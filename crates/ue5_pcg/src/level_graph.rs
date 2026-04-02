@@ -1,32 +1,32 @@
 // 生成关卡拓扑结构
 
 /// 房间类型
-/// Start       开始
-/// Combat      战斗
-/// Treasure    宝物
-/// Shop        商店
-/// Elite       精英怪
-/// Puzzle      解密
-/// Boss        boss房
 #[derive(Clone, Copy, Debug)]
 pub enum RoomType {
+    ///  开始
     Start,
+    ///  战斗
     Combat,
+    ///  宝物
     Treasure,
+    ///  商店
     Shop,
+    ///  精英怪
     Elite,
+    ///  解密
     Puzzle,
+    ///  boss房
     Boss
 }
 
-/// 房间节点
-/// id          房间id
-/// room_type   房间类型
-/// difficulty  难度
 #[derive(Clone, Debug)]
+/// 房间节点
 pub struct RoomNode {
+    ///  房间id
     pub id: usize,
+    /// 房间类型
     pub room_type: RoomType,
+    /// 难度
     pub difficulty: u8
 }
 
