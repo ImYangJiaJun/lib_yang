@@ -3,5 +3,8 @@ name = "yang_base"
 version = "0.0.1"
 edition = "2024"
 
+description = "个人使用构建后端服务器"
+license = "MIT OR Apache-2.0"
+
 [dependencies]
 
