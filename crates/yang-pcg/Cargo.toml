@@ -3,6 +3,9 @@ name = "yang-pcg"
 version = "0.0.1"
 edition = "2024"
 
+description = "个人使用地图生成"
+license = "MIT OR Apache-2.0"
+
 #排除文件
 exclude = [
     "INSTALL.md",
