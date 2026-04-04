@@ -3,9 +3,9 @@
 version = 4
 
 [[package]]
-name = "ue5_pcg"
+name = "yang-base"
 version = "0.0.1"
 
 [[package]]
-name = "yang_base"
+name = "yang-pcg"
 version = "0.0.1"

@@ -1,10 +1,15 @@
 [package]
-name = "yang_base"
+name = "yang-base"
 version = "0.0.1"
 edition = "2024"
 
 description = "个人使用构建后端服务器"
 license = "MIT OR Apache-2.0"
+
+#排除文件
+exclude = [
+    "INSTALL.md",
+]
 
 [dependencies]
 

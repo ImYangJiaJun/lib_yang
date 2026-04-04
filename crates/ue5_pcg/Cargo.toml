@@ -1,6 +1,0 @@
-[package]
-name = "ue5_pcg"
-version = "0.0.1"
-edition = "2024"
-
-[dependencies]

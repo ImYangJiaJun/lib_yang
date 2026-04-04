@@ -1,0 +1,11 @@
+[package]
+name = "yang-pcg"
+version = "0.0.1"
+edition = "2024"
+
+#排除文件
+exclude = [
+    "INSTALL.md",
+]
+
+[dependencies]
