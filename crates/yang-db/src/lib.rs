@@ -1,14 +1,27 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+// MySQL 查询构建器模块
+pub mod condition;
+pub mod database;
+pub mod error;
+pub mod field;
+pub mod init;
+pub mod query_builder;
+pub mod transaction;
 
+// 测试模块
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// 基于属性的测试模块
+#[cfg(test)]
+mod property_tests;
+
+// 重新导出核心类型
+pub use condition::{Condition, SqlValue};
+pub use database::{Database, DatabaseConfig};
+pub use error::DbError;
+pub use field::FieldType;
+pub use query_builder::QueryBuilder;
+pub use transaction::Transaction;
+
+// 类型别名
+pub type Result<T> = std::result::Result<T, DbError>;
