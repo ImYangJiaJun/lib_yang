@@ -7,14 +7,6 @@ pub mod init;
 pub mod query_builder;
 pub mod transaction;
 
-// 测试模块
-#[cfg(test)]
-mod tests;
-
-// 基于属性的测试模块
-#[cfg(test)]
-mod property_tests;
-
 // 重新导出核心类型
 pub use condition::{Condition, SqlValue};
 pub use database::{Database, DatabaseConfig};

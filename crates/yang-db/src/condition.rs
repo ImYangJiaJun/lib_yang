@@ -55,6 +55,12 @@ impl From<i64> for SqlValue {
     }
 }
 
+impl From<u64> for SqlValue {
+    fn from(v: u64) -> Self {
+        SqlValue::Int(v as i64)
+    }
+}
+
 impl From<f64> for SqlValue {
     fn from(v: f64) -> Self {
         SqlValue::Float(v)
@@ -633,8 +639,14 @@ mod property_tests {
         ]
     }
 
-    // Feature: mysql-query-builder, Property 5: 操作符支持
-    // 验证需求：3.3
+    // **Feature: mysql-query-builder, Property 5: 操作符支持**
+    // **验证需求：3.3**
+    //
+    // 属性：对于任意支持的操作符（=, !=, >, <, >=, <=, in, between, like），
+    // 生成的 SQL 应该包含正确的操作符语法
+    //
+    // 此测试验证所有支持的操作符都能正确生成 SQL 语句，
+    // 确保参数化查询的正确性和 SQL 注入防护。
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(100))]
 

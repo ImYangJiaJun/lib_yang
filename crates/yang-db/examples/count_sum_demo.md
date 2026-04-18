@@ -8,7 +8,7 @@
 
 ### 基本用法
 
-```rust
+````rust
 use yang_db::Database;
 
 #[tokio::main]
@@ -23,7 +23,7 @@ async fn main() -> Result<(), yang_db::DbError> {
 
     Ok(())
 }
-```
+````
 
 ### 带条件的统计
 

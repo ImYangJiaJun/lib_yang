@@ -207,7 +207,7 @@ impl SqlGenerator {
     /// # 返回
     /// - Ok(()): 成功生成 SQL
     /// - Err(DbError): 生成失败
-    fn build_insert(
+    pub(crate) fn build_insert(
         &mut self,
         table: &str,
         data: &serde_json::Value,
@@ -383,6 +383,38 @@ impl SqlGenerator {
         }
 
         self.append(&set_clauses.join(", "));
+
+        // 添加 WHERE 子句
+        self.build_where(conditions)?;
+
+        Ok(())
+    }
+
+    /// 生成 DELETE 语句
+    ///
+    /// # 参数
+    /// - table: 表名
+    /// - conditions: WHERE 条件列表
+    ///
+    /// # 返回
+    /// - Ok(()): 成功生成 SQL
+    /// - Err(DbError): 生成失败
+    pub(crate) fn build_delete(
+        &mut self,
+        table: &str,
+        conditions: &[Condition],
+    ) -> Result<(), crate::error::DbError> {
+        // 清空之前的内容
+        self.clear();
+
+        // 检查是否有 WHERE 条件
+        if conditions.is_empty() {
+            return Err(crate::error::DbError::MissingWhereClause);
+        }
+
+        // 构建 DELETE 语句
+        self.append("DELETE FROM ");
+        self.append(table);
 
         // 添加 WHERE 子句
         self.build_where(conditions)?;
@@ -1431,6 +1463,180 @@ impl<'a> QueryBuilder<'a> {
             }
             Err(e) => {
                 log::error!("insert_batch() 失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
+    /// 更新数据
+    ///
+    /// 执行 UPDATE 操作，更新表中的数据。
+    /// 为了防止误操作，必须提供 WHERE 条件，否则会返回错误。
+    ///
+    /// # 类型参数
+    /// - T: 数据类型，必须实现 Serialize trait
+    ///
+    /// # 参数
+    /// - data: 要更新的数据
+    ///
+    /// # 返回
+    /// - Ok(u64): 更新成功，返回受影响的行数
+    /// - Err(DbError): 更新失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::Database;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    ///
+    /// // 更新用户信息
+    /// let update_data = json!({
+    ///     "name": "李四",
+    ///     "age": 30
+    /// });
+    ///
+    /// let rows_affected = db.table("users")
+    ///     .where_and("id", "=", 1)
+    ///     .update(&update_data)
+    ///     .await?;
+    ///
+    /// println!("更新了 {} 行数据", rows_affected);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update<T>(self, data: &T) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 update() 操作，表: {}", self.table);
+        }
+
+        // 检查是否有 WHERE 条件
+        if self.conditions.is_empty() {
+            log::warn!("update() 操作缺少 WHERE 条件，禁止全表更新");
+            return Err(crate::error::DbError::MissingWhereClause);
+        }
+
+        // 将数据序列化为 JSON
+        let json_data = serde_json::to_value(data).map_err(|e| {
+            crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+        })?;
+
+        // 生成 UPDATE 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_update(&self.table, &json_data, &self.field_types, &self.conditions)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 update() SQL: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // 构建查询
+        let mut query = sqlx::query(sql);
+
+        // 绑定参数
+        for param in params {
+            query = bind_execute_param(query, param);
+        }
+
+        // 执行更新
+        let result = query.execute(self.pool).await;
+
+        match result {
+            Ok(query_result) => {
+                let rows_affected = query_result.rows_affected();
+                if self.enable_logging {
+                    log::debug!("update() 成功，影响 {} 行", rows_affected);
+                }
+                Ok(rows_affected)
+            }
+            Err(e) => {
+                log::error!("update() 失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
+    /// 删除数据
+    ///
+    /// 执行 DELETE 操作，删除表中的数据。
+    /// 为了防止误操作，必须提供 WHERE 条件，否则会返回错误。
+    ///
+    /// # 返回
+    /// - Ok(u64): 删除成功，返回受影响的行数
+    /// - Err(DbError): 删除失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::Database;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    ///
+    /// // 删除指定用户
+    /// let rows_affected = db.table("users")
+    ///     .where_and("id", "=", 1)
+    ///     .delete()
+    ///     .await?;
+    ///
+    /// println!("删除了 {} 行数据", rows_affected);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delete(self) -> Result<u64, crate::error::DbError> {
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 delete() 操作，表: {}", self.table);
+        }
+
+        // 检查是否有 WHERE 条件
+        if self.conditions.is_empty() {
+            log::warn!("delete() 操作缺少 WHERE 条件，禁止全表删除");
+            return Err(crate::error::DbError::MissingWhereClause);
+        }
+
+        // 生成 DELETE 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_delete(&self.table, &self.conditions)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 delete() SQL: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // 构建查询
+        let mut query = sqlx::query(sql);
+
+        // 绑定参数
+        for param in params {
+            query = bind_execute_param(query, param);
+        }
+
+        // 执行删除
+        let result = query.execute(self.pool).await;
+
+        match result {
+            Ok(query_result) => {
+                let rows_affected = query_result.rows_affected();
+                if self.enable_logging {
+                    log::debug!("delete() 成功，影响 {} 行", rows_affected);
+                }
+                Ok(rows_affected)
+            }
+            Err(e) => {
+                log::error!("delete() 失败: {}", e);
                 Err(crate::error::DbError::from(e))
             }
         }
