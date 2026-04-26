@@ -358,14 +358,9 @@ impl TokenManager {
     /// println!("Token 内容: {:?}", claims);
     /// ```
     pub fn parse_token_unsafe(&self, token: &str) -> Result<TokenClaims, BaseError> {
-        let mut validation = Validation::new(self.algorithm);
-        validation.insecure_disable_signature_validation();
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-        validation.validate_aud = false; // 不验证受众
-        validation.set_required_spec_claims::<&str>(&[]); // 不验证任何必需声明
-
-        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &validation)
+        // 使用 dangerous::insecure_decode 进行不安全解析
+        // 注意：此方法不验证签名、过期时间等，仅用于调试
+        let token_data = jsonwebtoken::dangerous::insecure_decode::<TokenClaims>(token)
             .map_err(|e| BaseError::TokenParseFailed(e.to_string()))?;
 
         Ok(token_data.claims)

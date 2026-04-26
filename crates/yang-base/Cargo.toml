@@ -30,13 +30,13 @@ thiserror = "2.0"
 log = "0.4"
 
 # HTTP 客户端
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13.2", features = ["json", "query"] }
 
 # JWT Token
-jsonwebtoken = "9.0"
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 
 # 工具库
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 chrono = "0.4"
 regex = "1.0"
 
