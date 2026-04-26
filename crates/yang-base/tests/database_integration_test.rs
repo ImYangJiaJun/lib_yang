@@ -11,34 +11,10 @@
 //! **注意**: 这些测试需要 Docker 环境。如果没有 Docker，测试将被跳过。
 //! 运行测试：`cargo test --test database_integration_test -- --test-threads=1`
 
-use testcontainers::{clients::Cli, core::WaitFor, GenericImage};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::database::{DatabaseInitializer, GlobalDatabase};
 use yang_base::plugin::{Plugin, PluginManager};
 use yang_db::{Database, DatabaseConfig};
-
-/// 测试设置宏：创建 Docker 容器并等待 MySQL 启动
-/// 返回 db_url 字符串
-macro_rules! setup_test_db {
-    ($docker:ident, $container:ident) => {{
-        let $docker = Cli::default();
-        let $container = match create_mysql_container(&$docker) {
-            Some(c) => c,
-            None => {
-                println!("跳过测试：Docker 不可用");
-                return;
-            }
-        };
-        let db_url = get_db_url(&$container);
-
-        // 等待 MySQL 完全启动
-        if !wait_for_mysql(&db_url, 15).await {
-            println!("跳过测试：MySQL 容器启动失败");
-            return;
-        }
-
-        db_url
-    }};
-}
 
 /// 测试插件 1
 struct TestPlugin1;
@@ -141,25 +117,31 @@ impl Plugin for TestPlugin3 {
     }
 }
 
-/// 创建 MySQL 测试容器
-///
-/// 返回 None 如果 Docker 不可用
-fn create_mysql_container(docker: &Cli) -> Option<testcontainers::Container<'_, GenericImage>> {
+/// 创建 MySQL 测试容器并返回数据库 URL
+async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
     let mysql_image = GenericImage::new("mysql", "8.0")
         .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
-        .with_env_var("MYSQL_DATABASE", "test_db")
-        .with_wait_for(WaitFor::message_on_stderr(
-            "port: 3306  MySQL Community Server",
-        ));
+        .with_env_var("MYSQL_DATABASE", "test_db");
 
-    // 尝试运行容器，如果失败则返回 None
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| docker.run(mysql_image))).ok()
-}
+    // 尝试启动容器
+    let container = match mysql_image.start().await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("跳过测试：无法启动 Docker 容器: {}", e);
+            return None;
+        }
+    };
 
-/// 获取数据库连接字符串
-fn get_db_url(container: &testcontainers::Container<'_, GenericImage>) -> String {
-    let port = container.get_host_port_ipv4(3306);
-    format!("mysql://root:test_password@127.0.0.1:{}/test_db", port)
+    let port = container.get_host_port_ipv4(3306).await.ok()?;
+    let db_url = format!("mysql://root:test_password@127.0.0.1:{}/test_db", port);
+
+    // 等待 MySQL 完全启动
+    if !wait_for_mysql(&db_url, 15).await {
+        println!("跳过测试：MySQL 容器启动超时");
+        return None;
+    }
+
+    Some((container, db_url))
 }
 
 /// 等待 MySQL 完全启动并可以接受连接
@@ -188,7 +170,10 @@ async fn wait_for_mysql(db_url: &str, max_retries: u32) -> bool {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_global_database_initialization() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 初始化全局数据库
     let config = DatabaseConfig {
@@ -216,7 +201,10 @@ async fn test_global_database_initialization() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_database_initialization_without_transaction() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();
@@ -286,7 +274,10 @@ async fn test_database_initialization_without_transaction() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_database_initialization_with_transaction() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();
@@ -349,7 +340,10 @@ async fn test_database_initialization_with_transaction() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_migration_table_creation() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();
@@ -408,7 +402,10 @@ async fn test_migration_table_creation() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_migration_execution_and_idempotency() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();
@@ -469,7 +466,10 @@ async fn test_migration_execution_and_idempotency() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_transaction_rollback_on_failure() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();
@@ -518,7 +518,10 @@ async fn test_transaction_rollback_on_failure() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_dependency_order_initialization() {
-    let db_url = setup_test_db!(_docker, _container);
+    let (_container, db_url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
 
     // 连接数据库
     let db = Database::connect(&db_url).await.unwrap();

@@ -1,4 +1,4 @@
-//! TableQuery CRUD 操作集成测试
+﻿//! TableQuery CRUD 操作集成测试
 //!
 //! 测试 TableQuery 的完整 CRUD 操作流程，包括：
 //! - 完整的 CRUD 流程（INSERT、SELECT、UPDATE、DELETE）
@@ -17,7 +17,7 @@ use sqlx::mysql::MySqlPoolOptions;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use testcontainers::{clients::Cli, core::WaitFor, GenericImage};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::table::{
     FieldConfig, FieldPermissions, FieldType, PaginatedResult, SortOrder, TableConfig, TableQuery,
     Validator,
@@ -43,22 +43,29 @@ struct TestProduct {
     deleted_at: Option<i64>,
 }
 
-/// 创建 MySQL 测试容器
-fn create_mysql_container(docker: &Cli) -> Option<testcontainers::Container<'_, GenericImage>> {
+/// 创建 MySQL 测试容器并返回数据库 URL
+async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
     let mysql_image = GenericImage::new("mysql", "8.0")
         .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
-        .with_env_var("MYSQL_DATABASE", "test_db")
-        .with_wait_for(WaitFor::message_on_stderr(
-            "port: 3306  MySQL Community Server",
-        ));
+        .with_env_var("MYSQL_DATABASE", "test_db");
 
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| docker.run(mysql_image))).ok()
-}
+    let container = match mysql_image.start().await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("跳过测试：无法启动 Docker 容器: {}", e);
+            return None;
+        }
+    };
 
-/// 获取数据库连接字符串
-fn get_db_url(container: &testcontainers::Container<'_, GenericImage>) -> String {
-    let port = container.get_host_port_ipv4(3306);
-    format!("mysql://root:test_password@127.0.0.1:{}/test_db", port)
+    let port = container.get_host_port_ipv4(3306).await.ok()?;
+    let db_url = format!("mysql://root:test_password@127.0.0.1:{}/test_db", port);
+
+    if !wait_for_mysql(&db_url, 15).await {
+        println!("跳过测试：MySQL 容器启动超时");
+        return None;
+    }
+
+    Some((container, db_url))
 }
 
 /// 等待 MySQL 完全启动
@@ -195,20 +202,10 @@ fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
 /// 设置测试环境的宏
 macro_rules! setup_test_env {
     () => {{
-        let docker = Cli::default();
-        let container = match create_mysql_container(&docker) {
-            Some(c) => c,
-            None => {
-                println!("跳过测试：Docker 不可用");
-                return;
-            }
+        let (_container, db_url) = match setup_mysql().await {
+            Some(setup) => setup,
+            None => return,
         };
-        let db_url = get_db_url(&container);
-
-        if !wait_for_mysql(&db_url, 15).await {
-            println!("跳过测试：MySQL 容器启动失败");
-            return;
-        }
 
         // 创建数据库连接池
         let pool = MySqlPoolOptions::new()
