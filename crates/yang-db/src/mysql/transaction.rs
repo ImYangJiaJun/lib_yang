@@ -1,6 +1,6 @@
-use crate::condition::{Condition, SqlValue};
 use crate::error::DbError;
-use crate::field::FieldType;
+use crate::mysql::condition::{Condition, SqlValue};
+use crate::mysql::field::FieldType;
 use sqlx::Transaction as SqlxTransaction;
 use std::collections::HashMap;
 
@@ -211,7 +211,7 @@ impl<'a> TransactionQueryBuilder<'a> {
             .map_err(|e| DbError::SerializationError(format!("数据序列化失败: {}", e)))?;
 
         // 生成 INSERT 语句
-        let mut generator = crate::query_builder::SqlGenerator::new();
+        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
         generator.build_insert(&self.table, &json_data, &self.field_types)?;
 
         let sql = generator.get_sql();
@@ -280,7 +280,7 @@ impl<'a> TransactionQueryBuilder<'a> {
             .map_err(|e| DbError::SerializationError(format!("数据序列化失败: {}", e)))?;
 
         // 生成 UPDATE 语句
-        let mut generator = crate::query_builder::SqlGenerator::new();
+        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
         generator.build_update(&self.table, &json_data, &self.field_types, &self.conditions)?;
 
         let sql = generator.get_sql();
@@ -336,7 +336,7 @@ impl<'a> TransactionQueryBuilder<'a> {
         }
 
         // 生成 DELETE 语句
-        let mut generator = crate::query_builder::SqlGenerator::new();
+        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
         generator.build_delete(&self.table, &self.conditions)?;
 
         let sql = generator.get_sql();

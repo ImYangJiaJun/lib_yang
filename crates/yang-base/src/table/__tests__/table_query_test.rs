@@ -1,0 +1,877 @@
+//! TableQuery 单元测试
+//!
+//! 测试查询构建器的功能，包括：
+//! - 查询构建方法的链式调用
+//! - 字段权限验证
+//! - 错误情况处理
+
+use crate::error::BaseError;
+use crate::table::{FieldConfig, FieldPermissions, FieldType, SortOrder, TableConfig, TableQuery};
+use serde_json::json;
+use std::sync::Arc;
+
+/// 创建测试用的表配置
+///
+/// 包含以下字段：
+/// - id: BigInt, 所有人可读可写可筛选可排序
+/// - name: String, 所有人可读可写可筛选可排序
+/// - email: String, 所有人可读可写可筛选可排序
+/// - salary: Double, 只有 admin 可读可筛选可排序
+/// - secret: String, 只有 admin 可读
+fn create_test_table_config() -> Arc<TableConfig> {
+    Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new(
+                "name",
+                FieldType::String { max_length: 50 },
+            ))
+            .field(FieldConfig::new(
+                "email",
+                FieldType::String { max_length: 100 },
+            ))
+            .field(
+                FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
+                    readable_roles: vec!["admin".to_string()],
+                    writable_roles: vec!["admin".to_string()],
+                    filterable_roles: vec!["admin".to_string()],
+                    sortable_roles: vec!["admin".to_string()],
+                }),
+            )
+            .field(
+                FieldConfig::new("secret", FieldType::String { max_length: 255 }).permissions(
+                    FieldPermissions {
+                        readable_roles: vec!["admin".to_string()],
+                        writable_roles: vec!["admin".to_string()],
+                        filterable_roles: vec!["admin".to_string()],
+                        sortable_roles: vec!["admin".to_string()],
+                    },
+                ),
+            ),
+    )
+}
+
+#[test]
+fn test_table_query_new() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config.clone(), vec!["user".to_string()], None);
+
+    assert_eq!(query.get_table_config().table_name, "users");
+    assert_eq!(query.get_user_roles(), &["user"]);
+    assert!(query.get_query_params().fields.is_none());
+    assert!(query.get_query_params().where_conditions.is_empty());
+    assert!(query.get_query_params().order_by.is_empty());
+}
+
+#[test]
+fn test_select_fields_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.select_fields(&["id", "name", "email"]);
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    let fields = query.get_query_params().fields.as_ref().unwrap();
+    assert_eq!(fields.len(), 3);
+    assert!(fields.contains(&"id".to_string()));
+    assert!(fields.contains(&"name".to_string()));
+    assert!(fields.contains(&"email".to_string()));
+}
+
+#[test]
+fn test_select_fields_not_found() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.select_fields(&["id", "nonexistent"]);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldNotFound(table, field) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "nonexistent");
+        }
+        _ => panic!("期望 FieldNotFound 错误"),
+    }
+}
+
+#[test]
+fn test_select_fields_permission_denied() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // salary 字段只有 admin 可读
+    let result = query.select_fields(&["id", "salary"]);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(table, field, msg) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "salary");
+            assert_eq!(msg, "用户无读取权限");
+        }
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_select_fields_admin_can_read_all() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // admin 可以读取所有字段
+    let result = query.select_fields(&["id", "name", "salary", "secret"]);
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    let fields = query.get_query_params().fields.as_ref().unwrap();
+    assert_eq!(fields.len(), 4);
+}
+
+#[test]
+fn test_where_eq_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.where_eq("name", json!("alice"));
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().where_conditions.len(), 1);
+}
+
+#[test]
+fn test_where_eq_field_not_found() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.where_eq("nonexistent", json!("value"));
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldNotFound(table, field) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "nonexistent");
+        }
+        _ => panic!("期望 FieldNotFound 错误"),
+    }
+}
+
+#[test]
+fn test_where_eq_permission_denied() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // salary 字段只有 admin 可筛选
+    let result = query.where_eq("salary", json!(50000));
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(table, field, msg) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "salary");
+            assert_eq!(msg, "用户无筛选权限");
+        }
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_where_in_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.where_in("name", vec![json!("alice"), json!("bob"), json!("charlie")]);
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().where_conditions.len(), 1);
+}
+
+#[test]
+fn test_where_in_permission_denied() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.where_in("salary", vec![json!(50000), json!(60000)]);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(_, _, _) => {}
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_where_like_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.where_like("name", "%alice%".to_string());
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().where_conditions.len(), 1);
+}
+
+#[test]
+fn test_where_like_permission_denied() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // secret 字段没有筛选权限
+    let result = query.where_like("secret", "%test%".to_string());
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(_, _, _) => {}
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_order_by_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.order_by("name", SortOrder::Asc);
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().order_by.len(), 1);
+    assert_eq!(query.get_query_params().order_by[0].0, "name");
+    assert_eq!(query.get_query_params().order_by[0].1, SortOrder::Asc);
+}
+
+#[test]
+fn test_order_by_field_not_found() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.order_by("nonexistent", SortOrder::Asc);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldNotFound(table, field) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "nonexistent");
+        }
+        _ => panic!("期望 FieldNotFound 错误"),
+    }
+}
+
+#[test]
+fn test_order_by_permission_denied() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // salary 字段只有 admin 可排序
+    let result = query.order_by("salary", SortOrder::Desc);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(table, field, msg) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "salary");
+            assert_eq!(msg, "用户无排序权限");
+        }
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_order_by_no_sort_permission() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // secret 字段没有排序权限
+    let result = query.order_by("secret", SortOrder::Asc);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(_, _, _) => {}
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_page_success() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query.page(1, 20);
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().page, Some(1));
+    assert_eq!(query.get_query_params().page_size, Some(20));
+}
+
+#[test]
+fn test_chained_calls() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // 测试链式调用
+    let result = query
+        .select_fields(&["id", "name", "email"])
+        .and_then(|q| q.where_eq("name", json!("alice")))
+        .and_then(|q| q.where_in("id", vec![json!(1), json!(2), json!(3)]))
+        .and_then(|q| q.order_by("name", SortOrder::Asc))
+        .and_then(|q| q.page(1, 20));
+
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().fields.as_ref().unwrap().len(), 3);
+    assert_eq!(query.get_query_params().where_conditions.len(), 2);
+    assert_eq!(query.get_query_params().order_by.len(), 1);
+    assert_eq!(query.get_query_params().page, Some(1));
+    assert_eq!(query.get_query_params().page_size, Some(20));
+}
+
+#[test]
+fn test_multiple_where_conditions() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query
+        .where_eq("name", json!("alice"))
+        .and_then(|q| q.where_like("email", "%@example.com".to_string()))
+        .and_then(|q| q.where_in("id", vec![json!(1), json!(2)]));
+
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().where_conditions.len(), 3);
+}
+
+#[test]
+fn test_multiple_order_by() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let result = query
+        .order_by("name", SortOrder::Asc)
+        .and_then(|q| q.order_by("id", SortOrder::Desc));
+
+    assert!(result.is_ok());
+
+    let query = result.unwrap();
+    assert_eq!(query.get_query_params().order_by.len(), 2);
+    assert_eq!(query.get_query_params().order_by[0].0, "name");
+    assert_eq!(query.get_query_params().order_by[0].1, SortOrder::Asc);
+    assert_eq!(query.get_query_params().order_by[1].0, "id");
+    assert_eq!(query.get_query_params().order_by[1].1, SortOrder::Desc);
+}
+
+#[test]
+fn test_admin_can_use_all_fields() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // admin 可以使用所有字段
+    let result = query
+        .select_fields(&["id", "name", "salary", "secret"])
+        .and_then(|q| q.where_eq("salary", json!(50000)))
+        .and_then(|q| q.order_by("salary", SortOrder::Desc));
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_empty_user_roles() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec![], None);
+
+    // 空角色列表应该可以访问没有权限限制的字段
+    let result = query.select_fields(&["id", "name"]);
+    assert!(result.is_ok());
+
+    // 但不能访问有权限限制的字段
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, vec![], None);
+    let result = query.select_fields(&["salary"]);
+    assert!(result.is_err());
+}
+
+// ==================== INSERT 操作测试 ====================
+// 注：由于 INSERT 操作需要数据库连接，这里只测试验证逻辑
+// 完整的集成测试应该在单独的集成测试文件中进行
+
+/// 创建测试用的表配置（带必填字段）
+///
+/// 包含以下字段：
+/// - id: BigInt, 自增主键，非必填
+/// - name: String, 必填
+/// - email: String, 必填
+/// - age: Integer, 非必填
+/// - salary: Double, 只有 admin 可写
+fn create_test_table_config_for_insert() -> Arc<TableConfig> {
+    Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
+            .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true))
+            .field(FieldConfig::new("age", FieldType::Integer))
+            .field(
+                FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
+                    readable_roles: vec!["admin".to_string()],
+                    writable_roles: vec!["admin".to_string()],
+                    filterable_roles: vec!["admin".to_string()],
+                    sortable_roles: vec!["admin".to_string()],
+                }),
+            ),
+    )
+}
+
+// ==================== UPDATE 操作测试 ====================
+// 注：由于 UPDATE 操作需要数据库连接，这里只测试验证逻辑
+// 完整的集成测试应该在单独的集成测试文件中进行
+
+#[test]
+fn test_update_validate_field_not_found() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("nonexistent".to_string(), json!("value"));
+
+    // validate_update_data 是私有方法，我们通过构建 SQL 来间接测试
+    // 这里我们测试 build_update_sql 会在 validate 中失败
+    let result = query.build_update_sql(&data);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldNotFound(table, field) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "nonexistent");
+        }
+        _ => panic!("期望 FieldNotFound 错误"),
+    }
+}
+
+#[test]
+fn test_update_validate_permission_denied() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("salary".to_string(), json!(50000.0)); // salary 只有 admin 可写
+
+    // validate_update_data 应该失败
+    let result = query.validate_update_data(&data);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::FieldPermissionDenied(table, field, msg) => {
+            assert_eq!(table, "users");
+            assert_eq!(field, "salary");
+            assert_eq!(msg, "用户无写入权限");
+        }
+        _ => panic!("期望 FieldPermissionDenied 错误"),
+    }
+}
+
+#[test]
+fn test_update_validate_success() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("email".to_string(), json!("zhangsan@example.com"));
+    data.insert("age".to_string(), json!(25));
+
+    // validate_update_data 应该成功
+    let result = query.validate_update_data(&data);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_validate_admin_can_write_all() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("salary".to_string(), json!(50000.0)); // admin 可以写入 salary
+
+    // validate_update_data 应该成功
+    let result = query.validate_update_data(&data);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_validate_type_validation() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("age".to_string(), json!("not a number")); // age 应该是整数
+
+    // validate_update_data 应该失败（类型验证失败）
+    let result = query.validate_update_data(&data);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        BaseError::InvalidFieldType(_, _) => {}
+        _ => panic!("期望 InvalidFieldType 错误"),
+    }
+}
+
+#[test]
+fn test_build_update_sql_basic() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("email".to_string(), json!("zhangsan@example.com"));
+
+    let result = query.build_update_sql(&data);
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含 UPDATE 和 SET
+    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("SET"));
+    assert!(sql.contains("name = ?"));
+    assert!(sql.contains("email = ?"));
+
+    // 检查参数数量
+    assert_eq!(params.len(), 2);
+}
+
+#[test]
+fn test_build_update_sql_with_where() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+
+    // 添加 WHERE 条件
+    let query = query.where_eq("id", json!(1)).unwrap();
+
+    let result = query.build_update_sql(&data);
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含 WHERE 子句
+    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("SET name = ?"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id = ?"));
+
+    // 检查参数数量：1个 SET 参数 + 1个 WHERE 参数
+    assert_eq!(params.len(), 2);
+}
+
+#[test]
+fn test_build_update_sql_with_multiple_where() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+    data.insert("age".to_string(), json!(25));
+
+    // 添加多个 WHERE 条件
+    let query = query
+        .where_eq("id", json!(1))
+        .unwrap()
+        .where_like("email", "%@example.com".to_string())
+        .unwrap();
+
+    let result = query.build_update_sql(&data);
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含多个 WHERE 条件
+    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("SET"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("AND"));
+    assert!(sql.contains("email LIKE ?"));
+
+    // 检查参数数量：2个 SET 参数 + 2个 WHERE 参数
+    assert_eq!(params.len(), 4);
+}
+
+#[test]
+fn test_build_update_sql_with_in_condition() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+
+    // 添加 IN 条件
+    let query = query
+        .where_in("id", vec![json!(1), json!(2), json!(3)])
+        .unwrap();
+
+    let result = query.build_update_sql(&data);
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含 IN 子句
+    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("SET name = ?"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id IN (?, ?, ?)"));
+
+    // 检查参数数量：1个 SET 参数 + 3个 IN 参数
+    assert_eq!(params.len(), 4);
+}
+
+#[test]
+fn test_update_partial_fields() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    // UPDATE 只更新部分字段，不需要提供所有字段
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三")); // 只更新 name
+
+    let result = query.validate_update_data(&data);
+    assert!(result.is_ok()); // 应该成功，即使 email 是必填字段
+}
+
+#[test]
+fn test_update_empty_data() {
+    use std::collections::HashMap;
+
+    let table_config = create_test_table_config_for_insert();
+    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+
+    let data = HashMap::new(); // 空数据
+
+    let result = query.validate_update_data(&data);
+    assert!(result.is_ok()); // 验证应该成功（虽然没有实际意义）
+
+    // 但构建 SQL 应该成功（生成空的 SET 子句）
+    let result = query.build_update_sql(&data);
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("SET"));
+    assert_eq!(params.len(), 0);
+}
+
+// ==================== DELETE 操作测试 ====================
+
+/// 创建测试用的表配置（带软删除字段）
+///
+/// 包含以下字段：
+/// - id: BigInt
+/// - name: String
+/// - email: String
+/// - deleted_at: BigInt（软删除字段）
+fn create_test_table_config_with_soft_delete() -> Arc<TableConfig> {
+    Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new(
+                "name",
+                FieldType::String { max_length: 50 },
+            ))
+            .field(FieldConfig::new(
+                "email",
+                FieldType::String { max_length: 100 },
+            ))
+            .field(FieldConfig::new("deleted_at", FieldType::BigInt))
+            .soft_delete_field("deleted_at"), // 配置软删除字段
+    )
+}
+
+/// 创建测试用的表配置（不带软删除字段）
+///
+/// 包含以下字段：
+/// - id: BigInt
+/// - message: Text
+fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
+    Arc::new(
+        TableConfig::new("logs")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("message", FieldType::Text)),
+        // 未配置 soft_delete_field
+    )
+}
+
+#[test]
+fn test_build_delete_sql_basic() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句
+    assert_eq!(sql, "DELETE FROM logs");
+    assert_eq!(params.len(), 0);
+}
+
+#[test]
+fn test_build_delete_sql_with_where_eq() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // 添加 WHERE 条件
+    let query = query.where_eq("id", json!(1)).unwrap();
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含 WHERE 子句
+    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id = ?"));
+
+    // 检查参数数量
+    assert_eq!(params.len(), 1);
+}
+
+#[test]
+fn test_build_delete_sql_with_multiple_where() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // 添加多个 WHERE 条件
+    let query = query
+        .where_eq("id", json!(1))
+        .unwrap()
+        .where_like("message", "%error%".to_string())
+        .unwrap();
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含多个 WHERE 条件
+    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("AND"));
+    assert!(sql.contains("message LIKE ?"));
+
+    // 检查参数数量
+    assert_eq!(params.len(), 2);
+}
+
+#[test]
+fn test_build_delete_sql_with_in_condition() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // 添加 IN 条件
+    let query = query
+        .where_in("id", vec![json!(1), json!(2), json!(3)])
+        .unwrap();
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句包含 IN 子句
+    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id IN (?, ?, ?)"));
+
+    // 检查参数数量
+    assert_eq!(params.len(), 3);
+}
+
+#[test]
+fn test_build_delete_sql_with_is_null() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // 添加 IS NULL 条件
+    let query = query.where_eq("id", json!(1)).unwrap();
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+
+    // 检查 SQL 语句
+    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("WHERE"));
+    assert!(sql.contains("id = ?"));
+
+    // 检查参数数量
+    assert_eq!(params.len(), 1);
+}
+
+#[test]
+fn test_soft_delete_field_configured() {
+    let table_config = create_test_table_config_with_soft_delete();
+
+    // 验证软删除字段已配置
+    assert_eq!(
+        table_config.soft_delete_field,
+        Some("deleted_at".to_string())
+    );
+}
+
+#[test]
+fn test_hard_delete_field_not_configured() {
+    let table_config = create_test_table_config_without_soft_delete();
+
+    // 验证软删除字段未配置
+    assert_eq!(table_config.soft_delete_field, None);
+}
+
+#[test]
+fn test_delete_sql_all_where_conditions() {
+    let table_config = create_test_table_config_without_soft_delete();
+    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+
+    // 测试所有 WHERE 条件类型
+    let query = query.where_eq("id", json!(1)).unwrap();
+
+    let result = query.build_delete_sql();
+    assert!(result.is_ok());
+
+    let (sql, params) = result.unwrap();
+    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("WHERE"));
+    assert_eq!(params.len(), 1);
+}

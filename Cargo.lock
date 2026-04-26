@@ -3361,6 +3361,7 @@ dependencies = [
  "log",
  "mockito",
  "proptest",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

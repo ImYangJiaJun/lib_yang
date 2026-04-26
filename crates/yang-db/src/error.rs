@@ -31,6 +31,22 @@ pub enum DbError {
     #[error("缺少 WHERE 条件，禁止全表操作")]
     MissingWhereClause,
 
+    // Redis 相关错误
+    #[error("Redis 连接错误: {0}")]
+    RedisConnectionError(String),
+
+    #[error("Redis 命令错误: {0}")]
+    RedisCommandError(String),
+
+    #[error("Redis 连接池错误: {0}")]
+    RedisPoolError(String),
+
+    #[error("Redis 类型转换错误: {0}")]
+    RedisTypeConversionError(String),
+
+    #[error("Redis 超时错误: {0}")]
+    RedisTimeoutError(String),
+
     #[error("未知错误: {0}")]
     Unknown(String),
 }
@@ -73,6 +89,45 @@ impl From<sqlx::Error> for DbError {
             sqlx::Error::PoolClosed => DbError::ConnectionError("连接池已关闭".to_string()),
             sqlx::Error::WorkerCrashed => DbError::ConnectionError("工作线程崩溃".to_string()),
             _ => DbError::Unknown(format!("未知错误: {}", err)),
+        }
+    }
+}
+
+/// 从 redis::RedisError 转换为 DbError
+impl From<redis::RedisError> for DbError {
+    fn from(err: redis::RedisError) -> Self {
+        // redis 1.1.0 中的 ErrorKind 是不同的，我们直接根据错误信息判断
+        let err_str = format!("{}", err);
+
+        if err_str.contains("IO error") || err_str.contains("Connection") {
+            DbError::RedisConnectionError(format!("IO 错误: {}", err))
+        } else if err_str.contains("type") || err_str.contains("Type") {
+            DbError::RedisTypeConversionError(format!("类型错误: {}", err))
+        } else if err_str.contains("timeout") || err_str.contains("Timeout") {
+            DbError::RedisTimeoutError(format!("超时错误: {}", err))
+        } else {
+            DbError::RedisCommandError(format!("Redis 错误: {}", err))
+        }
+    }
+}
+
+/// 从 deadpool_redis::PoolError 转换为 DbError
+impl From<deadpool_redis::PoolError> for DbError {
+    fn from(err: deadpool_redis::PoolError) -> Self {
+        match err {
+            deadpool_redis::PoolError::Timeout(_) => {
+                DbError::RedisTimeoutError("连接池获取连接超时".to_string())
+            }
+            deadpool_redis::PoolError::Closed => {
+                DbError::RedisPoolError("连接池已关闭".to_string())
+            }
+            deadpool_redis::PoolError::NoRuntimeSpecified => {
+                DbError::RedisPoolError("未指定运行时".to_string())
+            }
+            deadpool_redis::PoolError::PostCreateHook(source) => {
+                DbError::RedisPoolError(format!("连接创建后钩子失败: {:?}", source))
+            }
+            deadpool_redis::PoolError::Backend(err) => DbError::from(err),
         }
     }
 }
@@ -177,5 +232,44 @@ mod tests {
         // 验证 DbError 实现了 std::error::Error trait
         let err = DbError::QueryError("测试".to_string());
         let _: &dyn std::error::Error = &err;
+    }
+
+    // Redis 错误测试
+    #[test]
+    fn test_redis_connection_error() {
+        let err = DbError::RedisConnectionError("连接失败".to_string());
+        assert_eq!(format!("{}", err), "Redis 连接错误: 连接失败");
+    }
+
+    #[test]
+    fn test_redis_command_error() {
+        let err = DbError::RedisCommandError("命令执行失败".to_string());
+        assert_eq!(format!("{}", err), "Redis 命令错误: 命令执行失败");
+    }
+
+    #[test]
+    fn test_redis_pool_error() {
+        let err = DbError::RedisPoolError("连接池错误".to_string());
+        assert_eq!(format!("{}", err), "Redis 连接池错误: 连接池错误");
+    }
+
+    #[test]
+    fn test_redis_type_conversion_error() {
+        let err = DbError::RedisTypeConversionError("类型转换失败".to_string());
+        assert_eq!(format!("{}", err), "Redis 类型转换错误: 类型转换失败");
+    }
+
+    #[test]
+    fn test_redis_timeout_error() {
+        let err = DbError::RedisTimeoutError("操作超时".to_string());
+        assert_eq!(format!("{}", err), "Redis 超时错误: 操作超时");
+    }
+
+    #[test]
+    fn test_pool_error_conversion() {
+        // 测试 deadpool_redis::PoolError 转换
+        let pool_err = deadpool_redis::PoolError::Closed;
+        let db_err: DbError = pool_err.into();
+        assert!(matches!(db_err, DbError::RedisPoolError(_)));
     }
 }

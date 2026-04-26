@@ -1,5 +1,5 @@
-use crate::condition::{Condition, SqlValue};
-use crate::field::{FieldType, JoinClause, OrderClause};
+use crate::mysql::condition::{Condition, SqlValue};
+use crate::mysql::field::{FieldType, JoinClause, OrderClause};
 use sqlx::mysql::MySqlPool;
 use std::collections::HashMap;
 
@@ -129,12 +129,12 @@ impl SqlGenerator {
 
         // 如果有多个条件，用 AND 连接
         if conditions.len() == 1 {
-            let sql = crate::condition::condition_to_sql(&conditions[0], &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
             self.append(&sql);
         } else {
             // 多个条件用 AND 连接
             let combined = Condition::And(conditions.to_vec());
-            let sql = crate::condition::condition_to_sql(&combined, &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql(&combined, &mut self.params);
             self.append(&sql);
         }
 
@@ -146,7 +146,7 @@ impl SqlGenerator {
     /// # 参数
     /// - joins: JOIN 子句列表
     fn build_joins(&mut self, joins: &[JoinClause]) {
-        use crate::field::JoinType;
+        use crate::mysql::field::JoinType;
 
         for join in joins {
             let join_type_str = match join.join_type {
@@ -623,9 +623,9 @@ impl<'a> QueryBuilder<'a> {
     /// 添加 AND 条件
     pub fn where_and<V>(mut self, field: &str, op: &str, value: V) -> Self
     where
-        V: Into<crate::condition::SqlValue>,
+        V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::condition::{Condition, SqlValue};
+        use crate::mysql::condition::{Condition, SqlValue};
 
         let sql_value = value.into();
         let condition = match op {
@@ -653,9 +653,9 @@ impl<'a> QueryBuilder<'a> {
     /// 添加 OR 条件
     pub fn where_or<V>(mut self, field: &str, op: &str, value: V) -> Self
     where
-        V: Into<crate::condition::SqlValue>,
+        V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::condition::{Condition, SqlValue};
+        use crate::mysql::condition::{Condition, SqlValue};
 
         let sql_value = value.into();
         let condition = match op {
@@ -696,9 +696,9 @@ impl<'a> QueryBuilder<'a> {
     /// 添加 IN 条件
     pub fn where_in<V>(mut self, field: &str, values: Vec<V>) -> Self
     where
-        V: Into<crate::condition::SqlValue>,
+        V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::condition::Condition;
+        use crate::mysql::condition::Condition;
 
         let sql_values: Vec<_> = values.into_iter().map(|v| v.into()).collect();
         self.conditions
@@ -709,9 +709,9 @@ impl<'a> QueryBuilder<'a> {
     /// 添加 BETWEEN 条件
     pub fn where_between<V>(mut self, field: &str, start: V, end: V) -> Self
     where
-        V: Into<crate::condition::SqlValue>,
+        V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::condition::Condition;
+        use crate::mysql::condition::Condition;
 
         self.conditions.push(Condition::Between(
             field.to_string(),
@@ -723,7 +723,7 @@ impl<'a> QueryBuilder<'a> {
 
     /// INNER JOIN
     pub fn join(mut self, table: &str, on: &str) -> Self {
-        use crate::field::{JoinClause, JoinType};
+        use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Inner,
@@ -735,7 +735,7 @@ impl<'a> QueryBuilder<'a> {
 
     /// LEFT JOIN
     pub fn left_join(mut self, table: &str, on: &str) -> Self {
-        use crate::field::{JoinClause, JoinType};
+        use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Left,
@@ -747,7 +747,7 @@ impl<'a> QueryBuilder<'a> {
 
     /// RIGHT JOIN
     pub fn right_join(mut self, table: &str, on: &str) -> Self {
-        use crate::field::{JoinClause, JoinType};
+        use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Right,
@@ -759,7 +759,7 @@ impl<'a> QueryBuilder<'a> {
 
     /// 排序
     pub fn order(mut self, field: &str, asc: bool) -> Self {
-        use crate::field::OrderClause;
+        use crate::mysql::field::OrderClause;
 
         self.order_by.push(OrderClause {
             field: field.to_string(),

@@ -16,7 +16,7 @@ pub enum RoomType {
     ///  解密
     Puzzle,
     ///  boss房
-    Boss
+    Boss,
 }
 
 #[derive(Clone, Debug)]
@@ -27,17 +27,16 @@ pub struct RoomNode {
     /// 房间类型
     pub room_type: RoomType,
     /// 难度
-    pub difficulty: u8
+    pub difficulty: u8,
 }
 
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub from: usize,
-    pub to: usize
+    pub to: usize,
 }
 
 pub struct LevelGraph {
     pub nodes: Vec<RoomNode>,
-    pub edges: Vec<Edge>
+    pub edges: Vec<Edge>,
 }
-

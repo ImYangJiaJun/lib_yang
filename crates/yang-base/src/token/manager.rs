@@ -447,3 +447,16 @@ impl TokenManager {
         self.generate_access_token(&claims.sub, custom_claims)
     }
 }
+
+// 手动实现 Debug trait，因为 EncodingKey 和 DecodingKey 不支持 Debug
+impl std::fmt::Debug for TokenManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenManager")
+            .field("algorithm", &self.algorithm)
+            .field("issuer", &self.issuer)
+            .field("audience", &self.audience)
+            .field("access_token_expiry", &self.access_token_expiry)
+            .field("refresh_token_expiry", &self.refresh_token_expiry)
+            .finish()
+    }
+}

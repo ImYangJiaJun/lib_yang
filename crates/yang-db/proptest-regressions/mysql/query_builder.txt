@@ -1,0 +1,32 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 40bb8a286c764e46cd2756b17be2507fb568644fafebfbd0dc61491bcb313df3 # shrinks to table_name = "a"
+cc d60231a0a5db2af5039eb955114635894c4109ccfe8739fe144792d4f1a706cc # shrinks to table_name = "a", fields = ["a"]
+cc 7aacc83c5b215c870a2bc24d4d1de161eb83770d0082b2c36f0fe99b4fd6889c # shrinks to table_name = "a", field = "a", asc = false
+cc 93124d39436bfddca6da3dd30d7f76eae0a32881a29caeaec23959e5e3a36f71 # shrinks to table_name = "a", field = "a"
+cc ab11c3098b07b3bff92e615dbbda96b37c8ee57ec3d2fe91d172169253ccbc5c # shrinks to table_name = "a", join_tables = ["a"]
+cc c758edaef4123489e7fece808eb7250db4029c3b31586234a7590ea05a778645 # shrinks to table_name = "a", field_name = "a"
+cc 386be6b835947ad332b62a960e1eee45382cb480d3ef59f31cd260ff9234ab94 # shrinks to table_name = "a", fields = ["a"]
+cc e165eb79d8abcaed59c30d08d5a32f42ad1d39e9e4c077293cc3d040addb345d # shrinks to table_name = "a", fields = ["a"]
+cc a9b9f997711999c53376d641af6f7f49ac14f4d487daf3ae95af87c42d11690f # shrinks to table_name = "a", field_name = "a", field_value = 1
+cc da1446c7736c4b9c689efb1744bfc4b3390d46895c0731d145b72a4810319d71 # shrinks to table_name = "a", field = "a"
+cc e581767689c554d5713e23e7b4d3d685bf66cf4bce82d8894d35caf9cca562a3 # shrinks to table_name = "a", field = "a", start = 0, end = 0
+cc 639a3d6ed4187af32d74ac9a0585f02f369dd07a81481bb20b8cbb50249cf380 # shrinks to table_name = "a", field = "a", value = 0
+cc ed0b9520236d6dde3ab4e426c8c0c7d75ddcb1d249c6dbe8a8303fbb7dd68daa # shrinks to table_name = "a", join_table = "a", on_condition = "a.a = a.a"
+cc e439eeb1e03d35f4a0da4c1584cdbcfe4529a98543be528043d76f0d04524c1f # shrinks to table_name = "a", field = "a", values = [0]
+cc be68dbe56e070b986d30712e28bdfd449ae9688091f1eb17a81c06b2024ce6c7 # shrinks to table_name = "a", field = "a", values = [0, 0]
+cc ecdd264004d3a854f018bfdd78e9de7ad66a03b40944383414e98bd8b05d7f51 # shrinks to table_name = "a", json_field = "a", datetime_field = "aa", timestamp_field = "ab", decimal_field = "ac", blob_field = "a0", text_field = "ad"
+cc 676510e0c175564e5866b5dc18338144b82e2fcc74442a573aad87cf49231282 # shrinks to table_name = "a"
+cc 48967ac7cf79a5744ff879caa3338e3c26f66b17913e841b81eba912584cea3a # shrinks to table_name = "a", fields = [], use_distinct = false, limit_opt = None, offset_opt = None
+cc 516712ab63acf72c9f652a8333236f7a108cd79c3bf7fdd3c58204ac314da1ed # shrinks to table_name1 = "a", table_name2 = "aa"
+cc 67e93fc800740a143e5d2bc605da58605f6c791139aa577f480e55119384ae85 # shrinks to base_table = "a", join_table = "b", base_alias = "a", join_alias = "aa"
+cc a7f7335537047d733c19a745c0f3d42142803b7b11d6814281cee823b6cbf8bf # shrinks to table_name = "a", field = "a", value = 0
+cc dc42683089d711b39c1e81b43d3499a9aad3bf1d2d6b6d24ee3479535c0ed0d4 # shrinks to table_name = "a", join_table = "a", on_field1 = "a", on_field2 = "a"
+cc 4b490b50bdcb23634aad540ebf8997058be98b4f63215161fbd79a8f005c3989 # shrinks to table_name = "a", order_field = "a", group_field = "a", asc = false
+cc 584609884c9a9930cfece062845de8b5138f81d827e214e6bf1d1d4f08dff3ab # shrinks to table_name = "a", field = "a", value = 0
+cc fa5207732a153424bb76e284de180fecde34e370ef2fa14ef55510d1448c5e08 # shrinks to table_name = "a", field = "a", value1 = 0, value2 = 0
+cc 1f3d7bb0c4c333ba237b44e5412affe9863922004a439823e492f1f235de9cd6 # shrinks to table_name = "a", fields = ["a"], join_table = "a", where_field = "a", order_field = "a", group_field = "a"

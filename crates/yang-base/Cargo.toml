@@ -38,9 +38,11 @@ jsonwebtoken = "9.0"
 # 工具库
 uuid = { version = "1.0", features = ["v4"] }
 chrono = "0.4"
+regex = "1.0"
 
 # 数据库
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql"] }
+
 
 [dev-dependencies]
 tokio = { version = "1.51.0", features = ["full", "test-util"] }

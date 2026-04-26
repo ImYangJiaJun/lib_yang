@@ -1,6 +1,6 @@
 use crate::error::DbError;
-use crate::query_builder::QueryBuilder;
-use crate::transaction::Transaction;
+use crate::mysql::query_builder::QueryBuilder;
+use crate::mysql::transaction::Transaction;
 use sqlx::mysql::MySqlPool;
 
 /// 数据库配置
