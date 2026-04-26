@@ -1,6 +1,6 @@
 [package]
 name = "yang-base"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 
 description = "个人使用构建后端服务器"
@@ -46,8 +46,6 @@ sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql"] }
 
 [dev-dependencies]
 tokio = { version = "1.51.0", features = ["full", "test-util"] }
-proptest = "1.5"
-mockito = "1.0"
-testcontainers = "0.15"
+testcontainers = "0.27.3"
 env_logger = "0.11"
 
