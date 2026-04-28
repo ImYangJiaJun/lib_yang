@@ -1,7 +1,3 @@
-# crates.io  TOKEN
-````
-ciovEyOWJqeHMLfhUMOZ6nf7wMhLYyuSGbe
-````
 
 # 代码检查
 ````bash
