@@ -3,6 +3,19 @@ use crate::{DbError, RedisConfig, RedisValue, Result};
 use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
 use std::time::Duration;
 
+/// 连接池状态信息
+#[derive(Debug, Clone)]
+pub struct PoolStatus {
+    /// 连接池最大连接数
+    pub max_size: usize,
+    /// 当前连接总数
+    pub size: usize,
+    /// 当前可用（空闲）连接数
+    pub available: usize,
+    /// 正在等待获取连接的请求数
+    pub waiting: usize,
+}
+
 /// Redis 客户端
 ///
 /// 提供 Redis 数据库操作的统一接口，支持连接池管理
@@ -1033,12 +1046,11 @@ impl RedisClient {
         let result = self.execute(&cmd).await?;
 
         // BLPOP 返回数组 [key, value] 或 nil
-        if let Some(arr) = result.as_array() {
-            if arr.len() == 2 {
-                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
-                    return Ok(Some((key, value)));
-                }
-            }
+        if let Some(arr) = result.as_array()
+            && arr.len() == 2
+            && let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string())
+        {
+            return Ok(Some((key, value)));
         }
         Ok(None)
     }
@@ -1075,12 +1087,11 @@ impl RedisClient {
         let result = self.execute(&cmd).await?;
 
         // BRPOP 返回数组 [key, value] 或 nil
-        if let Some(arr) = result.as_array() {
-            if arr.len() == 2 {
-                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
-                    return Ok(Some((key, value)));
-                }
-            }
+        if let Some(arr) = result.as_array()
+            && arr.len() == 2
+            && let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string())
+        {
+            return Ok(Some((key, value)));
         }
         Ok(None)
     }
@@ -1179,6 +1190,135 @@ impl RedisClient {
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
         Ok(result.as_string())
+    }
+
+    /// SINTER - 返回多个集合的交集
+    ///
+    /// 计算所有给定集合的共同成员。
+    ///
+    /// # 参数
+    /// - `keys`: 参与交集运算的集合键列表
+    ///
+    /// # 返回
+    /// 所有集合中都存在的成员列表
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::RedisClient;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    /// let common = client.sinter(&["set_a".to_string(), "set_b".to_string()]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn sinter(&self, keys: &[String]) -> Result<Vec<String>> {
+        let mut cmd = redis::cmd("SINTER");
+        for key in keys {
+            cmd.arg(key);
+        }
+        let result = self.execute(&cmd).await?;
+        if let Some(arr) = result.as_array() {
+            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// SUNION - 返回多个集合的并集
+    ///
+    /// 计算所有给定集合的所有成员。
+    ///
+    /// # 参数
+    /// - `keys`: 参与并集运算的集合键列表
+    ///
+    /// # 返回
+    /// 所有集合的成员合并列表（去重）
+    pub async fn sunion(&self, keys: &[String]) -> Result<Vec<String>> {
+        let mut cmd = redis::cmd("SUNION");
+        for key in keys {
+            cmd.arg(key);
+        }
+        let result = self.execute(&cmd).await?;
+        if let Some(arr) = result.as_array() {
+            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// SDIFF - 返回多个集合的差集
+    ///
+    /// 计算第一个集合与其余集合的差集（仅存在于第一个集合中的成员）。
+    ///
+    /// # 参数
+    /// - `keys`: 集合键列表，第一个为基准集合
+    ///
+    /// # 返回
+    /// 仅存在于第一个集合中的成员列表
+    pub async fn sdiff(&self, keys: &[String]) -> Result<Vec<String>> {
+        let mut cmd = redis::cmd("SDIFF");
+        for key in keys {
+            cmd.arg(key);
+        }
+        let result = self.execute(&cmd).await?;
+        if let Some(arr) = result.as_array() {
+            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// SMOVE - 将指定成员从源集合移动到目标集合
+    ///
+    /// # 参数
+    /// - `source`: 源集合键
+    /// - `destination`: 目标集合键
+    /// - `member`: 要移动的成员
+    ///
+    /// # 返回
+    /// - `Ok(true)`: 移动成功
+    /// - `Ok(false)`: 成员不存在于源集合
+    pub async fn smove(
+        &self,
+        source: impl Into<String>,
+        destination: impl Into<String>,
+        member: impl Into<String>,
+    ) -> Result<bool> {
+        let mut cmd = redis::cmd("SMOVE");
+        cmd.arg(source.into())
+            .arg(destination.into())
+            .arg(member.into());
+        let result = self.execute(&cmd).await?;
+        Ok(result.as_i64() == Some(1))
+    }
+
+    /// SSCAN - 增量式迭代集合中的元素
+    ///
+    /// # 参数
+    /// - `key`: 集合键
+    /// - `cursor`: 游标（初始传 0）
+    /// - `pattern`: 可选的匹配模式
+    /// - `count`: 可选的每批返回数量提示
+    ///
+    /// # 返回
+    /// - `Ok((i64, Vec<String>))`: (下一游标, 本批成员列表)
+    pub async fn sscan(
+        &self,
+        key: impl Into<String>,
+        cursor: i64,
+        pattern: Option<&str>,
+        count: Option<i64>,
+    ) -> Result<(i64, Vec<String>)> {
+        let mut cmd = redis::cmd("SSCAN");
+        cmd.arg(key.into()).arg(cursor);
+        if let Some(p) = pattern {
+            cmd.arg("MATCH").arg(p);
+        }
+        if let Some(c) = count {
+            cmd.arg("COUNT").arg(c);
+        }
+        let result = self.execute(&cmd).await?;
+        parse_scan_result(&result)
     }
 
     // ==================== Sorted Set 操作 ====================
@@ -1320,6 +1460,210 @@ impl RedisClient {
         }
     }
 
+    /// ZRANK - 获取成员在有序集合中的排名（从低到高，0 为第一名）
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `member`: 成员
+    ///
+    /// # 返回
+    /// - `Ok(Some(i64))`: 成员的排名（0 开始）
+    /// - `Ok(None)`: 成员不存在
+    pub async fn zrank(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<String>,
+    ) -> Result<Option<i64>> {
+        let mut cmd = redis::cmd("ZRANK");
+        cmd.arg(key.into()).arg(member.into());
+        let result = self.execute(&cmd).await?;
+        if result.is_nil() {
+            Ok(None)
+        } else {
+            Ok(result.as_i64())
+        }
+    }
+
+    /// ZREVRANK - 获取成员在有序集合中的逆序排名（从高到低，0 为第一名）
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `member`: 成员
+    ///
+    /// # 返回
+    /// - `Ok(Some(i64))`: 成员的逆序排名（0 开始）
+    /// - `Ok(None)`: 成员不存在
+    pub async fn zrevrank(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<String>,
+    ) -> Result<Option<i64>> {
+        let mut cmd = redis::cmd("ZREVRANK");
+        cmd.arg(key.into()).arg(member.into());
+        let result = self.execute(&cmd).await?;
+        if result.is_nil() {
+            Ok(None)
+        } else {
+            Ok(result.as_i64())
+        }
+    }
+
+    /// ZREVRANGE - 按索引范围从高到低获取有序集合的成员
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `start`: 起始索引
+    /// - `stop`: 结束索引
+    ///
+    /// # 返回
+    /// 指定范围内的成员列表（从高分到低分排序）
+    pub async fn zrevrange(
+        &self,
+        key: impl Into<String>,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<String>> {
+        let mut cmd = redis::cmd("ZREVRANGE");
+        cmd.arg(key.into()).arg(start).arg(stop);
+        let result = self.execute(&cmd).await?;
+        if let Some(arr) = result.as_array() {
+            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// ZRANGE WITHSCORES - 按索引范围获取有序集合的成员及其分数
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `start`: 起始索引
+    /// - `stop`: 结束索引
+    ///
+    /// # 返回
+    /// 成员和分数的元组列表（从低分到高分排序）
+    pub async fn zrange_with_scores(
+        &self,
+        key: impl Into<String>,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<(String, f64)>> {
+        let mut cmd = redis::cmd("ZRANGE");
+        cmd.arg(key.into()).arg(start).arg(stop).arg("WITHSCORES");
+        let result = self.execute(&cmd).await?;
+        Ok(parse_with_scores(&result))
+    }
+
+    /// ZREVRANGE WITHSCORES - 按索引范围从高到低获取有序集合的成员及其分数
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `start`: 起始索引
+    /// - `stop`: 结束索引
+    ///
+    /// # 返回
+    /// 成员和分数的元组列表（从高分到低分排序）
+    pub async fn zrevrange_with_scores(
+        &self,
+        key: impl Into<String>,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<(String, f64)>> {
+        let mut cmd = redis::cmd("ZREVRANGE");
+        cmd.arg(key.into()).arg(start).arg(stop).arg("WITHSCORES");
+        let result = self.execute(&cmd).await?;
+        Ok(parse_with_scores(&result))
+    }
+
+    /// ZREMRANGEBYRANK - 移除有序集合中指定排名范围的成员
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `start`: 起始排名（0 为第一）
+    /// - `stop`: 结束排名（-1 为最后一个）
+    ///
+    /// # 返回
+    /// 被移除的成员数量
+    pub async fn zremrangebyrank(
+        &self,
+        key: impl Into<String>,
+        start: i64,
+        stop: i64,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("ZREMRANGEBYRANK");
+        cmd.arg(key.into()).arg(start).arg(stop);
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// ZREMRANGEBYSCORE - 移除有序集合中指定分数范围的成员
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `min`: 最小分数（包含）
+    /// - `max`: 最大分数（包含）
+    ///
+    /// # 返回
+    /// 被移除的成员数量
+    pub async fn zremrangebyscore(
+        &self,
+        key: impl Into<String>,
+        min: f64,
+        max: f64,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("ZREMRANGEBYSCORE");
+        cmd.arg(key.into()).arg(min).arg(max);
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// ZSCAN - 增量式迭代有序集合中的成员
+    ///
+    /// # 参数
+    /// - `key`: 有序集合键
+    /// - `cursor`: 游标（初始传 0）
+    /// - `pattern`: 可选的匹配模式
+    /// - `count`: 可选的每批返回数量提示
+    ///
+    /// # 返回
+    /// - `Ok((i64, Vec<(String, f64)>))`: (下一游标, 成员-分数对列表)
+    pub async fn zscan(
+        &self,
+        key: impl Into<String>,
+        cursor: i64,
+        pattern: Option<&str>,
+        count: Option<i64>,
+    ) -> Result<(i64, Vec<(String, f64)>)> {
+        let mut cmd = redis::cmd("ZSCAN");
+        cmd.arg(key.into()).arg(cursor);
+        if let Some(p) = pattern {
+            cmd.arg("MATCH").arg(p);
+        }
+        if let Some(c) = count {
+            cmd.arg("COUNT").arg(c);
+        }
+        let result = self.execute(&cmd).await?;
+        if let Some(arr) = result.as_array() {
+            let next_cursor = arr
+                .first()
+                .and_then(|v| v.as_string())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            if let Some(inner) = arr.get(1) {
+                let pairs = parse_with_scores(inner);
+                Ok((next_cursor, pairs))
+            } else {
+                Ok((next_cursor, vec![]))
+            }
+        } else {
+            Ok((0, vec![]))
+        }
+    }
+
     // ==================== 通用键操作 ====================
 
     /// DEL - 删除一个或多个键
@@ -1406,6 +1750,103 @@ impl RedisClient {
             Ok(arr.iter().filter_map(|v| v.as_string()).collect())
         } else {
             Ok(vec![])
+        }
+    }
+
+    /// SCAN - 增量式迭代数据库中的所有键
+    ///
+    /// 生产安全的 KEYS 替代方案，不会阻塞 Redis 服务器。
+    ///
+    /// # 参数
+    /// - `cursor`: 游标（初始传 0，使用返回的游标继续迭代）
+    /// - `pattern`: 可选的键名匹配模式（如 `Some("user:*")`）
+    /// - `count`: 可选的每批返回数量提示
+    ///
+    /// # 返回
+    /// - `Ok((i64, Vec<String>))`: (下一游标, 本批键列表)
+    /// - 游标为 0 表示完整迭代完成
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::RedisClient;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    /// let mut cursor = 0i64;
+    /// loop {
+    ///     let (next, keys) = client.scan(cursor, Some("user:*"), Some(100)).await?;
+    ///     // 处理 keys...
+    ///     cursor = next;
+    ///     if cursor == 0 { break; }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn scan(
+        &self,
+        cursor: i64,
+        pattern: Option<&str>,
+        count: Option<i64>,
+    ) -> Result<(i64, Vec<String>)> {
+        let mut cmd = redis::cmd("SCAN");
+        cmd.arg(cursor);
+        if let Some(p) = pattern {
+            cmd.arg("MATCH").arg(p);
+        }
+        if let Some(c) = count {
+            cmd.arg("COUNT").arg(c);
+        }
+        let result = self.execute(&cmd).await?;
+        parse_scan_result(&result)
+    }
+
+    /// PUBLISH - 向指定频道发布消息
+    ///
+    /// # 参数
+    /// - `channel`: 频道名称
+    /// - `message`: 消息内容
+    ///
+    /// # 返回
+    /// 接收到此消息的订阅者数量
+    pub async fn publish(
+        &self,
+        channel: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("PUBLISH");
+        cmd.arg(channel.into()).arg(message.into());
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// 健康检查 - 验证 Redis 连接是否正常
+    ///
+    /// 执行 PING 命令检查 Redis 服务可达性。连接异常时不抛错误，返回 Ok(false)。
+    ///
+    /// # 返回
+    /// - `Ok(true)`: Redis 连接正常
+    /// - `Ok(false)`: PING 响应异常
+    /// - `Err(DbError)`: 无法获取连接
+    pub async fn health_check(&self) -> Result<bool> {
+        let cmd = redis::cmd("PING");
+        match self.execute(&cmd).await {
+            Ok(result) => Ok(!result.is_nil()),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// 获取连接池当前状态
+    ///
+    /// # 返回
+    /// PoolStatus 结构体，包含 max_size、size、available、waiting 统计信息
+    pub fn pool_status(&self) -> PoolStatus {
+        let s = self.pool.status();
+        PoolStatus {
+            max_size: s.max_size,
+            size: s.size,
+            available: s.available,
+            waiting: s.waiting,
         }
     }
 
@@ -1576,6 +2017,44 @@ impl RedisClient {
     }
 }
 
+/// 解析 SCAN/SSCAN 结果
+fn parse_scan_result(result: &RedisValue) -> crate::Result<(i64, Vec<String>)> {
+    if let Some(arr) = result.as_array() {
+        let cursor = arr
+            .first()
+            .and_then(|v| v.as_string())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let members = arr
+            .get(1)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_string()).collect())
+            .unwrap_or_default();
+        Ok((cursor, members))
+    } else {
+        Ok((0, vec![]))
+    }
+}
+
+/// 解析 WITHSCORES 结果（交替的成员/分数对）
+fn parse_with_scores(result: &RedisValue) -> Vec<(String, f64)> {
+    if let Some(arr) = result.as_array() {
+        let mut pairs = Vec::new();
+        let mut i = 0;
+        while i + 1 < arr.len() {
+            if let (Some(member), Some(score_str)) = (arr[i].as_string(), arr[i + 1].as_string())
+                && let Ok(score) = score_str.parse::<f64>()
+            {
+                pairs.push((member, score));
+            }
+            i += 2;
+        }
+        pairs
+    } else {
+        vec![]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1669,5 +2148,65 @@ mod tests {
             Some(Duration::from_secs(5)),
             "默认创建超时应为 5 秒"
         );
+    }
+
+    #[test]
+    fn test_pool_status_creation() {
+        let status = PoolStatus {
+            max_size: 10,
+            size: 5,
+            available: 3,
+            waiting: 2,
+        };
+        assert_eq!(status.max_size, 10);
+        assert_eq!(status.size, 5);
+        assert_eq!(status.available, 3);
+        assert_eq!(status.waiting, 2);
+    }
+
+    #[test]
+    fn test_parse_scan_result_valid() {
+        let result = RedisValue::Array(vec![
+            RedisValue::String("5".to_string()),
+            RedisValue::Array(vec![
+                RedisValue::String("key1".to_string()),
+                RedisValue::String("key2".to_string()),
+            ]),
+        ]);
+        let (cursor, keys) = parse_scan_result(&result).unwrap();
+        assert_eq!(cursor, 5);
+        assert_eq!(keys, vec!["key1".to_string(), "key2".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_scan_result_empty() {
+        let result = RedisValue::Array(vec![
+            RedisValue::String("0".to_string()),
+            RedisValue::Array(vec![]),
+        ]);
+        let (cursor, keys) = parse_scan_result(&result).unwrap();
+        assert_eq!(cursor, 0);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_parse_with_scores_valid() {
+        let result = RedisValue::Array(vec![
+            RedisValue::String("alice".to_string()),
+            RedisValue::String("100".to_string()),
+            RedisValue::String("bob".to_string()),
+            RedisValue::String("95.5".to_string()),
+        ]);
+        let pairs = parse_with_scores(&result);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("alice".to_string(), 100.0));
+        assert_eq!(pairs[1], ("bob".to_string(), 95.5));
+    }
+
+    #[test]
+    fn test_parse_with_scores_empty() {
+        let result = RedisValue::Array(vec![]);
+        let pairs = parse_with_scores(&result);
+        assert!(pairs.is_empty());
     }
 }

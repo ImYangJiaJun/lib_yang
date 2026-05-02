@@ -36,6 +36,10 @@ pub enum Condition {
     Between(String, SqlValue, SqlValue),
     /// LIKE 条件
     Like(String, String),
+    /// IS NULL 条件
+    IsNull(String),
+    /// IS NOT NULL 条件
+    IsNotNull(String),
     /// AND 组合
     And(Vec<Condition>),
     /// OR 组合
@@ -179,6 +183,8 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
             params.push(SqlValue::String(pattern.clone()));
             format!("{} LIKE ?", field)
         }
+        Condition::IsNull(field) => format!("{} IS NULL", field),
+        Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
         Condition::And(conditions) => {
             if conditions.is_empty() {
                 return "1 = 1".to_string();

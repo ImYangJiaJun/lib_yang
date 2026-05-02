@@ -9,6 +9,9 @@ use std::collections::HashMap;
 /// 批量插入操作会自动将数据分批处理，每批最多插入 INSERT_BATCH_SIZE 条记录。
 const INSERT_BATCH_SIZE: usize = 500;
 
+/// 批量更新的默认批次大小
+const UPDATE_BATCH_SIZE: usize = 1000;
+
 /// SQL 生成器（内部使用）
 #[allow(dead_code)]
 pub(crate) struct SqlGenerator {
@@ -98,6 +101,14 @@ impl SqlGenerator {
         // GROUP BY 子句
         if !builder.group_by.is_empty() {
             self.build_group_by(&builder.group_by);
+        }
+
+        // HAVING 子句
+        if !builder.having_clause.is_empty() {
+            if builder.group_by.is_empty() {
+                return Err(crate::error::DbError::MissingGroupByClause);
+            }
+            self.build_having(&builder.having_clause)?;
         }
 
         // ORDER BY 子句
@@ -201,6 +212,22 @@ impl SqlGenerator {
 
         self.append(" GROUP BY ");
         self.append(&groups.join(", "));
+    }
+
+    /// 生成 HAVING 子句
+    fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
+        self.append(" HAVING ");
+        if conditions.len() == 1 {
+            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
+            self.append(&sql);
+        } else {
+            let parts: Vec<String> = conditions
+                .iter()
+                .map(|c| crate::mysql::condition::condition_to_sql(c, &mut self.params))
+                .collect();
+            self.append(&parts.join(" AND "));
+        }
+        Ok(())
     }
 
     /// 生成 INSERT 语句
@@ -428,7 +455,124 @@ impl SqlGenerator {
         Ok(())
     }
 
-    /// 将 JSON 值转换为 SQL 值
+    /// 生成批量 UPDATE 语句（CASE WHEN 策略）
+    pub(crate) fn build_update_batch(
+        &mut self,
+        table: &str,
+        records: &[serde_json::Value],
+        id_field: &str,
+        field_types: &std::collections::HashMap<String, FieldType>,
+    ) -> Result<(), crate::error::DbError> {
+        self.clear();
+
+        if records.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "批量更新数据不能为空".to_string(),
+            ));
+        }
+
+        let first = records[0].as_object().ok_or_else(|| {
+            crate::error::DbError::SerializationError("更新数据必须是 JSON 对象".to_string())
+        })?;
+
+        let update_fields: Vec<String> = first
+            .keys()
+            .filter(|k| k.as_str() != id_field)
+            .cloned()
+            .collect();
+
+        if update_fields.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "没有可更新的字段".to_string(),
+            ));
+        }
+
+        self.append(&format!("UPDATE {} SET ", table));
+
+        let mut set_parts = Vec::new();
+        for field in &update_fields {
+            let mut when_parts = Vec::new();
+            for record in records {
+                let id_val = record.get(id_field).unwrap_or(&serde_json::Value::Null);
+                let field_val = record
+                    .get(field.as_str())
+                    .unwrap_or(&serde_json::Value::Null);
+
+                self.add_param(self.json_value_to_sql_value(id_val, field_types.get(id_field))?);
+                self.add_param(
+                    self.json_value_to_sql_value(field_val, field_types.get(field.as_str()))?,
+                );
+
+                when_parts.push(format!("WHEN {}=? THEN ?", id_field));
+            }
+            set_parts.push(format!("{} = CASE {} END", field, when_parts.join(" ")));
+        }
+
+        self.append(&set_parts.join(", "));
+
+        // WHERE id IN (?, ?, ...)
+        let id_placeholders: Vec<&str> = records.iter().map(|_| "?").collect();
+        self.append(&format!(
+            " WHERE {} IN ({})",
+            id_field,
+            id_placeholders.join(",")
+        ));
+
+        for record in records {
+            let id_val = record.get(id_field).unwrap_or(&serde_json::Value::Null);
+            self.add_param(self.json_value_to_sql_value(id_val, field_types.get(id_field))?);
+        }
+
+        Ok(())
+    }
+
+    /// 生成 UPSERT (INSERT ... ON DUPLICATE KEY UPDATE) 语句
+    pub(crate) fn build_upsert(
+        &mut self,
+        table: &str,
+        data: &serde_json::Value,
+        field_types: &std::collections::HashMap<String, FieldType>,
+    ) -> Result<(), crate::error::DbError> {
+        self.clear();
+
+        let obj = data.as_object().ok_or_else(|| {
+            crate::error::DbError::SerializationError("插入数据必须是 JSON 对象".to_string())
+        })?;
+
+        if obj.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "插入数据不能为空".to_string(),
+            ));
+        }
+
+        let fields: Vec<String> = obj.keys().cloned().collect();
+        let placeholders: Vec<&str> = fields.iter().map(|_| "?").collect();
+
+        self.append(&format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table,
+            fields.join(", "),
+            placeholders.join(", ")
+        ));
+
+        for field in &fields {
+            let val = obj.get(field.as_str()).unwrap_or(&serde_json::Value::Null);
+            self.add_param(self.json_value_to_sql_value(val, field_types.get(field.as_str()))?);
+        }
+
+        let update_parts: Vec<String> = fields
+            .iter()
+            .map(|f| format!("{}=VALUES({})", f, f))
+            .collect();
+
+        self.append(&format!(
+            " ON DUPLICATE KEY UPDATE {}",
+            update_parts.join(", ")
+        ));
+
+        Ok(())
+    }
+
     ///
     /// # 参数
     /// - value: JSON 值
@@ -540,6 +684,8 @@ pub struct QueryBuilder<'a> {
     order_by: Vec<OrderClause>,
     #[allow(dead_code)]
     group_by: Vec<String>,
+    #[allow(dead_code)]
+    having_clause: Vec<Condition>,
     limit: Option<u64>,
     offset: Option<u64>,
     distinct: bool,
@@ -559,6 +705,7 @@ impl<'a> QueryBuilder<'a> {
             joins: Vec::new(),
             order_by: Vec::new(),
             group_by: Vec::new(),
+            having_clause: Vec::new(),
             limit: None,
             offset: None,
             distinct: false,
@@ -724,6 +871,88 @@ impl<'a> QueryBuilder<'a> {
             start.into(),
             end.into(),
         ));
+        self
+    }
+
+    /// 添加 IS NULL 条件
+    ///
+    /// 生成 `field IS NULL` 子句，用于查询字段值为 NULL 的记录。
+    ///
+    /// # 参数
+    /// - `field`: 字段名
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct User;
+    /// let users = db.table("users")
+    ///     .where_null("deleted_at")
+    ///     .select::<User>()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn where_null(mut self, field: &str) -> Self {
+        self.conditions.push(Condition::IsNull(field.to_string()));
+        self
+    }
+
+    /// 添加 IS NOT NULL 条件
+    ///
+    /// 生成 `field IS NOT NULL` 子句，用于查询字段值不为 NULL 的记录。
+    ///
+    /// # 参数
+    /// - `field`: 字段名
+    pub fn where_not_null(mut self, field: &str) -> Self {
+        self.conditions
+            .push(Condition::IsNotNull(field.to_string()));
+        self
+    }
+
+    /// 添加 HAVING 条件
+    ///
+    /// 对 GROUP BY 分组后的结果进行过滤。必须与 `group()` 方法配合使用，
+    /// 否则查询执行时返回 `MissingGroupByClause` 错误。
+    /// 多次调用将以 AND 连接所有条件。
+    ///
+    /// # 参数
+    /// - `field`: 聚合字段或聚合表达式（如 `"cnt"`）
+    /// - `op`: 比较运算符（"="、"!="、">"、"<"、">="、"<="）
+    /// - `value`: 比较值（参数化，防 SQL 注入）
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct OrderSummary;
+    /// let result = db.table("orders")
+    ///     .field("user_id")
+    ///     .field("COUNT(*) as cnt")
+    ///     .group("user_id")
+    ///     .having_cond("cnt", ">", 5i64)
+    ///     .select::<OrderSummary>()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn having_cond<V>(mut self, field: &str, op: &str, value: V) -> Self
+    where
+        V: Into<crate::mysql::condition::SqlValue>,
+    {
+        let sql_value = value.into();
+        let condition = match op {
+            "=" => Condition::Eq(field.to_string(), sql_value),
+            "!=" => Condition::Ne(field.to_string(), sql_value),
+            ">" => Condition::Gt(field.to_string(), sql_value),
+            "<" => Condition::Lt(field.to_string(), sql_value),
+            ">=" => Condition::Gte(field.to_string(), sql_value),
+            "<=" => Condition::Lte(field.to_string(), sql_value),
+            _ => panic!("不支持的操作符: {}", op),
+        };
+        self.having_clause.push(condition);
         self
     }
 
@@ -1831,6 +2060,7 @@ impl<'a> QueryBuilder<'a> {
                 joins: self.joins.clone(),
                 order_by: self.order_by.clone(),
                 group_by: self.group_by.clone(),
+                having_clause: self.having_clause.clone(),
                 limit: self.limit,
                 offset: self.offset,
                 distinct: self.distinct,
@@ -2094,6 +2324,152 @@ impl<'a> QueryBuilder<'a> {
                 Err(crate::error::DbError::from(e))
             }
         }
+    }
+
+    /// 批量更新记录
+    ///
+    /// 使用 CASE WHEN 策略在单次查询中更新多条记录。自动分批处理（每批 1000 条），
+    /// 所有批次在同一事务中执行，保证原子性。
+    ///
+    /// # 参数
+    /// - `records`: 要更新的记录列表（每条必须包含 where_field 字段）
+    /// - `where_field`: 主键字段名（如 `"id"`），用于匹配记录
+    ///
+    /// # 返回
+    /// - `Ok(u64)`: 总受影响行数
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # use serde_json::json;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let records = vec![
+    ///     json!({"id": 1, "name": "张三", "age": 25}),
+    ///     json!({"id": 2, "name": "李四", "age": 30}),
+    /// ];
+    /// let affected = db.table("users")
+    ///     .update_batch(&records, "id")
+    ///     .await?;
+    /// println!("批量更新了 {} 行", affected);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_batch<T>(
+        self,
+        records: &[T],
+        where_field: &str,
+    ) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        if records.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "批量更新数据不能为空".to_string(),
+            ));
+        }
+
+        let json_records: Vec<serde_json::Value> = records
+            .iter()
+            .map(|r| {
+                serde_json::to_value(r).map_err(|e| {
+                    crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(crate::error::DbError::from)?;
+        let mut total = 0u64;
+
+        for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+            let mut generator = SqlGenerator::new();
+            generator.build_update_batch(&self.table, chunk, where_field, &self.field_types)?;
+
+            let sql = generator.get_sql();
+            let params = generator.get_params();
+
+            let mut query = sqlx::query(sql);
+            for param in params {
+                query = bind_execute_param(query, param);
+            }
+
+            let result = query
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::error::DbError::from)?;
+            total += result.rows_affected();
+        }
+
+        tx.commit().await.map_err(crate::error::DbError::from)?;
+        Ok(total)
+    }
+
+    /// UPSERT - 插入或更新记录
+    ///
+    /// 使用 `INSERT ... ON DUPLICATE KEY UPDATE` 语法。当主键或唯一键冲突时
+    /// 自动更新所有字段，否则插入新记录。
+    ///
+    /// # 返回
+    /// - `Ok(u64)`: MySQL rows_affected（1=插入新记录, 2=更新现有记录）
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # use serde_json::json;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let data = json!({"id": 1, "name": "张三", "email": "zhangsan@example.com"});
+    /// let rows = db.table("users").upsert(&data).await?;
+    /// if rows == 1 {
+    ///     println!("新插入记录");
+    /// } else if rows == 2 {
+    ///     println!("更新了已有记录");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn upsert<T>(self, data: &T) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        if self.enable_logging {
+            log::debug!("执行 upsert() 操作，表: {}", self.table);
+        }
+
+        let json_data = serde_json::to_value(data).map_err(|e| {
+            crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+        })?;
+
+        let mut generator = SqlGenerator::new();
+        generator.build_upsert(&self.table, &json_data, &self.field_types)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        if self.enable_logging {
+            log::debug!("执行 upsert() SQL: {}", sql);
+        }
+
+        let mut query = sqlx::query(sql);
+        for param in params {
+            query = bind_execute_param(query, param);
+        }
+
+        let result = query
+            .execute(self.pool)
+            .await
+            .map_err(crate::error::DbError::from)?;
+        let rows = result.rows_affected();
+
+        if self.enable_logging {
+            log::debug!("upsert() 完成，rows_affected: {}", rows);
+        }
+
+        Ok(rows)
     }
 }
 
@@ -2547,6 +2923,130 @@ mod tests {
         assert!(sql.contains("BETWEEN"));
     }
 
+    #[test]
+    fn test_where_null_generates_is_null_sql() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "users", false).where_null("deleted_at");
+        let sql = builder.to_sql();
+        assert!(sql.contains("deleted_at IS NULL"));
+    }
+
+    #[test]
+    fn test_where_not_null_generates_is_not_null_sql() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "users", false).where_not_null("email");
+        let sql = builder.to_sql();
+        assert!(sql.contains("email IS NOT NULL"));
+    }
+
+    #[test]
+    fn test_is_null_with_and_condition() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "users", false)
+            .where_and("status", "=", 1i64)
+            .where_null("deleted_at");
+        let sql = builder.to_sql();
+        assert!(sql.contains("status = ?"));
+        assert!(sql.contains("deleted_at IS NULL"));
+    }
+
+    #[test]
+    fn test_having_clause_sql_generation() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "orders", false)
+            .field("user_id")
+            .field("COUNT(*) as cnt")
+            .group("user_id")
+            .having_cond("cnt", ">", 5i64);
+        let sql = builder.to_sql();
+        assert!(sql.contains("HAVING"));
+        assert!(sql.contains("cnt > ?"));
+    }
+
+    #[test]
+    fn test_having_without_group_returns_error() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "orders", false).having_cond("cnt", ">", 5i64);
+        let mut generator = SqlGenerator::new();
+        let result = generator.build_select(&builder);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::DbError::MissingGroupByClause
+        ));
+    }
+
+    #[test]
+    fn test_having_clause_order() {
+        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
+        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let builder = QueryBuilder::new(pool, "orders", false)
+            .group("user_id")
+            .having_cond("cnt", ">", 5i64)
+            .order("cnt", false);
+        let sql = builder.to_sql();
+        let group_pos = sql.find("GROUP BY").unwrap();
+        let having_pos = sql.find("HAVING").unwrap();
+        let order_pos = sql.find("ORDER BY").unwrap();
+        assert!(group_pos < having_pos);
+        assert!(having_pos < order_pos);
+    }
+
+    #[test]
+    fn test_update_batch_case_when_sql() {
+        let records = vec![
+            serde_json::json!({"id": 1, "name": "Alice", "age": 25}),
+            serde_json::json!({"id": 2, "name": "Bob", "age": 30}),
+        ];
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_update_batch("users", &records, "id", &std::collections::HashMap::new())
+            .unwrap();
+        let sql = generator.get_sql();
+        assert!(sql.starts_with("UPDATE users SET "));
+        assert!(sql.contains("CASE WHEN id=? THEN ?"));
+        assert!(sql.contains("WHERE id IN ("));
+    }
+
+    #[test]
+    fn test_update_batch_empty_returns_error() {
+        let records: Vec<serde_json::Value> = vec![];
+        let mut generator = SqlGenerator::new();
+        let result = generator.build_update_batch(
+            "users",
+            &records,
+            "id",
+            &std::collections::HashMap::new(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_upsert_sql_generation() {
+        let data = serde_json::json!({"id": 1, "name": "Alice", "email": "a@b.com"});
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_upsert("users", &data, &std::collections::HashMap::new())
+            .unwrap();
+        let sql = generator.get_sql();
+        assert!(sql.starts_with("INSERT INTO users"));
+        assert!(sql.contains("ON DUPLICATE KEY UPDATE"));
+        assert!(sql.contains("name=VALUES(name)"));
+    }
+
+    #[test]
+    fn test_upsert_empty_data_returns_error() {
+        let data = serde_json::json!({});
+        let mut generator = SqlGenerator::new();
+        let result = generator.build_upsert("users", &data, &std::collections::HashMap::new());
+        assert!(result.is_err());
+    }
+
     // 测试 SqlGenerator 的 build_select 方法
     #[tokio::test]
     async fn test_sql_generator_build_select_basic() {
@@ -2814,11 +3314,13 @@ mod tests {
     #[tokio::test]
     async fn test_avg_sql_generation() {
         let pool = create_test_pool().await;
-        
+
         // 创建一个新的 builder 来模拟 avg() 方法的行为
         let mut test_builder = QueryBuilder::new(&pool, "products", false);
         test_builder.fields.clear();
-        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder
+            .fields
+            .push("CAST(AVG(price) AS DOUBLE)".to_string());
         test_builder.limit = Some(1);
 
         let sql = test_builder.to_sql();
@@ -2831,12 +3333,14 @@ mod tests {
     #[tokio::test]
     async fn test_avg_with_where_sql() {
         let pool = create_test_pool().await;
-        
+
         // 模拟 avg() 方法与 WHERE 条件组合
-        let mut test_builder = QueryBuilder::new(&pool, "products", false)
-            .where_and("status", "=", 1);
+        let mut test_builder =
+            QueryBuilder::new(&pool, "products", false).where_and("status", "=", 1);
         test_builder.fields.clear();
-        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder
+            .fields
+            .push("CAST(AVG(price) AS DOUBLE)".to_string());
         test_builder.limit = Some(1);
 
         let sql = test_builder.to_sql();
@@ -2850,7 +3354,7 @@ mod tests {
     #[tokio::test]
     async fn test_min_sql_generation() {
         let pool = create_test_pool().await;
-        
+
         // 模拟 min() 方法的行为
         let mut test_builder = QueryBuilder::new(&pool, "products", false);
         test_builder.fields.clear();
@@ -2867,7 +3371,7 @@ mod tests {
     #[tokio::test]
     async fn test_max_sql_generation() {
         let pool = create_test_pool().await;
-        
+
         // 模拟 max() 方法的行为
         let mut test_builder = QueryBuilder::new(&pool, "products", false);
         test_builder.fields.clear();
@@ -2884,7 +3388,7 @@ mod tests {
     #[tokio::test]
     async fn test_min_max_different_types() {
         let pool = create_test_pool().await;
-        
+
         // 测试整数类型
         let mut builder_int = QueryBuilder::new(&pool, "products", false);
         builder_int.fields.clear();
@@ -2918,13 +3422,14 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_with_group_by_sql() {
         let pool = create_test_pool().await;
-        
+
         // 模拟聚合函数与 GROUP BY 组合
-        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
-            .group("user_id");
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false).group("user_id");
         test_builder.fields.clear();
         test_builder.fields.push("user_id".to_string());
-        test_builder.fields.push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
+        test_builder
+            .fields
+            .push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
 
         let sql = test_builder.to_sql();
         assert!(sql.contains("SELECT user_id, CAST(AVG(amount) AS DOUBLE) as avg_amount"));
@@ -2936,15 +3441,23 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_aggregates_sql() {
         let pool = create_test_pool().await;
-        
+
         // 模拟多个聚合函数组合
-        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
-            .where_and("status", "=", "completed");
+        let mut test_builder =
+            QueryBuilder::new(&pool, "orders", false).where_and("status", "=", "completed");
         test_builder.fields.clear();
-        test_builder.fields.push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
-        test_builder.fields.push("CAST(MIN(amount) AS DOUBLE) as min_amount".to_string());
-        test_builder.fields.push("CAST(MAX(amount) AS DOUBLE) as max_amount".to_string());
-        test_builder.fields.push("COUNT(*) as order_count".to_string());
+        test_builder
+            .fields
+            .push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
+        test_builder
+            .fields
+            .push("CAST(MIN(amount) AS DOUBLE) as min_amount".to_string());
+        test_builder
+            .fields
+            .push("CAST(MAX(amount) AS DOUBLE) as max_amount".to_string());
+        test_builder
+            .fields
+            .push("COUNT(*) as order_count".to_string());
 
         let sql = test_builder.to_sql();
         assert!(sql.contains("CAST(AVG(amount) AS DOUBLE) as avg_amount"));
@@ -2959,7 +3472,7 @@ mod tests {
     #[tokio::test]
     async fn test_sql_clause_order_with_aggregates() {
         let pool = create_test_pool().await;
-        
+
         // 创建包含 WHERE、GROUP BY、ORDER BY 的查询
         let mut test_builder = QueryBuilder::new(&pool, "orders", false)
             .where_and("status", "=", "completed")
@@ -2967,15 +3480,17 @@ mod tests {
             .order("total_amount", false);
         test_builder.fields.clear();
         test_builder.fields.push("user_id".to_string());
-        test_builder.fields.push("SUM(amount) as total_amount".to_string());
+        test_builder
+            .fields
+            .push("SUM(amount) as total_amount".to_string());
 
         let sql = test_builder.to_sql();
-        
+
         // 验证子句顺序：WHERE 应该在 GROUP BY 之前，GROUP BY 应该在 ORDER BY 之前
         let where_pos = sql.find("WHERE").expect("应该包含 WHERE");
         let group_pos = sql.find("GROUP BY").expect("应该包含 GROUP BY");
         let order_pos = sql.find("ORDER BY").expect("应该包含 ORDER BY");
-        
+
         assert!(where_pos < group_pos, "WHERE 应该在 GROUP BY 之前");
         assert!(group_pos < order_pos, "GROUP BY 应该在 ORDER BY 之前");
     }
@@ -2984,12 +3499,13 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_empty_result_sql() {
         let pool = create_test_pool().await;
-        
+
         // 创建一个不会匹配任何记录的查询
-        let mut test_builder = QueryBuilder::new(&pool, "products", false)
-            .where_and("id", "=", -1); // 假设 id 不会是负数
+        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and("id", "=", -1); // 假设 id 不会是负数
         test_builder.fields.clear();
-        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder
+            .fields
+            .push("CAST(AVG(price) AS DOUBLE)".to_string());
         test_builder.limit = Some(1);
 
         let sql = test_builder.to_sql();
@@ -3002,7 +3518,7 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_with_special_field_names() {
         let pool = create_test_pool().await;
-        
+
         // 测试带下划线的字段名
         let mut test_builder = QueryBuilder::new(&pool, "products", false);
         test_builder.fields.clear();
@@ -3024,11 +3540,13 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_with_distinct() {
         let pool = create_test_pool().await;
-        
+
         // 模拟 COUNT(DISTINCT field) 场景
         let mut test_builder = QueryBuilder::new(&pool, "orders", false);
         test_builder.fields.clear();
-        test_builder.fields.push("COUNT(DISTINCT user_id) as unique_users".to_string());
+        test_builder
+            .fields
+            .push("COUNT(DISTINCT user_id) as unique_users".to_string());
 
         let sql = test_builder.to_sql();
         assert!(sql.contains("COUNT(DISTINCT user_id)"));
@@ -3038,7 +3556,7 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_with_join() {
         let pool = create_test_pool().await;
-        
+
         // 模拟聚合函数与 JOIN 组合
         let mut test_builder = QueryBuilder::new(&pool, "users", false)
             .join("orders", "users.id = orders.user_id")
@@ -3046,8 +3564,12 @@ mod tests {
         test_builder.fields.clear();
         test_builder.fields.push("users.id".to_string());
         test_builder.fields.push("users.name".to_string());
-        test_builder.fields.push("COUNT(orders.id) as order_count".to_string());
-        test_builder.fields.push("SUM(orders.amount) as total_amount".to_string());
+        test_builder
+            .fields
+            .push("COUNT(orders.id) as order_count".to_string());
+        test_builder
+            .fields
+            .push("SUM(orders.amount) as total_amount".to_string());
 
         let sql = test_builder.to_sql();
         assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
@@ -3060,10 +3582,13 @@ mod tests {
     #[tokio::test]
     async fn test_aggregates_sql_injection_prevention() {
         let pool = create_test_pool().await;
-        
+
         // 测试 WHERE 条件使用参数化查询
-        let builder = QueryBuilder::new(&pool, "products", false)
-            .where_and("category", "=", "'; DROP TABLE products; --");
+        let builder = QueryBuilder::new(&pool, "products", false).where_and(
+            "category",
+            "=",
+            "'; DROP TABLE products; --",
+        );
 
         // 生成 SQL 和参数
         let mut generator = SqlGenerator::new();
@@ -3076,7 +3601,7 @@ mod tests {
         // 验证 SQL 使用占位符而不是直接拼接值
         assert!(sql.contains("?"));
         assert!(!sql.contains("DROP TABLE"));
-        
+
         // 验证参数列表包含恶意字符串（作为参数值，不会被执行）
         assert_eq!(params.len(), 1);
     }

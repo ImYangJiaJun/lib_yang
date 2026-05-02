@@ -47,6 +47,9 @@ pub enum DbError {
     #[error("Redis 超时错误: {0}")]
     RedisTimeoutError(String),
 
+    #[error("HAVING 子句需要 GROUP BY 子句")]
+    MissingGroupByClause,
+
     #[error("未知错误: {0}")]
     Unknown(String),
 }
