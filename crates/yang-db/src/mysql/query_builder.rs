@@ -3,6 +3,12 @@ use crate::mysql::field::{FieldType, JoinClause, OrderClause};
 use sqlx::mysql::MySqlPool;
 use std::collections::HashMap;
 
+/// 批量插入的默认批次大小
+///
+/// 为了避免单次插入过多数据导致 SQL 语句过大或超时，
+/// 批量插入操作会自动将数据分批处理，每批最多插入 INSERT_BATCH_SIZE 条记录。
+const INSERT_BATCH_SIZE: usize = 500;
+
 /// SQL 生成器（内部使用）
 #[allow(dead_code)]
 pub(crate) struct SqlGenerator {
@@ -1226,6 +1232,385 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
+    /// 计算字段平均值
+    ///
+    /// 执行 AVG 聚合函数，计算指定字段的平均值。
+    ///
+    /// # 参数
+    /// - field: 要计算平均值的字段名
+    ///
+    /// # 返回
+    /// - Ok(Some(f64)): 计算成功，返回平均值
+    /// - Ok(None): 没有匹配记录或所有字段值为 NULL
+    /// - Err(DbError): 查询失败
+    ///
+    /// # 注意
+    /// - 只对数值类型字段有效
+    /// - 空结果集返回 None
+    /// - NULL 值会被忽略（不参与计算）
+    /// - 可以与 WHERE 条件组合使用
+    /// - 可以与 GROUP BY 组合使用
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::Database;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    ///
+    /// // 计算所有用户的平均年龄
+    /// let avg_age = db.table("users")
+    ///     .avg("age")
+    ///     .await?;
+    ///
+    /// if let Some(age) = avg_age {
+    ///     println!("平均年龄: {:.1}", age);
+    /// } else {
+    ///     println!("没有数据");
+    /// }
+    ///
+    /// // 计算已完成订单的平均金额
+    /// let avg_amount = db.table("orders")
+    ///     .where_and("status", "=", "completed")
+    ///     .avg("amount")
+    ///     .await?;
+    ///
+    /// println!("已完成订单平均金额: {:.2}", avg_amount.unwrap_or(0.0));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn avg(self, field: &str) -> Result<Option<f64>, crate::error::DbError> {
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 avg() 查询，字段: {}", field);
+        }
+
+        // 构建 AVG(field) 表达式，并使用 CAST 转换为 DOUBLE
+        // 这样可以统一处理整数和浮点数字段的平均值结果
+        let avg_expr = format!("CAST(AVG({}) AS DOUBLE)", field);
+
+        // 清空现有字段选择，只选择 AVG 表达式
+        let mut builder = self;
+        builder.fields.clear();
+        builder.fields.push(avg_expr.clone());
+
+        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
+        builder.limit = Some(1);
+
+        // 生成 SQL 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&builder)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 记录日志
+        if builder.enable_logging {
+            log::debug!("执行 avg() 查询: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // 构建查询 - 使用 Option<f64> 来处理 NULL 值
+        let mut query = sqlx::query_scalar::<_, Option<f64>>(sql);
+
+        // 绑定参数
+        for param in params {
+            query = bind_scalar_param_option(query, param);
+        }
+
+        // 执行查询
+        let result = query.fetch_optional(builder.pool).await;
+
+        match result {
+            Ok(Some(value)) => {
+                // 查询成功，返回值（可能是 Some(f64) 或 None）
+                if builder.enable_logging {
+                    if value.is_some() {
+                        log::debug!("avg() 查询成功，返回平均值");
+                    } else {
+                        log::debug!("avg() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
+                    }
+                }
+                Ok(value)
+            }
+            Ok(None) => {
+                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
+                if builder.enable_logging {
+                    log::debug!("avg() 查询成功，未找到匹配记录");
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                log::error!("avg() 查询失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
+    /// 获取字段最小值
+    ///
+    /// 执行 MIN 聚合函数，获取指定字段的最小值。
+    ///
+    /// # 参数
+    /// - field: 要查询最小值的字段名
+    ///
+    /// # 类型参数
+    /// - T: 字段值类型，必须实现 sqlx::Decode 和 sqlx::Type trait
+    ///   支持的类型包括：i32, i64, f32, f64, String, chrono::NaiveDateTime 等
+    ///
+    /// # 返回
+    /// - Ok(Some(T)): 查询成功，返回最小值
+    /// - Ok(None): 没有匹配记录或所有字段值为 NULL
+    /// - Err(DbError): 查询失败
+    ///
+    /// # 注意
+    /// - 对数值类型字段返回数值最小值
+    /// - 对字符串类型字段返回字典序最小值
+    /// - 对日期时间类型字段返回最早时间
+    /// - 空结果集返回 None
+    /// - NULL 值会被忽略（不参与比较）
+    /// - 可以与 WHERE 条件组合使用
+    /// - 可以与 GROUP BY 组合使用
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::Database;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    ///
+    /// // 查询最低价格（浮点数）
+    /// let min_price: Option<f64> = db.table("products")
+    ///     .min("price")
+    ///     .await?;
+    ///
+    /// if let Some(price) = min_price {
+    ///     println!("最低价格: {:.2}", price);
+    /// } else {
+    ///     println!("没有产品数据");
+    /// }
+    ///
+    /// // 查询最小库存数量（整数）
+    /// let min_stock: Option<i32> = db.table("products")
+    ///     .where_and("status", "=", 1)
+    ///     .min("stock")
+    ///     .await?;
+    ///
+    /// println!("最小库存: {}", min_stock.unwrap_or(0));
+    ///
+    /// // 查询最早注册时间（字符串）
+    /// let earliest_date: Option<String> = db.table("users")
+    ///     .min("created_at")
+    ///     .await?;
+    ///
+    /// if let Some(date) = earliest_date {
+    ///     println!("最早注册时间: {}", date);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn min<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    where
+        T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
+    {
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 min() 查询，字段: {}", field);
+        }
+
+        // 构建 MIN(field) 表达式
+        let min_expr = format!("MIN({})", field);
+
+        // 清空现有字段选择，只选择 MIN 表达式
+        let mut builder = self;
+        builder.fields.clear();
+        builder.fields.push(min_expr.clone());
+
+        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
+        builder.limit = Some(1);
+
+        // 生成 SQL 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&builder)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 记录日志
+        if builder.enable_logging {
+            log::debug!("执行 min() 查询: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // 构建查询 - 使用 query_scalar 直接获取单个值
+        let mut query = sqlx::query_scalar::<_, Option<T>>(sql);
+
+        // 绑定参数
+        for param in params {
+            query = bind_scalar_param_option(query, param);
+        }
+
+        // 执行查询
+        let result = query.fetch_optional(builder.pool).await;
+
+        match result {
+            Ok(Some(value)) => {
+                // 查询成功，返回值（可能是 Some(T) 或 None）
+                if builder.enable_logging {
+                    if value.is_some() {
+                        log::debug!("min() 查询成功，返回最小值");
+                    } else {
+                        log::debug!("min() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
+                    }
+                }
+                Ok(value)
+            }
+            Ok(None) => {
+                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
+                if builder.enable_logging {
+                    log::debug!("min() 查询成功，未找到匹配记录");
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                log::error!("min() 查询失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
+    /// 获取字段最大值
+    ///
+    /// 执行 MAX 聚合函数，获取指定字段的最大值。
+    ///
+    /// # 参数
+    /// - field: 要查询最大值的字段名
+    ///
+    /// # 类型参数
+    /// - T: 字段值类型，必须实现 sqlx::Decode 和 sqlx::Type trait
+    ///   支持的类型包括：i32, i64, f32, f64, String, chrono::NaiveDateTime 等
+    ///
+    /// # 返回
+    /// - Ok(Some(T)): 查询成功，返回最大值
+    /// - Ok(None): 没有匹配记录或所有字段值为 NULL
+    /// - Err(DbError): 查询失败
+    ///
+    /// # 注意
+    /// - 对数值类型字段返回数值最大值
+    /// - 对字符串类型字段返回字典序最大值
+    /// - 对日期时间类型字段返回最晚时间
+    /// - 空结果集返回 None
+    /// - NULL 值会被忽略（不参与比较）
+    /// - 可以与 WHERE 条件组合使用
+    /// - 可以与 GROUP BY 组合使用
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::Database;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    ///
+    /// // 查询最高价格（浮点数）
+    /// let max_price: Option<f64> = db.table("products")
+    ///     .max("price")
+    ///     .await?;
+    ///
+    /// if let Some(price) = max_price {
+    ///     println!("最高价格: {:.2}", price);
+    /// } else {
+    ///     println!("没有产品数据");
+    /// }
+    ///
+    /// // 查询最高分数（整数）
+    /// let max_score: Option<i32> = db.table("scores")
+    ///     .where_and("exam_id", "=", 1)
+    ///     .max("score")
+    ///     .await?;
+    ///
+    /// println!("最高分: {}", max_score.unwrap_or(0));
+    ///
+    /// // 查询最新更新时间（字符串）
+    /// let latest_date: Option<String> = db.table("articles")
+    ///     .max("updated_at")
+    ///     .await?;
+    ///
+    /// if let Some(date) = latest_date {
+    ///     println!("最新更新时间: {}", date);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn max<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    where
+        T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
+    {
+        // 记录日志
+        if self.enable_logging {
+            log::debug!("执行 max() 查询，字段: {}", field);
+        }
+
+        // 构建 MAX(field) 表达式
+        let max_expr = format!("MAX({})", field);
+
+        // 清空现有字段选择，只选择 MAX 表达式
+        let mut builder = self;
+        builder.fields.clear();
+        builder.fields.push(max_expr.clone());
+
+        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
+        builder.limit = Some(1);
+
+        // 生成 SQL 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&builder)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 记录日志
+        if builder.enable_logging {
+            log::debug!("执行 max() 查询: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // 构建查询 - 使用 query_scalar 直接获取单个值
+        let mut query = sqlx::query_scalar::<_, Option<T>>(sql);
+
+        // 绑定参数
+        for param in params {
+            query = bind_scalar_param_option(query, param);
+        }
+
+        // 执行查询
+        let result = query.fetch_optional(builder.pool).await;
+
+        match result {
+            Ok(Some(value)) => {
+                // 查询成功，返回值（可能是 Some(T) 或 None）
+                if builder.enable_logging {
+                    if value.is_some() {
+                        log::debug!("max() 查询成功，返回最大值");
+                    } else {
+                        log::debug!("max() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
+                    }
+                }
+                Ok(value)
+            }
+            Ok(None) => {
+                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
+                if builder.enable_logging {
+                    log::debug!("max() 查询成功，未找到匹配记录");
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                log::error!("max() 查询失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
     /// 插入数据
     ///
     /// 执行 INSERT 操作，将数据插入到表中。
@@ -1351,6 +1736,7 @@ impl<'a> QueryBuilder<'a> {
     /// - 字段顺序以第一条记录为准
     /// - 如果某条记录缺少字段，将使用 NULL 值
     /// - 批量插入使用单个 INSERT 语句，性能优于多次单条插入
+    /// - 自动分批处理：当数据量超过 INSERT_BATCH_SIZE（默认 500）时，会自动分批插入
     ///
     /// # 示例
     /// ```no_run
@@ -1417,6 +1803,74 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
+        // 如果数据量小于等于批次大小，直接插入
+        if data.len() <= INSERT_BATCH_SIZE {
+            return self.insert_chunk(data).await;
+        }
+
+        // 数据量大于批次大小，分批插入
+        let mut total_affected = 0u64;
+
+        // 使用 chunks() 方法将数据分批
+        for (batch_index, chunk) in data.chunks(INSERT_BATCH_SIZE).enumerate() {
+            if self.enable_logging {
+                log::debug!(
+                    "执行第 {} 批插入，本批记录数: {}",
+                    batch_index + 1,
+                    chunk.len()
+                );
+            }
+
+            // 为每个批次创建新的 QueryBuilder（因为 self 已经被 move）
+            // 我们需要保存必要的信息来重建 QueryBuilder
+            let chunk_builder = QueryBuilder {
+                pool: self.pool,
+                table: self.table.clone(),
+                fields: self.fields.clone(),
+                conditions: self.conditions.clone(),
+                joins: self.joins.clone(),
+                order_by: self.order_by.clone(),
+                group_by: self.group_by.clone(),
+                limit: self.limit,
+                offset: self.offset,
+                distinct: self.distinct,
+                field_types: self.field_types.clone(),
+                enable_logging: self.enable_logging,
+            };
+
+            let affected = chunk_builder.insert_chunk(chunk).await?;
+            total_affected += affected;
+
+            if self.enable_logging {
+                log::debug!("第 {} 批插入成功，影响 {} 行", batch_index + 1, affected);
+            }
+        }
+
+        if self.enable_logging {
+            log::debug!("insert_batch() 全部完成，总共影响 {} 行", total_affected);
+        }
+
+        Ok(total_affected)
+    }
+
+    /// 插入单个批次的数据（内部方法）
+    ///
+    /// 此方法用于实际执行单个批次的 INSERT 操作。
+    /// 它被 insert_batch() 方法调用，用于处理分批后的每个数据块。
+    ///
+    /// # 类型参数
+    /// - T: 数据类型，必须实现 Serialize trait
+    ///
+    /// # 参数
+    /// - data: 要插入的数据切片（单个批次）
+    ///
+    /// # 返回
+    /// - Ok(u64): 插入成功，返回受影响的行数
+    /// - Err(DbError): 插入失败
+    async fn insert_chunk<T>(&self, data: &[T]) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
         // 将所有数据序列化为 JSON
         let json_data_list: Result<Vec<_>, _> = data
             .iter()
@@ -1438,7 +1892,7 @@ impl<'a> QueryBuilder<'a> {
 
         // 记录日志
         if self.enable_logging {
-            log::debug!("执行 insert_batch() SQL: {}", sql);
+            log::debug!("执行 insert_chunk() SQL: {}", sql);
             log::debug!("参数数量: {}", params.len());
         }
 
@@ -1457,12 +1911,12 @@ impl<'a> QueryBuilder<'a> {
             Ok(query_result) => {
                 let rows_affected = query_result.rows_affected();
                 if self.enable_logging {
-                    log::debug!("insert_batch() 成功，影响 {} 行", rows_affected);
+                    log::debug!("insert_chunk() 成功，影响 {} 行", rows_affected);
                 }
                 Ok(rows_affected)
             }
             Err(e) => {
-                log::error!("insert_batch() 失败: {}", e);
+                log::error!("insert_chunk() 失败: {}", e);
                 Err(crate::error::DbError::from(e))
             }
         }
@@ -2352,6 +2806,279 @@ mod tests {
             result.unwrap_err(),
             crate::error::DbError::SerializationError(_)
         ));
+    }
+
+    // ==================== 聚合函数单元测试 ====================
+
+    /// 测试 AVG 聚合函数 SQL 生成
+    #[tokio::test]
+    async fn test_avg_sql_generation() {
+        let pool = create_test_pool().await;
+        
+        // 创建一个新的 builder 来模拟 avg() 方法的行为
+        let mut test_builder = QueryBuilder::new(&pool, "products", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder.limit = Some(1);
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT CAST(AVG(price) AS DOUBLE)"));
+        assert!(sql.contains("FROM products"));
+        assert!(sql.contains("LIMIT 1"));
+    }
+
+    /// 测试 AVG 与 WHERE 条件组合
+    #[tokio::test]
+    async fn test_avg_with_where_sql() {
+        let pool = create_test_pool().await;
+        
+        // 模拟 avg() 方法与 WHERE 条件组合
+        let mut test_builder = QueryBuilder::new(&pool, "products", false)
+            .where_and("status", "=", 1);
+        test_builder.fields.clear();
+        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder.limit = Some(1);
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT CAST(AVG(price) AS DOUBLE)"));
+        assert!(sql.contains("FROM products"));
+        assert!(sql.contains("WHERE"));
+        assert!(sql.contains("status"));
+    }
+
+    /// 测试 MIN 聚合函数 SQL 生成
+    #[tokio::test]
+    async fn test_min_sql_generation() {
+        let pool = create_test_pool().await;
+        
+        // 模拟 min() 方法的行为
+        let mut test_builder = QueryBuilder::new(&pool, "products", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("MIN(price)".to_string());
+        test_builder.limit = Some(1);
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT MIN(price)"));
+        assert!(sql.contains("FROM products"));
+        assert!(sql.contains("LIMIT 1"));
+    }
+
+    /// 测试 MAX 聚合函数 SQL 生成
+    #[tokio::test]
+    async fn test_max_sql_generation() {
+        let pool = create_test_pool().await;
+        
+        // 模拟 max() 方法的行为
+        let mut test_builder = QueryBuilder::new(&pool, "products", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("MAX(price)".to_string());
+        test_builder.limit = Some(1);
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT MAX(price)"));
+        assert!(sql.contains("FROM products"));
+        assert!(sql.contains("LIMIT 1"));
+    }
+
+    /// 测试 MIN/MAX 不同数据类型的 SQL 生成
+    #[tokio::test]
+    async fn test_min_max_different_types() {
+        let pool = create_test_pool().await;
+        
+        // 测试整数类型
+        let mut builder_int = QueryBuilder::new(&pool, "products", false);
+        builder_int.fields.clear();
+        builder_int.fields.push("MIN(stock)".to_string());
+        let sql_int = builder_int.to_sql();
+        assert!(sql_int.contains("MIN(stock)"));
+
+        // 测试浮点数类型
+        let mut builder_float = QueryBuilder::new(&pool, "products", false);
+        builder_float.fields.clear();
+        builder_float.fields.push("MAX(price)".to_string());
+        let sql_float = builder_float.to_sql();
+        assert!(sql_float.contains("MAX(price)"));
+
+        // 测试字符串类型
+        let mut builder_string = QueryBuilder::new(&pool, "users", false);
+        builder_string.fields.clear();
+        builder_string.fields.push("MIN(name)".to_string());
+        let sql_string = builder_string.to_sql();
+        assert!(sql_string.contains("MIN(name)"));
+
+        // 测试日期时间类型
+        let mut builder_datetime = QueryBuilder::new(&pool, "users", false);
+        builder_datetime.fields.clear();
+        builder_datetime.fields.push("MAX(created_at)".to_string());
+        let sql_datetime = builder_datetime.to_sql();
+        assert!(sql_datetime.contains("MAX(created_at)"));
+    }
+
+    /// 测试聚合函数与 GROUP BY 组合
+    #[tokio::test]
+    async fn test_aggregates_with_group_by_sql() {
+        let pool = create_test_pool().await;
+        
+        // 模拟聚合函数与 GROUP BY 组合
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
+            .group("user_id");
+        test_builder.fields.clear();
+        test_builder.fields.push("user_id".to_string());
+        test_builder.fields.push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT user_id, CAST(AVG(amount) AS DOUBLE) as avg_amount"));
+        assert!(sql.contains("FROM orders"));
+        assert!(sql.contains("GROUP BY user_id"));
+    }
+
+    /// 测试多个聚合函数组合
+    #[tokio::test]
+    async fn test_multiple_aggregates_sql() {
+        let pool = create_test_pool().await;
+        
+        // 模拟多个聚合函数组合
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
+            .where_and("status", "=", "completed");
+        test_builder.fields.clear();
+        test_builder.fields.push("CAST(AVG(amount) AS DOUBLE) as avg_amount".to_string());
+        test_builder.fields.push("CAST(MIN(amount) AS DOUBLE) as min_amount".to_string());
+        test_builder.fields.push("CAST(MAX(amount) AS DOUBLE) as max_amount".to_string());
+        test_builder.fields.push("COUNT(*) as order_count".to_string());
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("CAST(AVG(amount) AS DOUBLE) as avg_amount"));
+        assert!(sql.contains("CAST(MIN(amount) AS DOUBLE) as min_amount"));
+        assert!(sql.contains("CAST(MAX(amount) AS DOUBLE) as max_amount"));
+        assert!(sql.contains("COUNT(*) as order_count"));
+        assert!(sql.contains("WHERE"));
+        assert!(sql.contains("status"));
+    }
+
+    /// 测试 SQL 子句顺序正确性（WHERE -> GROUP BY -> ORDER BY）
+    #[tokio::test]
+    async fn test_sql_clause_order_with_aggregates() {
+        let pool = create_test_pool().await;
+        
+        // 创建包含 WHERE、GROUP BY、ORDER BY 的查询
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
+            .where_and("status", "=", "completed")
+            .group("user_id")
+            .order("total_amount", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("user_id".to_string());
+        test_builder.fields.push("SUM(amount) as total_amount".to_string());
+
+        let sql = test_builder.to_sql();
+        
+        // 验证子句顺序：WHERE 应该在 GROUP BY 之前，GROUP BY 应该在 ORDER BY 之前
+        let where_pos = sql.find("WHERE").expect("应该包含 WHERE");
+        let group_pos = sql.find("GROUP BY").expect("应该包含 GROUP BY");
+        let order_pos = sql.find("ORDER BY").expect("应该包含 ORDER BY");
+        
+        assert!(where_pos < group_pos, "WHERE 应该在 GROUP BY 之前");
+        assert!(group_pos < order_pos, "GROUP BY 应该在 ORDER BY 之前");
+    }
+
+    /// 测试空结果集场景的 SQL 生成
+    #[tokio::test]
+    async fn test_aggregates_empty_result_sql() {
+        let pool = create_test_pool().await;
+        
+        // 创建一个不会匹配任何记录的查询
+        let mut test_builder = QueryBuilder::new(&pool, "products", false)
+            .where_and("id", "=", -1); // 假设 id 不会是负数
+        test_builder.fields.clear();
+        test_builder.fields.push("CAST(AVG(price) AS DOUBLE)".to_string());
+        test_builder.limit = Some(1);
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("SELECT CAST(AVG(price) AS DOUBLE)"));
+        assert!(sql.contains("WHERE"));
+        // SQL 生成应该正常，即使结果集为空
+    }
+
+    /// 测试聚合函数字段名包含特殊字符
+    #[tokio::test]
+    async fn test_aggregates_with_special_field_names() {
+        let pool = create_test_pool().await;
+        
+        // 测试带下划线的字段名
+        let mut test_builder = QueryBuilder::new(&pool, "products", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("AVG(unit_price)".to_string());
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("AVG(unit_price)"));
+
+        // 测试带反引号的字段名（MySQL 保留字）
+        let mut test_builder2 = QueryBuilder::new(&pool, "products", false);
+        test_builder2.fields.clear();
+        test_builder2.fields.push("MAX(`order`)".to_string());
+
+        let sql2 = test_builder2.to_sql();
+        assert!(sql2.contains("MAX(`order`)"));
+    }
+
+    /// 测试聚合函数与 DISTINCT 组合
+    #[tokio::test]
+    async fn test_aggregates_with_distinct() {
+        let pool = create_test_pool().await;
+        
+        // 模拟 COUNT(DISTINCT field) 场景
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false);
+        test_builder.fields.clear();
+        test_builder.fields.push("COUNT(DISTINCT user_id) as unique_users".to_string());
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("COUNT(DISTINCT user_id)"));
+    }
+
+    /// 测试聚合函数与 JOIN 组合
+    #[tokio::test]
+    async fn test_aggregates_with_join() {
+        let pool = create_test_pool().await;
+        
+        // 模拟聚合函数与 JOIN 组合
+        let mut test_builder = QueryBuilder::new(&pool, "users", false)
+            .join("orders", "users.id = orders.user_id")
+            .group("users.id");
+        test_builder.fields.clear();
+        test_builder.fields.push("users.id".to_string());
+        test_builder.fields.push("users.name".to_string());
+        test_builder.fields.push("COUNT(orders.id) as order_count".to_string());
+        test_builder.fields.push("SUM(orders.amount) as total_amount".to_string());
+
+        let sql = test_builder.to_sql();
+        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
+        assert!(sql.contains("COUNT(orders.id) as order_count"));
+        assert!(sql.contains("SUM(orders.amount) as total_amount"));
+        assert!(sql.contains("GROUP BY users.id"));
+    }
+
+    /// 测试聚合函数参数化查询防止 SQL 注入
+    #[tokio::test]
+    async fn test_aggregates_sql_injection_prevention() {
+        let pool = create_test_pool().await;
+        
+        // 测试 WHERE 条件使用参数化查询
+        let builder = QueryBuilder::new(&pool, "products", false)
+            .where_and("category", "=", "'; DROP TABLE products; --");
+
+        // 生成 SQL 和参数
+        let mut generator = SqlGenerator::new();
+        let result = generator.build_select(&builder);
+        assert!(result.is_ok());
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        // 验证 SQL 使用占位符而不是直接拼接值
+        assert!(sql.contains("?"));
+        assert!(!sql.contains("DROP TABLE"));
+        
+        // 验证参数列表包含恶意字符串（作为参数值，不会被执行）
+        assert_eq!(params.len(), 1);
     }
 }
 

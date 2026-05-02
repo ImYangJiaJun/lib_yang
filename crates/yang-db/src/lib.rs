@@ -16,7 +16,7 @@ pub use mysql::{
 };
 
 // 重新导出 Redis 核心类型
-pub use redis::{RedisClient, RedisConfig, RedisValue};
+pub use redis::{RedisClient, RedisConfig, RedisPipeline, RedisTransaction, RedisValue};
 
 // 类型别名
 pub type Result<T> = std::result::Result<T, DbError>;

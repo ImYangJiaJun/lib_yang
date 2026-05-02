@@ -1,5 +1,7 @@
+use crate::redis::{RedisPipeline, RedisTransaction};
 use crate::{DbError, RedisConfig, RedisValue, Result};
-use deadpool_redis::{Config, Pool, Runtime};
+use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
+use std::time::Duration;
 
 /// Redis 客户端
 ///
@@ -60,16 +62,22 @@ impl RedisClient {
     /// }
     /// ```
     pub async fn connect_with_config(url: impl Into<String>, config: RedisConfig) -> Result<Self> {
-        let url = url.into();
+        let url_str = url.into();
 
-        // 创建连接池配置
-        let pool_config = Config {
-            url: Some(url.clone()),
+        // 使用 from_url 创建配置，然后设置连接池参数
+        let mut cfg = Config::from_url(url_str.clone());
+        cfg.pool = Some(PoolConfig {
+            max_size: config.max_connections,
+            timeouts: Timeouts {
+                wait: Some(Duration::from_secs(config.wait_timeout)),
+                create: Some(Duration::from_secs(config.connect_timeout)),
+                recycle: Some(Duration::from_secs(config.connect_timeout)),
+            },
             ..Default::default()
-        };
+        });
 
         // 创建连接池
-        let pool = pool_config
+        let pool = cfg
             .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| DbError::RedisConnectionError(format!("创建连接池失败: {}", e)))?;
 
@@ -86,7 +94,7 @@ impl RedisClient {
             .map_err(|e| DbError::RedisConnectionError(format!("连接测试失败: {}", e)))?;
 
         if config.enable_logging {
-            log::info!("Redis 连接成功: {}", url);
+            log::info!("Redis 连接成功: {}", url_str);
         }
 
         Ok(Self { pool, config })
@@ -98,6 +106,96 @@ impl RedisClient {
     /// 连接池的引用
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// 创建 Pipeline 批量操作
+    ///
+    /// Pipeline 允许将多个命令打包发送到 Redis 服务器，减少网络往返次数，提高性能。
+    ///
+    /// # 返回
+    /// 新的 Pipeline 实例
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     let mut pipeline = client.pipeline();
+    ///     pipeline.set("key1", "value1")
+    ///             .set("key2", "value2")
+    ///             .get("key1")
+    ///             .incr("counter");
+    ///
+    ///     let results = pipeline.execute().await?;
+    ///     println!("Pipeline 执行结果: {:?}", results);
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn pipeline(&self) -> RedisPipeline {
+        RedisPipeline::new(self.clone())
+    }
+
+    /// 创建 Redis 事务
+    ///
+    /// 使用 WATCH/MULTI/EXEC 机制实现乐观锁事务。事务会自动处理 WATCH 冲突并重试。
+    ///
+    /// # 返回
+    /// 新的事务实例
+    ///
+    /// # 示例：基础事务
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     let mut tx = client.transaction();
+    ///     tx.set("key1", "value1")
+    ///       .set("key2", "value2")
+    ///       .incr("counter");
+    ///     
+    ///     let results: (String, String, i64) = tx.exec().await?;
+    ///     println!("事务执行结果: {:?}", results);
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # 示例：乐观锁实现余额扣减
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     // 初始化余额
+    ///     client.set("balance", "1000").await?;
+    ///     
+    ///     // 读取当前余额
+    ///     let balance_str = client.get("balance").await?.unwrap();
+    ///     let balance: i64 = balance_str.parse().unwrap();
+    ///     
+    ///     // 使用事务扣减余额
+    ///     if balance >= 100 {
+    ///         let mut tx = client.transaction();
+    ///         tx.watch(&["balance".to_string()]);
+    ///         tx.set("balance", (balance - 100).to_string());
+    ///         
+    ///         let result: (String,) = tx.exec().await?;
+    ///         println!("余额扣减成功: {:?}", result);
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn transaction(&self) -> RedisTransaction {
+        RedisTransaction::new(self.clone())
     }
 
     /// 执行 Redis 命令
@@ -326,6 +424,148 @@ impl RedisClient {
         result
             .as_i64()
             .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// GETRANGE - 获取字符串的子串
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `start`: 起始偏移量（0 表示第一个字符，-1 表示最后一个字符）
+    /// - `end`: 结束偏移量（包含）
+    ///
+    /// # 返回
+    /// - `Ok(String)`: 子串内容
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     // 假设 key "mykey" 的值是 "Hello World"
+    ///     client.set("mykey", "Hello World").await?;
+    ///     let substr = client.getrange("mykey", 0, 4).await?;  // "Hello"
+    ///     let substr2 = client.getrange("mykey", -5, -1).await?; // "World"
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn getrange(&self, key: impl Into<String>, start: i64, end: i64) -> Result<String> {
+        let mut cmd = redis::cmd("GETRANGE");
+        cmd.arg(key.into()).arg(start).arg(end);
+        let result = self.execute(&cmd).await?;
+        Ok(result.as_string().unwrap_or_default())
+    }
+
+    /// SETRANGE - 从指定偏移量开始替换字符串内容
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `offset`: 起始偏移量
+    /// - `value`: 要设置的值
+    ///
+    /// # 返回
+    /// - `Ok(i64)`: 修改后字符串的长度
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     client.set("mykey", "Hello World").await?;
+    ///     let len = client.setrange("mykey", 6, "Redis").await?; // "Hello Redis"
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn setrange(
+        &self,
+        key: impl Into<String>,
+        offset: i64,
+        value: impl Into<String>,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("SETRANGE");
+        cmd.arg(key.into()).arg(offset).arg(value.into());
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// INCRBYFLOAT - 将键的浮点数值增加指定数量
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `increment`: 增量（可以是负数）
+    ///
+    /// # 返回
+    /// - `Ok(f64)`: 增加后的值
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     client.set("price", "10.5").await?;
+    ///     let new_price = client.incrbyfloat("price", 2.3).await?; // 12.8
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn incrbyfloat(&self, key: impl Into<String>, increment: f64) -> Result<f64> {
+        let mut cmd = redis::cmd("INCRBYFLOAT");
+        cmd.arg(key.into()).arg(increment);
+        let result = self.execute(&cmd).await?;
+        // Redis 返回字符串形式的浮点数
+        if let Some(s) = result.as_string() {
+            s.parse::<f64>()
+                .map_err(|_| DbError::RedisTypeConversionError("无法转换为浮点数".to_string()))
+        } else {
+            result
+                .as_f64()
+                .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为浮点数".to_string()))
+        }
+    }
+
+    /// PSETEX - 设置键值并指定毫秒级过期时间
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `milliseconds`: 过期时间（毫秒）
+    /// - `value`: 值
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     // 设置键值，100 毫秒后过期
+    ///     client.psetex("session", 100, "data").await?;
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn psetex(
+        &self,
+        key: impl Into<String>,
+        milliseconds: i64,
+        value: impl Into<String>,
+    ) -> Result<()> {
+        let mut cmd = redis::cmd("PSETEX");
+        cmd.arg(key.into()).arg(milliseconds).arg(value.into());
+        self.execute(&cmd).await?;
+        Ok(())
     }
 
     // ==================== Hash 操作 ====================
@@ -637,6 +877,212 @@ impl RedisClient {
         cmd.arg(key.into()).arg(start).arg(stop);
         self.execute(&cmd).await?;
         Ok(())
+    }
+
+    /// LINSERT - 在列表的指定元素前或后插入新元素
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `before_after`: "BEFORE" 或 "AFTER"
+    /// - `pivot`: 参考元素
+    /// - `value`: 要插入的值
+    ///
+    /// # 返回
+    /// - `Ok(i64)`: 插入后列表的长度，-1 表示 pivot 不存在
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     client.rpush("mylist", &["a".to_string(), "c".to_string()]).await?;
+    ///     client.linsert("mylist", "BEFORE", "c", "b").await?; // ["a", "b", "c"]
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn linsert(
+        &self,
+        key: impl Into<String>,
+        before_after: &str,
+        pivot: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("LINSERT");
+        cmd.arg(key.into())
+            .arg(before_after)
+            .arg(pivot.into())
+            .arg(value.into());
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// LREM - 删除列表中的指定元素
+    ///
+    /// # 参数
+    /// - `key`: 键
+    /// - `count`: 删除数量
+    ///   - count > 0: 从头到尾删除 count 个匹配元素
+    ///   - count < 0: 从尾到头删除 |count| 个匹配元素
+    ///   - count = 0: 删除所有匹配元素
+    /// - `value`: 要删除的值
+    ///
+    /// # 返回
+    /// - `Ok(i64)`: 被删除元素的数量
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     client.rpush("mylist", &["a".to_string(), "b".to_string(), "a".to_string()]).await?;
+    ///     let removed = client.lrem("mylist", 2, "a").await?; // 删除 2 个 "a"
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn lrem(
+        &self,
+        key: impl Into<String>,
+        count: i64,
+        value: impl Into<String>,
+    ) -> Result<i64> {
+        let mut cmd = redis::cmd("LREM");
+        cmd.arg(key.into()).arg(count).arg(value.into());
+        let result = self.execute(&cmd).await?;
+        result
+            .as_i64()
+            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+    }
+
+    /// RPOPLPUSH - 从源列表尾部弹出元素并插入到目标列表头部
+    ///
+    /// # 参数
+    /// - `source`: 源列表键
+    /// - `destination`: 目标列表键
+    ///
+    /// # 返回
+    /// - `Ok(Some(String))`: 被移动的元素
+    /// - `Ok(None)`: 源列表为空
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     client.rpush("list1", &["a".to_string(), "b".to_string()]).await?;
+    ///     let elem = client.rpoplpush("list1", "list2").await?; // "b"
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn rpoplpush(
+        &self,
+        source: impl Into<String>,
+        destination: impl Into<String>,
+    ) -> Result<Option<String>> {
+        let mut cmd = redis::cmd("RPOPLPUSH");
+        cmd.arg(source.into()).arg(destination.into());
+        let result = self.execute(&cmd).await?;
+        Ok(result.as_string())
+    }
+
+    /// BLPOP - 阻塞式地从列表头部弹出元素
+    ///
+    /// # 参数
+    /// - `keys`: 键列表（按顺序检查）
+    /// - `timeout`: 超时时间（秒），0 表示无限等待
+    ///
+    /// # 返回
+    /// - `Ok(Some((String, String)))`: (键名, 元素值)
+    /// - `Ok(None)`: 超时
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     let result = client.blpop(&["queue1".to_string(), "queue2".to_string()], 5).await?;
+    ///     if let Some((key, value)) = result {
+    ///         println!("从 {} 弹出: {}", key, value);
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn blpop(&self, keys: &[String], timeout: i64) -> Result<Option<(String, String)>> {
+        let mut cmd = redis::cmd("BLPOP");
+        for key in keys {
+            cmd.arg(key);
+        }
+        cmd.arg(timeout);
+        let result = self.execute(&cmd).await?;
+
+        // BLPOP 返回数组 [key, value] 或 nil
+        if let Some(arr) = result.as_array() {
+            if arr.len() == 2 {
+                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
+                    return Ok(Some((key, value)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// BRPOP - 阻塞式地从列表尾部弹出元素
+    ///
+    /// # 参数
+    /// - `keys`: 键列表（按顺序检查）
+    /// - `timeout`: 超时时间（秒），0 表示无限等待
+    ///
+    /// # 返回
+    /// - `Ok(Some((String, String)))`: (键名, 元素值)
+    /// - `Ok(None)`: 超时
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     let result = client.brpop(&["queue1".to_string()], 10).await?;
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn brpop(&self, keys: &[String], timeout: i64) -> Result<Option<(String, String)>> {
+        let mut cmd = redis::cmd("BRPOP");
+        for key in keys {
+            cmd.arg(key);
+        }
+        cmd.arg(timeout);
+        let result = self.execute(&cmd).await?;
+
+        // BRPOP 返回数组 [key, value] 或 nil
+        if let Some(arr) = result.as_array() {
+            if arr.len() == 2 {
+                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
+                    return Ok(Some((key, value)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     // ==================== Set 操作 ====================
@@ -962,6 +1408,172 @@ impl RedisClient {
             Ok(vec![])
         }
     }
+
+    // ==================== Lua 脚本操作 ====================
+
+    /// 创建 Lua 脚本对象
+    ///
+    /// 返回 redis-rs 的原生 Script 类型，可用于执行 Lua 脚本。
+    /// Script 会自动处理 EVALSHA 和 EVAL 的回退机制。
+    ///
+    /// # 参数
+    /// - `code`: Lua 脚本代码
+    ///
+    /// # 返回
+    /// redis::Script 对象
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     // 创建脚本：原子性地增加两个计数器
+    ///     let script = client.script(
+    ///         r#"
+    ///         redis.call('INCR', KEYS[1])
+    ///         redis.call('INCR', KEYS[2])
+    ///         return redis.call('GET', KEYS[1])
+    ///         "#
+    ///     );
+    ///     
+    ///     // 执行脚本
+    ///     let result: String = client.eval_script(
+    ///         &script,
+    ///         &["counter1".to_string(), "counter2".to_string()],
+    ///         &[]
+    ///     ).await?;
+    ///     
+    ///     println!("counter1 的值: {}", result);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn script(&self, code: &str) -> redis::Script {
+        redis::Script::new(code)
+    }
+
+    /// 执行 Lua 脚本
+    ///
+    /// 使用 redis::Script 执行 Lua 脚本，自动处理 EVALSHA 和 EVAL 的回退。
+    /// 脚本内的所有操作都是原子性的。
+    ///
+    /// # 参数
+    /// - `script`: 脚本对象（通过 `script()` 方法创建）
+    /// - `keys`: KEYS 参数列表（在脚本中通过 KEYS[1], KEYS[2] 访问）
+    /// - `args`: ARGV 参数列表（在脚本中通过 ARGV[1], ARGV[2] 访问）
+    ///
+    /// # 返回
+    /// - `Ok(T)`: 脚本执行成功，返回类型化结果
+    /// - `Err(DbError)`: 脚本执行失败
+    ///
+    /// # 示例：原子性计数器增加
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     let script = client.script(
+    ///         r#"
+    ///         local current = redis.call('GET', KEYS[1])
+    ///         if not current then
+    ///             current = 0
+    ///         end
+    ///         local new_value = tonumber(current) + tonumber(ARGV[1])
+    ///         redis.call('SET', KEYS[1], new_value)
+    ///         return new_value
+    ///         "#
+    ///     );
+    ///     
+    ///     let result: i64 = client.eval_script(
+    ///         &script,
+    ///         &["my_counter".to_string()],
+    ///         &["10".to_string()]
+    ///     ).await?;
+    ///     
+    ///     println!("新值: {}", result);
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # 示例：条件更新（乐观锁）
+    /// ```no_run
+    /// use yang_db::RedisClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
+    ///     
+    ///     // 只有当余额足够时才扣减
+    ///     let script = client.script(
+    ///         r#"
+    ///         local balance = tonumber(redis.call('GET', KEYS[1]) or 0)
+    ///         local amount = tonumber(ARGV[1])
+    ///         if balance >= amount then
+    ///             redis.call('DECRBY', KEYS[1], amount)
+    ///             return 1
+    ///         else
+    ///             return 0
+    ///         end
+    ///         "#
+    ///     );
+    ///     
+    ///     let success: i64 = client.eval_script(
+    ///         &script,
+    ///         &["user:1000:balance".to_string()],
+    ///         &["100".to_string()]
+    ///     ).await?;
+    ///     
+    ///     if success == 1 {
+    ///         println!("扣款成功");
+    ///     } else {
+    ///         println!("余额不足");
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # 性能优化
+    /// - 首次执行时，脚本会被发送到 Redis 服务器并缓存
+    /// - 后续执行使用 EVALSHA 命令，只传输脚本的 SHA1 哈希值
+    /// - 如果脚本不在缓存中，自动回退到 EVAL 命令
+    pub async fn eval_script<T>(
+        &self,
+        script: &redis::Script,
+        keys: &[String],
+        args: &[String],
+    ) -> Result<T>
+    where
+        T: redis::FromRedisValue,
+    {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
+
+        // 准备脚本调用
+        let mut invocation = script.prepare_invoke();
+
+        // 添加 KEYS 参数
+        for key in keys {
+            invocation.key(key);
+        }
+
+        // 添加 ARGV 参数
+        for arg in args {
+            invocation.arg(arg);
+        }
+
+        // 执行脚本
+        invocation
+            .invoke_async(&mut *conn)
+            .await
+            .map_err(|e| DbError::RedisCommandError(format!("Lua 脚本执行失败: {}", e)))
+    }
 }
 
 #[cfg(test)]
@@ -992,5 +1604,70 @@ mod tests {
         assert_eq!(config.connect_timeout, 10);
         assert_eq!(config.wait_timeout, 15);
         assert!(config.enable_logging);
+    }
+
+    /// 测试连接池配置构建逻辑
+    ///
+    /// 验证 PoolConfig 和 Timeouts 是否正确应用了 RedisConfig 参数
+    #[test]
+    fn test_pool_config_construction() {
+        let redis_config = RedisConfig::new(25, 8, 12, true);
+
+        // 构建 PoolConfig
+        let pool_config = PoolConfig {
+            max_size: redis_config.max_connections,
+            timeouts: Timeouts {
+                wait: Some(Duration::from_secs(redis_config.wait_timeout)),
+                create: Some(Duration::from_secs(redis_config.connect_timeout)),
+                recycle: Some(Duration::from_secs(redis_config.connect_timeout)),
+            },
+            ..Default::default()
+        };
+
+        // 验证配置参数
+        assert_eq!(pool_config.max_size, 25, "最大连接数应为 25");
+        assert_eq!(
+            pool_config.timeouts.wait,
+            Some(Duration::from_secs(12)),
+            "等待超时应为 12 秒"
+        );
+        assert_eq!(
+            pool_config.timeouts.create,
+            Some(Duration::from_secs(8)),
+            "创建超时应为 8 秒"
+        );
+        assert_eq!(
+            pool_config.timeouts.recycle,
+            Some(Duration::from_secs(8)),
+            "回收超时应为 8 秒"
+        );
+    }
+
+    /// 测试默认配置的连接池构建
+    #[test]
+    fn test_default_pool_config_construction() {
+        let redis_config = RedisConfig::default();
+
+        let pool_config = PoolConfig {
+            max_size: redis_config.max_connections,
+            timeouts: Timeouts {
+                wait: Some(Duration::from_secs(redis_config.wait_timeout)),
+                create: Some(Duration::from_secs(redis_config.connect_timeout)),
+                recycle: Some(Duration::from_secs(redis_config.connect_timeout)),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(pool_config.max_size, 10, "默认最大连接数应为 10");
+        assert_eq!(
+            pool_config.timeouts.wait,
+            Some(Duration::from_secs(10)),
+            "默认等待超时应为 10 秒"
+        );
+        assert_eq!(
+            pool_config.timeouts.create,
+            Some(Duration::from_secs(5)),
+            "默认创建超时应为 5 秒"
+        );
     }
 }
