@@ -50,6 +50,10 @@ pub enum DbError {
     #[error("HAVING 子句需要 GROUP BY 子句")]
     MissingGroupByClause,
 
+    /// 不支持的操作符错误，当传入的操作符不在支持集合中时返回
+    #[error("不支持的操作符: {0}")]
+    UnsupportedOperator(String),
+
     #[error("未知错误: {0}")]
     Unknown(String),
 }
@@ -274,5 +278,44 @@ mod tests {
         let pool_err = deadpool_redis::PoolError::Closed;
         let db_err: DbError = pool_err.into();
         assert!(matches!(db_err, DbError::RedisPoolError(_)));
+    }
+
+    // 验证需求: 4.4 — UnsupportedOperator 变体错误消息格式测试
+    #[test]
+    fn test_unsupported_operator_error_message() {
+        // 验证错误消息格式为 "不支持的操作符: {op}"
+        let op = "BETWEEN";
+        let err = DbError::UnsupportedOperator(op.to_string());
+        assert_eq!(format!("{}", err), "不支持的操作符: BETWEEN");
+    }
+
+    #[test]
+    fn test_unsupported_operator_empty_string() {
+        // 验证空字符串操作符的错误消息格式
+        let err = DbError::UnsupportedOperator(String::new());
+        assert_eq!(format!("{}", err), "不支持的操作符: ");
+    }
+
+    #[test]
+    fn test_unsupported_operator_special_chars() {
+        // 验证包含特殊字符的操作符错误消息格式
+        let err = DbError::UnsupportedOperator("<>".to_string());
+        assert_eq!(format!("{}", err), "不支持的操作符: <>");
+    }
+
+    #[test]
+    fn test_unsupported_operator_implements_std_error() {
+        // 验证 UnsupportedOperator 变体实现了 std::error::Error trait
+        let err = DbError::UnsupportedOperator("IN".to_string());
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_unsupported_operator_message_contains_chinese() {
+        // 验证错误消息包含中文字符（"不支持的操作符"）
+        let err = DbError::UnsupportedOperator("XOR".to_string());
+        let msg = format!("{}", err);
+        let has_chinese = msg.chars().any(|c| matches!(c, '\u{4e00}'..='\u{9fff}'));
+        assert!(has_chinese, "错误消息应该包含中文: {}", msg);
     }
 }

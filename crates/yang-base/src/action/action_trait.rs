@@ -52,6 +52,7 @@
 
 use crate::error::BaseError;
 use async_trait::async_trait;
+use std::borrow::Cow;
 
 use super::{ActionContext, ApiResponse};
 
@@ -79,8 +80,8 @@ use super::{ActionContext, ApiResponse};
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Permission {
-    /// 权限名称
-    name: String,
+    /// 权限名称，使用 Cow 支持零拷贝静态字符串和动态字符串
+    name: Cow<'static, str>,
 }
 
 impl Permission {
@@ -102,7 +103,35 @@ impl Permission {
     /// let permission = Permission::new("user:create");
     /// ```
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+        // 动态字符串存储为 Cow::Owned（堆分配）
+        Self {
+            name: Cow::Owned(name.into()),
+        }
+    }
+
+    /// 从静态字符串创建权限（零拷贝，无堆分配）
+    ///
+    /// # 参数
+    ///
+    /// - `name`: 静态字符串字面量
+    ///
+    /// # 返回
+    ///
+    /// - 新的 Permission 实例（内部使用 Cow::Borrowed，无堆分配）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::action::Permission;
+    ///
+    /// let permission = Permission::from_static("user:create");
+    /// assert_eq!(permission.name(), "user:create");
+    /// ```
+    pub fn from_static(name: &'static str) -> Self {
+        // 静态字符串存储为 Cow::Borrowed（零拷贝）
+        Self {
+            name: Cow::Borrowed(name),
+        }
     }
 
     /// 获取权限名称
@@ -120,6 +149,7 @@ impl Permission {
     /// assert_eq!(permission.name(), "user:create");
     /// ```
     pub fn name(&self) -> &str {
+        // Cow<'static, str> 自动解引用为 &str
         &self.name
     }
 }

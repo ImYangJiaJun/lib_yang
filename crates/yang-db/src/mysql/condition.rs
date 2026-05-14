@@ -216,6 +216,104 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
     }
 }
 
+/// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
+///
+/// 与 `condition_to_sql` 的借用版本相比，本函数消费传入的 `Condition`，
+/// 对 `SqlValue::String`、`SqlValue::Bytes`、`SqlValue::Json` 等堆分配类型
+/// 直接 push 到 params 中，无需 clone，从而减少堆分配次数。
+///
+/// # 参数
+/// - `condition`: 要消费的条件（owned）
+/// - `params`: 用于收集参数的可变向量
+///
+/// # 返回
+/// - SQL 字符串片段
+pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
+    match condition {
+        Condition::Eq(field, value) => {
+            // 直接 push，无需 clone
+            params.push(value);
+            format!("{} = ?", field)
+        }
+        Condition::Ne(field, value) => {
+            params.push(value);
+            format!("{} != ?", field)
+        }
+        Condition::Gt(field, value) => {
+            params.push(value);
+            format!("{} > ?", field)
+        }
+        Condition::Lt(field, value) => {
+            params.push(value);
+            format!("{} < ?", field)
+        }
+        Condition::Gte(field, value) => {
+            params.push(value);
+            format!("{} >= ?", field)
+        }
+        Condition::Lte(field, value) => {
+            params.push(value);
+            format!("{} <= ?", field)
+        }
+        Condition::In(field, values) => {
+            if values.is_empty() {
+                // IN 空列表总是返回 false
+                return "1 = 0".to_string();
+            }
+            let count = values.len();
+            // 直接 extend，无需逐个 clone
+            params.extend(values);
+            let placeholders = vec!["?"; count].join(", ");
+            format!("{} IN ({})", field, placeholders)
+        }
+        Condition::Between(field, start, end) => {
+            // 直接 push 两个值，无需 clone
+            params.push(start);
+            params.push(end);
+            format!("{} BETWEEN ? AND ?", field)
+        }
+        Condition::Like(field, pattern) => {
+            // pattern 是 String，直接消费
+            params.push(SqlValue::String(pattern));
+            format!("{} LIKE ?", field)
+        }
+        Condition::IsNull(field) => format!("{} IS NULL", field),
+        Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
+        Condition::And(conditions) => {
+            if conditions.is_empty() {
+                return "1 = 1".to_string();
+            }
+            if conditions.len() == 1 {
+                // 只有一个条件时，直接递归处理，避免多余括号
+                let mut iter = conditions.into_iter();
+                return condition_to_sql_owned(iter.next().unwrap(), params);
+            }
+            // AND 条件需要括号以确保优先级，递归调用自身消费子条件
+            let parts: Vec<String> = conditions
+                .into_iter()
+                .map(|c| condition_to_sql_owned(c, params))
+                .collect();
+            format!("({})", parts.join(" AND "))
+        }
+        Condition::Or(conditions) => {
+            if conditions.is_empty() {
+                return "1 = 0".to_string();
+            }
+            if conditions.len() == 1 {
+                // 只有一个条件时，直接递归处理，避免多余括号
+                let mut iter = conditions.into_iter();
+                return condition_to_sql_owned(iter.next().unwrap(), params);
+            }
+            // OR 条件需要括号，递归调用自身消费子条件
+            let parts: Vec<String> = conditions
+                .into_iter()
+                .map(|c| condition_to_sql_owned(c, params))
+                .collect();
+            format!("({})", parts.join(" OR "))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,6 +1008,157 @@ mod property_tests {
             // 验证 OR 连接
             let or_count = sql.matches(" OR ").count();
             prop_assert_eq!(or_count, values.len() - 1);
+        }
+    }
+
+    // **Validates: Requirements 5**
+    //
+    // 属性 P3：condition_to_sql_owned 与 condition_to_sql 等价性
+    //
+    // 形式化描述：对于任意 Condition c，
+    // `condition_to_sql_owned(c.clone(), &mut p1)` 生成的 SQL 字符串
+    // 与 `condition_to_sql(&c, &mut p2)` 完全相同，且参数列表长度相等。
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_owned_equals_borrowed_eq(
+            field in field_name_strategy(),
+            value in sql_value_strategy()
+        ) {
+            let cond = Condition::Eq(field, value);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            // SQL 字符串必须完全相同
+            prop_assert_eq!(&sql1, &sql2);
+            // 参数列表长度必须相等
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_ne(
+            field in field_name_strategy(),
+            value in sql_value_strategy()
+        ) {
+            let cond = Condition::Ne(field, value);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            prop_assert_eq!(&sql1, &sql2);
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_in(
+            field in field_name_strategy(),
+            values in prop::collection::vec(sql_value_strategy(), 0..8)
+        ) {
+            let cond = Condition::In(field, values);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            prop_assert_eq!(&sql1, &sql2);
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_between(
+            field in field_name_strategy(),
+            start in sql_value_strategy(),
+            end in sql_value_strategy()
+        ) {
+            let cond = Condition::Between(field, start, end);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            prop_assert_eq!(&sql1, &sql2);
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_like(
+            field in field_name_strategy(),
+            pattern in "[a-zA-Z0-9_%]{1,20}"
+        ) {
+            let cond = Condition::Like(field, pattern);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            prop_assert_eq!(&sql1, &sql2);
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_and(
+            field in field_name_strategy(),
+            values in prop::collection::vec(sql_value_strategy(), 0..5)
+        ) {
+            // 构建 AND 条件
+            let conditions: Vec<Condition> = values
+                .iter()
+                .map(|v| Condition::Eq(field.clone(), v.clone()))
+                .collect();
+            let cond = Condition::And(conditions);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            // SQL 字符串必须完全相同
+            prop_assert_eq!(&sql1, &sql2);
+            // 参数列表长度必须相等
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_or(
+            field in field_name_strategy(),
+            values in prop::collection::vec(sql_value_strategy(), 0..5)
+        ) {
+            // 构建 OR 条件
+            let conditions: Vec<Condition> = values
+                .iter()
+                .map(|v| Condition::Eq(field.clone(), v.clone()))
+                .collect();
+            let cond = Condition::Or(conditions);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            // SQL 字符串必须完全相同
+            prop_assert_eq!(&sql1, &sql2);
+            // 参数列表长度必须相等
+            prop_assert_eq!(p1.len(), p2.len());
+        }
+
+        #[test]
+        fn prop_owned_equals_borrowed_nested(
+            field1 in field_name_strategy(),
+            field2 in field_name_strategy(),
+            values in prop::collection::vec(sql_value_strategy(), 2..4)
+        ) {
+            // 构建嵌套条件：(field1 = v1 OR field1 = v2) AND field2 = v3
+            let or_conds: Vec<Condition> = values[..values.len()-1]
+                .iter()
+                .map(|v| Condition::Eq(field1.clone(), v.clone()))
+                .collect();
+            let cond = Condition::And(vec![
+                Condition::Or(or_conds),
+                Condition::Eq(field2.clone(), values.last().unwrap().clone()),
+            ]);
+            let mut p1 = vec![];
+            let mut p2 = vec![];
+            let sql1 = condition_to_sql_owned(cond.clone(), &mut p1);
+            let sql2 = condition_to_sql(&cond, &mut p2);
+            // SQL 字符串必须完全相同
+            prop_assert_eq!(&sql1, &sql2);
+            // 参数列表长度必须相等
+            prop_assert_eq!(p1.len(), p2.len());
         }
     }
 }
