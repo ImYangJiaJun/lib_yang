@@ -1,0 +1,169 @@
+// 地形雕刻算法
+
+use crate::config::{NormalizedConfig, TerrainConfig};
+use crate::error::PcgResult;
+use crate::model::geometry::{GridPoint, GridSize};
+use crate::model::room::{DoorAnchor, Room, RoomType};
+use crate::model::terrain::{Grid2D, ReservedZone, ReservedZoneBounds, Terrain, TileKind};
+use crate::rng::StableRng;
+
+use super::connectivity::summarize_connectivity;
+use super::grid::to_local;
+
+/// 为单个房间生成地形。
+pub fn carve_room_terrain(
+    room: &Room,
+    door_anchors: &[DoorAnchor],
+    config: &NormalizedConfig,
+    rng: &mut StableRng,
+) -> Option<Terrain> {
+    carve_room_terrain_with_config(room, door_anchors, &config.config.terrain, rng).ok()
+}
+
+/// 使用 TerrainConfig 为单个房间生成地形。
+///
+/// 这是 `carve_room_terrain` 的核心实现，接受 `TerrainConfig` 而非 `NormalizedConfig`，
+/// 便于作为 `TerrainStrategy` trait 的底层实现使用。
+///
+/// # 参数
+///
+/// * `room` - 目标房间
+/// * `door_anchors` - 属于该房间的门锚点
+/// * `config` - 地形配置
+/// * `rng` - 确定性随机数生成器
+///
+/// # 错误
+///
+/// 当房间没有边界或边界尺寸为零时返回错误。
+pub fn carve_room_terrain_with_config(
+    room: &Room,
+    door_anchors: &[DoorAnchor],
+    config: &TerrainConfig,
+    rng: &mut StableRng,
+) -> PcgResult<Terrain> {
+    use crate::error::PcgError;
+
+    let bounds = room.bounds.ok_or_else(|| {
+        PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
+    })?;
+    let width = bounds.width();
+    let height = bounds.height();
+    if width == 0 || height == 0 {
+        return Err(PcgError::terrain(format!(
+            "房间 {} 边界尺寸为零: {}x{}",
+            room.id, width, height
+        )));
+    }
+
+    let mut tiles = Grid2D::new(width, height, TileKind::Floor);
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
+                tiles.set(x, y, TileKind::Wall);
+            }
+        }
+    }
+
+    let room_anchors: Vec<&DoorAnchor> = door_anchors
+        .iter()
+        .filter(|anchor| anchor.room_id == room.id)
+        .collect();
+    for anchor in room_anchors {
+        let local = to_local(bounds.min, anchor.grid_pos);
+        tiles.set(local.x, local.y, TileKind::Doorway);
+    }
+
+    let reserved_zones = build_reserved_zones(room, width, height);
+    mark_reserved_zones(&mut tiles, &reserved_zones);
+    place_obstacles_with_config(&mut tiles, room, config, rng);
+
+    let connectivity_summary = summarize_connectivity(&tiles);
+
+    Ok(Terrain {
+        room_id: room.id.clone(),
+        grid_size: GridSize { width, height },
+        tiles,
+        reserved_zones,
+        connectivity_summary,
+    })
+}
+
+fn build_reserved_zones(room: &Room, width: u32, height: u32) -> Vec<ReservedZone> {
+    let mut zones = Vec::new();
+    if matches!(room.room_type, RoomType::Boss) {
+        let center = GridPoint {
+            x: (width / 2) as i32,
+            y: (height / 2) as i32,
+        };
+        zones.push(ReservedZone {
+            id: format!("{}-boss-center", room.id),
+            zone_type: "boss_center".to_string(),
+            bounds: ReservedZoneBounds::Circle {
+                center,
+                radius: (width.min(height) / 4).max(2),
+            },
+            allow_items: false,
+            allow_enemies: true,
+        });
+    }
+    zones
+}
+
+fn mark_reserved_zones(grid: &mut Grid2D<TileKind>, zones: &[ReservedZone]) {
+    for zone in zones {
+        match &zone.bounds {
+            ReservedZoneBounds::Rect { min, max } => {
+                for y in min.y..max.y {
+                    for x in min.x..max.x {
+                        grid.set(x, y, TileKind::Reserved);
+                    }
+                }
+            }
+            ReservedZoneBounds::Circle { center, radius } => {
+                let radius_sq = (*radius as i32).pow(2);
+                for y in 0..grid.height as i32 {
+                    for x in 0..grid.width as i32 {
+                        let dx = x - center.x;
+                        let dy = y - center.y;
+                        if dx * dx + dy * dy <= radius_sq {
+                            grid.set(x, y, TileKind::Reserved);
+                        }
+                    }
+                }
+            }
+            ReservedZoneBounds::Polygon { .. } => {}
+        }
+    }
+}
+
+/// 使用 TerrainConfig 放置障碍物
+fn place_obstacles_with_config(
+    grid: &mut Grid2D<TileKind>,
+    room: &Room,
+    config: &TerrainConfig,
+    rng: &mut StableRng,
+) {
+    if matches!(
+        room.room_type,
+        RoomType::Boss | RoomType::Start | RoomType::Shop | RoomType::Safe
+    ) {
+        return;
+    }
+
+    let candidate_budget = ((grid.width * grid.height) as f32
+        * config.obstacle_density)
+        .round() as usize;
+    let target_obstacle_count = candidate_budget.min(4);
+    let mut placed = 0usize;
+    let max_x = grid.width as i32 - 2;
+    let max_y = grid.height as i32 - 2;
+
+    while placed < target_obstacle_count && max_x > 1 && max_y > 1 {
+        let x = rng.random_range(1, max_x);
+        let y = rng.random_range(1, max_y);
+        if grid.get(x, y).copied() == Some(TileKind::Floor) {
+            grid.set(x, y, TileKind::Obstacle);
+            placed += 1;
+        }
+    }
+}

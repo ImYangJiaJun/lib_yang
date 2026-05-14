@@ -1,0 +1,118 @@
+// 几何数据结构
+// 定义基础几何类型和空间相关数据结构
+
+use serde::{Deserialize, Serialize};
+
+/// 世界坐标点
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WorldPoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+/// 逻辑网格坐标点
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GridPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// 网格尺寸
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 房间边界(逻辑网格空间)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomBounds {
+    /// 左下角坐标
+    pub min: GridPoint,
+    /// 右上角坐标
+    pub max: GridPoint,
+}
+
+impl RoomBounds {
+    /// 获取房间宽度
+    pub fn width(&self) -> u32 {
+        (self.max.x - self.min.x).unsigned_abs()
+    }
+
+    /// 获取房间高度
+    pub fn height(&self) -> u32 {
+        (self.max.y - self.min.y).unsigned_abs()
+    }
+
+    /// 获取房间中心点
+    pub fn center(&self) -> GridPoint {
+        GridPoint {
+            x: (self.min.x + self.max.x) / 2,
+            y: (self.min.y + self.max.y) / 2,
+        }
+    }
+
+    /// 判断是否包含指定网格点。
+    pub fn contains(&self, point: GridPoint) -> bool {
+        point.x >= self.min.x
+            && point.x < self.max.x
+            && point.y >= self.min.y
+            && point.y < self.max.y
+    }
+
+    /// 判断是否与另一个边界相交。
+    pub fn intersects(&self, other: &RoomBounds) -> bool {
+        self.min.x < other.max.x
+            && self.max.x > other.min.x
+            && self.min.y < other.max.y
+            && self.max.y > other.min.y
+    }
+}
+
+/// 基本方向
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CardinalDir {
+    /// 北(上)
+    North,
+    /// 南(下)
+    South,
+    /// 东(右)
+    East,
+    /// 西(左)
+    West,
+}
+
+/// 3D 变换
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Transform3 {
+    /// 位置
+    pub position: WorldPoint,
+    /// 旋转(欧拉角,度数)
+    pub rotation: (f32, f32, f32),
+    /// 缩放
+    pub scale: (f32, f32, f32),
+}
+
+impl Default for Transform3 {
+    fn default() -> Self {
+        Self {
+            position: WorldPoint {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotation: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+        }
+    }
+}
+
+/// 3D 边界盒
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Bounds3 {
+    /// 最小点
+    pub min: WorldPoint,
+    /// 最大点
+    pub max: WorldPoint,
+}

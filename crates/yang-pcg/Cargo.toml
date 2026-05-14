@@ -1,7 +1,7 @@
 [package]
 name = "yang-pcg"
 version = "0.0.1"
-edition = "2024"
+edition = "2021"
 
 description = "个人使用地图生成"
 license = "MIT OR Apache-2.0"
@@ -12,3 +12,22 @@ exclude = [
 ]
 
 [dependencies]
+# 序列化支持
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 校验和
+crc32fast = "1.4"  # CRC32 校验和计算
+
+# 错误处理
+thiserror = "2.0.18"
+
+# 图算法
+
+# 随机数生成
+rand = "0.10.1"
+rand_pcg = "0.10.2"
+
+[dev-dependencies]
+# 属性测试框架
+proptest = "1.6"

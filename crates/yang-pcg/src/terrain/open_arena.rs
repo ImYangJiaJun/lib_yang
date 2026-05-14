@@ -1,0 +1,201 @@
+// 开放式地形策略
+// Boss 房优先生成开放中心战斗区，障碍物稀疏分布在边缘
+
+use crate::config::TerrainConfig;
+use crate::error::{PcgError, PcgResult};
+use crate::model::geometry::GridSize;
+use crate::model::room::{DoorAnchor, Room};
+use crate::model::terrain::{Grid2D, Terrain, TileKind};
+use crate::rng::StableRng;
+
+use super::connectivity::summarize_connectivity;
+use super::grid::to_local;
+use super::strategy::TerrainStrategy;
+
+/// 开放式地形策略
+///
+/// 适用于 Boss 房间，生成宽敞的中心战斗区域，障碍物稀疏分布在边缘。
+/// 中心区域保持完全开放，为大型战斗提供充足空间。
+///
+/// # 生成规则
+///
+/// 1. 四周生成墙体边框
+/// 2. 标记门口瓦片
+/// 3. 中心区域保持完全开放（地板）
+/// 4. 障碍物仅放置在靠近墙体的边缘区域
+/// 5. 确保所有门口之间连通
+pub struct OpenArenaStrategy;
+
+impl TerrainStrategy for OpenArenaStrategy {
+    fn name(&self) -> &str {
+        "open_arena"
+    }
+
+    fn generate(
+        &self,
+        room: &Room,
+        anchors: &[DoorAnchor],
+        config: &TerrainConfig,
+        rng: &mut StableRng,
+    ) -> PcgResult<Terrain> {
+        let bounds = room.bounds.ok_or_else(|| {
+            PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
+        })?;
+        let width = bounds.width();
+        let height = bounds.height();
+        if width == 0 || height == 0 {
+            return Err(PcgError::terrain(format!(
+                "房间 {} 边界尺寸为零: {}x{}",
+                room.id, width, height
+            )));
+        }
+
+        // 初始化网格为地板
+        let mut tiles = Grid2D::new(width, height, TileKind::Floor);
+
+        // 生成墙体边框
+        for y in 0..height as i32 {
+            for x in 0..width as i32 {
+                if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
+                    tiles.set(x, y, TileKind::Wall);
+                }
+            }
+        }
+
+        // 标记门口瓦片
+        let room_anchors: Vec<&DoorAnchor> = anchors
+            .iter()
+            .filter(|a| a.room_id == room.id)
+            .collect();
+        for anchor in &room_anchors {
+            let local = to_local(bounds.min, anchor.grid_pos);
+            tiles.set(local.x, local.y, TileKind::Doorway);
+        }
+
+        // 在边缘区域稀疏放置障碍物
+        // 边缘区域定义为距离墙体 1-2 格的区域
+        let edge_margin = 2i32;
+        let obstacle_budget = ((width * height) as f32 * config.obstacle_density * 0.3)
+            .round() as usize;
+        let mut placed = 0usize;
+        let max_attempts = obstacle_budget * 10;
+        let mut attempts = 0usize;
+
+        while placed < obstacle_budget && attempts < max_attempts {
+            attempts += 1;
+            let x = rng.random_range(1, width as i32 - 1);
+            let y = rng.random_range(1, height as i32 - 1);
+
+            // 仅在边缘区域放置（靠近墙体但不在中心）
+            let dist_to_left = x;
+            let dist_to_right = width as i32 - 1 - x;
+            let dist_to_top = y;
+            let dist_to_bottom = height as i32 - 1 - y;
+            let min_dist = dist_to_left
+                .min(dist_to_right)
+                .min(dist_to_top)
+                .min(dist_to_bottom);
+
+            // 只在距离墙体 1~edge_margin 格的位置放置
+            if min_dist >= 1 && min_dist <= edge_margin
+                && tiles.get(x, y).copied() == Some(TileKind::Floor)
+            {
+                tiles.set(x, y, TileKind::Obstacle);
+                placed += 1;
+            }
+        }
+
+        // 确保门口之间连通（通过 BFS 验证，如果不连通则移除阻塞障碍物）
+        ensure_doorway_connectivity(&mut tiles, &room_anchors, bounds.min);
+
+        let connectivity_summary = summarize_connectivity(&tiles);
+
+        Ok(Terrain {
+            room_id: room.id.clone(),
+            grid_size: GridSize { width, height },
+            tiles,
+            reserved_zones: Vec::new(),
+            connectivity_summary,
+        })
+    }
+}
+
+/// 确保所有门口之间连通
+///
+/// 如果门口之间不连通，逐步移除障碍物直到连通
+fn ensure_doorway_connectivity(
+    tiles: &mut Grid2D<TileKind>,
+    anchors: &[&DoorAnchor],
+    origin: crate::model::geometry::GridPoint,
+) {
+    use std::collections::{HashSet, VecDeque};
+
+    if anchors.len() < 2 {
+        return;
+    }
+
+    // 获取所有门口的局部坐标
+    let doorways: Vec<crate::model::geometry::GridPoint> = anchors
+        .iter()
+        .map(|a| to_local(origin, a.grid_pos))
+        .collect();
+
+    // 从第一个门口开始 BFS，检查是否能到达所有其他门口
+    let start = doorways[0];
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(start);
+    visited.insert(start);
+
+    while let Some(current) = queue.pop_front() {
+        for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nx = current.x + dx;
+            let ny = current.y + dy;
+            let neighbor = crate::model::geometry::GridPoint { x: nx, y: ny };
+            if visited.contains(&neighbor) {
+                continue;
+            }
+            if let Some(tile) = tiles.get(nx, ny).copied() {
+                if super::grid::is_walkable(tile) {
+                    visited.insert(neighbor);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
+
+    // 检查是否所有门口都可达
+    let all_reachable = doorways.iter().all(|d| visited.contains(d));
+    if all_reachable {
+        return;
+    }
+
+    // 如果不连通，移除障碍物来建立通路
+    // 策略：沿着中心十字线清除障碍物
+    let cx = tiles.width as i32 / 2;
+    let cy = tiles.height as i32 / 2;
+
+    // 清除水平中心线附近的障碍物
+    for x in 1..tiles.width as i32 - 1 {
+        for dy in -1..=1i32 {
+            let y = cy + dy;
+            if y > 0 && y < tiles.height as i32 - 1
+                && tiles.get(x, y).copied() == Some(TileKind::Obstacle)
+            {
+                tiles.set(x, y, TileKind::Floor);
+            }
+        }
+    }
+
+    // 清除垂直中心线附近的障碍物
+    for y in 1..tiles.height as i32 - 1 {
+        for dx in -1..=1i32 {
+            let x = cx + dx;
+            if x > 0 && x < tiles.width as i32 - 1
+                && tiles.get(x, y).copied() == Some(TileKind::Obstacle)
+            {
+                tiles.set(x, y, TileKind::Floor);
+            }
+        }
+    }
+}
