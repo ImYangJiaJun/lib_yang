@@ -128,6 +128,14 @@ pub enum BaseError {
     #[error("HTTP 请求超时")]
     HttpTimeout,
 
+    /// HTTP 客户端已初始化
+    #[error("HTTP 客户端已初始化")]
+    HttpClientAlreadyInitialized,
+
+    /// HTTP 客户端未初始化
+    #[error("HTTP 客户端未初始化")]
+    HttpClientNotInitialized,
+
     // ==================== Token 管理错误 ====================
     /// Token 密钥无效
     #[error("Token 密钥无效: {0}")]
@@ -349,6 +357,8 @@ impl BaseError {
             BaseError::HttpRequestFailed(_) => 300002,
             BaseError::HttpResponseParseFailed(_) => 300003,
             BaseError::HttpTimeout => 300004,
+            BaseError::HttpClientAlreadyInitialized => 300005,
+            BaseError::HttpClientNotInitialized => 300006,
 
             // ==================== Token 管理错误 (4xxxxx) ====================
             BaseError::TokenKeyInvalid(_) => 400001,
@@ -482,6 +492,8 @@ mod tests {
             300003
         );
         assert_eq!(BaseError::HttpTimeout.code(), 300004);
+        assert_eq!(BaseError::HttpClientAlreadyInitialized.code(), 300005);
+        assert_eq!(BaseError::HttpClientNotInitialized.code(), 300006);
     }
 
     #[test]

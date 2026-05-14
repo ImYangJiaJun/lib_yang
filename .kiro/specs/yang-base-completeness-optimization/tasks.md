@@ -16,7 +16,7 @@
 ## 任务
 
 - [ ] 1. 基础设施：错误体系改造与依赖结构调整
-  - [-] 1.1 调整 Workspace 与 Feature Gate
+  - [x] 1.1 调整 Workspace 与 Feature Gate
     - 在根 `Cargo.toml` 增加 `[workspace.dependencies]` 集中声明 `tokio`、`serde`、`serde_json`、`thiserror`、`log`、`chrono`、`uuid`、`regex`、`sqlx`、`reqwest`、`jsonwebtoken`、`jsonschema`、`serde_urlencoded`
     - 在根 `Cargo.toml` 增加 `[workspace.lints.rust]` 与 `[workspace.lints.clippy]`，配置 `unused_must_use`、`unsafe_code`、`unwrap_used` 等 lint 等级
     - 修正 `crates/yang-db/Cargo.toml` 与 `crates/yang-pcg/Cargo.toml` 中的 `edition = "2024"` 为 `edition = "2021"`
@@ -24,7 +24,7 @@
     - 验证 `cargo build --no-default-features` 与默认 features 均通过
     - _Requirements: 34.1, 34.2, 34.3, 34.4, 38.1, 38.2, 38.3_
 
-  - [~] 1.2 新增结构化错误变体并补齐错误码
+  - [-] 1.2 新增结构化错误变体并补齐错误码
     - 在 `crates/yang-base/src/error/mod.rs` 新增 `BaseError::HttpClientAlreadyInitialized`、`BaseError::HttpClientNotInitialized` 变体
     - 为新变体在 `BaseError::code()` 中分配错误码 `300005`、`300006`
     - _Requirements: 32.1, 32.2, 32.3_
