@@ -39,6 +39,7 @@
 
 use crate::error::BaseError;
 use crate::table::{QueryParams, SortOrder, TableConfig, WhereCondition};
+#[cfg(feature = "mysql")]
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -109,6 +110,7 @@ pub struct TableQuery {
     /// 数据库连接池引用（预留）
     ///
     /// 暂未使用，预留用于后续实现 CRUD 操作
+    #[cfg(feature = "mysql")]
     #[allow(dead_code)]
     pool: Option<Arc<sqlx::MySqlPool>>,
 }
@@ -139,6 +141,7 @@ impl TableQuery {
     ///     Some(Arc::new(pool)),
     /// );
     /// ```
+    #[cfg(feature = "mysql")]
     pub fn new(
         table_config: Arc<TableConfig>,
         user_roles: Vec<String>,
@@ -149,6 +152,22 @@ impl TableQuery {
             user_roles,
             query_params: QueryParams::new(),
             pool,
+        }
+    }
+
+    /// 创建新的查询构建器（无数据库连接池）
+    ///
+    /// 当未启用 `mysql` feature 时使用此方法。
+    #[cfg(not(feature = "mysql"))]
+    pub fn new(
+        table_config: Arc<TableConfig>,
+        user_roles: Vec<String>,
+        _pool: Option<()>,
+    ) -> Self {
+        Self {
+            table_config,
+            user_roles,
+            query_params: QueryParams::new(),
         }
     }
 
@@ -470,7 +489,11 @@ impl TableQuery {
     pub fn get_user_roles(&self) -> &[String] {
         &self.user_roles
     }
+}
 
+/// 数据库执行方法（需要启用 `mysql` feature）
+#[cfg(feature = "mysql")]
+impl TableQuery {
     /// 执行分页查询操作
     ///
     /// 执行分页查询，包括以下步骤：
@@ -1627,6 +1650,7 @@ impl TableQuery {
 /// SQL 参数类型
 ///
 /// 用于表示 SQL 查询中的参数值
+#[cfg(feature = "mysql")]
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(crate) enum SqlParam {
@@ -1642,6 +1666,7 @@ pub(crate) enum SqlParam {
     String(String),
 }
 
+#[cfg(feature = "mysql")]
 impl SqlParam {
     /// 从 JSON 值创建 SQL 参数
     ///

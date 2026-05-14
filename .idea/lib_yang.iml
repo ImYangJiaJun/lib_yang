@@ -10,6 +10,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-db/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-base/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-base/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/yang-pcg/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/yang-pcg/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

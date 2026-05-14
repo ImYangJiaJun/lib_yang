@@ -1,6 +1,7 @@
 //! 内置 CRUD Actions 模块
 //!
 //! 提供标准的 CRUD 操作 Actions，包括新增、更新、删除、查询等。
+//! 需要启用 `mysql` feature 才可使用。
 //!
 //! # 主要组件
 //!
@@ -27,17 +28,27 @@
 //! let select_action = SelectAction::new(table_config.clone());
 //! ```
 
+#[cfg(feature = "mysql")]
 mod add;
+#[cfg(feature = "mysql")]
 mod del;
+#[cfg(feature = "mysql")]
 mod get;
+#[cfg(feature = "mysql")]
 mod put;
+#[cfg(feature = "mysql")]
 mod select;
 mod table;
 
+#[cfg(feature = "mysql")]
 pub use add::AddAction;
+#[cfg(feature = "mysql")]
 pub use del::DelAction;
+#[cfg(feature = "mysql")]
 pub use get::GetAction;
+#[cfg(feature = "mysql")]
 pub use put::PutAction;
+#[cfg(feature = "mysql")]
 pub use select::SelectAction;
 pub use table::TableAction;
 

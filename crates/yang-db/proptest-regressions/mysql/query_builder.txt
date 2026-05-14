@@ -1,0 +1,22 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 226070b15a881a07f861eff9546259e4b3f92b6f2fe66f5b3852d68871d17c16 # shrinks to table_name = "a", field_name = "a"
+cc 975b3a80483fae063c363dfecf92fea1a5f6b0c83c1c4db6e10083d90a333446 # shrinks to table_name = "a", fields = ["a"]
+cc 2eefd9d63f30ceb9536a811dc0f384e12a8ea5d055ad0d6557c056f438277a53 # shrinks to table_name = "a"
+cc 92d60011c1efc047ad201d7d42d57b4781d882baa4c608e06dccc95bba829393 # shrinks to table_name = "a", field = "a", asc = false
+cc c6728c9236cd4f69b47c1d50a53e096b61769fdf42179411405a0b4c3b8b7096 # shrinks to table_name = "a", join_tables = ["a"]
+cc 0df24340cb19761a208492b4b9eeb5e569ecf48edef6c2610b7744a479a2294a # shrinks to table_name = "a", field = "a"
+cc f82c803d07254ce8bb0ee3a45f98b07b511fed6afd03af50a99799ddab4b69dd # shrinks to table_name = "a", field = "a"
+cc b9f1927ccff9e04f84fa034e1e689b3330398002913f83d3922a5a534c570f9b # shrinks to table_name = "a", field = "a", values = [0]
+cc d3310c4e6fdf61bed1835d5c0234c4a1c657a436b45d5dbbe01aff92060fa6d6 # shrinks to table_name = "a", fields = ["a"]
+cc f10c2aeb1b106b05e60a8c9bd0ebabf2da80ed863146f532fbf82e920ddeea26 # shrinks to table_name = "a", fields = ["a"]
+cc 34179747a26f8f9e7663fb061f27e974fda0a1d8816d67c69f7dc2419185118a # shrinks to table_name = "a", field_name = "a", field_value = 1
+cc f140db788228d1343f4e75c6bd42e54d1f471feeee0e6ecab6e4551841e3a8e4 # shrinks to table_name = "a", join_table = "a", on_condition = "a.a = a.a"
+cc d1fb6269f407d64a2ce604b8b7c5c9143a38f7e117d9524437aa454a60aa8190 # shrinks to table_name = "a", json_field = "a", datetime_field = "a_", timestamp_field = "aa", decimal_field = "d3", blob_field = "jy___t_4_4__5i4_755ar", text_field = "e316__o1p_vd792_r1__03xjq__m"
+cc 846516cba1cf0d621d42d7c318ae9ee72ef72f3fa9d33e243f86c1943ac65ca4 # shrinks to table_name = "a", field = "a", value = -21
+cc 68beda44750dcc8d220eddb9104117003aee7b524ed98a3d5293d77c9ca88808 # shrinks to table_name = "a", field = "a", values = [0, -717]
+cc 0eebf5c7489d19036b97ecd3c48b7a34ff62e5b3d00c29946b503133d09f72b4 # shrinks to table_name = "a", field = "a", start = 0, end = -136222

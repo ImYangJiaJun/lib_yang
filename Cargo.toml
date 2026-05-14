@@ -2,3 +2,55 @@
 resolver = "2"
 
 members = ["crates/*"]
+
+# 集中声明共享依赖，各 crate 通过 `xxx.workspace = true` 引用
+[workspace.dependencies]
+# 异步运行时
+tokio = { version = "1.52.1", features = ["full"] }
+
+# 序列化
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.140"
+serde_urlencoded = "0.7"
+
+# 错误处理
+thiserror = "2.0.18"
+
+# 日志
+log = "0.4.29"
+
+# 时间与唯一标识
+chrono = "0.4.44"
+uuid = { version = "1.23.1", features = ["v4"] }
+
+# 正则表达式
+regex = "1.12.3"
+
+# 数据库
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql", "chrono", "json"] }
+
+# HTTP 客户端
+reqwest = { version = "0.13.2", features = ["json", "query"] }
+
+# JWT Token
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+
+# JSON Schema 验证
+jsonschema = "0.29"
+
+# Workspace 统一 lint 配置
+[workspace.lints.rust]
+# 忽略 Result 返回值视为编译错误
+unused_must_use = "deny"
+# 禁止 unsafe 代码（警告级别，允许测试中使用）
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+# 禁止裸 unwrap，强制使用 expect 或错误处理
+unwrap_used = "warn"
+# 禁止裸 expect（生产代码应使用 Result 传播）
+expect_used = "warn"
+# 克隆开销提示
+clone_on_ref_ptr = "warn"
+# 大型枚举变体提示
+large_enum_variant = "warn"

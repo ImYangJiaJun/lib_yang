@@ -43,6 +43,7 @@
 
 use crate::error::BaseError;
 use crate::table::{TableConfig, TableQuery};
+#[cfg(feature = "token")]
 use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
@@ -190,6 +191,7 @@ impl User {
 #[derive(Debug)]
 pub struct GlobalTools {
     /// Token 管理器
+    #[cfg(feature = "token")]
     token_manager: Arc<TokenManager>,
 
     /// 自定义工具注册表
@@ -226,9 +228,24 @@ impl GlobalTools {
     ///
     /// let tools = GlobalTools::new(token_manager);
     /// ```
+    #[cfg(feature = "token")]
     pub fn new(token_manager: TokenManager) -> Self {
         Self {
             token_manager: Arc::new(token_manager),
+            tools: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// 创建新的全局工具集合（无 Token 管理器）
+    ///
+    /// 当未启用 `token` feature 时使用此方法创建 GlobalTools。
+    ///
+    /// # 返回
+    ///
+    /// - 新的 GlobalTools 实例
+    #[cfg(not(feature = "token"))]
+    pub fn new() -> Self {
+        Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -294,6 +311,7 @@ impl GlobalTools {
     ///     serde_json::json!({"role": "admin"}),
     /// )?;
     /// ```
+    #[cfg(feature = "token")]
     pub fn token_manager(&self) -> &TokenManager {
         &self.token_manager
     }

@@ -11,41 +11,67 @@ exclude = [
     "INSTALL.md",
 ]
 
+[lints]
+workspace = true
+
+[features]
+# 默认启用所有功能，保持向后兼容
+default = ["token", "http", "mysql", "validator", "plugin-schema"]
+
+# JWT Token 管理功能
+token = ["dep:jsonwebtoken"]
+
+# HTTP 客户端功能
+http = ["dep:reqwest", "dep:serde_urlencoded"]
+
+# MySQL 数据库功能
+mysql = ["dep:sqlx"]
+
+# 字段校验器正则支持
+validator = ["dep:regex"]
+
+# 插件 JSON Schema 配置验证
+plugin-schema = ["dep:jsonschema"]
+
 [dependencies]
 # 内部依赖
 yang-db = { version = "0.1.2" }
 
 # 异步运行时
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { workspace = true }
 async-trait = "0.1.89"
 
 # 序列化
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.140"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # 错误处理
-thiserror = "2.0.18"
+thiserror = { workspace = true }
 
 # 日志
-log = "0.4.29"
-
-# HTTP 客户端
-reqwest = { version = "0.13.2", features = ["json", "query"] }
-
-# JWT Token
-jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+log = { workspace = true }
 
 # 工具库
-uuid = { version = "1.23.1", features = ["v4"] }
-chrono = "0.4.44"
-regex = "1.12.3"
+uuid = { workspace = true }
+chrono = { workspace = true }
 
-# 数据库
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql"] }
+# HTTP 客户端（可选，通过 "http" feature 启用）
+reqwest = { workspace = true, optional = true }
+serde_urlencoded = { workspace = true, optional = true }
 
+# JWT Token（可选，通过 "token" feature 启用）
+jsonwebtoken = { workspace = true, optional = true }
+
+# 数据库（可选，通过 "mysql" feature 启用）
+sqlx = { workspace = true, optional = true }
+
+# 正则表达式（可选，通过 "validator" feature 启用）
+regex = { workspace = true, optional = true }
+
+# JSON Schema 验证（可选，通过 "plugin-schema" feature 启用）
+jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.52.1", features = ["full", "test-util"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 testcontainers = "0.27.3"
 env_logger = "0.11.10"
-

@@ -3,6 +3,7 @@
 //! 提供灵活的字段值验证机制，支持长度验证、数值范围验证、格式验证和自定义验证。
 
 use crate::error::BaseError;
+#[cfg(feature = "validator")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -398,6 +399,7 @@ impl Validator {
             }
 
             // 正则表达式验证
+            #[cfg(feature = "validator")]
             Validator::Regex(pattern) => {
                 if let Some(s) = value.as_str() {
                     let re = Regex::new(pattern).map_err(|e| {
@@ -420,6 +422,15 @@ impl Validator {
                         "Regex 验证器只能用于字符串类型".to_string(),
                     ))
                 }
+            }
+
+            // 未启用 validator feature 时，正则验证不可用
+            #[cfg(not(feature = "validator"))]
+            Validator::Regex(_pattern) => {
+                Err(BaseError::ValidationFailed(
+                    field_name.to_string(),
+                    "正则验证器需要启用 'validator' feature".to_string(),
+                ))
             }
 
             // 自定义验证函数

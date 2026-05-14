@@ -6,11 +6,19 @@
 //!
 //! - `plugin`：插件管理模块
 //! - `database`：数据库管理模块（支持 MySQL 和 Redis）
-//! - `http`：HTTP 客户端模块
-//! - `token`：JWT Token 管理模块
+//! - `http`：HTTP 客户端模块（需启用 `http` feature）
+//! - `token`：JWT Token 管理模块（需启用 `token` feature）
 //! - `error`：错误处理模块
 //! - `table`：表配置系统模块
 //! - `action`：Action 系统模块
+//!
+//! # Feature Gates
+//!
+//! - `token`：启用 JWT Token 管理功能（依赖 `jsonwebtoken`）
+//! - `http`：启用 HTTP 客户端功能（依赖 `reqwest`、`serde_urlencoded`）
+//! - `mysql`：启用 MySQL 数据库查询执行功能（依赖 `sqlx`）
+//! - `validator`：启用正则表达式校验器（依赖 `regex`）
+//! - `plugin-schema`：启用插件 JSON Schema 配置验证（依赖 `jsonschema`）
 //!
 //! # 快速开始
 //!
@@ -51,10 +59,12 @@
 pub mod action;
 pub mod database;
 pub mod error;
+#[cfg(feature = "http")]
 pub mod http;
 pub mod plugin;
 pub mod router;
 pub mod table;
+#[cfg(feature = "token")]
 pub mod token;
 
 // 重新导出插件系统的核心类型，方便用户直接使用

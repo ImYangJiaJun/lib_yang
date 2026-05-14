@@ -43,9 +43,12 @@ fn main() {
                 .display_name("年龄")
                 .validator(Validator::Min(18.0))
                 .validator(Validator::Max(100.0)),
-            FieldConfig::new("status", FieldType::Enum {
-                values: vec!["active".to_string(), "inactive".to_string()],
-            })
+            FieldConfig::new(
+                "status",
+                FieldType::Enum {
+                    values: vec!["active".to_string(), "inactive".to_string()],
+                },
+            )
             .display_name("状态")
             .default_value(json!("active")),
         ])

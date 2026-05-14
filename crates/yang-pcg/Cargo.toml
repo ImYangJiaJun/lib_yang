@@ -11,18 +11,19 @@ exclude = [
     "INSTALL.md",
 ]
 
+[lints]
+workspace = true
+
 [dependencies]
 # 序列化支持
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # 校验和
 crc32fast = "1.4"  # CRC32 校验和计算
 
 # 错误处理
-thiserror = "2.0.18"
-
-# 图算法
+thiserror = { workspace = true }
 
 # 随机数生成
 rand = "0.10.1"

@@ -688,10 +688,10 @@ impl RedisClient {
         if let Some(arr) = result.as_array() {
             let mut pairs = Vec::new();
             for i in (0..arr.len()).step_by(2) {
-                if i + 1 < arr.len()
-                    && let (Some(field), Some(value)) = (arr[i].as_string(), arr[i + 1].as_string())
-                {
-                    pairs.push((field, value));
+                if i + 1 < arr.len() {
+                    if let (Some(field), Some(value)) = (arr[i].as_string(), arr[i + 1].as_string()) {
+                        pairs.push((field, value));
+                    }
                 }
             }
             Ok(pairs)
@@ -1046,11 +1046,12 @@ impl RedisClient {
         let result = self.execute(&cmd).await?;
 
         // BLPOP 返回数组 [key, value] 或 nil
-        if let Some(arr) = result.as_array()
-            && arr.len() == 2
-            && let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string())
-        {
-            return Ok(Some((key, value)));
+        if let Some(arr) = result.as_array() {
+            if arr.len() == 2 {
+                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
+                    return Ok(Some((key, value)));
+                }
+            }
         }
         Ok(None)
     }
@@ -1087,11 +1088,12 @@ impl RedisClient {
         let result = self.execute(&cmd).await?;
 
         // BRPOP 返回数组 [key, value] 或 nil
-        if let Some(arr) = result.as_array()
-            && arr.len() == 2
-            && let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string())
-        {
-            return Ok(Some((key, value)));
+        if let Some(arr) = result.as_array() {
+            if arr.len() == 2 {
+                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
+                    return Ok(Some((key, value)));
+                }
+            }
         }
         Ok(None)
     }
@@ -2042,10 +2044,10 @@ fn parse_with_scores(result: &RedisValue) -> Vec<(String, f64)> {
         let mut pairs = Vec::new();
         let mut i = 0;
         while i + 1 < arr.len() {
-            if let (Some(member), Some(score_str)) = (arr[i].as_string(), arr[i + 1].as_string())
-                && let Ok(score) = score_str.parse::<f64>()
-            {
-                pairs.push((member, score));
+            if let (Some(member), Some(score_str)) = (arr[i].as_string(), arr[i + 1].as_string()) {
+                if let Ok(score) = score_str.parse::<f64>() {
+                    pairs.push((member, score));
+                }
             }
             i += 2;
         }

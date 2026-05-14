@@ -274,6 +274,7 @@ impl From<serde_json::Error> for BaseError {
 }
 
 /// 从 reqwest::Error 转换为 BaseError
+#[cfg(feature = "http")]
 impl From<reqwest::Error> for BaseError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {

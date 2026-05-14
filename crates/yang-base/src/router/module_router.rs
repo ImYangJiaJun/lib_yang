@@ -30,8 +30,11 @@
 //! let response = router.dispatch("add", context).await?;
 //! ```
 
+#[cfg(feature = "mysql")]
+use crate::action::builtin::TableAction;
+#[cfg(feature = "mysql")]
 use crate::action::builtin::{
-    AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
+    AddAction, DelAction, GetAction, PutAction, SelectAction,
 };
 use crate::action::{Action, ActionContext, ApiResponse, User};
 use crate::error::BaseError;
@@ -202,6 +205,7 @@ impl ModuleRouter {
     ///     .table_config(table_config)
     ///     .register_builtin_actions();
     /// ```
+    #[cfg(feature = "mysql")]
     pub fn register_builtin_actions(mut self) -> Self {
         let table_config = self
             .table_config

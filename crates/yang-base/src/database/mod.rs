@@ -4,9 +4,9 @@
 //!
 //! # 主要组件
 //!
-//! - `GlobalDatabase`：全局 MySQL 数据库访问器
+//! - `GlobalDatabase`：全局 MySQL 数据库访问器（需启用 `mysql` feature）
 //! - `GlobalRedis`：全局 Redis 访问器
-//! - `DatabaseInitializer`：数据库初始化器
+//! - `DatabaseInitializer`：数据库初始化器（需启用 `mysql` feature）
 //!
 //! # 示例
 //!
@@ -38,10 +38,14 @@
 //! initializer.initialize_all(&manager).await?;
 //! ```
 
+#[cfg(feature = "mysql")]
 mod global;
 mod global_redis;
+#[cfg(feature = "mysql")]
 mod initializer;
 
+#[cfg(feature = "mysql")]
 pub use global::GlobalDatabase;
 pub use global_redis::GlobalRedis;
+#[cfg(feature = "mysql")]
 pub use initializer::DatabaseInitializer;
