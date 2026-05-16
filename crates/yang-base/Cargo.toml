@@ -1,6 +1,6 @@
 [package]
 name = "yang-base"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 description = "个人使用构建后端服务器"
