@@ -269,3 +269,194 @@ fn test_action_context_user_roles() {
         vec!["admin".to_string(), "user".to_string()]
     );
 }
+
+#[test]
+fn test_action_context_user_roles_slice() {
+    let request = Request::new(json!({}));
+    let tools = create_test_tools();
+
+    // 没有用户时返回空切片
+    let context = ActionContext::new(request.clone(), tools.clone());
+    assert_eq!(context.user_roles_slice(), &[] as &[String]);
+
+    // 有用户时返回用户角色切片
+    let mut user = User::new(1, "alice");
+    user.roles = vec!["admin".to_string(), "user".to_string()];
+    let context = ActionContext::new(request, tools).with_user(user);
+    assert_eq!(
+        context.user_roles_slice(),
+        &["admin".to_string(), "user".to_string()]
+    );
+}
+
+#[test]
+fn test_action_context_path_param() {
+    let request = Request::new(json!({})).path_param("id", "123");
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    // 获取存在的路径参数
+    let id: String = context.path_param("id").unwrap();
+    assert_eq!(id, "123");
+
+    // 获取不存在的路径参数
+    let result: Result<String, _> = context.path_param("nonexistent");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_action_context_query_param() {
+    let request = Request::new(json!({})).query("page", "2");
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    // 获取存在的查询参数
+    let page: u32 = context.query_param("page").unwrap();
+    assert_eq!(page, 2);
+
+    // 获取不存在的查询参数
+    let result: Result<u32, _> = context.query_param("nonexistent");
+    assert!(result.is_err());
+
+    // 类型不匹配
+    let result: Result<u32, _> = context.query_param("page");
+    assert!(result.is_ok()); // "2" 可以解析为 u32
+}
+
+#[test]
+fn test_action_context_param_or() {
+    let request = Request::new(json!({ "page": 2 }));
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    // 参数存在时返回参数值
+    let page: i64 = context.param_or("page", 1);
+    assert_eq!(page, 2);
+
+    // 参数不存在时返回默认值
+    let limit: i64 = context.param_or("limit", 10);
+    assert_eq!(limit, 10);
+}
+
+#[test]
+fn test_action_context_param_optional_strict() {
+    let request = Request::new(json!({
+        "age": 25,
+        "name": "alice",
+        "bad_age": "not_a_number"
+    }));
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    // 参数存在且类型匹配
+    let age: Result<Option<i64>, _> = context.param_optional_strict("age");
+    assert_eq!(age.unwrap(), Some(25));
+
+    // 参数不存在
+    let missing: Result<Option<i64>, _> = context.param_optional_strict("missing");
+    assert_eq!(missing.unwrap(), None);
+
+    // 参数存在但类型不匹配，返回错误
+    let bad: Result<Option<i64>, _> = context.param_optional_strict("bad_age");
+    assert!(bad.is_err());
+}
+
+/// 测试 GlobalTools 全局单例功能
+///
+/// 注意：由于 OnceLock 只能初始化一次，所有单例相关测试放在同一个函数中按顺序执行
+/// 需求: 3.1, 3.2, 3.3, 3.4
+#[test]
+fn test_global_tools_singleton() {
+    // 步骤 1：在初始化之前，获取应返回错误
+    // 注意：这个测试可能在其他测试已初始化单例后运行，所以我们先检查当前状态
+    let initial_state = GlobalTools::get();
+
+    if initial_state.is_err() {
+        // 单例尚未初始化，测试未初始化场景
+        let err = initial_state.unwrap_err();
+        assert!(
+            matches!(err, crate::error::BaseError::ConfigError(_)),
+            "未初始化时应返回 ConfigError，实际返回: {:?}",
+            err
+        );
+        // 验证错误信息包含预期内容
+        if let crate::error::BaseError::ConfigError(msg) = err {
+            assert!(
+                msg.contains("GlobalTools 未初始化"),
+                "错误信息应包含 '未初始化'，实际: {}",
+                msg
+            );
+        }
+
+        // 步骤 2：初始化单例
+        let token_manager = create_test_token_manager();
+        let result = GlobalTools::init(token_manager);
+        assert!(result.is_ok(), "第一次初始化应成功，实际错误: {:?}", result.err());
+
+        // 步骤 3：初始化后获取应成功
+        let tools = GlobalTools::get();
+        assert!(tools.is_ok(), "初始化后获取应成功，实际错误: {:?}", tools.err());
+
+        // 步骤 4：重复初始化应返回错误
+        let token_manager2 = create_test_token_manager();
+        let result2 = GlobalTools::init(token_manager2);
+        assert!(result2.is_err(), "重复初始化应返回错误");
+        let err2 = result2.unwrap_err();
+        assert!(
+            matches!(err2, crate::error::BaseError::ConfigError(_)),
+            "重复初始化应返回 ConfigError，实际: {:?}",
+            err2
+        );
+        if let crate::error::BaseError::ConfigError(msg) = err2 {
+            assert!(
+                msg.contains("GlobalTools 已初始化"),
+                "错误信息应包含 '已初始化'，实际: {}",
+                msg
+            );
+        }
+    } else {
+        // 单例已经初始化（其他测试先运行了）
+        // 测试重复初始化应返回错误
+        let token_manager = create_test_token_manager();
+        let result = GlobalTools::init(token_manager);
+        assert!(result.is_err(), "已初始化后重复初始化应返回错误");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::BaseError::ConfigError(_)),
+            "重复初始化应返回 ConfigError，实际: {:?}",
+            err
+        );
+        if let crate::error::BaseError::ConfigError(msg) = err {
+            assert!(
+                msg.contains("GlobalTools 已初始化"),
+                "错误信息应包含 '已初始化'，实际: {}",
+                msg
+            );
+        }
+
+        // 单例已初始化，获取应成功
+        let tools = GlobalTools::get();
+        assert!(tools.is_ok(), "已初始化后获取应成功，实际错误: {:?}", tools.err());
+    }
+}
+
+/// 测试 ActionContext::new_with_global_tools
+/// 需求: 3.5
+#[test]
+fn test_action_context_new_with_global_tools() {
+    // 确保全局单例已初始化（如果还没有）
+    if GlobalTools::get().is_err() {
+        let token_manager = create_test_token_manager();
+        let _ = GlobalTools::init(token_manager);
+    }
+
+    // 使用全局单例创建上下文
+    let request = Request::new(serde_json::json!({ "name": "test" }));
+    let result = ActionContext::new_with_global_tools(request);
+    assert!(result.is_ok(), "全局单例已初始化时应成功创建上下文，实际错误: {:?}", result.err());
+
+    let context = result.unwrap();
+    // 验证上下文创建成功
+    assert!(context.user.is_none());
+    assert!(context.table_config.is_none());
+}

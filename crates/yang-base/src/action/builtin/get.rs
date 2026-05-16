@@ -62,26 +62,39 @@ impl Action for GetAction {
         // 获取主键字段名
         let pk_field = &self.table_config.primary_key;
 
-        // 获取主键值
+        // 从请求体中获取主键值
         let pk_value: serde_json::Value = context.param(pk_field)?;
 
-        // 创建查询构建器
-        let query = context.table_query()?;
+        // 创建查询构建器，添加主键 WHERE 条件
+        let query = context
+            .table_query()?
+            .where_eq(pk_field.as_str(), pk_value)?;
 
-        // 添加主键 WHERE 条件
-        let _query = query.where_eq(pk_field.as_str(), pk_value.clone())?;
+        // 使用 DynamicRow 类型执行查询，获取可选的单条记录
+        #[cfg(feature = "mysql")]
+        {
+            use crate::table::DynamicRow;
 
-        // 注意：实际的 select 需要具体的类型，这里我们返回一个占位响应
-        // 在实际使用时，需要根据表结构定义具体的类型
-        // 这里为了编译通过，我们假设查询成功并返回模拟数据
+            let row = query.fetch_optional::<DynamicRow>().await?;
 
-        // TODO: 实际实现需要使用具体的结构体类型而不是 serde_json::Value
-        // 或者实现一个动态行类型来支持任意表结构
+            // 查询结果为空时返回 RecordNotFound 错误
+            match row {
+                None => Err(BaseError::RecordNotFound(format!(
+                    "表 {} 中主键为 {} 的记录不存在",
+                    self.table_config.table_name, pk_field
+                ))),
+                Some(record) => ApiResponse::success(record, "获取成功"),
+            }
+        }
 
-        // 暂时返回错误提示需要实现
-        return Err(BaseError::Unknown(
-            "GetAction 需要在实际使用时提供具体的数据类型实现".to_string(),
-        ));
+        // 未启用 mysql feature 时返回错误
+        #[cfg(not(feature = "mysql"))]
+        {
+            let _ = query;
+            Err(BaseError::Unknown(
+                "GetAction 需要启用 mysql feature".to_string(),
+            ))
+        }
     }
 
     fn name(&self) -> &str {

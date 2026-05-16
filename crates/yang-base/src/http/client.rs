@@ -11,9 +11,63 @@ use std::time::Duration;
 /// 全局 HTTP 客户端实例
 static GLOBAL_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
 
+/// HTTP 客户端配置
+///
+/// 用于通过 `HttpClient::with_config` 创建自定义配置的客户端
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::http::{HttpClient, HttpClientConfig};
+///
+/// let config = HttpClientConfig {
+///     timeout_secs: 60,
+///     pool_max_idle_per_host: 10,
+///     user_agent: Some("MyApp/1.0".to_string()),
+///     ..Default::default()
+/// };
+/// let client = HttpClient::with_config(config)?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct HttpClientConfig {
+    /// 请求超时时间（秒），默认 30 秒
+    pub timeout_secs: u64,
+
+    /// 每个主机最大空闲连接数，默认 10
+    pub pool_max_idle_per_host: usize,
+
+    /// 连接池空闲超时时间（秒），默认 90 秒
+    pub pool_idle_timeout_secs: u64,
+
+    /// 自定义 User-Agent，默认为 None（使用 reqwest 默认值）
+    pub user_agent: Option<String>,
+
+    /// 是否接受无效的 TLS 证书，默认 false（生产环境不应设为 true）
+    pub accept_invalid_certs: bool,
+
+    /// 代理 URL，默认为 None（不使用代理）
+    pub proxy_url: Option<String>,
+}
+
+impl Default for HttpClientConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 30,
+            pool_max_idle_per_host: 10,
+            pool_idle_timeout_secs: 90,
+            user_agent: None,
+            accept_invalid_certs: false,
+            proxy_url: None,
+        }
+    }
+}
+
 /// HTTP 客户端
 ///
-/// 提供 HTTP 请求构建和发送能力
+/// 提供 HTTP 请求构建和发送能力。
+///
+/// 内部持有 `Arc<reqwest::Client>`，`clone()` 时复用同一连接池（即 `Arc::clone`），
+/// 不会创建新的底层连接池。
 ///
 /// # 示例
 ///
@@ -31,7 +85,7 @@ static GLOBAL_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
 /// ```
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    /// reqwest 客户端
+    /// reqwest 客户端（Arc 包装，clone 时复用同一连接池）
     client: Client,
 
     /// 默认超时时间
@@ -42,7 +96,63 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
+    /// 使用结构化配置创建 HTTP 客户端
+    ///
+    /// # 参数
+    ///
+    /// - `cfg`: HTTP 客户端配置
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(HttpClient)`: 客户端实例
+    /// - `Err(BaseError::HttpClientCreateFailed)`: 创建失败（如代理 URL 无效）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::http::{HttpClient, HttpClientConfig};
+    ///
+    /// let config = HttpClientConfig {
+    ///     timeout_secs: 60,
+    ///     pool_max_idle_per_host: 20,
+    ///     ..Default::default()
+    /// };
+    /// let client = HttpClient::with_config(config)?;
+    /// ```
+    pub fn with_config(cfg: HttpClientConfig) -> Result<Self, BaseError> {
+        // 构建 reqwest 客户端
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(cfg.timeout_secs))
+            .pool_max_idle_per_host(cfg.pool_max_idle_per_host)
+            .pool_idle_timeout(Duration::from_secs(cfg.pool_idle_timeout_secs))
+            .danger_accept_invalid_certs(cfg.accept_invalid_certs);
+
+        // 设置自定义 User-Agent
+        if let Some(ua) = cfg.user_agent {
+            builder = builder.user_agent(ua);
+        }
+
+        // 设置代理
+        if let Some(proxy_url) = cfg.proxy_url {
+            let proxy = reqwest::Proxy::all(&proxy_url)
+                .map_err(BaseError::HttpClientCreateFailed)?;
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder
+            .build()
+            .map_err(BaseError::HttpClientCreateFailed)?;
+
+        Ok(Self {
+            client,
+            default_timeout: Duration::from_secs(cfg.timeout_secs),
+            default_token: Arc::new(RwLock::new(None)),
+        })
+    }
+
     /// 创建新的 HTTP 客户端
+    ///
+    /// 委托给 `with_config`，使用默认配置并仅覆盖超时时间。
     ///
     /// # 参数
     ///
@@ -59,15 +169,10 @@ impl HttpClient {
     /// let client = HttpClient::new(30)?;
     /// ```
     pub fn new(timeout_secs: u64) -> Result<Self, BaseError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| BaseError::HttpClientCreateFailed(e.to_string()))?;
-
-        Ok(Self {
-            client,
-            default_timeout: Duration::from_secs(timeout_secs),
-            default_token: Arc::new(RwLock::new(None)),
+        // 委托给 with_config，仅覆盖超时时间
+        Self::with_config(HttpClientConfig {
+            timeout_secs,
+            ..Default::default()
         })
     }
 
@@ -80,7 +185,8 @@ impl HttpClient {
     /// # 返回
     ///
     /// - `Ok(())`: 初始化成功
-    /// - `Err(BaseError)`: 初始化失败
+    /// - `Err(BaseError::HttpClientAlreadyInitialized)`: 已初始化（重复调用）
+    /// - `Err(BaseError::HttpClientCreateFailed)`: 客户端创建失败
     ///
     /// # 示例
     ///
@@ -90,9 +196,10 @@ impl HttpClient {
     pub fn init_global(timeout_secs: u64) -> Result<(), BaseError> {
         let client = Self::new(timeout_secs)?;
 
+        // 重复初始化返回结构化错误
         GLOBAL_HTTP_CLIENT
             .set(client)
-            .map_err(|_| BaseError::HttpClientCreateFailed("全局客户端已初始化".to_string()))?;
+            .map_err(|_| BaseError::HttpClientAlreadyInitialized)?;
 
         log::info!("全局 HTTP 客户端已初始化，超时时间: {} 秒", timeout_secs);
         Ok(())
@@ -103,7 +210,7 @@ impl HttpClient {
     /// # 返回
     ///
     /// - `Ok(&HttpClient)`: 客户端实例
-    /// - `Err(BaseError)`: 客户端未初始化
+    /// - `Err(BaseError::HttpClientNotInitialized)`: 客户端未初始化
     ///
     /// # 示例
     ///
@@ -111,11 +218,10 @@ impl HttpClient {
     /// let client = HttpClient::global()?;
     /// ```
     pub fn global() -> Result<&'static HttpClient, BaseError> {
+        // 未初始化返回结构化错误
         GLOBAL_HTTP_CLIENT
             .get()
-            .ok_or(BaseError::HttpClientCreateFailed(
-                "全局客户端未初始化".to_string(),
-            ))
+            .ok_or(BaseError::HttpClientNotInitialized)
     }
 
     /// 设置默认 Token
@@ -131,18 +237,29 @@ impl HttpClient {
     /// client.set_default_token("your_token".to_string());
     /// ```
     pub fn set_default_token(&self, token: String) {
-        let mut default_token = self.default_token.write().unwrap();
+        // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续写入
+        let mut default_token = self
+            .default_token
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         *default_token = Some(token);
         log::debug!("已设置默认 Token");
     }
 
     /// 获取默认 Token
     fn get_default_token(&self) -> Option<String> {
-        let default_token = self.default_token.read().unwrap();
+        // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续读取
+        let default_token = self
+            .default_token
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         default_token.clone()
     }
 
     /// 创建请求构建器
+    ///
+    /// 注意：`self.client.clone()` 是 `Arc::clone`，复用同一底层连接池，
+    /// 不会创建新的 TCP 连接池，多个请求共享连接。
     ///
     /// # 参数
     ///
@@ -164,6 +281,7 @@ impl HttpClient {
     ///     .await?;
     /// ```
     pub fn request(&self, method: Method, url: &str) -> RequestBuilder {
+        // self.client.clone() 是 Arc::clone，复用同一连接池
         RequestBuilder::new(
             self.client.clone(),
             method,

@@ -168,7 +168,7 @@ impl DatabaseInitializer {
             .db
             .transaction()
             .await
-            .map_err(|e| BaseError::DatabaseTransactionFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseTransactionFailed)?;
 
         for plugin in plugins {
             let name = plugin.name();
@@ -194,7 +194,7 @@ impl DatabaseInitializer {
 
         tx.commit()
             .await
-            .map_err(|e| BaseError::DatabaseTransactionFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseTransactionFailed)?;
 
         Ok(())
     }
@@ -267,7 +267,7 @@ impl DatabaseInitializer {
         self.db
             .execute(sql)
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseExecuteFailed)?;
 
         Ok(())
     }
@@ -346,14 +346,15 @@ impl DatabaseInitializer {
                 BaseError::MigrationFailed(module_name.to_string(), version.clone(), e.to_string())
             })?;
 
-            // 记录迁移
-            let record_sql = format!(
-                "INSERT INTO _migrations (module_name, version) VALUES ('{}', '{}')",
-                module_name, version
-            );
-            tx.execute(&record_sql)
+            // 记录迁移（使用参数化查询，防止 SQL 注入）
+            let record_sql = "INSERT INTO _migrations (module_name, version) VALUES (?, ?)";
+            let record_params = vec![
+                serde_json::Value::String(module_name.to_string()),
+                serde_json::Value::String(version.clone()),
+            ];
+            tx.execute_with_params(record_sql, record_params)
                 .await
-                .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+                .map_err(BaseError::DatabaseExecuteFailed)?;
         }
 
         Ok(())
@@ -373,7 +374,7 @@ impl DatabaseInitializer {
     ///
     /// # 说明
     ///
-    /// 使用 yang-db::Database::query 方法查询。
+    /// 使用参数化查询，防止 SQL 注入攻击。
     pub async fn is_migration_executed(
         &self,
         module_name: &str,
@@ -385,17 +386,19 @@ impl DatabaseInitializer {
             count: i64,
         }
 
-        let sql = format!(
-            "SELECT COUNT(*) as count FROM _migrations WHERE module_name = '{}' AND version = '{}'",
-            module_name, version
-        );
+        // 使用参数占位符，防止 SQL 注入
+        let sql = "SELECT COUNT(*) as count FROM _migrations WHERE module_name = ? AND version = ?";
+        let params = vec![
+            serde_json::Value::String(module_name.to_string()),
+            serde_json::Value::String(version.to_string()),
+        ];
 
-        // 使用 yang-db::Database::query 方法
+        // 使用 yang-db::Database::query_with_params 方法
         let results: Vec<CountResult> = self
             .db
-            .query(&sql)
+            .query_with_params(sql, params)
             .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseQueryFailed)?;
 
         Ok(results.first().map(|r| r.count > 0).unwrap_or(false))
     }
@@ -414,21 +417,23 @@ impl DatabaseInitializer {
     ///
     /// # 说明
     ///
-    /// 使用 yang-db::Database::execute 执行 SQL。
+    /// 使用参数化查询，防止 SQL 注入攻击。
     pub async fn record_migration(
         &self,
         module_name: &str,
         version: &str,
     ) -> Result<(), BaseError> {
-        let sql = format!(
-            "INSERT INTO _migrations (module_name, version) VALUES ('{}', '{}')",
-            module_name, version
-        );
+        // 使用参数占位符，防止 SQL 注入
+        let sql = "INSERT INTO _migrations (module_name, version) VALUES (?, ?)";
+        let params = vec![
+            serde_json::Value::String(module_name.to_string()),
+            serde_json::Value::String(version.to_string()),
+        ];
 
         self.db
-            .execute(&sql)
+            .execute_with_params(sql, params)
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseExecuteFailed)?;
 
         Ok(())
     }

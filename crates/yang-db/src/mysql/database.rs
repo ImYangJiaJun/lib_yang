@@ -182,4 +182,164 @@ impl Database {
 
         Ok(row.0 > 0)
     }
+
+    /// 执行带参数的原生 SELECT 查询（参数化查询，防止 SQL 注入）
+    ///
+    /// # 参数
+    /// - sql: SQL 查询语句，使用 `?` 作为参数占位符
+    /// - params: 参数列表，使用 `serde_json::Value` 类型
+    ///
+    /// # 返回
+    /// - Ok(Vec<T>): 查询结果列表
+    /// - Err(DbError): 查询失败错误
+    ///
+    /// # 示例
+    ///
+    /// ```rust,no_run
+    /// use yang_db::Database;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let params = vec![json!("admin"), json!(1)];
+    /// // let users: Vec<User> = db.query_with_params("SELECT * FROM users WHERE role = ? AND status = ?", params).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn query_with_params<T>(
+        &self,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        if self.config.enable_logging {
+            log::debug!("执行参数化查询: {}, 参数数量: {}", sql, params.len());
+        }
+
+        // 构建查询并逐一绑定参数
+        let mut query = sqlx::query_as::<_, T>(sql);
+        for param in &params {
+            query = bind_json_param_as(query, param);
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    /// 执行带参数的原生 INSERT/UPDATE/DELETE 语句（参数化查询，防止 SQL 注入）
+    ///
+    /// # 参数
+    /// - sql: SQL 语句，使用 `?` 作为参数占位符
+    /// - params: 参数列表，使用 `serde_json::Value` 类型
+    ///
+    /// # 返回
+    /// - Ok(u64): 受影响的行数
+    /// - Err(DbError): 执行失败错误
+    ///
+    /// # 示例
+    ///
+    /// ```rust,no_run
+    /// use yang_db::Database;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let params = vec![json!("张三"), json!("zhangsan@example.com")];
+    /// let rows = db.execute_with_params("INSERT INTO users (name, email) VALUES (?, ?)", params).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn execute_with_params(
+        &self,
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<u64, DbError> {
+        if self.config.enable_logging {
+            log::debug!("执行参数化语句: {}, 参数数量: {}", sql, params.len());
+        }
+
+        // 构建查询并逐一绑定参数
+        let mut query = sqlx::query(sql);
+        for param in &params {
+            query = bind_json_param(query, param);
+        }
+
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+}
+
+/// 将 `serde_json::Value` 参数绑定到 `query_as` 查询
+///
+/// # 参数
+/// - query: sqlx query_as 查询对象
+/// - param: JSON 参数值
+///
+/// # 返回
+/// - 绑定参数后的查询对象
+fn bind_json_param_as<'q, T>(
+    query: sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>,
+    param: &serde_json::Value,
+) -> sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>
+where
+    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
+{
+    match param {
+        // 字符串类型直接绑定
+        serde_json::Value::String(s) => query.bind(s.clone()),
+        // 数字类型转为 i64 绑定
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                query.bind(i)
+            } else if let Some(f) = n.as_f64() {
+                // 浮点数转为字符串绑定，避免精度丢失
+                query.bind(f.to_string())
+            } else {
+                query.bind(Option::<String>::None)
+            }
+        }
+        // 布尔类型绑定
+        serde_json::Value::Bool(b) => query.bind(*b),
+        // NULL 类型绑定为 None
+        serde_json::Value::Null => query.bind(Option::<String>::None),
+        // 数组和对象类型序列化为 JSON 字符串绑定
+        other => query.bind(other.to_string()),
+    }
+}
+
+/// 将 `serde_json::Value` 参数绑定到执行查询
+///
+/// # 参数
+/// - query: sqlx 执行查询对象
+/// - param: JSON 参数值
+///
+/// # 返回
+/// - 绑定参数后的查询对象
+fn bind_json_param<'q>(
+    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    param: &serde_json::Value,
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    match param {
+        // 字符串类型直接绑定
+        serde_json::Value::String(s) => query.bind(s.clone()),
+        // 数字类型转为 i64 绑定
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                query.bind(i)
+            } else if let Some(f) = n.as_f64() {
+                // 浮点数转为字符串绑定，避免精度丢失
+                query.bind(f.to_string())
+            } else {
+                query.bind(Option::<String>::None)
+            }
+        }
+        // 布尔类型绑定
+        serde_json::Value::Bool(b) => query.bind(*b),
+        // NULL 类型绑定为 None
+        serde_json::Value::Null => query.bind(Option::<String>::None),
+        // 数组和对象类型序列化为 JSON 字符串绑定
+        other => query.bind(other.to_string()),
+    }
 }

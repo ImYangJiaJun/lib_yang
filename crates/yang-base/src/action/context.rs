@@ -7,39 +7,6 @@
 //! - `ActionContext`：Action 执行上下文结构
 //! - `User`：用户信息（占位符，后续实现）
 //! - `GlobalTools`：全局工具集合（占位符，后续实现）
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::action::{ActionContext, Request};
-//! use yang_base::table::TableConfig;
-//! use serde_json::json;
-//! use std::sync::Arc;
-//!
-//! // 创建请求
-//! let request = Request::new(json!({
-//!     "username": "alice",
-//!     "age": 30
-//! }));
-//!
-//! // 创建上下文
-//! let tools = Arc::new(GlobalTools::new());
-//! let mut context = ActionContext::new(request, tools);
-//!
-//! // 设置表配置
-//! let table_config = Arc::new(TableConfig::new("users"));
-//! context = context.with_table_config(table_config);
-//!
-//! // 获取参数
-//! let username: String = context.param("username")?;
-//! let age: i64 = context.param("age")?;
-//!
-//! // 获取可选参数
-//! let email: Option<String> = context.param_optional("email");
-//!
-//! // 创建表查询
-//! let query = context.table_query()?;
-//! ```
 
 use crate::error::BaseError;
 use crate::table::{TableConfig, TableQuery};
@@ -48,54 +15,36 @@ use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::str::FromStr;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
 
-/// 用户信息（占位符）
-///
-/// 此结构体在后续阶段实现，当前仅作为占位符使用。
-///
-/// # 字段
-///
-/// - `id`: 用户 ID
-/// - `username`: 用户名
-/// - `nickname`: 昵称
-/// - `email`: 邮箱
-/// - `roles`: 角色列表
-/// - `permissions`: 权限列表
+/// 全局 GlobalTools 单例
+/// 使用 OnceLock 保证线程安全的一次性初始化
+/// 内部存储 Arc<GlobalTools> 以支持废弃克隆
+/// 注意：返回的是静态引用，不需要克隆
+static GLOBAL_TOOLS: OnceLock<Arc<GlobalTools>> = OnceLock::new();
+
+/// 用户信息
 #[derive(Debug, Clone)]
 pub struct User {
     /// 用户 ID
     pub id: i64,
-
     /// 用户名
     pub username: String,
-
     /// 昵称
     pub nickname: String,
-
     /// 邮箱
     pub email: String,
-
     /// 角色列表
     pub roles: Vec<String>,
-
     /// 权限列表
     pub permissions: Vec<String>,
 }
 
 impl User {
     /// 创建新用户
-    ///
-    /// # 参数
-    ///
-    /// - `id`: 用户 ID
-    /// - `username`: 用户名
-    ///
-    /// # 返回
-    ///
-    /// - 新的 User 实例
     pub fn new(id: i64, username: impl Into<String>) -> Self {
         Self {
             id,
@@ -108,126 +57,33 @@ impl User {
     }
 
     /// 检查是否有指定权限
-    ///
-    /// # 参数
-    ///
-    /// - `permission`: 权限名称
-    ///
-    /// # 返回
-    ///
-    /// - `true`: 有权限
-    /// - `false`: 无权限
     pub fn has_permission(&self, permission: &str) -> bool {
         self.permissions.contains(&permission.to_string())
     }
 
     /// 检查是否有指定角色
-    ///
-    /// # 参数
-    ///
-    /// - `role`: 角色名称
-    ///
-    /// # 返回
-    ///
-    /// - `true`: 有角色
-    /// - `false`: 无角色
     pub fn has_role(&self, role: &str) -> bool {
         self.roles.contains(&role.to_string())
     }
 
     /// 检查是否有任一角色
-    ///
-    /// # 参数
-    ///
-    /// - `roles`: 角色列表
-    ///
-    /// # 返回
-    ///
-    /// - `true`: 有任一角色
-    /// - `false`: 无任何角色
     pub fn has_any_role(&self, roles: &[String]) -> bool {
         roles.iter().any(|r| self.has_role(r))
     }
 }
 
 /// 全局工具集合
-///
-/// 提供全局共享的工具和服务，包括 Token 管理器和自定义工具注册。
-///
-/// # 功能
-///
-/// - 提供 Token 管理器
-/// - 支持自定义工具注册和获取
-/// - 线程安全的工具访问
-///
-/// # 示例
-///
-/// ```rust,ignore
-/// use yang_base::action::GlobalTools;
-/// use yang_base::token::TokenManager;
-/// use jsonwebtoken::Algorithm;
-/// use std::sync::Arc;
-///
-/// // 创建 Token 管理器
-/// let token_manager = TokenManager::new_symmetric(
-///     "secret_key",
-///     Algorithm::HS256,
-///     "issuer".to_string(),
-///     "audience".to_string(),
-///     3600,
-///     86400,
-/// );
-///
-/// // 创建全局工具
-/// let tools = GlobalTools::new(token_manager);
-///
-/// // 注册自定义工具
-/// let redis_client = Arc::new("redis://localhost".to_string());
-/// tools.register_tool("redis", redis_client);
-///
-/// // 获取工具
-/// let redis: Option<Arc<String>> = tools.get_tool("redis");
-/// ```
 #[derive(Debug)]
 pub struct GlobalTools {
     /// Token 管理器
     #[cfg(feature = "token")]
     token_manager: Arc<TokenManager>,
-
     /// 自定义工具注册表
-    /// Key: 工具名称, Value: 工具实例
     tools: Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>,
 }
 
 impl GlobalTools {
-    /// 创建新的全局工具集合
-    ///
-    /// # 参数
-    ///
-    /// - `token_manager`: Token 管理器
-    ///
-    /// # 返回
-    ///
-    /// - 新的 GlobalTools 实例
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::GlobalTools;
-    /// use yang_base::token::TokenManager;
-    /// use jsonwebtoken::Algorithm;
-    ///
-    /// let token_manager = TokenManager::new_symmetric(
-    ///     "secret_key",
-    ///     Algorithm::HS256,
-    ///     "issuer".to_string(),
-    ///     "audience".to_string(),
-    ///     3600,
-    ///     86400,
-    /// );
-    ///
-    /// let tools = GlobalTools::new(token_manager);
-    /// ```
+    /// 创建新的全局工具集合（启用 token feature）
     #[cfg(feature = "token")]
     pub fn new(token_manager: TokenManager) -> Self {
         Self {
@@ -236,13 +92,7 @@ impl GlobalTools {
         }
     }
 
-    /// 创建新的全局工具集合（无 Token 管理器）
-    ///
-    /// 当未启用 `token` feature 时使用此方法创建 GlobalTools。
-    ///
-    /// # 返回
-    ///
-    /// - 新的 GlobalTools 实例
+    /// 创建新的全局工具集合（未启用 token feature）
     #[cfg(not(feature = "token"))]
     pub fn new() -> Self {
         Self {
@@ -251,145 +101,118 @@ impl GlobalTools {
     }
 
     /// 注册自定义工具
-    ///
-    /// # 参数
-    ///
-    /// - `name`: 工具名称
-    /// - `tool`: 工具实例
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use std::sync::Arc;
-    ///
-    /// let redis_client = Arc::new("redis://localhost".to_string());
-    /// tools.register_tool("redis", redis_client);
-    /// ```
     pub fn register_tool<T: Any + Send + Sync>(&self, name: &str, tool: Arc<T>) {
-        let mut tools = self.tools.write().unwrap();
+        // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续注册
+        let mut tools = self.tools.write().unwrap_or_else(|p| p.into_inner());
         tools.insert(name.to_string(), tool);
     }
 
     /// 获取已注册的工具
-    ///
-    /// # 参数
-    ///
-    /// - `name`: 工具名称
-    ///
-    /// # 返回
-    ///
-    /// - `Some(Arc<T>)`: 工具实例
-    /// - `None`: 工具不存在或类型不匹配
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// let redis: Option<Arc<String>> = tools.get_tool("redis");
-    /// if let Some(client) = redis {
-    ///     println!("Redis URL: {}", client);
-    /// }
-    /// ```
     pub fn get_tool<T: Any + Send + Sync>(&self, name: &str) -> Option<Arc<T>> {
-        let tools = self.tools.read().unwrap();
+        // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续读取
+        let tools = self.tools.read().unwrap_or_else(|p| p.into_inner());
         tools
             .get(name)
             .and_then(|tool| tool.clone().downcast::<T>().ok())
     }
 
     /// 获取 Token 管理器
-    ///
-    /// # 返回
-    ///
-    /// - Token 管理器引用
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// let token_manager = tools.token_manager();
-    /// let token = token_manager.generate_access_token(
-    ///     "user_123",
-    ///     serde_json::json!({"role": "admin"}),
-    /// )?;
-    /// ```
     #[cfg(feature = "token")]
     pub fn token_manager(&self) -> &TokenManager {
         &self.token_manager
+    }
+
+    /// 初始化全局 GlobalTools 单例（启用 token feature）
+    ///
+    /// 使用 `OnceLock` 保证只能初始化一次，线程安全。
+    ///
+    /// # 参数
+    ///
+    /// - `token_manager`: JWT 令牌管理器
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(())`: 初始化成功
+    /// - `Err(BaseError::ConfigError)`: 已经初始化过，重复调用
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError("GlobalTools 已初始化")`: 重复初始化时返回
+    #[cfg(feature = "token")]
+    pub fn init(token_manager: TokenManager) -> Result<(), BaseError> {
+        // 尝试设置全局单例，若已初始化则返回错误
+        GLOBAL_TOOLS
+            .set(Arc::new(GlobalTools::new(token_manager)))
+            .map_err(|_| BaseError::ConfigError("GlobalTools 已初始化".to_string()))
+    }
+
+    /// 初始化全局 GlobalTools 单例（未启用 token feature）
+    ///
+    /// 使用 `OnceLock` 保证只能初始化一次，线程安全。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(())`: 初始化成功
+    /// - `Err(BaseError::ConfigError)`: 已经初始化过，重复调用
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError("GlobalTools 已初始化")`: 重复初始化时返回
+    #[cfg(not(feature = "token"))]
+    pub fn init() -> Result<(), BaseError> {
+        // 尝试设置全局单例，若已初始化则返回错误
+        GLOBAL_TOOLS
+            .set(Arc::new(GlobalTools::new()))
+            .map_err(|_| BaseError::ConfigError("GlobalTools 已初始化".to_string()))
+    }
+
+    /// 获取全局 GlobalTools 单例引用
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(&'static GlobalTools)`: 全局实例的静态引用
+    /// - `Err(BaseError::ConfigError)`: 尚未初始化
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError("GlobalTools 未初始化")`: 在调用 `init` 之前调用此方法时返回
+    pub fn get() -> Result<&'static GlobalTools, BaseError> {
+        // 获取全局单例，若未初始化则返回错误
+        GLOBAL_TOOLS
+            .get()
+            .map(|arc| arc.as_ref())
+            .ok_or_else(|| BaseError::ConfigError("GlobalTools 未初始化".to_string()))
+    }
+
+    /// 获取全局 GlobalTools 的 Arc 引用（内部使用）
+    ///
+    /// 返回 Arc 克隆，允许将全局单例嵌入到 ActionContext 中
+    pub(crate) fn get_arc() -> Result<Arc<GlobalTools>, BaseError> {
+        // 获取全局单例的 Arc 克隆（廉价操作）
+        GLOBAL_TOOLS
+            .get()
+            .cloned()
+            .ok_or_else(|| BaseError::ConfigError("GlobalTools 未初始化".to_string()))
     }
 }
 
 /// Action 执行上下文
 ///
 /// 包含 Action 执行所需的所有信息，包括请求数据、用户信息、全局工具和表配置。
-///
-/// # 字段
-///
-/// - `request`: 请求数据
-/// - `user`: 当前用户（已认证）
-/// - `tools`: 全局工具
-/// - `table_config`: 表配置（如果 action 关联表）
-///
-/// # 示例
-///
-/// ```rust,ignore
-/// use yang_base::action::{ActionContext, Request};
-/// use yang_base::table::TableConfig;
-/// use serde_json::json;
-/// use std::sync::Arc;
-///
-/// // 创建请求
-/// let request = Request::new(json!({
-///     "username": "alice",
-///     "email": "alice@example.com"
-/// }));
-///
-/// // 创建上下文
-/// let tools = Arc::new(GlobalTools::new());
-/// let context = ActionContext::new(request, tools);
-///
-/// // 获取参数
-/// let username: String = context.param("username")?;
-///
-/// // 获取可选参数
-/// let phone: Option<String> = context.param_optional("phone");
-/// ```
 #[derive(Debug)]
 pub struct ActionContext {
     /// 请求数据
     pub request: Request,
-
     /// 当前用户（已认证）
     pub user: Option<User>,
-
     /// 全局工具
     pub tools: Arc<GlobalTools>,
-
     /// 表配置（如果 action 关联表）
     pub table_config: Option<Arc<TableConfig>>,
 }
 
 impl ActionContext {
     /// 创建新的上下文
-    ///
-    /// # 参数
-    ///
-    /// - `request`: 请求数据
-    /// - `tools`: 全局工具
-    ///
-    /// # 返回
-    ///
-    /// - 新的 ActionContext 实例
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request};
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({ "name": "Alice" }));
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let context = ActionContext::new(request, tools);
-    /// ```
     pub fn new(request: Request, tools: Arc<GlobalTools>) -> Self {
         Self {
             request,
@@ -399,66 +222,46 @@ impl ActionContext {
         }
     }
 
-    /// 设置用户
+    /// 使用全局单例创建新的上下文
+    ///
+    /// 自动从全局单例获取 `GlobalTools`，无需手动传入。
     ///
     /// # 参数
     ///
-    /// - `user`: 用户信息
+    /// - `request`: 请求数据
     ///
     /// # 返回
     ///
-    /// - 修改后的 ActionContext 实例（支持链式调用）
+    /// - `Ok(ActionContext)`: 创建成功
+    /// - `Err(BaseError::ConfigError)`: 全局单例未初始化
     ///
-    /// # 示例
+    /// # 错误
     ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request, User};
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({}));
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let user = User::new(1, "alice");
-    ///
-    /// let context = ActionContext::new(request, tools)
-    ///     .with_user(user);
-    /// ```
+    /// - `BaseError::ConfigError("GlobalTools 未初始化")`: 在调用 `GlobalTools::init` 之前调用此方法时返回
+    pub fn new_with_global_tools(request: Request) -> Result<Self, BaseError> {
+        // 从全局单例获取 GlobalTools 的 Arc 克隆（廉价操作）
+        let tools = GlobalTools::get_arc()?;
+        Ok(Self {
+            request,
+            user: None,
+            tools,
+            table_config: None,
+        })
+    }
+
+    /// 设置用户（链式调用）
     pub fn with_user(mut self, user: User) -> Self {
         self.user = Some(user);
         self
     }
 
-    /// 设置表配置
-    ///
-    /// # 参数
-    ///
-    /// - `config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 修改后的 ActionContext 实例（支持链式调用）
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request};
-    /// use yang_base::table::TableConfig;
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({}));
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    ///
-    /// let context = ActionContext::new(request, tools)
-    ///     .with_table_config(table_config);
-    /// ```
+    /// 设置表配置（链式调用）
     pub fn with_table_config(mut self, config: Arc<TableConfig>) -> Self {
         self.table_config = Some(config);
         self
     }
 
-    /// 获取请求参数（必填）
+    /// 获取请求体参数（必填）
     ///
     /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回错误。
     ///
@@ -471,34 +274,6 @@ impl ActionContext {
     /// - `Ok(T)`: 参数值
     /// - `Err(BaseError::ParamMissing)`: 参数不存在
     /// - `Err(BaseError::ParamInvalid)`: 参数类型不匹配
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request};
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({
-    ///     "username": "alice",
-    ///     "age": 30
-    /// }));
-    ///
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let context = ActionContext::new(request, tools);
-    ///
-    /// // 获取字符串参数
-    /// let username: String = context.param("username")?;
-    /// assert_eq!(username, "alice");
-    ///
-    /// // 获取整数参数
-    /// let age: i64 = context.param("age")?;
-    /// assert_eq!(age, 30);
-    ///
-    /// // 参数不存在
-    /// let result: Result<String, _> = context.param("email");
-    /// assert!(result.is_err());
-    /// ```
     pub fn param<T: DeserializeOwned>(&self, key: &str) -> Result<T, BaseError> {
         let value = self
             .request
@@ -511,9 +286,14 @@ impl ActionContext {
         })
     }
 
-    /// 获取请求参数（可选）
+    /// 获取请求体参数（可选，宽松模式）
     ///
     /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回 None。
+    /// 类型不匹配时会记录 warn 日志，但不返回错误。
+    ///
+    /// 与 [`param_optional_strict`] 的区别：
+    /// - `param_optional`：类型不匹配时静默返回 `None`（宽松模式）
+    /// - `param_optional_strict`：类型不匹配时返回 `Err`（严格模式）
     ///
     /// # 参数
     ///
@@ -523,34 +303,140 @@ impl ActionContext {
     ///
     /// - `Some(T)`: 参数值
     /// - `None`: 参数不存在或类型不匹配
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request};
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({
-    ///     "username": "alice"
-    /// }));
-    ///
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let context = ActionContext::new(request, tools);
-    ///
-    /// // 获取存在的参数
-    /// let username: Option<String> = context.param_optional("username");
-    /// assert_eq!(username, Some("alice".to_string()));
-    ///
-    /// // 获取不存在的参数
-    /// let email: Option<String> = context.param_optional("email");
-    /// assert_eq!(email, None);
-    /// ```
     pub fn param_optional<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let result = self
+            .request
+            .body
+            .get(key)
+            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok());
+        // 若参数存在但类型不匹配，记录警告日志
+        if result.is_none() && self.request.body.get(key).is_some() {
+            log::warn!(
+                "param_optional: 参数 '{}' 存在但类型不匹配，已静默返回 None",
+                key
+            );
+        }
+        result
+    }
+
+    /// 获取请求体参数（可选，严格模式）
+    ///
+    /// 从请求体中获取指定参数：
+    /// - 参数不存在：返回 `Ok(None)`
+    /// - 参数存在且类型匹配：返回 `Ok(Some(T))`
+    /// - 参数存在但类型不匹配：返回 `Err(BaseError::ParamInvalid)`
+    ///
+    /// 与 [`param_optional`] 的区别：
+    /// - `param_optional`：类型不匹配时静默返回 `None`（宽松模式）
+    /// - `param_optional_strict`：类型不匹配时返回错误（严格模式），适用于需要明确感知类型错误的场景
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 参数名
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(Some(T))`: 参数存在且类型匹配
+    /// - `Ok(None)`: 参数不存在
+    /// - `Err(BaseError::ParamInvalid)`: 参数存在但类型不匹配
+    pub fn param_optional_strict<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, BaseError> {
+        match self.request.body.get(key) {
+            // 参数不存在，返回 None
+            None => Ok(None),
+            // 参数存在，尝试反序列化
+            Some(value) => serde_json::from_value::<T>(value.clone())
+                .map(Some)
+                .map_err(|_| {
+                    BaseError::ParamInvalid(
+                        key.to_string(),
+                        format!("参数 '{}' 存在但无法转换为目标类型", key),
+                    )
+                }),
+        }
+    }
+
+    /// 获取路径参数（必填）
+    ///
+    /// 从 `request.path_params` 中获取指定路径参数，并尝试反序列化为目标类型。
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 路径参数名
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(T)`: 参数值
+    /// - `Err(BaseError::ParamMissing)`: 路径参数不存在
+    /// - `Err(BaseError::ParamInvalid)`: 参数值无法转换为目标类型
+    pub fn path_param<T: DeserializeOwned>(&self, key: &str) -> Result<T, BaseError> {
+        // 从路径参数中获取字符串值
+        let raw = self
+            .request
+            .path_params
+            .get(key)
+            .ok_or_else(|| BaseError::ParamMissing(key.to_string()))?;
+
+        // 将字符串包装为 JSON 字符串后反序列化，支持数字、布尔等类型
+        let json_val = serde_json::Value::String(raw.clone());
+        serde_json::from_value(json_val).map_err(|_| {
+            BaseError::ParamInvalid(
+                key.to_string(),
+                format!("路径参数 '{}' 无法转换为目标类型，原始值: {}", key, raw),
+            )
+        })
+    }
+
+    /// 获取查询参数（必填）
+    ///
+    /// 从 `request.query` 中获取指定查询参数，并通过 `FromStr` 解析为目标类型。
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 查询参数名
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(T)`: 参数值
+    /// - `Err(BaseError::ParamMissing)`: 查询参数不存在
+    /// - `Err(BaseError::ParamInvalid)`: 参数值无法解析为目标类型
+    pub fn query_param<T: FromStr>(&self, key: &str) -> Result<T, BaseError> {
+        // 从查询参数中获取字符串值
+        let raw = self
+            .request
+            .query
+            .get(key)
+            .ok_or_else(|| BaseError::ParamMissing(key.to_string()))?;
+
+        // 通过 FromStr 解析为目标类型
+        raw.parse::<T>().map_err(|_| {
+            BaseError::ParamInvalid(
+                key.to_string(),
+                format!("查询参数 '{}' 无法解析为目标类型，原始值: {}", key, raw),
+            )
+        })
+    }
+
+    /// 获取请求体参数，不存在时返回默认值
+    ///
+    /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回提供的默认值。
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 参数名
+    /// - `default`: 参数不存在或类型不匹配时的默认值
+    ///
+    /// # 返回
+    ///
+    /// - `T`: 参数值或默认值
+    pub fn param_or<T: DeserializeOwned>(&self, key: &str, default: T) -> T {
         self.request
             .body
             .get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(default)
     }
 
     /// 创建表查询构建器
@@ -561,69 +447,42 @@ impl ActionContext {
     ///
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableConfigNotSet)`: 表配置未设置
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request};
-    /// use yang_base::table::TableConfig;
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({}));
-    /// let tools = Arc::new(GlobalTools::new());
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    ///
-    /// let context = ActionContext::new(request, tools)
-    ///     .with_table_config(table_config);
-    ///
-    /// // 创建查询构建器
-    /// let query = context.table_query()?;
-    /// ```
     pub fn table_query(&self) -> Result<TableQuery, BaseError> {
         let config = self
             .table_config
             .as_ref()
             .ok_or(BaseError::TableConfigNotSet)?;
 
-        let user_roles = self
-            .user
-            .as_ref()
-            .map(|u| u.roles.clone())
-            .unwrap_or_default();
+        // 通过 user_roles_slice 获取借用，再转换为 Arc<[String]>
+        let user_roles: Arc<[String]> = Arc::from(self.user_roles_slice().to_vec());
 
         Ok(TableQuery::new(config.clone(), user_roles, None))
     }
 
-    /// 获取用户角色列表
+    /// 获取用户角色列表（克隆）
     ///
     /// # 返回
     ///
     /// - 用户角色列表（如果用户未登录则返回空列表）
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::action::{ActionContext, Request, User};
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let request = Request::new(json!({}));
-    /// let tools = Arc::new(GlobalTools::new());
-    ///
-    /// let mut user = User::new(1, "alice");
-    /// user.roles = vec!["admin".to_string(), "user".to_string()];
-    ///
-    /// let context = ActionContext::new(request, tools)
-    ///     .with_user(user);
-    ///
-    /// let roles = context.user_roles();
-    /// assert_eq!(roles, vec!["admin", "user"]);
-    /// ```
     pub fn user_roles(&self) -> Vec<String> {
         self.user
             .as_ref()
             .map(|u| u.roles.clone())
             .unwrap_or_default()
+    }
+
+    /// 获取用户角色列表（借用切片，避免克隆）
+    ///
+    /// 返回用户角色的借用切片，避免不必要的内存分配。
+    /// 如果用户未登录则返回空切片。
+    ///
+    /// # 返回
+    ///
+    /// - `&[String]`: 用户角色切片引用
+    pub fn user_roles_slice(&self) -> &[String] {
+        self.user
+            .as_ref()
+            .map(|u| u.roles.as_slice())
+            .unwrap_or(&[])
     }
 }

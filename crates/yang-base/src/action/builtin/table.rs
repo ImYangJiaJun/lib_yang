@@ -87,8 +87,8 @@ impl Action for TableAction {
             "soft_delete_field": self.table_config.soft_delete_field,
         });
 
-        // 返回成功响应
-        Ok(ApiResponse::success(metadata, "获取表元数据成功"))
+        // 返回成功响应（metadata 已是 serde_json::Value，直接使用 success_value 避免额外序列化）
+        Ok(ApiResponse::success_value(metadata, "获取表元数据成功"))
     }
 
     fn name(&self) -> &str {

@@ -665,13 +665,11 @@ mod tests {
         let result = field_type.validate("name", &serde_json::json!("this is too long"));
         assert!(result.is_err());
 
-        if let Err(BaseError::StringTooLong(field, len, max)) = result {
-            assert_eq!(field, "name");
-            assert_eq!(len, 16);
-            assert_eq!(max, 10);
-        } else {
-            panic!("期望 StringTooLong 错误");
-        }
+        assert!(
+            matches!(result, Err(BaseError::StringTooLong(ref field, 16, 10)) if field == "name"),
+            "期望 StringTooLong 错误，实际: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -886,12 +884,11 @@ mod tests {
         let result = field_type.validate("status", &serde_json::json!("invalid"));
         assert!(result.is_err());
 
-        if let Err(BaseError::InvalidEnumValue(field, value)) = result {
-            assert_eq!(field, "status");
-            assert_eq!(value, "invalid");
-        } else {
-            panic!("期望 InvalidEnumValue 错误");
-        }
+        assert!(
+            matches!(result, Err(BaseError::InvalidEnumValue(ref field, ref value)) if field == "status" && value == "invalid"),
+            "期望 InvalidEnumValue 错误，实际: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -940,11 +937,11 @@ mod tests {
         let result = field_type.validate("data", &serde_json::json!("not a json"));
         assert!(result.is_err());
 
-        if let Err(BaseError::InvalidJsonFormat(field, _)) = result {
-            assert_eq!(field, "data");
-        } else {
-            panic!("期望 InvalidJsonFormat 错误");
-        }
+        assert!(
+            matches!(result, Err(BaseError::InvalidJsonFormat(ref field, _)) if field == "data"),
+            "期望 InvalidJsonFormat 错误，实际: {:?}",
+            result
+        );
     }
 
     #[test]

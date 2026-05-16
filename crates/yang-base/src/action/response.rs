@@ -56,11 +56,59 @@ pub struct ApiResponse {
 impl ApiResponse {
     /// 创建成功响应
     ///
-    /// 状态码为 0，包含业务数据
+    /// 状态码为 0，包含业务数据。序列化失败时返回 `BaseError::JsonSerializeFailed`。
     ///
     /// # 参数
     ///
     /// - `data`: 响应数据（任何可序列化的类型）
+    /// - `message`: 成功消息
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(ApiResponse)`: 序列化成功时返回响应实例
+    /// - `Err(BaseError::JsonSerializeFailed)`: 序列化失败时返回错误
+    ///
+    /// # Errors
+    ///
+    /// - `BaseError::JsonSerializeFailed`: 当 `data` 无法被序列化为 JSON 时
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::action::ApiResponse;
+    /// use serde_json::json;
+    ///
+    /// // 返回单个对象
+    /// let response = ApiResponse::success(
+    ///     json!({ "id": 1, "name": "Alice" }),
+    ///     "获取成功"
+    /// )?;
+    ///
+    /// // 返回影响行数
+    /// let response = ApiResponse::success(
+    ///     json!({ "affected": 1 }),
+    ///     "更新成功"
+    /// )?;
+    /// ```
+    pub fn success<T: Serialize>(data: T, message: impl Into<String>) -> Result<Self, BaseError> {
+        // 序列化数据，失败时返回结构化错误而非静默吞错
+        let json_value = serde_json::to_value(data)
+            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
+        Ok(Self {
+            code: 0,
+            message: message.into(),
+            data: Some(json_value),
+        })
+    }
+
+    /// 创建成功响应（接受已序列化的 JSON 值）
+    ///
+    /// 当数据已经是 `serde_json::Value` 类型时，使用此方法可避免额外的序列化开销，
+    /// 且不会失败，因此直接返回 `Self` 而非 `Result`。
+    ///
+    /// # 参数
+    ///
+    /// - `data`: 已序列化的 JSON 值
     /// - `message`: 成功消息
     ///
     /// # 返回
@@ -73,32 +121,16 @@ impl ApiResponse {
     /// use yang_base::action::ApiResponse;
     /// use serde_json::json;
     ///
-    /// // 返回单个对象
-    /// let response = ApiResponse::success(
-    ///     json!({ "id": 1, "name": "Alice" }),
-    ///     "获取成功"
-    /// );
-    ///
-    /// // 返回列表
-    /// let response = ApiResponse::success(
-    ///     json!([
-    ///         { "id": 1, "name": "Alice" },
-    ///         { "id": 2, "name": "Bob" }
-    ///     ]),
-    ///     "查询成功"
-    /// );
-    ///
-    /// // 返回影响行数
-    /// let response = ApiResponse::success(
-    ///     json!({ "affected": 1 }),
-    ///     "更新成功"
-    /// );
+    /// // 直接使用 serde_json::Value
+    /// let data = json!({ "id": 1, "name": "Alice" });
+    /// let response = ApiResponse::success_value(data, "获取成功");
+    /// assert_eq!(response.code, 0);
     /// ```
-    pub fn success(data: impl Serialize, message: impl Into<String>) -> Self {
+    pub fn success_value(data: serde_json::Value, message: impl Into<String>) -> Self {
         Self {
             code: 0,
             message: message.into(),
-            data: Some(serde_json::to_value(data).unwrap_or(serde_json::Value::Null)),
+            data: Some(data),
         }
     }
 
@@ -187,7 +219,9 @@ mod tests {
 
     #[test]
     fn test_success_response() {
-        let response = ApiResponse::success(json!({ "id": 123, "name": "Alice" }), "操作成功");
+        // success 现在返回 Result，需要用 ? 或 unwrap
+        let response =
+            ApiResponse::success(json!({ "id": 123, "name": "Alice" }), "操作成功").unwrap();
 
         assert_eq!(response.code, 0);
         assert_eq!(response.message, "操作成功");
@@ -200,12 +234,47 @@ mod tests {
 
     #[test]
     fn test_success_response_with_null() {
-        let response = ApiResponse::success(serde_json::Value::Null, "操作成功");
+        // 使用 success_value 传入已有的 JSON 值（不会失败）
+        let response = ApiResponse::success_value(serde_json::Value::Null, "操作成功");
 
         assert_eq!(response.code, 0);
         assert_eq!(response.message, "操作成功");
         assert!(response.data.is_some());
         assert_eq!(response.data.unwrap(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_success_value_response() {
+        // 测试 success_value 便捷构造器
+        let data = json!({ "count": 42 });
+        let response = ApiResponse::success_value(data, "查询成功");
+
+        assert_eq!(response.code, 0);
+        assert_eq!(response.message, "查询成功");
+        assert!(response.data.is_some());
+        assert_eq!(response.data.unwrap()["count"], 42);
+    }
+
+    #[test]
+    fn test_success_serialize_error_propagation() {
+        // 构造一个序列化时主动返回错误的类型
+        struct AlwaysFailSerialize;
+
+        impl serde::Serialize for AlwaysFailSerialize {
+            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::Error;
+                Err(S::Error::custom("测试序列化失败"))
+            }
+        }
+
+        let result = ApiResponse::success(AlwaysFailSerialize, "测试");
+        // 序列化失败应该返回 JsonSerializeFailed 错误
+        assert!(result.is_err(), "序列化失败应该返回错误");
+        if let Err(BaseError::JsonSerializeFailed(_)) = result {
+            // 正确：返回了 JsonSerializeFailed
+        } else {
+            panic!("期望 JsonSerializeFailed 错误");
+        }
     }
 
     #[test]
@@ -238,7 +307,8 @@ mod tests {
 
     #[test]
     fn test_serialize_response() {
-        let response = ApiResponse::success(json!({ "count": 10 }), "查询成功");
+        // success 现在返回 Result
+        let response = ApiResponse::success(json!({ "count": 10 }), "查询成功").unwrap();
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"code\":0"));

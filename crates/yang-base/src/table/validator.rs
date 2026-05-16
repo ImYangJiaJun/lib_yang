@@ -1,4 +1,4 @@
-//! 字段验证器
+﻿//! 字段验证器
 //!
 //! 提供灵活的字段值验证机制，支持长度验证、数值范围验证、格式验证和自定义验证。
 
@@ -7,227 +7,105 @@ use crate::error::BaseError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+#[cfg(feature = "validator")]
+use std::collections::HashMap;
+#[cfg(feature = "validator")]
+use std::sync::{OnceLock, RwLock};
 
 /// 自定义验证函数类型
 ///
 /// 接收字段名和字段值，返回验证结果
 pub type ValidatorFn = Arc<dyn Fn(&str, &serde_json::Value) -> Result<(), BaseError> + Send + Sync>;
 
+/// 缓存的邮箱正则表达式（严格模式）
+///
+/// 使用 OnceLock 确保线程安全的延迟初始化
+#[cfg(feature = "validator")]
+static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// 缓存的手机号正则表达式（E.164 格式）
+#[cfg(feature = "validator")]
+static PHONE_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// 动态正则表达式缓存（用于 Validator::Regex 变体）
+///
+/// 使用 RwLock 支持并发读写，避免重复编译相同的正则表达式
+#[cfg(feature = "validator")]
+static REGEX_CACHE: OnceLock<RwLock<HashMap<String, Regex>>> = OnceLock::new();
+
+/// 获取缓存的邮箱正则表达式引用
+#[cfg(feature = "validator")]
+fn email_regex() -> &'static Regex {
+    EMAIL_REGEX.get_or_init(|| {
+        // 严格邮箱格式：用户名@域名.顶级域名（至少2个字符）
+        Regex::new(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+            .expect("邮箱正则表达式编译失败")
+    })
+}
+
+/// 获取缓存的手机号正则表达式引用
+#[cfg(feature = "validator")]
+fn phone_regex() -> &'static Regex {
+    PHONE_REGEX.get_or_init(|| {
+        // E.164 格式：可选的 + 号，第一位非零数字，总长度 2-15 位
+        Regex::new(r"^\+?[1-9]\d{1,14}$")
+            .expect("手机号正则表达式编译失败")
+    })
+}
+
+/// 使用缓存的正则表达式匹配字符串
+#[cfg(feature = "validator")]
+fn match_cached_regex(pattern: &str, text: &str) -> Result<bool, BaseError> {
+    let cache = REGEX_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let read_guard = cache.read().unwrap_or_else(|p| p.into_inner());
+    match read_guard.get(pattern) {
+        Some(re) => Ok(re.is_match(text)),
+        None => Err(BaseError::ValidationFailed(
+            "regex".to_string(),
+            format!("正则表达式未缓存: {}", pattern),
+        )),
+    }
+}
+
 /// 字段验证器
-///
-/// 定义各种字段值验证规则，包括：
-/// - 长度验证：MinLength, MaxLength
-/// - 数值范围验证：Min, Max
-/// - 格式验证：Email, Phone, Url
-/// - 正则表达式验证：Regex
-/// - 自定义验证：Custom
-///
-/// # 示例
-///
-/// ```rust
-/// use yang_base::table::Validator;
-/// use serde_json::json;
-///
-/// // 最小长度验证
-/// let validator = Validator::MinLength(5);
-/// assert!(validator.validate("username", &json!("alice")).is_ok());
-/// assert!(validator.validate("username", &json!("bob")).is_err());
-///
-/// // 邮箱格式验证
-/// let validator = Validator::Email;
-/// assert!(validator.validate("email", &json!("user@example.com")).is_ok());
-/// assert!(validator.validate("email", &json!("invalid")).is_err());
-///
-/// // 数值范围验证
-/// let validator = Validator::Min(0.0);
-/// assert!(validator.validate("age", &json!(18)).is_ok());
-/// assert!(validator.validate("age", &json!(-5)).is_err());
-/// ```
 #[derive(Clone)]
 pub enum Validator {
     /// 最小长度验证
-    ///
-    /// 验证字符串的字符数不小于指定值。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::MinLength(3);
-    /// assert!(validator.validate("name", &json!("abc")).is_ok());
-    /// assert!(validator.validate("name", &json!("ab")).is_err());
-    /// ```
     MinLength(usize),
-
     /// 最大长度验证
-    ///
-    /// 验证字符串的字符数不大于指定值。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::MaxLength(10);
-    /// assert!(validator.validate("name", &json!("short")).is_ok());
-    /// assert!(validator.validate("name", &json!("this is too long")).is_err());
-    /// ```
     MaxLength(usize),
-
     /// 最小值验证
-    ///
-    /// 验证数值不小于指定值。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Min(0.0);
-    /// assert!(validator.validate("age", &json!(18)).is_ok());
-    /// assert!(validator.validate("age", &json!(-5)).is_err());
-    /// ```
     Min(f64),
-
     /// 最大值验证
-    ///
-    /// 验证数值不大于指定值。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Max(100.0);
-    /// assert!(validator.validate("score", &json!(95)).is_ok());
-    /// assert!(validator.validate("score", &json!(150)).is_err());
-    /// ```
     Max(f64),
-
-    /// 邮箱格式验证
-    ///
-    /// 验证字符串是否为有效的邮箱格式（包含 @ 符号）。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Email;
-    /// assert!(validator.validate("email", &json!("user@example.com")).is_ok());
-    /// assert!(validator.validate("email", &json!("invalid")).is_err());
-    /// ```
+    /// 邮箱格式验证（严格模式）
     Email,
-
-    /// 手机号格式验证
-    ///
-    /// 验证字符串是否为有效的手机号格式（仅包含数字和连字符）。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Phone;
-    /// assert!(validator.validate("phone", &json!("13800138000")).is_ok());
-    /// assert!(validator.validate("phone", &json!("138-0013-8000")).is_ok());
-    /// assert!(validator.validate("phone", &json!("invalid")).is_err());
-    /// ```
+    /// 邮箱格式验证（宽松模式，向后兼容）
+    EmailLoose,
+    /// 手机号格式验证（严格模式，E.164 格式）
     Phone,
-
+    /// 手机号格式验证（宽松模式，向后兼容）
+    PhoneLoose,
     /// URL 格式验证
-    ///
-    /// 验证字符串是否为有效的 URL 格式（以 http:// 或 https:// 开头）。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Url;
-    /// assert!(validator.validate("website", &json!("https://example.com")).is_ok());
-    /// assert!(validator.validate("website", &json!("http://example.com")).is_ok());
-    /// assert!(validator.validate("website", &json!("invalid")).is_err());
-    /// ```
     Url,
-
     /// 正则表达式验证
-    ///
-    /// 使用正则表达式验证字符串格式。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::Regex(r"^\d{6}$".to_string());
-    /// assert!(validator.validate("code", &json!("123456")).is_ok());
-    /// assert!(validator.validate("code", &json!("12345")).is_err());
-    /// ```
     Regex(String),
-
     /// 自定义验证函数
-    ///
-    /// 使用自定义函数进行验证，提供最大的灵活性。
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use yang_base::error::BaseError;
-    /// use serde_json::json;
-    /// use std::sync::Arc;
-    ///
-    /// let validator = Validator::Custom(Arc::new(|field_name, value| {
-    ///     if let Some(s) = value.as_str() {
-    ///         if s.contains("forbidden") {
-    ///             return Err(BaseError::ValidationFailed(
-    ///                 field_name.to_string(),
-    ///                 "包含禁止的词汇".to_string(),
-    ///             ));
-    ///         }
-    ///     }
-    ///     Ok(())
-    /// }));
-    ///
-    /// assert!(validator.validate("content", &json!("normal text")).is_ok());
-    /// assert!(validator.validate("content", &json!("forbidden word")).is_err());
-    /// ```
     Custom(ValidatorFn),
 }
 
 impl Validator {
     /// 获取验证器的显示名称
-    ///
-    /// # 返回值
-    ///
-    /// 返回验证器的中文显示名称
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    ///
-    /// assert_eq!(Validator::MinLength(5).display_name(), "最小长度");
-    /// assert_eq!(Validator::Email.display_name(), "邮箱格式");
-    /// ```
     pub fn display_name(&self) -> &str {
         match self {
             Validator::MinLength(_) => "最小长度",
             Validator::MaxLength(_) => "最大长度",
             Validator::Min(_) => "最小值",
             Validator::Max(_) => "最大值",
-            Validator::Email => "邮箱格式",
-            Validator::Phone => "手机号格式",
+            Validator::Email => "邮箱格式（严格）",
+            Validator::EmailLoose => "邮箱格式（宽松）",
+            Validator::Phone => "手机号格式（严格）",
+            Validator::PhoneLoose => "手机号格式（宽松）",
             Validator::Url => "URL格式",
             Validator::Regex(_) => "正则表达式",
             Validator::Custom(_) => "自定义验证",
@@ -235,29 +113,8 @@ impl Validator {
     }
 
     /// 验证字段值是否符合验证规则
-    ///
-    /// # 参数
-    ///
-    /// - `field_name`: 字段名称（用于错误消息）
-    /// - `value`: 要验证的值
-    ///
-    /// # 返回值
-    ///
-    /// 如果验证通过返回 Ok(())，否则返回相应的错误
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::Validator;
-    /// use serde_json::json;
-    ///
-    /// let validator = Validator::MinLength(5);
-    /// assert!(validator.validate("username", &json!("alice")).is_ok());
-    /// assert!(validator.validate("username", &json!("bob")).is_err());
-    /// ```
     pub fn validate(&self, field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
         match self {
-            // 最小长度验证
             Validator::MinLength(min_len) => {
                 if let Some(s) = value.as_str() {
                     let len = s.chars().count();
@@ -276,7 +133,6 @@ impl Validator {
                 }
             }
 
-            // 最大长度验证
             Validator::MaxLength(max_len) => {
                 if let Some(s) = value.as_str() {
                     let len = s.chars().count();
@@ -295,7 +151,6 @@ impl Validator {
                 }
             }
 
-            // 最小值验证
             Validator::Min(min_val) => {
                 let num = if let Some(n) = value.as_f64() {
                     n
@@ -309,7 +164,6 @@ impl Validator {
                         "Min 验证器只能用于数值类型".to_string(),
                     ));
                 };
-
                 if num < *min_val {
                     return Err(BaseError::ValidationFailed(
                         field_name.to_string(),
@@ -319,7 +173,6 @@ impl Validator {
                 Ok(())
             }
 
-            // 最大值验证
             Validator::Max(max_val) => {
                 let num = if let Some(n) = value.as_f64() {
                     n
@@ -333,7 +186,6 @@ impl Validator {
                         "Max 验证器只能用于数值类型".to_string(),
                     ));
                 };
-
                 if num > *max_val {
                     return Err(BaseError::ValidationFailed(
                         field_name.to_string(),
@@ -343,7 +195,27 @@ impl Validator {
                 Ok(())
             }
 
-            // 邮箱格式验证
+            // 邮箱格式验证（严格模式）：使用正则表达式
+            #[cfg(feature = "validator")]
+            Validator::Email => {
+                if let Some(s) = value.as_str() {
+                    if !email_regex().is_match(s) {
+                        return Err(BaseError::ValidationFailed(
+                            field_name.to_string(),
+                            "邮箱格式无效，请使用标准邮箱格式（如 user@example.com）".to_string(),
+                        ));
+                    }
+                    Ok(())
+                } else {
+                    Err(BaseError::ValidationFailed(
+                        field_name.to_string(),
+                        "Email 验证器只能用于字符串类型".to_string(),
+                    ))
+                }
+            }
+
+            // 未启用 validator feature 时，Email 降级为宽松模式
+            #[cfg(not(feature = "validator"))]
             Validator::Email => {
                 if let Some(s) = value.as_str() {
                     if !s.contains('@') {
@@ -361,10 +233,65 @@ impl Validator {
                 }
             }
 
-            // 手机号格式验证
+            // 邮箱格式验证（宽松模式）：仅检查 @ 符号
+            Validator::EmailLoose => {
+                if let Some(s) = value.as_str() {
+                    if !s.contains('@') {
+                        return Err(BaseError::ValidationFailed(
+                            field_name.to_string(),
+                            "邮箱格式无效，必须包含 @ 符号".to_string(),
+                        ));
+                    }
+                    Ok(())
+                } else {
+                    Err(BaseError::ValidationFailed(
+                        field_name.to_string(),
+                        "EmailLoose 验证器只能用于字符串类型".to_string(),
+                    ))
+                }
+            }
+
+            // 手机号格式验证（严格模式）：使用 E.164 正则表达式
+            #[cfg(feature = "validator")]
             Validator::Phone => {
                 if let Some(s) = value.as_str() {
-                    // 检查是否只包含数字和连字符
+                    if !phone_regex().is_match(s) {
+                        return Err(BaseError::ValidationFailed(
+                            field_name.to_string(),
+                            "手机号格式无效，请使用 E.164 格式（如 +8613800138000 或 13800138000）".to_string(),
+                        ));
+                    }
+                    Ok(())
+                } else {
+                    Err(BaseError::ValidationFailed(
+                        field_name.to_string(),
+                        "Phone 验证器只能用于字符串类型".to_string(),
+                    ))
+                }
+            }
+
+            // 未启用 validator feature 时，Phone 降级为宽松模式
+            #[cfg(not(feature = "validator"))]
+            Validator::Phone => {
+                if let Some(s) = value.as_str() {
+                    if !s.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+') {
+                        return Err(BaseError::ValidationFailed(
+                            field_name.to_string(),
+                            "手机号格式无效，只能包含数字、连字符和加号".to_string(),
+                        ));
+                    }
+                    Ok(())
+                } else {
+                    Err(BaseError::ValidationFailed(
+                        field_name.to_string(),
+                        "Phone 验证器只能用于字符串类型".to_string(),
+                    ))
+                }
+            }
+
+            // 手机号格式验证（宽松模式）：仅检查数字和连字符
+            Validator::PhoneLoose => {
+                if let Some(s) = value.as_str() {
                     if !s.chars().all(|c| c.is_ascii_digit() || c == '-') {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
@@ -375,7 +302,7 @@ impl Validator {
                 } else {
                     Err(BaseError::ValidationFailed(
                         field_name.to_string(),
-                        "Phone 验证器只能用于字符串类型".to_string(),
+                        "PhoneLoose 验证器只能用于字符串类型".to_string(),
                     ))
                 }
             }
@@ -398,18 +325,30 @@ impl Validator {
                 }
             }
 
-            // 正则表达式验证
+            // 正则表达式验证（使用缓存，编译错误使用字段名作为上下文）
             #[cfg(feature = "validator")]
             Validator::Regex(pattern) => {
                 if let Some(s) = value.as_str() {
-                    let re = Regex::new(pattern).map_err(|e| {
-                        BaseError::ValidationFailed(
-                            field_name.to_string(),
-                            format!("正则表达式无效: {}", e),
-                        )
-                    })?;
-
-                    if !re.is_match(s) {
+                    // 先确保正则表达式已编译并缓存
+                    let cache = REGEX_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+                    {
+                        let read_guard = cache.read().unwrap_or_else(|p| p.into_inner());
+                        if !read_guard.contains_key(pattern) {
+                            drop(read_guard);
+                            // 编译正则表达式，使用字段名作为错误上下文
+                            let re = Regex::new(pattern).map_err(|e| {
+                                BaseError::ValidationFailed(
+                                    field_name.to_string(),
+                                    format!("正则表达式无效: {}", e),
+                                )
+                            })?;
+                            let mut write_guard = cache.write().unwrap_or_else(|p| p.into_inner());
+                            write_guard.entry(pattern.to_string()).or_insert(re);
+                        }
+                    }
+                    // 使用缓存的正则表达式进行匹配
+                    let matched = match_cached_regex(pattern, s)?;
+                    if !matched {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
                             format!("值不匹配正则表达式: {}", pattern),
@@ -426,12 +365,10 @@ impl Validator {
 
             // 未启用 validator feature 时，正则验证不可用
             #[cfg(not(feature = "validator"))]
-            Validator::Regex(_pattern) => {
-                Err(BaseError::ValidationFailed(
-                    field_name.to_string(),
-                    "正则验证器需要启用 'validator' feature".to_string(),
-                ))
-            }
+            Validator::Regex(_pattern) => Err(BaseError::ValidationFailed(
+                field_name.to_string(),
+                "正则验证器需要启用 'validator' feature".to_string(),
+            )),
 
             // 自定义验证函数
             Validator::Custom(func) => func(field_name, value),
@@ -448,7 +385,9 @@ impl std::fmt::Debug for Validator {
             Validator::Min(val) => write!(f, "Min({})", val),
             Validator::Max(val) => write!(f, "Max({})", val),
             Validator::Email => write!(f, "Email"),
+            Validator::EmailLoose => write!(f, "EmailLoose"),
             Validator::Phone => write!(f, "Phone"),
+            Validator::PhoneLoose => write!(f, "PhoneLoose"),
             Validator::Url => write!(f, "Url"),
             Validator::Regex(pattern) => write!(f, "Regex(\"{}\")", pattern),
             Validator::Custom(_) => write!(f, "Custom(<function>)"),
@@ -466,7 +405,9 @@ enum ValidatorSerde {
     Min(f64),
     Max(f64),
     Email,
+    EmailLoose,
     Phone,
+    PhoneLoose,
     Url,
     Regex(String),
 }
@@ -482,11 +423,12 @@ impl Serialize for Validator {
             Validator::Min(val) => ValidatorSerde::Min(*val),
             Validator::Max(val) => ValidatorSerde::Max(*val),
             Validator::Email => ValidatorSerde::Email,
+            Validator::EmailLoose => ValidatorSerde::EmailLoose,
             Validator::Phone => ValidatorSerde::Phone,
+            Validator::PhoneLoose => ValidatorSerde::PhoneLoose,
             Validator::Url => ValidatorSerde::Url,
             Validator::Regex(pattern) => ValidatorSerde::Regex(pattern.clone()),
             Validator::Custom(_) => {
-                // Custom 验证器无法序列化，返回错误
                 return Err(serde::ser::Error::custom("Custom 验证器无法序列化"));
             }
         };
@@ -506,7 +448,9 @@ impl<'de> Deserialize<'de> for Validator {
             ValidatorSerde::Min(val) => Validator::Min(val),
             ValidatorSerde::Max(val) => Validator::Max(val),
             ValidatorSerde::Email => Validator::Email,
+            ValidatorSerde::EmailLoose => Validator::EmailLoose,
             ValidatorSerde::Phone => Validator::Phone,
+            ValidatorSerde::PhoneLoose => Validator::PhoneLoose,
             ValidatorSerde::Url => Validator::Url,
             ValidatorSerde::Regex(pattern) => Validator::Regex(pattern),
         })

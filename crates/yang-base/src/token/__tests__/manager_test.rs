@@ -167,11 +167,17 @@ fn test_token_verification_with_wrong_secret() {
     let result = manager_b.verify_token(&token);
     assert!(result.is_err());
 
-    if let Err(BaseError::TokenVerifyFailed(msg)) = result {
+    // 验证错误消息包含签名相关信息
+    if let Err(BaseError::TokenVerifyFailed(ref err)) = result {
+        let msg = err.to_string();
         assert!(msg.contains("signature") || msg.contains("Invalid"));
-    } else {
-        panic!("期望 TokenVerifyFailed 错误");
     }
+    // 断言错误类型为 TokenVerifyFailed
+    assert!(
+        matches!(result, Err(BaseError::TokenVerifyFailed(_))),
+        "期望 TokenVerifyFailed 错误，实际: {:?}",
+        result
+    );
 }
 
 /// 测试 Token 验证失败（错误的签发者）
@@ -263,17 +269,22 @@ fn test_token_expiration() {
     let result = manager.verify_token(&token);
     assert!(result.is_err(), "Token 应该已过期但验证仍然成功");
 
-    if let Err(BaseError::TokenVerifyFailed(msg)) = result {
-        // 验证错误消息包含过期相关的信息
+    // 验证错误消息包含过期相关的信息
+    if let Err(BaseError::TokenVerifyFailed(ref err)) = result {
+        let msg = err.to_string();
         let msg_lower = msg.to_lowercase();
         assert!(
             msg_lower.contains("expired") || msg_lower.contains("expiredsignature"),
             "错误消息应该包含过期信息，实际消息: {}",
             msg
         );
-    } else {
-        panic!("期望 TokenVerifyFailed 错误，实际: {:?}", result);
     }
+    // 断言错误类型为 TokenVerifyFailed
+    assert!(
+        matches!(result, Err(BaseError::TokenVerifyFailed(_))),
+        "期望 TokenVerifyFailed 错误，实际: {:?}",
+        result
+    );
 }
 
 /// 测试 parse_token_unsafe 方法
@@ -392,11 +403,12 @@ fn test_refresh_with_access_token_should_fail() {
 
     assert!(result.is_err());
 
-    if let Err(BaseError::TokenTypeInvalid(msg)) = result {
-        assert!(msg.contains("refresh"));
-    } else {
-        panic!("期望 TokenTypeInvalid 错误");
-    }
+    // 断言错误类型为 TokenTypeInvalid 且消息包含 "refresh"
+    assert!(
+        matches!(result, Err(BaseError::TokenTypeInvalid(ref msg)) if msg.contains("refresh")),
+        "期望 TokenTypeInvalid 错误，实际: {:?}",
+        result
+    );
 }
 
 /// 测试自定义声明的序列化和反序列化

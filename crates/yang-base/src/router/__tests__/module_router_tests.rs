@@ -58,7 +58,8 @@ fn test_module_router_new() {
 
     assert_eq!(router.module_name(), "user");
     assert_eq!(router.display_name(), "用户管理");
-    assert!(router.table_config().is_none());
+    // 使用新的 get_table_config getter
+    assert!(router.get_table_config().is_none());
     assert_eq!(router.action_names().len(), 0);
 }
 
@@ -67,8 +68,25 @@ fn test_module_router_with_table_config() {
     let table_config = create_test_table_config();
     let router = ModuleRouter::new("user", "用户管理").with_table_config(table_config.clone());
 
-    assert!(router.table_config().is_some());
-    assert_eq!(router.table_config().unwrap().table_name, "test_users");
+    // 使用新的 get_table_config getter
+    assert!(router.get_table_config().is_some());
+    assert_eq!(
+        router.get_table_config().unwrap().table_name,
+        "test_users"
+    );
+}
+
+#[test]
+fn test_module_router_table_config_alias() {
+    let table_config = create_test_table_config();
+    // 测试 table_config 链式 setter 别名
+    let router = ModuleRouter::new("user", "用户管理").table_config(table_config.clone());
+
+    assert!(router.get_table_config().is_some());
+    assert_eq!(
+        router.get_table_config().unwrap().table_name,
+        "test_users"
+    );
 }
 
 #[test]
@@ -86,9 +104,11 @@ fn test_module_router_register_action() {
 #[test]
 fn test_module_router_register_builtin_actions() {
     let table_config = create_test_table_config();
+    // register_builtin_actions 现在返回 Result，需要处理
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
-        .register_builtin_actions();
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
 
     let action_names = router.action_names();
     assert_eq!(action_names.len(), 6);
@@ -114,7 +134,8 @@ async fn test_module_router_dispatch_action_not_found() {
     let table_config = create_test_table_config();
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
-        .register_builtin_actions();
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
 
     let request = Request::new(json!({}));
     let tools = create_test_tools();
@@ -136,7 +157,8 @@ async fn test_module_router_dispatch_public_action() {
     let table_config = create_test_table_config();
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
-        .register_builtin_actions();
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
 
     let request = Request::new(json!({}));
     let tools = create_test_tools();
@@ -155,7 +177,8 @@ async fn test_module_router_dispatch_unauthorized() {
     let table_config = create_test_table_config();
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
-        .register_builtin_actions();
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
 
     let request = Request::new(json!({
         "data": {
@@ -181,7 +204,8 @@ async fn test_module_router_dispatch_with_user() {
     let table_config = create_test_table_config();
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
-        .register_builtin_actions();
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
 
     let user = create_test_user();
     let request = Request::new(json!({
@@ -209,6 +233,7 @@ async fn test_module_router_dispatch_permission_denied() {
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
         .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功")
         .default_permissions(vec!["admin:access".to_string()]);
 
     // 创建没有 admin:access 权限的用户
@@ -247,6 +272,7 @@ async fn test_module_router_dispatch_with_sufficient_permissions() {
     let router = ModuleRouter::new("user", "用户管理")
         .with_table_config(table_config)
         .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功")
         .default_permissions(vec!["user:access".to_string()]);
 
     // 创建有 user:access 权限的用户
@@ -293,8 +319,41 @@ fn test_module_router_action_names() {
     assert!(action_names.contains(&"get".to_string()));
 }
 
+/// 测试未设置 table_config 时 register_builtin_actions 返回 Err
 #[test]
-#[should_panic(expected = "必须先设置 table_config 才能注册内置 Actions")]
 fn test_module_router_register_builtin_actions_without_table_config() {
-    let _router = ModuleRouter::new("user", "用户管理").register_builtin_actions();
+    // 验证需求: 2.1, 2.2 - 未设置 table_config 时返回 Err 而非 panic
+    let result = ModuleRouter::new("user", "用户管理").register_builtin_actions();
+
+    assert!(result.is_err());
+    match result.err().unwrap() {
+        BaseError::TableConfigNotSet => {}
+        e => panic!("期望 TableConfigNotSet 错误，实际得到: {:?}", e),
+    }
+}
+
+/// 测试 BUILTIN_ACTION_NAMES 常量驱动注册的一致性
+#[test]
+fn test_builtin_action_names_consistency() {
+    use crate::router::BUILTIN_ACTION_NAMES;
+
+    let table_config = create_test_table_config();
+    let router = ModuleRouter::new("user", "用户管理")
+        .with_table_config(table_config)
+        .register_builtin_actions()
+        .expect("注册内置 Actions 应该成功");
+
+    let action_names = router.action_names();
+
+    // 验证注册的 Action 数量与常量一致
+    assert_eq!(action_names.len(), BUILTIN_ACTION_NAMES.len());
+
+    // 验证每个常量名称都已注册
+    for name in BUILTIN_ACTION_NAMES {
+        assert!(
+            action_names.contains(&name.to_string()),
+            "内置 Action '{}' 应该已注册",
+            name
+        );
+    }
 }

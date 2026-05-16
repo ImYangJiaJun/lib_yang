@@ -354,7 +354,6 @@ table/
 ├── field_config.rs      # FieldConfig 实现
 ├── field_type.rs        # FieldType 枚举
 ├── table_query.rs       # TableQuery 实现
-├── table_query_select.rs # 查询选择器
 ├── query_params.rs      # QueryParams 实现
 ├── validator.rs         # Validator 实现
 └── __tests__/           # 单元测试

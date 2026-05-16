@@ -99,8 +99,8 @@ pub struct TableQuery {
 
     /// 用户角色列表
     ///
-    /// 用于字段权限检查
-    user_roles: Vec<String>,
+    /// 使用 Arc<[String]> 共享所有权，避免不必要的克隆
+    user_roles: Arc<[String]>,
 
     /// 查询参数
     ///
@@ -115,36 +115,65 @@ pub struct TableQuery {
     pool: Option<Arc<sqlx::MySqlPool>>,
 }
 
+/// 检查字符串是否为合法的 SQL 标识符
+///
+/// 合法标识符规则：
+/// - 首字符必须是 ASCII 字母或下划线
+/// - 后续字符必须是 ASCII 字母、数字或下划线
+/// - 不能为空
+/// - 不能包含分号、`--`、空白字符
+fn is_valid_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 impl TableQuery {
+    /// 对字段名进行反引号转义
+    ///
+    /// 对合法标识符添加反引号，内部反引号转义为双反引号。
+    /// 非法字段名返回 `BaseError::FieldNotFound`。
+    ///
+    /// # 参数
+    ///
+    /// - `field`: 字段名
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(String)`: 转义后的字段名，如 `` `field_name` ``
+    /// - `Err(BaseError)`: 字段名非法
+    fn quote_identifier(&self, field: &str) -> Result<String, BaseError> {
+        if !is_valid_identifier(field) {
+            return Err(BaseError::FieldNotFound(
+                self.table_config.table_name.clone(),
+                field.to_string(),
+            ));
+        }
+        // 反引号转义：内部反引号变双反引号
+        Ok(format!("`{}`", field.replace('`', "``")))
+    }
+
     /// 创建新的查询构建器
     ///
     /// # 参数
     ///
     /// - `table_config`：表配置引用
-    /// - `user_roles`：用户角色列表
+    /// - `user_roles`：用户角色列表（`Arc<[String]>` 共享所有权）
     /// - `pool`：数据库连接池引用（可选）
     ///
     /// # 返回值
     ///
     /// 返回新的 TableQuery 实例
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig};
-    /// use std::sync::Arc;
-    ///
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["user".to_string()],
-    ///     Some(Arc::new(pool)),
-    /// );
-    /// ```
     #[cfg(feature = "mysql")]
     pub fn new(
         table_config: Arc<TableConfig>,
-        user_roles: Vec<String>,
+        user_roles: Arc<[String]>,
         pool: Option<Arc<sqlx::MySqlPool>>,
     ) -> Self {
         Self {
@@ -161,7 +190,7 @@ impl TableQuery {
     #[cfg(not(feature = "mysql"))]
     pub fn new(
         table_config: Arc<TableConfig>,
-        user_roles: Vec<String>,
+        user_roles: Arc<[String]>,
         _pool: Option<()>,
     ) -> Self {
         Self {
@@ -193,8 +222,41 @@ impl TableQuery {
     ///
     /// # 示例
     ///
-    /// ```rust,ignore
-    /// let query = query.select_fields(&["id", "name", "email"])?;
+    /// ```rust
+    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
+    /// use std::sync::Arc;
+    ///
+    /// // 创建表配置
+    /// let table_config = Arc::new(
+    ///     TableConfig::new("users")
+    ///         .field(FieldConfig::new("id", FieldType::BigInt))
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    /// );
+    ///
+    /// // 创建查询构建器（不需要数据库连接）
+    /// let query = TableQuery::new(
+    ///     table_config,
+    ///     Arc::from(vec!["admin".to_string()]),
+    ///     None,
+    /// );
+    ///
+    /// // 选择存在的字段，应成功
+    /// let result = query.select_fields(&["id", "name", "email"]);
+    /// assert!(result.is_ok());
+    ///
+    /// // 选择不存在的字段，应返回错误
+    /// let table_config2 = Arc::new(
+    ///     TableConfig::new("users")
+    ///         .field(FieldConfig::new("id", FieldType::BigInt))
+    /// );
+    /// let query2 = TableQuery::new(
+    ///     table_config2,
+    ///     Arc::from(vec!["admin".to_string()]),
+    ///     None,
+    /// );
+    /// let result2 = query2.select_fields(&["nonexistent_field"]);
+    /// assert!(result2.is_err());
     /// ```
     pub fn select_fields(mut self, fields: &[&str]) -> Result<Self, BaseError> {
         // 验证每个字段
@@ -637,9 +699,96 @@ impl TableQuery {
         let count = query
             .fetch_one(pool.as_ref())
             .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(e.to_string()))?;
+            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
 
         Ok(count as usize)
+    }
+
+    /// 统一拼接 WHERE 子句到 SQL 字符串
+    ///
+    /// 集中处理 9 种 WHERE 条件（Eq/In/Like/Gt/Gte/Lt/Lte/IsNull/IsNotNull）的 SQL 拼接，
+    /// 并通过 `quote_identifier` 对字段名进行反引号转义，防止 SQL 注入。
+    ///
+    /// # 参数
+    ///
+    /// - `sql`：目标 SQL 字符串（追加模式）
+    /// - `params`：参数列表（追加模式）
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(())`：拼接成功
+    /// - `Err(BaseError)`：字段名非法或参数转换失败
+    fn append_where_to_sql(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlParam>,
+    ) -> Result<(), BaseError> {
+        // 如果没有 WHERE 条件，直接返回
+        if self.query_params.where_conditions.is_empty() {
+            return Ok(());
+        }
+
+        sql.push_str(" WHERE ");
+        let mut first = true;
+
+        for condition in &self.query_params.where_conditions {
+            if !first {
+                sql.push_str(" AND ");
+            }
+            first = false;
+
+            match condition {
+                WhereCondition::Eq { field, value } => {
+                    // 通过 quote_identifier 转义字段名，防止 SQL 注入
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} = ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::In { field, values } => {
+                    let quoted = self.quote_identifier(field)?;
+                    let placeholders = vec!["?"; values.len()].join(", ");
+                    sql.push_str(&format!("{} IN ({})", quoted, placeholders));
+                    for value in values {
+                        params.push(SqlParam::from_json(value)?);
+                    }
+                }
+                WhereCondition::Like { field, pattern } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} LIKE ?", quoted));
+                    params.push(SqlParam::String(pattern.clone()));
+                }
+                WhereCondition::Gt { field, value } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} > ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::Gte { field, value } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} >= ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::Lt { field, value } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} < ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::Lte { field, value } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} <= ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::IsNull { field } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} IS NULL", quoted));
+                }
+                WhereCondition::IsNotNull { field } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} IS NOT NULL", quoted));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// 构建 COUNT SQL 语句
@@ -652,61 +801,11 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
     fn build_count_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        let mut sql = format!("SELECT COUNT(*) FROM {}", self.table_config.table_name);
+        let mut sql = format!("SELECT COUNT(*) FROM `{}`", self.table_config.table_name);
         let mut params = Vec::new();
 
-        // WHERE 子句
-        if !self.query_params.where_conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            let mut first = true;
-
-            for condition in &self.query_params.where_conditions {
-                if !first {
-                    sql.push_str(" AND ");
-                }
-                first = false;
-
-                match condition {
-                    WhereCondition::Eq { field, value } => {
-                        sql.push_str(&format!("{} = ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::In { field, values } => {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} IN ({})", field, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                    WhereCondition::Like { field, pattern } => {
-                        sql.push_str(&format!("{} LIKE ?", field));
-                        params.push(SqlParam::String(pattern.clone()));
-                    }
-                    WhereCondition::Gt { field, value } => {
-                        sql.push_str(&format!("{} > ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Gte { field, value } => {
-                        sql.push_str(&format!("{} >= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lt { field, value } => {
-                        sql.push_str(&format!("{} < ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lte { field, value } => {
-                        sql.push_str(&format!("{} <= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::IsNull { field } => {
-                        sql.push_str(&format!("{} IS NULL", field));
-                    }
-                    WhereCondition::IsNotNull { field } => {
-                        sql.push_str(&format!("{} IS NOT NULL", field));
-                    }
-                }
-            }
-        }
+        // 通过统一方法拼接 WHERE 子句
+        self.append_where_to_sql(&mut sql, &mut params)?;
 
         Ok((sql, params))
     }
@@ -818,7 +917,7 @@ impl TableQuery {
         let results = query
             .fetch_all(pool.as_ref())
             .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(e.to_string()))?;
+            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
 
         Ok(results)
     }
@@ -836,77 +935,30 @@ impl TableQuery {
         let mut sql = String::from("SELECT ");
         let mut params = Vec::new();
 
-        // 1. 字段列表
+        // 1. 字段列表（通过 quote_identifier 转义字段名）
         if let Some(fields) = &self.query_params.fields {
             if fields.is_empty() {
                 sql.push('*');
             } else {
-                sql.push_str(&fields.join(", "));
+                // 对每个字段名进行反引号转义
+                let quoted_fields: Result<Vec<String>, BaseError> =
+                    fields.iter().map(|f| self.quote_identifier(f)).collect();
+                sql.push_str(&quoted_fields?.join(", "));
             }
         } else {
             sql.push('*');
         }
 
-        // 2. FROM 子句
-        sql.push_str(&format!(" FROM {}", self.table_config.table_name));
+        // 2. FROM 子句（表名使用反引号保护）
+        sql.push_str(&format!(" FROM `{}`", self.table_config.table_name));
 
-        // 3. WHERE 子句
-        if !self.query_params.where_conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            let mut first = true;
+        // 3. 通过统一方法拼接 WHERE 子句
+        self.append_where_to_sql(&mut sql, &mut params)?;
 
-            for condition in &self.query_params.where_conditions {
-                if !first {
-                    sql.push_str(" AND ");
-                }
-                first = false;
-
-                match condition {
-                    WhereCondition::Eq { field, value } => {
-                        sql.push_str(&format!("{} = ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::In { field, values } => {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} IN ({})", field, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                    WhereCondition::Like { field, pattern } => {
-                        sql.push_str(&format!("{} LIKE ?", field));
-                        params.push(SqlParam::String(pattern.clone()));
-                    }
-                    WhereCondition::Gt { field, value } => {
-                        sql.push_str(&format!("{} > ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Gte { field, value } => {
-                        sql.push_str(&format!("{} >= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lt { field, value } => {
-                        sql.push_str(&format!("{} < ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lte { field, value } => {
-                        sql.push_str(&format!("{} <= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::IsNull { field } => {
-                        sql.push_str(&format!("{} IS NULL", field));
-                    }
-                    WhereCondition::IsNotNull { field } => {
-                        sql.push_str(&format!("{} IS NOT NULL", field));
-                    }
-                }
-            }
-        }
-
-        // 4. ORDER BY 子句
+        // 4. ORDER BY 子句（通过 quote_identifier 转义字段名）
         if !self.query_params.order_by.is_empty() {
             sql.push_str(" ORDER BY ");
-            let order_clauses: Vec<String> = self
+            let order_clauses: Result<Vec<String>, BaseError> = self
                 .query_params
                 .order_by
                 .iter()
@@ -915,10 +967,11 @@ impl TableQuery {
                         SortOrder::Asc => "ASC",
                         SortOrder::Desc => "DESC",
                     };
-                    format!("{} {}", field, direction)
+                    self.quote_identifier(field)
+                        .map(|quoted| format!("{} {}", quoted, direction))
                 })
                 .collect();
-            sql.push_str(&order_clauses.join(", "));
+            sql.push_str(&order_clauses?.join(", "));
         }
 
         // 5. LIMIT 和 OFFSET 子句
@@ -955,6 +1008,75 @@ impl TableQuery {
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
         }
+    }
+
+    /// 执行查询并返回可选的单条记录
+    ///
+    /// 执行 SELECT 查询，返回第一条匹配记录，如果没有匹配记录则返回 None。
+    /// 通常与 `where_eq` 等条件方法配合使用，用于按主键查询单条记录。
+    ///
+    /// # 类型参数
+    ///
+    /// - `T`：结果类型，必须实现 `sqlx::FromRow` trait
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Some(T))`：找到匹配记录
+    /// - `Ok(None)`：没有匹配记录
+    /// - `Err(BaseError)`：查询失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
+    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::table::DynamicRow;
+    ///
+    /// # async fn example() -> Result<(), yang_base::error::BaseError> {
+    /// // 按主键查询单条记录
+    /// let row: Option<DynamicRow> = query
+    ///     .where_eq("id", serde_json::json!(1))?
+    ///     .fetch_optional()
+    ///     .await?;
+    ///
+    /// match row {
+    ///     Some(r) => println!("找到记录: {:?}", r.columns),
+    ///     None => println!("记录不存在"),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn fetch_optional<T>(self) -> Result<Option<T>, BaseError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        // 1. 检查数据库连接池是否存在
+        let pool = self
+            .pool
+            .as_ref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
+
+        // 2. 构建 SQL 语句（限制返回 1 条记录）
+        let (sql, params) = self.build_select_sql()?;
+
+        // 3. 创建查询
+        let mut query = sqlx::query_as::<_, T>(&sql);
+
+        // 4. 绑定参数
+        for param in params {
+            query = Self::bind_param(query, &param);
+        }
+
+        // 5. 执行查询，返回可选结果
+        let result = query
+            .fetch_optional(pool.as_ref())
+            .await
+            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
+
+        Ok(result)
     }
 
     /// 执行 INSERT 操作
@@ -1044,7 +1166,7 @@ impl TableQuery {
         let result = query
             .execute(pool.as_ref())
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
 
         Ok(result.rows_affected())
     }
@@ -1138,14 +1260,16 @@ impl TableQuery {
                 }
             }
 
-            fields.push(field_name.clone());
+            // 对字段名进行反引号转义，防止 SQL 注入
+            let quoted = self.quote_identifier(field_name)?;
+            fields.push(quoted);
             placeholders.push("?".to_string());
             params.push(SqlParam::from_json(value)?);
         }
 
-        // 构建 SQL 语句
+        // 构建 SQL 语句（表名使用反引号保护）
         let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
+            "INSERT INTO `{}` ({}) VALUES ({})",
             self.table_config.table_name,
             fields.join(", "),
             placeholders.join(", ")
@@ -1245,7 +1369,7 @@ impl TableQuery {
         let result = query
             .execute(pool.as_ref())
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
 
         Ok(result.rows_affected())
     }
@@ -1354,7 +1478,7 @@ impl TableQuery {
         let mut set_clauses = Vec::new();
         let mut params = Vec::new();
 
-        // 1. 构建 SET 子句（并验证字段存在性）
+        // 1. 构建 SET 子句（通过 quote_identifier 转义字段名）
         for (field_name, value) in data {
             // 检查字段是否存在于表配置中
             if !self.table_config.fields.contains_key(field_name) {
@@ -1364,69 +1488,21 @@ impl TableQuery {
                 ));
             }
 
-            set_clauses.push(format!("{} = ?", field_name));
+            // 对字段名进行反引号转义
+            let quoted = self.quote_identifier(field_name)?;
+            set_clauses.push(format!("{} = ?", quoted));
             params.push(SqlParam::from_json(value)?);
         }
 
-        // 2. 构建基本 UPDATE 语句
+        // 2. 构建基本 UPDATE 语句（表名使用反引号保护）
         let mut sql = format!(
-            "UPDATE {} SET {}",
+            "UPDATE `{}` SET {}",
             self.table_config.table_name,
             set_clauses.join(", ")
         );
 
-        // 3. 添加 WHERE 子句（应用已配置的 WHERE 条件）
-        if !self.query_params.where_conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            let mut first = true;
-
-            for condition in &self.query_params.where_conditions {
-                if !first {
-                    sql.push_str(" AND ");
-                }
-                first = false;
-
-                match condition {
-                    WhereCondition::Eq { field, value } => {
-                        sql.push_str(&format!("{} = ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::In { field, values } => {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} IN ({})", field, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                    WhereCondition::Like { field, pattern } => {
-                        sql.push_str(&format!("{} LIKE ?", field));
-                        params.push(SqlParam::String(pattern.clone()));
-                    }
-                    WhereCondition::Gt { field, value } => {
-                        sql.push_str(&format!("{} > ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Gte { field, value } => {
-                        sql.push_str(&format!("{} >= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lt { field, value } => {
-                        sql.push_str(&format!("{} < ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lte { field, value } => {
-                        sql.push_str(&format!("{} <= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::IsNull { field } => {
-                        sql.push_str(&format!("{} IS NULL", field));
-                    }
-                    WhereCondition::IsNotNull { field } => {
-                        sql.push_str(&format!("{} IS NOT NULL", field));
-                    }
-                }
-            }
-        }
+        // 3. 通过统一方法拼接 WHERE 子句
+        self.append_where_to_sql(&mut sql, &mut params)?;
 
         Ok((sql, params))
     }
@@ -1536,7 +1612,7 @@ impl TableQuery {
         let result = query
             .execute(pool.as_ref())
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))?;
+            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
 
         Ok(result.rows_affected())
     }
@@ -1564,61 +1640,12 @@ impl TableQuery {
 
     /// 构建 DELETE SQL 语句的实际实现
     fn build_delete_sql_impl(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        let mut sql = format!("DELETE FROM {}", self.table_config.table_name);
+        // 表名使用反引号保护
+        let mut sql = format!("DELETE FROM `{}`", self.table_config.table_name);
         let mut params = Vec::new();
 
-        // 添加 WHERE 子句（应用已配置的 WHERE 条件）
-        if !self.query_params.where_conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            let mut first = true;
-
-            for condition in &self.query_params.where_conditions {
-                if !first {
-                    sql.push_str(" AND ");
-                }
-                first = false;
-
-                match condition {
-                    WhereCondition::Eq { field, value } => {
-                        sql.push_str(&format!("{} = ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::In { field, values } => {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} IN ({})", field, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                    WhereCondition::Like { field, pattern } => {
-                        sql.push_str(&format!("{} LIKE ?", field));
-                        params.push(SqlParam::String(pattern.clone()));
-                    }
-                    WhereCondition::Gt { field, value } => {
-                        sql.push_str(&format!("{} > ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Gte { field, value } => {
-                        sql.push_str(&format!("{} >= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lt { field, value } => {
-                        sql.push_str(&format!("{} < ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::Lte { field, value } => {
-                        sql.push_str(&format!("{} <= ?", field));
-                        params.push(SqlParam::from_json(value)?);
-                    }
-                    WhereCondition::IsNull { field } => {
-                        sql.push_str(&format!("{} IS NULL", field));
-                    }
-                    WhereCondition::IsNotNull { field } => {
-                        sql.push_str(&format!("{} IS NOT NULL", field));
-                    }
-                }
-            }
-        }
+        // 通过统一方法拼接 WHERE 子句
+        self.append_where_to_sql(&mut sql, &mut params)?;
 
         Ok((sql, params))
     }
@@ -1688,17 +1715,17 @@ impl SqlParam {
                 } else if let Some(f) = n.as_f64() {
                     Ok(SqlParam::Float(f))
                 } else {
-                    Err(BaseError::DatabaseQueryFailed(format!(
+                    Err(BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(format!(
                         "不支持的数字类型: {}",
                         n
-                    )))
+                    ))))
                 }
             }
             Value::String(s) => Ok(SqlParam::String(s.clone())),
-            _ => Err(BaseError::DatabaseQueryFailed(format!(
+            _ => Err(BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(format!(
                 "不支持的值类型: {:?}",
                 value
-            ))),
+            )))),
         }
     }
 }

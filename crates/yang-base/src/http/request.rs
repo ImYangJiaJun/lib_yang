@@ -11,7 +11,13 @@ use std::time::Duration;
 
 /// HTTP 请求构建器
 ///
-/// 提供链式调用接口构建 HTTP 请求
+/// 提供链式调用接口构建 HTTP 请求。
+///
+/// # Header 错误处理
+///
+/// `header`、`headers` 等方法在解析失败时不会立即返回错误，而是将错误信息
+/// 累积到内部 `header_errors` 列表中。调用 `send()` 时，若存在累积的 header
+/// 错误，则返回 `BaseError::ParamInvalid("header", ...)` 而不发送请求。
 ///
 /// # 示例
 ///
@@ -28,7 +34,7 @@ use std::time::Duration;
 ///     .await?;
 /// ```
 pub struct RequestBuilder {
-    /// reqwest 客户端
+    /// reqwest 客户端（Arc 包装，clone 时复用同一连接池）
     client: Client,
 
     /// HTTP 方法
@@ -39,6 +45,12 @@ pub struct RequestBuilder {
 
     /// 请求头
     headers: HeaderMap,
+
+    /// 累积的 header 解析错误列表
+    ///
+    /// `header`、`headers` 方法在解析失败时将错误描述追加到此列表，
+    /// `send()` 时若非空则返回 `BaseError::ParamInvalid`。
+    header_errors: Vec<String>,
 
     /// 查询参数
     query_params: Vec<(String, String)>,
@@ -58,7 +70,7 @@ impl RequestBuilder {
     ///
     /// # 参数
     ///
-    /// - `client`: reqwest 客户端
+    /// - `client`: reqwest 客户端（Arc 包装，clone 时复用同一连接池）
     /// - `method`: HTTP 方法
     /// - `url`: 请求 URL
     /// - `timeout`: 超时时间
@@ -75,6 +87,7 @@ impl RequestBuilder {
             method,
             url,
             headers: HeaderMap::new(),
+            header_errors: Vec::new(),
             query_params: Vec::new(),
             body: None,
             timeout,
@@ -83,6 +96,9 @@ impl RequestBuilder {
     }
 
     /// 设置请求头
+    ///
+    /// 若 header 名称或值解析失败，错误信息将被累积到内部错误列表，
+    /// 不会立即返回错误。调用 `send()` 时若存在累积错误则返回 `BaseError::ParamInvalid`。
     ///
     /// # 参数
     ///
@@ -99,16 +115,36 @@ impl RequestBuilder {
     ///     .await?;
     /// ```
     pub fn header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(name), Ok(value)) = (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            self.headers.insert(name, value);
-        }
+        // 解析 header 名称
+        let header_name = match HeaderName::from_bytes(name.as_bytes()) {
+            Ok(n) => n,
+            Err(e) => {
+                // 累积错误，不立即返回
+                self.header_errors
+                    .push(format!("非法 header 名称 '{}': {}", name, e));
+                return self;
+            }
+        };
+
+        // 解析 header 值
+        let header_value = match HeaderValue::from_str(value) {
+            Ok(v) => v,
+            Err(e) => {
+                // 累积错误，不立即返回
+                self.header_errors
+                    .push(format!("非法 header 值 '{}': {}", value, e));
+                return self;
+            }
+        };
+
+        self.headers.insert(header_name, header_value);
         self
     }
 
     /// 批量设置请求头
+    ///
+    /// 若任意 header 名称或值解析失败，错误信息将被累积到内部错误列表，
+    /// 不会立即返回错误。调用 `send()` 时若存在累积错误则返回 `BaseError::ParamInvalid`。
     ///
     /// # 参数
     ///
@@ -128,12 +164,29 @@ impl RequestBuilder {
     /// ```
     pub fn headers(mut self, headers: Vec<(&str, &str)>) -> Self {
         for (name, value) in headers {
-            if let (Ok(name), Ok(value)) = (
-                HeaderName::from_bytes(name.as_bytes()),
-                HeaderValue::from_str(value),
-            ) {
-                self.headers.insert(name, value);
-            }
+            // 解析 header 名称
+            let header_name = match HeaderName::from_bytes(name.as_bytes()) {
+                Ok(n) => n,
+                Err(e) => {
+                    // 累积错误，继续处理其余 header
+                    self.header_errors
+                        .push(format!("非法 header 名称 '{}': {}", name, e));
+                    continue;
+                }
+            };
+
+            // 解析 header 值
+            let header_value = match HeaderValue::from_str(value) {
+                Ok(v) => v,
+                Err(e) => {
+                    // 累积错误，继续处理其余 header
+                    self.header_errors
+                        .push(format!("非法 header 值 '{}': {}", value, e));
+                    continue;
+                }
+            };
+
+            self.headers.insert(header_name, header_value);
         }
         self
     }
@@ -272,10 +325,10 @@ impl RequestBuilder {
     ///     .await?;
     /// ```
     pub fn json<T: Serialize>(mut self, json: &T) -> Result<Self, BaseError> {
-        let json_str =
+        let json_bytes =
             serde_json::to_vec(json).map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
 
-        self.body = Some(json_str);
+        self.body = Some(json_bytes);
         self = self.content_type("application/json");
 
         Ok(self)
@@ -283,9 +336,12 @@ impl RequestBuilder {
 
     /// 设置表单请求体
     ///
+    /// 使用 `serde_urlencoded` 对表单数据进行 URL 编码，正确处理特殊字符、
+    /// 空格、UTF-8 字符等，并自动设置 `Content-Type: application/x-www-form-urlencoded`。
+    ///
     /// # 参数
     ///
-    /// - `form`: 表单数据
+    /// - `form`: 表单数据（键值对列表）
     ///
     /// # 示例
     ///
@@ -297,15 +353,19 @@ impl RequestBuilder {
     ///     .await?;
     /// ```
     pub fn form(mut self, form: Vec<(&str, &str)>) -> Self {
-        let form_str = form
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("&");
-
-        self.body = Some(form_str.into_bytes());
-        self = self.content_type("application/x-www-form-urlencoded");
-
+        // 使用 serde_urlencoded 进行标准 URL 编码，正确处理特殊字符
+        match serde_urlencoded::to_string(&form) {
+            Ok(encoded) => {
+                self.body = Some(encoded.into_bytes());
+                // 自动设置 Content-Type
+                self = self.content_type("application/x-www-form-urlencoded");
+            }
+            Err(e) => {
+                // 编码失败时累积错误
+                self.header_errors
+                    .push(format!("表单数据编码失败: {}", e));
+            }
+        }
         self
     }
 
@@ -372,10 +432,14 @@ impl RequestBuilder {
 
     /// 发送请求
     ///
+    /// 在发送前检查累积的 header 错误。若存在任何 header 解析错误，
+    /// 则返回 `BaseError::ParamInvalid("header", ...)` 而不发送请求。
+    ///
     /// # 返回
     ///
     /// - `Ok(Response)`: 响应对象
-    /// - `Err(BaseError)`: 请求失败
+    /// - `Err(BaseError::ParamInvalid)`: 存在非法 header
+    /// - `Err(BaseError::HttpRequestFailed)`: 请求发送失败
     ///
     /// # 示例
     ///
@@ -386,7 +450,16 @@ impl RequestBuilder {
     ///     .await?;
     /// ```
     pub async fn send(self) -> Result<Response, BaseError> {
+        // 检查累积的 header 错误，若非空则提前返回错误
+        if !self.header_errors.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "header".to_string(),
+                self.header_errors.join("; "),
+            ));
+        }
+
         // 构建请求
+        // 注意：self.client.clone() 是 Arc::clone，复用同一底层连接池，不创建新的 TCP 连接池
         let mut request = self
             .client
             .request(self.method, &self.url)
@@ -414,7 +487,7 @@ impl RequestBuilder {
         let response = request
             .send()
             .await
-            .map_err(|e| BaseError::HttpRequestFailed(e.to_string()))?;
+            .map_err(BaseError::HttpRequestFailed)?;
 
         Ok(Response::new(response))
     }

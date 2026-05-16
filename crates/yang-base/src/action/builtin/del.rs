@@ -75,11 +75,11 @@ impl Action for DelAction {
         // 执行删除操作（自动处理软删除）
         let affected = query.delete().await?;
 
-        // 返回成功响应
+        // 返回成功响应（序列化失败时通过 ? 传播错误）
         Ok(ApiResponse::success(
             serde_json::json!({ "affected": affected }),
             "删除成功",
-        ))
+        )?)
     }
 
     fn name(&self) -> &str {

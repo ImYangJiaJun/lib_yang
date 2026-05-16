@@ -5,7 +5,31 @@
 use crate::error::BaseError;
 use crate::token::TokenClaims;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 获取当前 Unix 时间戳（秒）
+///
+/// # 返回
+///
+/// - `Ok(u64)`: 当前 Unix 时间戳（秒）
+/// - `Err(BaseError::ConfigError)`: 系统时钟早于 UNIX_EPOCH（时钟异常）
+///
+/// # 错误
+///
+/// 当系统时钟早于 1970-01-01 00:00:00 UTC 时返回错误，
+/// 这通常意味着系统时钟配置异常。
+fn current_unix_timestamp() -> Result<u64, BaseError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| {
+            BaseError::ConfigError(format!(
+                "系统时钟异常，早于 UNIX_EPOCH: {}",
+                e
+            ))
+        })
+}
 
 /// Token 管理器
 ///
@@ -205,10 +229,8 @@ impl TokenManager {
         subject: &str,
         custom_claims: serde_json::Value,
     ) -> Result<String, BaseError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // 使用辅助函数获取时间戳，避免时钟异常时 panic
+        let now = current_unix_timestamp()?;
 
         let claims = TokenClaims {
             iss: self.issuer.clone(),
@@ -226,7 +248,7 @@ impl TokenManager {
         header.typ = Some("JWT".to_string());
 
         encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| BaseError::TokenGenerateFailed(e.to_string()))
+            .map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 生成 Refresh Token
@@ -246,10 +268,8 @@ impl TokenManager {
     /// let refresh_token = manager.generate_refresh_token("user_123")?;
     /// ```
     pub fn generate_refresh_token(&self, subject: &str) -> Result<String, BaseError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // 使用辅助函数获取时间戳，避免时钟异常时 panic
+        let now = current_unix_timestamp()?;
 
         let claims = TokenClaims {
             iss: self.issuer.clone(),
@@ -267,7 +287,7 @@ impl TokenManager {
         header.typ = Some("JWT".to_string());
 
         encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| BaseError::TokenGenerateFailed(e.to_string()))
+            .map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 生成 Token 对（Access Token + Refresh Token）
@@ -323,12 +343,20 @@ impl TokenManager {
     /// ```
     pub fn verify_token(&self, token: &str) -> Result<TokenClaims, BaseError> {
         let mut validation = Validation::new(self.algorithm);
+        // 显式设置允许的算法白名单，防止算法混淆攻击（如 none 算法绕过）
+        validation.algorithms = vec![self.algorithm];
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
+        // 显式要求 exp、iss、aud 三个标准声明必须存在
+        let mut required_claims = HashSet::new();
+        required_claims.insert("exp".to_string());
+        required_claims.insert("iss".to_string());
+        required_claims.insert("aud".to_string());
+        validation.required_spec_claims = required_claims;
         validation.leeway = 0; // 不允许时间容差
 
         let token_data = decode::<TokenClaims>(token, &self.decoding_key, &validation)
-            .map_err(|e| BaseError::TokenVerifyFailed(e.to_string()))?;
+            .map_err(BaseError::TokenVerifyFailed)?;
 
         Ok(token_data.claims)
     }
@@ -346,6 +374,20 @@ impl TokenManager {
     /// - `Ok(TokenClaims)`: Token 声明
     /// - `Err(BaseError)`: 解析失败
     ///
+    /// # Safety
+    ///
+    /// **此方法绝对不能用于鉴权决策。**
+    ///
+    /// 该方法跳过签名验证、过期时间检查及所有标准声明校验，
+    /// 任何人均可伪造 Token 内容并通过此方法解析。
+    /// 仅允许在以下场景使用：
+    /// - 调试与日志记录（打印 Token 内容）
+    /// - 从已过期 Token 中提取用户标识以便刷新
+    /// - 单元测试中检查 Token 结构
+    ///
+    /// 在任何涉及权限判断、身份认证的代码路径中，
+    /// 必须使用 [`TokenManager::verify_token`] 代替本方法。
+    ///
     /// # 警告
     ///
     /// 此方法不验证签名和过期时间，仅用于调试目的。
@@ -361,7 +403,7 @@ impl TokenManager {
         // 使用 dangerous::insecure_decode 进行不安全解析
         // 注意：此方法不验证签名、过期时间等，仅用于调试
         let token_data = jsonwebtoken::dangerous::insecure_decode::<TokenClaims>(token)
-            .map_err(|e| BaseError::TokenParseFailed(e.to_string()))?;
+            .map_err(BaseError::TokenParseFailed)?;
 
         Ok(token_data.claims)
     }
@@ -393,10 +435,8 @@ impl TokenManager {
     ) -> Result<bool, BaseError> {
         let claims = self.verify_token(token)?;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // 使用辅助函数获取时间戳，避免时钟异常时 panic
+        let now = current_unix_timestamp()?;
 
         let remaining = claims.exp.saturating_sub(now);
 
@@ -444,6 +484,7 @@ impl TokenManager {
 }
 
 // 手动实现 Debug trait，因为 EncodingKey 和 DecodingKey 不支持 Debug
+// 注意：故意不输出 encoding_key 和 decoding_key，防止密钥泄露到日志或调试输出中
 impl std::fmt::Debug for TokenManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenManager")
@@ -452,6 +493,7 @@ impl std::fmt::Debug for TokenManager {
             .field("audience", &self.audience)
             .field("access_token_expiry", &self.access_token_expiry)
             .field("refresh_token_expiry", &self.refresh_token_expiry)
-            .finish()
+            // 使用 finish_non_exhaustive() 表明结构体还有其他字段（密钥字段）未输出
+            .finish_non_exhaustive()
     }
 }

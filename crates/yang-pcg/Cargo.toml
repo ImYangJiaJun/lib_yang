@@ -11,8 +11,16 @@ exclude = [
     "INSTALL.md",
 ]
 
-[lints]
-workspace = true
+# yang-pcg 测试代码中使用了 expect/unwrap，不使用 workspace lints
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+# 测试代码中使用 expect/unwrap 是合理的，允许
+unwrap_used = "allow"
+expect_used = "allow"
+clone_on_ref_ptr = "warn"
+large_enum_variant = "warn"
 
 [dependencies]
 # 序列化支持

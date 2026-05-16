@@ -66,13 +66,13 @@ pub enum BaseError {
     #[error("数据库已初始化")]
     DatabaseAlreadyInitialized,
 
-    /// 数据库查询失败
+    /// 数据库查询失败，持有底层 DbError 以保留错误链
     #[error("数据库查询失败: {0}")]
-    DatabaseQueryFailed(String),
+    DatabaseQueryFailed(#[source] yang_db::DbError),
 
-    /// 数据库执行失败
+    /// 数据库执行失败，持有底层 DbError 以保留错误链
     #[error("数据库执行失败: {0}")]
-    DatabaseExecuteFailed(String),
+    DatabaseExecuteFailed(#[source] yang_db::DbError),
 
     /// 数据库初始化失败
     #[error("数据库初始化失败: {0}")]
@@ -90,9 +90,9 @@ pub enum BaseError {
     #[error("数据库未初始化")]
     DatabaseNotInitialized,
 
-    /// 数据库事务失败
+    /// 数据库事务失败，持有底层 DbError 以保留错误链
     #[error("数据库事务失败: {0}")]
-    DatabaseTransactionFailed(String),
+    DatabaseTransactionFailed(#[source] yang_db::DbError),
 
     // ==================== Redis 错误 ====================
     /// Redis 连接失败
@@ -112,11 +112,23 @@ pub enum BaseError {
     RedisOperationFailed(String),
 
     // ==================== HTTP 客户端错误 ====================
-    /// HTTP 客户端创建失败
+    /// HTTP 客户端创建失败，持有底层 reqwest::Error 以保留错误链
+    #[cfg(feature = "http")]
+    #[error("HTTP 客户端创建失败: {0}")]
+    HttpClientCreateFailed(#[source] reqwest::Error),
+
+    /// HTTP 客户端创建失败（无 http feature 时使用字符串）
+    #[cfg(not(feature = "http"))]
     #[error("HTTP 客户端创建失败: {0}")]
     HttpClientCreateFailed(String),
 
-    /// HTTP 请求失败
+    /// HTTP 请求失败，持有底层 reqwest::Error 以保留错误链
+    #[cfg(feature = "http")]
+    #[error("HTTP 请求失败: {0}")]
+    HttpRequestFailed(#[source] reqwest::Error),
+
+    /// HTTP 请求失败（无 http feature 时使用字符串）
+    #[cfg(not(feature = "http"))]
     #[error("HTTP 请求失败: {0}")]
     HttpRequestFailed(String),
 
@@ -141,15 +153,33 @@ pub enum BaseError {
     #[error("Token 密钥无效: {0}")]
     TokenKeyInvalid(String),
 
-    /// Token 生成失败
+    /// Token 生成失败，持有底层 jsonwebtoken::errors::Error 以保留错误链
+    #[cfg(feature = "token")]
+    #[error("Token 生成失败: {0}")]
+    TokenGenerateFailed(#[source] jsonwebtoken::errors::Error),
+
+    /// Token 生成失败（无 token feature 时使用字符串）
+    #[cfg(not(feature = "token"))]
     #[error("Token 生成失败: {0}")]
     TokenGenerateFailed(String),
 
-    /// Token 验证失败
+    /// Token 验证失败，持有底层 jsonwebtoken::errors::Error 以保留错误链
+    #[cfg(feature = "token")]
+    #[error("Token 验证失败: {0}")]
+    TokenVerifyFailed(#[source] jsonwebtoken::errors::Error),
+
+    /// Token 验证失败（无 token feature 时使用字符串）
+    #[cfg(not(feature = "token"))]
     #[error("Token 验证失败: {0}")]
     TokenVerifyFailed(String),
 
-    /// Token 解析失败
+    /// Token 解析失败，持有底层 jsonwebtoken::errors::Error 以保留错误链
+    #[cfg(feature = "token")]
+    #[error("Token 解析失败: {0}")]
+    TokenParseFailed(#[source] jsonwebtoken::errors::Error),
+
+    /// Token 解析失败（无 token feature 时使用字符串）
+    #[cfg(not(feature = "token"))]
     #[error("Token 解析失败: {0}")]
     TokenParseFailed(String),
 
@@ -257,9 +287,45 @@ pub enum BaseError {
 // ==================== From trait 实现 ====================
 
 /// 从 yang_db::DbError 转换为 BaseError
+///
+/// 按 DbError 变体分类映射到对应的 BaseError 变体：
+/// - 查询类 → DatabaseQueryFailed
+/// - 执行类 → DatabaseExecuteFailed
+/// - 事务类 → DatabaseTransactionFailed
+/// - 连接类 → DatabaseConnectionFailed
+/// - Redis 类 → RedisOperationFailed
 impl From<yang_db::DbError> for BaseError {
     fn from(err: yang_db::DbError) -> Self {
-        BaseError::DatabaseQueryFailed(err.to_string())
+        use yang_db::DbError as D;
+        match &err {
+            // 查询类：查询错误、表不存在、类型转换、反序列化、不支持的操作符、未知错误
+            D::QueryError(_)
+            | D::TableNotFound(_)
+            | D::TypeConversionError(_)
+            | D::DeserializationError(_)
+            | D::UnsupportedOperator(_)
+            | D::Unknown(_) => BaseError::DatabaseQueryFailed(err),
+
+            // 执行类：约束错误、SQL 语法错误、缺少 WHERE 条件、缺少 GROUP BY、序列化错误
+            D::ConstraintError(_)
+            | D::SqlSyntaxError(_)
+            | D::MissingWhereClause
+            | D::MissingGroupByClause
+            | D::SerializationError(_) => BaseError::DatabaseExecuteFailed(err),
+
+            // 事务类：事务错误
+            D::TransactionError(_) => BaseError::DatabaseTransactionFailed(err),
+
+            // 连接类：连接错误（使用字符串，因为 DatabaseConnectionFailed 持有 String）
+            D::ConnectionError(_) => BaseError::DatabaseConnectionFailed(err.to_string()),
+
+            // Redis 类：所有 Redis 相关错误（使用字符串，因为 RedisOperationFailed 持有 String）
+            D::RedisConnectionError(_)
+            | D::RedisCommandError(_)
+            | D::RedisPoolError(_)
+            | D::RedisTypeConversionError(_)
+            | D::RedisTimeoutError(_) => BaseError::RedisOperationFailed(err.to_string()),
+        }
     }
 }
 
@@ -288,9 +354,29 @@ impl From<reqwest::Error> for BaseError {
         if err.is_timeout() {
             BaseError::HttpTimeout
         } else if err.is_connect() {
-            BaseError::HttpClientCreateFailed(err.to_string())
+            BaseError::HttpClientCreateFailed(err)
         } else {
-            BaseError::HttpRequestFailed(err.to_string())
+            BaseError::HttpRequestFailed(err)
+        }
+    }
+}
+
+/// 从 jsonwebtoken::errors::Error 转换为 BaseError
+///
+/// 按 ErrorKind 分类映射：
+/// - ExpiredSignature → TokenExpired
+/// - InvalidToken / InvalidSignature → TokenVerifyFailed
+/// - 其他 → TokenParseFailed
+#[cfg(feature = "token")]
+impl From<jsonwebtoken::errors::Error> for BaseError {
+    fn from(err: jsonwebtoken::errors::Error) -> Self {
+        use jsonwebtoken::errors::ErrorKind;
+        match err.kind() {
+            ErrorKind::ExpiredSignature => BaseError::TokenExpired,
+            ErrorKind::InvalidToken | ErrorKind::InvalidSignature => {
+                BaseError::TokenVerifyFailed(err)
+            }
+            _ => BaseError::TokenParseFailed(err),
         }
     }
 }
@@ -446,11 +532,13 @@ mod tests {
         );
         assert_eq!(BaseError::DatabaseAlreadyInitialized.code(), 200002);
         assert_eq!(
-            BaseError::DatabaseQueryFailed("reason".to_string()).code(),
+            BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("reason".to_string()))
+                .code(),
             200003
         );
         assert_eq!(
-            BaseError::DatabaseExecuteFailed("reason".to_string()).code(),
+            BaseError::DatabaseExecuteFailed(yang_db::DbError::QueryError("reason".to_string()))
+                .code(),
             200004
         );
         assert_eq!(
@@ -472,21 +560,18 @@ mod tests {
         );
         assert_eq!(BaseError::DatabaseNotInitialized.code(), 200008);
         assert_eq!(
-            BaseError::DatabaseTransactionFailed("reason".to_string()).code(),
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "reason".to_string()
+            ))
+            .code(),
             200009
         );
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn test_error_codes_http() {
-        assert_eq!(
-            BaseError::HttpClientCreateFailed("reason".to_string()).code(),
-            300001
-        );
-        assert_eq!(
-            BaseError::HttpRequestFailed("reason".to_string()).code(),
-            300002
-        );
+        // 注意：reqwest::Error 无法直接构造，通过 code() 方法间接测试
         assert_eq!(
             BaseError::HttpResponseParseFailed("reason".to_string()).code(),
             300003
@@ -496,6 +581,7 @@ mod tests {
         assert_eq!(BaseError::HttpClientNotInitialized.code(), 300006);
     }
 
+    #[cfg(feature = "token")]
     #[test]
     fn test_error_codes_token() {
         assert_eq!(
@@ -503,15 +589,24 @@ mod tests {
             400001
         );
         assert_eq!(
-            BaseError::TokenGenerateFailed("reason".to_string()).code(),
+            BaseError::TokenGenerateFailed(jsonwebtoken::errors::Error::from(
+                jsonwebtoken::errors::ErrorKind::InvalidToken
+            ))
+            .code(),
             400002
         );
         assert_eq!(
-            BaseError::TokenVerifyFailed("reason".to_string()).code(),
+            BaseError::TokenVerifyFailed(jsonwebtoken::errors::Error::from(
+                jsonwebtoken::errors::ErrorKind::InvalidToken
+            ))
+            .code(),
             400003
         );
         assert_eq!(
-            BaseError::TokenParseFailed("reason".to_string()).code(),
+            BaseError::TokenParseFailed(jsonwebtoken::errors::Error::from(
+                jsonwebtoken::errors::ErrorKind::InvalidToken
+            ))
+            .code(),
             400004
         );
         assert_eq!(BaseError::TokenExpired.code(), 400005);
@@ -615,9 +710,9 @@ mod tests {
     #[test]
     fn test_all_error_codes_are_nonzero() {
         // 确保所有错误码都是非零的
-        let errors = vec![
+        let errors: Vec<BaseError> = vec![
             BaseError::PluginNotFound("test".to_string()),
-            BaseError::DatabaseQueryFailed("test".to_string()),
+            BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("test".to_string())),
             BaseError::HttpTimeout,
             BaseError::TokenExpired,
             BaseError::JsonSerializeFailed("test".to_string()),
@@ -636,5 +731,31 @@ mod tests {
         for error in errors {
             assert_ne!(error.code(), 0, "错误码不应该为 0: {:?}", error);
         }
+    }
+
+    /// 测试数据库错误链 source() 可遍历
+    #[test]
+    fn test_database_error_source_chain() {
+        use std::error::Error;
+
+        let db_err = yang_db::DbError::QueryError("底层查询错误".to_string());
+        let base_err = BaseError::DatabaseQueryFailed(db_err);
+
+        // BaseError.source() 应返回 Some，指向 DbError
+        let source = base_err.source();
+        assert!(source.is_some(), "BaseError.source() 应返回底层 DbError");
+    }
+
+    /// 测试 From<DbError> 转换保留错误链
+    #[test]
+    fn test_from_db_error_preserves_source() {
+        use std::error::Error;
+
+        let db_err = yang_db::DbError::QueryError("查询失败".to_string());
+        let base_err: BaseError = db_err.into();
+
+        // 验证转换后仍可通过 source() 访问底层错误
+        assert!(base_err.source().is_some());
+        assert!(matches!(base_err, BaseError::DatabaseQueryFailed(_)));
     }
 }

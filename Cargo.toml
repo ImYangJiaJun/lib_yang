@@ -46,11 +46,5 @@ unused_must_use = "deny"
 unsafe_code = "warn"
 
 [workspace.lints.clippy]
-# 禁止裸 unwrap，强制使用 expect 或错误处理
-unwrap_used = "warn"
-# 禁止裸 expect（生产代码应使用 Result 传播）
-expect_used = "warn"
-# 克隆开销提示
-clone_on_ref_ptr = "warn"
 # 大型枚举变体提示
 large_enum_variant = "warn"

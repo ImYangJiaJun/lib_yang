@@ -345,9 +345,9 @@ impl PluginManager {
             .await
             .ok_or_else(|| BaseError::PluginNotFound(name.to_string()))?;
 
-        // 验证配置
+        // 验证配置（插件未定义 config_schema 时跳过验证）
         if let Some(schema) = plugin.config_schema() {
-            self.validate_config(&config, &schema)?;
+            self.validate_config(name, &config, &schema)?;
         }
 
         // 存储配置
@@ -440,16 +440,54 @@ impl PluginManager {
 
     /// 验证配置
     ///
+    /// 使用 jsonschema crate 对配置进行 JSON Schema 验证。
+    /// 未启用 `plugin-schema` feature 时跳过验证。
+    ///
     /// # 参数
-    /// - config: 配置 JSON
-    /// - schema: JSON Schema
+    /// - `plugin_name`: 插件名称（用于错误信息）
+    /// - `config`: 配置 JSON
+    /// - `schema`: JSON Schema
     ///
     /// # 返回
-    /// - Ok(()): 验证通过
-    /// - Err(BaseError): 验证失败
-    fn validate_config(&self, _config: &JsonValue, _schema: &JsonValue) -> Result<(), BaseError> {
-        // TODO: 实现 JSON Schema 验证
-        // 可以使用 jsonschema crate
+    /// - `Ok(())`: 验证通过
+    /// - `Err(BaseError::PluginConfigInvalid)`: 配置不符合 Schema
+    fn validate_config(
+        &self,
+        plugin_name: &str,
+        config: &JsonValue,
+        schema: &JsonValue,
+    ) -> Result<(), BaseError> {
+        // 使用 jsonschema crate 进行 JSON Schema 验证
+        #[cfg(feature = "plugin-schema")]
+        {
+            // 构建可复用的验证器
+            let validator = jsonschema::validator_for(schema).map_err(|e| {
+                BaseError::PluginConfigInvalid(
+                    plugin_name.to_string(),
+                    format!("Schema 编译失败: {}", e),
+                )
+            })?;
+
+            // 收集所有验证错误信息
+            let error_msgs: Vec<String> = validator
+                .iter_errors(config)
+                .map(|e| e.to_string())
+                .collect();
+
+            if !error_msgs.is_empty() {
+                return Err(BaseError::PluginConfigInvalid(
+                    plugin_name.to_string(),
+                    error_msgs.join("; "),
+                ));
+            }
+        }
+
+        // 未启用 plugin-schema feature 时，跳过验证直接返回成功
+        #[cfg(not(feature = "plugin-schema"))]
+        {
+            let _ = (plugin_name, config, schema);
+        }
+
         Ok(())
     }
 
@@ -602,7 +640,9 @@ impl PluginManagerBuilder {
     /// `PluginRegistry` 在构建时执行一次拓扑排序并缓存结果。
     ///
     /// # 返回
-    /// - 不可变的 `PluginRegistry` 实例
+    /// - `Ok(PluginRegistry)`: 构建成功
+    /// - `Err(BaseError::PluginDependencyMissing)`: 某插件的依赖未注册
+    /// - `Err(BaseError::PluginCircularDependency)`: 插件之间存在循环依赖
     ///
     /// # 示例
     ///
@@ -611,9 +651,23 @@ impl PluginManagerBuilder {
     ///
     /// let mut builder = PluginManagerBuilder::new();
     /// // ... 注册插件 ...
-    /// let registry = builder.build();
+    /// let registry = builder.build()?;
     /// ```
-    pub fn build(self) -> PluginRegistry {
+    pub fn build(self) -> Result<PluginRegistry, BaseError> {
+        // 检查每个插件的依赖是否都已注册
+        for plugin in self.plugins.values() {
+            let plugin_name = plugin.name().to_string();
+            for dep in plugin.dependencies() {
+                if !self.plugins.contains_key(dep) {
+                    // 依赖未注册，返回错误
+                    return Err(BaseError::PluginDependencyMissing(
+                        plugin_name,
+                        dep.to_string(),
+                    ));
+                }
+            }
+        }
+        // 依赖完整性检查通过，构建注册表（内部会检测循环依赖）
         PluginRegistry::new(self.plugins, self.configs)
     }
 }
@@ -679,18 +733,19 @@ impl PluginRegistry {
     /// - `configs`: 配置 HashMap
     ///
     /// # 返回
-    /// - 新的 PluginRegistry 实例
+    /// - `Ok(PluginRegistry)`: 构建成功
+    /// - `Err(BaseError::PluginCircularDependency)`: 存在循环依赖
     fn new(
         plugins: HashMap<String, Arc<dyn Plugin>>,
         configs: HashMap<String, JsonValue>,
-    ) -> Self {
-        // 构建时执行一次拓扑排序并缓存结果
-        let sorted_plugins = Self::compute_topological_sort(&plugins);
-        Self {
+    ) -> Result<Self, BaseError> {
+        // 构建时执行一次拓扑排序并缓存结果（内部检测循环依赖）
+        let sorted_plugins = Self::compute_topological_sort(&plugins)?;
+        Ok(Self {
             plugins,
             sorted_plugins,
             configs,
-        }
+        })
     }
 
     /// 查找插件（无锁，O(1) HashMap 查找）
@@ -789,16 +844,17 @@ impl PluginRegistry {
     /// 计算拓扑排序（私有方法，构建时调用一次）
     ///
     /// 使用 Kahn 算法对插件进行拓扑排序，确保依赖插件先于当前插件出现。
-    /// 与 `PluginManager::topological_sort` 逻辑一致，但接收 HashMap 引用。
+    /// 当排序后的节点数小于插件总数时，说明存在循环依赖。
     ///
     /// # 参数
     /// - `plugins`: 插件 HashMap 引用
     ///
     /// # 返回
-    /// - 按依赖关系排序的插件列表
+    /// - `Ok(Vec<Arc<dyn Plugin>>)`: 按依赖关系排序的插件列表
+    /// - `Err(BaseError::PluginCircularDependency)`: 存在循环依赖，错误信息含未排序节点
     fn compute_topological_sort(
         plugins: &HashMap<String, Arc<dyn Plugin>>,
-    ) -> Vec<Arc<dyn Plugin>> {
+    ) -> Result<Vec<Arc<dyn Plugin>>, BaseError> {
         // 构建入度表和邻接图
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut graph: HashMap<String, Vec<String>> = HashMap::new();
@@ -841,6 +897,21 @@ impl PluginRegistry {
             }
         }
 
+        // 检测循环依赖：若排序后的节点数小于插件总数，说明存在循环
+        if sorted_names.len() < plugins.len() {
+            // 找出未被排序的节点（即循环中的插件）
+            let unsorted: Vec<String> = plugins
+                .keys()
+                .filter(|name| !sorted_names.contains(name))
+                .cloned()
+                .collect();
+            let unsorted_str = unsorted.join(", ");
+            return Err(BaseError::PluginCircularDependency(format!(
+                "循环依赖涉及的插件: {}",
+                unsorted_str
+            )));
+        }
+
         // 按排序顺序构建插件列表
         let mut sorted_plugins: Vec<Arc<dyn Plugin>> = plugins.values().cloned().collect();
         sorted_plugins.sort_by_key(|p| {
@@ -850,7 +921,7 @@ impl PluginRegistry {
                 .unwrap_or(usize::MAX)
         });
 
-        sorted_plugins
+        Ok(sorted_plugins)
     }
 }
 
@@ -918,7 +989,7 @@ mod tests {
         builder.register(PluginB).await.unwrap();
         builder.register(PluginC).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
 
         // 验证每个注册的插件都能通过 get 找到，且名称一致
         let plugin_a = registry.get("plugin_a");
@@ -945,7 +1016,7 @@ mod tests {
         builder.register(PluginB).await.unwrap();
         builder.register(PluginC).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
 
         // 多次调用 get_all() 应返回相同的结果（缓存）
         let all_first = registry.get_all();
@@ -970,7 +1041,7 @@ mod tests {
         builder.register(PluginA).await.unwrap();
         builder.register(PluginB).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
         let all_plugins = registry.get_all();
 
         // 找到各插件在排序结果中的位置
@@ -1030,7 +1101,7 @@ mod tests {
         let mut builder = PluginManagerBuilder::new();
         builder.register(PluginA).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
 
         // 验证 registry 包含注册的插件
         assert!(registry.get("plugin_a").is_some(), "registry 应包含已注册的插件");
@@ -1044,7 +1115,7 @@ mod tests {
         builder.register(PluginA).await.unwrap();
         builder.register(PluginB).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
 
         // 验证 get() 返回正确的插件
         let plugin = registry.get("plugin_a").unwrap();
@@ -1059,7 +1130,7 @@ mod tests {
         builder.register(PluginA).await.unwrap();
         builder.register(PluginB).await.unwrap();
 
-        let registry = builder.build();
+        let registry = builder.build().expect("构建注册表应成功");
 
         // 验证 shutdown() 成功执行
         let result = registry.shutdown().await;
@@ -1070,10 +1141,145 @@ mod tests {
     #[tokio::test]
     async fn test_builder_new_creates_empty_builder() {
         let builder = PluginManagerBuilder::new();
-        let registry = builder.build();
+        let registry = builder.build().expect("空构建器构建应成功");
 
         // 空构建器构建的 registry 应为空
         assert_eq!(registry.get_all().len(), 0, "空构建器应生成空 registry");
         assert!(registry.get("any").is_none(), "空 registry 不应包含任何插件");
+    }
+
+    /// 验证需求: 20.1, 20.2, 20.3 - build() 检查依赖完整性
+    #[tokio::test]
+    async fn test_build_detects_missing_dependency() {
+        let mut builder = PluginManagerBuilder::new();
+        // 只注册 plugin_b，但 plugin_b 依赖 plugin_a（未注册）
+        builder.register(PluginB).await.expect("注册 plugin_b 应成功");
+
+        let result = builder.build();
+        assert!(
+            matches!(result, Err(BaseError::PluginDependencyMissing(_, _))),
+            "依赖未注册时应返回 PluginDependencyMissing 错误"
+        );
+
+        // 验证错误信息包含插件名和依赖名
+        if let Err(BaseError::PluginDependencyMissing(plugin, dep)) = result {
+            assert_eq!(plugin, "plugin_b", "错误应指向 plugin_b");
+            assert_eq!(dep, "plugin_a", "缺失的依赖应是 plugin_a");
+        }
+    }
+
+    /// 验证需求: 19.1, 19.2, 19.3, 19.4 - build() 检测循环依赖
+    #[tokio::test]
+    async fn test_build_detects_circular_dependency() {
+        // 定义循环依赖的插件：X 依赖 Y，Y 依赖 X
+        struct PluginX;
+        #[async_trait]
+        impl Plugin for PluginX {
+            fn name(&self) -> &str {
+                "plugin_x"
+            }
+            fn dependencies(&self) -> Vec<&str> {
+                vec!["plugin_y"]
+            }
+        }
+
+        struct PluginY;
+        #[async_trait]
+        impl Plugin for PluginY {
+            fn name(&self) -> &str {
+                "plugin_y"
+            }
+            fn dependencies(&self) -> Vec<&str> {
+                vec!["plugin_x"]
+            }
+        }
+
+        let mut builder = PluginManagerBuilder::new();
+        builder.register(PluginX).await.expect("注册 plugin_x 应成功");
+        builder.register(PluginY).await.expect("注册 plugin_y 应成功");
+
+        let result = builder.build();
+        assert!(
+            matches!(result, Err(BaseError::PluginCircularDependency(_))),
+            "循环依赖时应返回 PluginCircularDependency 错误"
+        );
+
+        // 验证错误信息包含未排序节点
+        if let Err(BaseError::PluginCircularDependency(msg)) = result {
+            assert!(
+                msg.contains("plugin_x") || msg.contains("plugin_y"),
+                "错误信息应包含循环中的插件名称"
+            );
+        }
+    }
+
+    /// 验证需求: 7.1, 7.2, 7.3, 7.4 - validate_config 集成 jsonschema
+    #[cfg(feature = "plugin-schema")]
+    #[tokio::test]
+    async fn test_validate_config_with_schema() {
+        use serde_json::json;
+
+        // 定义带 Schema 的插件
+        struct SchemaPlugin;
+        #[async_trait]
+        impl Plugin for SchemaPlugin {
+            fn name(&self) -> &str {
+                "schema_plugin"
+            }
+            fn config_schema(&self) -> Option<JsonValue> {
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "port": {"type": "integer"}
+                    },
+                    "required": ["host", "port"]
+                }))
+            }
+        }
+
+        let manager = PluginManager::new();
+        manager.register(SchemaPlugin).await.expect("注册应成功");
+
+        // 合法配置应通过验证
+        let valid_config = json!({"host": "localhost", "port": 3306});
+        let result = manager.load_config("schema_plugin", valid_config).await;
+        assert!(result.is_ok(), "合法配置应通过验证");
+    }
+
+    /// 验证需求: 7.1, 7.2 - 配置不符合 Schema 时返回错误
+    #[cfg(feature = "plugin-schema")]
+    #[tokio::test]
+    async fn test_validate_config_invalid_returns_error() {
+        use serde_json::json;
+
+        // 定义带 Schema 的插件
+        struct StrictPlugin;
+        #[async_trait]
+        impl Plugin for StrictPlugin {
+            fn name(&self) -> &str {
+                "strict_plugin"
+            }
+            fn config_schema(&self) -> Option<JsonValue> {
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "port": {"type": "integer"}
+                    },
+                    "required": ["port"]
+                }))
+            }
+        }
+
+        let manager = PluginManager::new();
+        manager.register(StrictPlugin).await.expect("注册应成功");
+
+        // 配置缺少必填字段应返回错误
+        let invalid_config = json!({"host": "localhost"});
+        let result = manager.load_config("strict_plugin", invalid_config).await;
+        assert!(
+            matches!(result, Err(BaseError::PluginConfigInvalid(_, _))),
+            "配置不符合 Schema 应返回 PluginConfigInvalid 错误"
+        );
     }
 }

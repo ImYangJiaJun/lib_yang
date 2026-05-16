@@ -54,7 +54,7 @@ impl Action for TestAction {
     async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
         // 简单的测试实现：返回请求参数
         let name: String = context.param("name")?;
-        Ok(ApiResponse::success(json!({ "name": name }), "执行成功"))
+        Ok(ApiResponse::success(json!({ "name": name }), "执行成功")?)
     }
 
     fn name(&self) -> &str {
@@ -299,7 +299,7 @@ mod tests {
     /// 验证多个不同静态权限的 name() 返回值正确
     #[test]
     fn test_permission_from_static_multiple() {
-        let perms = vec![
+        let perms = [
             Permission::from_static("user:create"),
             Permission::from_static("user:read"),
             Permission::from_static("user:update"),

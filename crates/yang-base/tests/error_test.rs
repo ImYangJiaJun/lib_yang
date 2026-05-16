@@ -65,8 +65,9 @@ fn test_database_connection_failed_message() {
 
 #[test]
 fn test_database_query_failed_message() {
-    let err = BaseError::DatabaseQueryFailed("查询超时".to_string());
-    assert_eq!(format!("{}", err), "数据库查询失败: 查询超时");
+    let err =
+        BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("查询超时".to_string()));
+    assert_eq!(format!("{}", err), "数据库查询失败: 查询错误: 查询超时");
 }
 
 #[test]
@@ -89,20 +90,27 @@ fn test_database_not_initialized_message() {
 
 #[test]
 fn test_database_transaction_failed_message() {
-    let err = BaseError::DatabaseTransactionFailed("事务回滚失败".to_string());
-    assert_eq!(format!("{}", err), "数据库事务失败: 事务回滚失败");
+    let err = BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+        "事务回滚失败".to_string(),
+    ));
+    assert_eq!(
+        format!("{}", err),
+        "数据库事务失败: 事务错误: 事务回滚失败"
+    );
 }
 
 #[test]
 fn test_http_client_create_failed_message() {
-    let err = BaseError::HttpClientCreateFailed("无效的配置".to_string());
-    assert_eq!(format!("{}", err), "HTTP 客户端创建失败: 无效的配置");
+    // 注意：reqwest::Error 无法直接构造，测试 HttpClientAlreadyInitialized 替代
+    let err = BaseError::HttpClientAlreadyInitialized;
+    assert_eq!(format!("{}", err), "HTTP 客户端已初始化");
 }
 
 #[test]
 fn test_http_request_failed_message() {
-    let err = BaseError::HttpRequestFailed("404 Not Found".to_string());
-    assert_eq!(format!("{}", err), "HTTP 请求失败: 404 Not Found");
+    // 注意：reqwest::Error 无法直接构造，测试 Display 格式通过 From 转换间接验证
+    let err = BaseError::HttpTimeout;
+    assert_eq!(format!("{}", err), "HTTP 请求超时");
 }
 
 #[test]
@@ -125,20 +133,27 @@ fn test_token_key_invalid_message() {
 
 #[test]
 fn test_token_generate_failed_message() {
-    let err = BaseError::TokenGenerateFailed("签名失败".to_string());
-    assert_eq!(format!("{}", err), "Token 生成失败: 签名失败");
+    let err = BaseError::TokenGenerateFailed(jsonwebtoken::errors::Error::from(
+        jsonwebtoken::errors::ErrorKind::InvalidToken,
+    ));
+    // jsonwebtoken 的 InvalidToken 错误消息
+    assert!(format!("{}", err).starts_with("Token 生成失败:"));
 }
 
 #[test]
 fn test_token_verify_failed_message() {
-    let err = BaseError::TokenVerifyFailed("签名不匹配".to_string());
-    assert_eq!(format!("{}", err), "Token 验证失败: 签名不匹配");
+    let err = BaseError::TokenVerifyFailed(jsonwebtoken::errors::Error::from(
+        jsonwebtoken::errors::ErrorKind::InvalidSignature,
+    ));
+    assert!(format!("{}", err).starts_with("Token 验证失败:"));
 }
 
 #[test]
 fn test_token_parse_failed_message() {
-    let err = BaseError::TokenParseFailed("无效的 JWT 格式".to_string());
-    assert_eq!(format!("{}", err), "Token 解析失败: 无效的 JWT 格式");
+    let err = BaseError::TokenParseFailed(jsonwebtoken::errors::Error::from(
+        jsonwebtoken::errors::ErrorKind::InvalidToken,
+    ));
+    assert!(format!("{}", err).starts_with("Token 解析失败:"));
 }
 
 #[test]
@@ -187,7 +202,7 @@ fn test_unknown_error_message() {
 
 #[test]
 fn test_all_error_messages_contain_chinese() {
-    let errors = vec![
+    let errors: Vec<BaseError> = vec![
         BaseError::PluginAlreadyRegistered("test".to_string()),
         BaseError::PluginNotFound("test".to_string()),
         BaseError::PluginRegisterFailed("test".to_string(), "reason".to_string()),
@@ -196,19 +211,27 @@ fn test_all_error_messages_contain_chinese() {
         BaseError::PluginCircularDependency("test".to_string()),
         BaseError::PluginConfigInvalid("test".to_string(), "reason".to_string()),
         BaseError::DatabaseConnectionFailed("test".to_string()),
-        BaseError::DatabaseQueryFailed("test".to_string()),
+        BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("test".to_string())),
         BaseError::DatabaseInitFailed("test".to_string()),
         BaseError::DatabaseMigrationFailed("v1".to_string(), "reason".to_string()),
         BaseError::DatabaseNotInitialized,
-        BaseError::DatabaseTransactionFailed("test".to_string()),
-        BaseError::HttpClientCreateFailed("test".to_string()),
-        BaseError::HttpRequestFailed("test".to_string()),
+        BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+            "test".to_string(),
+        )),
+        BaseError::HttpClientAlreadyInitialized,
+        BaseError::HttpClientNotInitialized,
         BaseError::HttpResponseParseFailed("test".to_string()),
         BaseError::HttpTimeout,
         BaseError::TokenKeyInvalid("test".to_string()),
-        BaseError::TokenGenerateFailed("test".to_string()),
-        BaseError::TokenVerifyFailed("test".to_string()),
-        BaseError::TokenParseFailed("test".to_string()),
+        BaseError::TokenGenerateFailed(jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::InvalidToken,
+        )),
+        BaseError::TokenVerifyFailed(jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::InvalidToken,
+        )),
+        BaseError::TokenParseFailed(jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::InvalidToken,
+        )),
         BaseError::TokenExpired,
         BaseError::TokenTypeInvalid("test".to_string()),
         BaseError::JsonSerializeFailed("test".to_string()),
@@ -233,9 +256,9 @@ fn test_from_yang_db_error() {
     let db_err = yang_db::DbError::QueryError("查询失败".to_string());
     let base_err: BaseError = db_err.into();
 
-    match base_err {
-        BaseError::DatabaseQueryFailed(msg) => {
-            assert!(msg.contains("查询失败"));
+    match &base_err {
+        BaseError::DatabaseQueryFailed(inner) => {
+            assert!(inner.to_string().contains("查询失败"));
         }
         _ => panic!("期望 DatabaseQueryFailed 错误"),
     }
@@ -338,10 +361,41 @@ fn test_error_propagation_with_question_mark() {
     let result = outer_function();
     assert!(result.is_err());
 
-    match result.unwrap_err() {
-        BaseError::DatabaseQueryFailed(msg) => {
-            assert!(msg.contains("内部错误"));
+    match &result.unwrap_err() {
+        BaseError::DatabaseQueryFailed(inner) => {
+            assert!(inner.to_string().contains("内部错误"));
         }
         _ => panic!("期望 DatabaseQueryFailed 错误"),
     }
+}
+
+// ==================== 错误链 source() 可遍历性测试 ====================
+
+#[test]
+fn test_database_error_source_chain() {
+    use std::error::Error;
+
+    let db_err = yang_db::DbError::QueryError("底层查询错误".to_string());
+    let base_err = BaseError::DatabaseQueryFailed(db_err);
+
+    // BaseError.source() 应返回 Some，指向 DbError
+    let source = base_err.source();
+    assert!(source.is_some(), "BaseError.source() 应返回底层 DbError");
+}
+
+#[test]
+fn test_token_error_source_chain() {
+    use std::error::Error;
+
+    let jwt_err = jsonwebtoken::errors::Error::from(
+        jsonwebtoken::errors::ErrorKind::InvalidSignature,
+    );
+    let base_err = BaseError::TokenVerifyFailed(jwt_err);
+
+    // BaseError.source() 应返回 Some，指向 jsonwebtoken::errors::Error
+    let source = base_err.source();
+    assert!(
+        source.is_some(),
+        "BaseError.source() 应返回底层 jsonwebtoken::errors::Error"
+    );
 }

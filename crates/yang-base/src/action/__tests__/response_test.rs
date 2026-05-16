@@ -13,7 +13,8 @@ fn test_success_response_with_user_data() {
         "roles": ["admin", "user"]
     });
 
-    let response = ApiResponse::success(user_data, "用户信息获取成功");
+    // success 现在返回 Result
+    let response = ApiResponse::success(user_data, "用户信息获取成功").unwrap();
 
     assert_eq!(response.code, 0);
     assert_eq!(response.message, "用户信息获取成功");
@@ -32,7 +33,8 @@ fn test_success_response_with_list() {
         { "id": 3, "name": "Charlie" }
     ]);
 
-    let response = ApiResponse::success(users, "用户列表查询成功");
+    // success 现在返回 Result
+    let response = ApiResponse::success(users, "用户列表查询成功").unwrap();
 
     assert_eq!(response.code, 0);
     assert!(response.data.is_some());
@@ -45,7 +47,8 @@ fn test_success_response_with_list() {
 #[test]
 fn test_success_response_with_affected_rows() {
     let result = json!({ "affected": 5 });
-    let response = ApiResponse::success(result, "批量更新成功");
+    // success 现在返回 Result
+    let response = ApiResponse::success(result, "批量更新成功").unwrap();
 
     assert_eq!(response.code, 0);
     assert_eq!(response.message, "批量更新成功");
@@ -82,7 +85,7 @@ fn test_from_error_plugin_errors() {
 
 #[test]
 fn test_from_error_database_errors() {
-    let error = BaseError::DatabaseQueryFailed("连接超时".to_string());
+    let error = BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("连接超时".to_string()));
     let response = ApiResponse::from_error(error);
 
     assert_eq!(response.code, 200003);
@@ -107,7 +110,8 @@ fn test_from_error_field_validation_errors() {
 
 #[test]
 fn test_response_serialization_format() {
-    let response = ApiResponse::success(json!({ "count": 10 }), "查询成功");
+    // success 现在返回 Result
+    let response = ApiResponse::success(json!({ "count": 10 }), "查询成功").unwrap();
     let json_str = serde_json::to_string(&response).unwrap();
 
     // 验证 JSON 格式
@@ -145,10 +149,10 @@ fn test_response_chain_with_error_handling() {
         }))
     }
 
-    // 成功情况
+    // 成功情况：success 现在返回 Result
     match get_user(1) {
         Ok(user) => {
-            let response = ApiResponse::success(user, "获取成功");
+            let response = ApiResponse::success(user, "获取成功").unwrap();
             assert_eq!(response.code, 0);
         }
         Err(e) => {
@@ -160,7 +164,7 @@ fn test_response_chain_with_error_handling() {
     // 失败情况
     match get_user(-1) {
         Ok(user) => {
-            let response = ApiResponse::success(user, "获取成功");
+            let response = ApiResponse::success(user, "获取成功").unwrap();
             assert_eq!(response.code, 0);
         }
         Err(e) => {
@@ -174,9 +178,9 @@ fn test_response_chain_with_error_handling() {
 #[test]
 fn test_all_error_types_have_valid_codes() {
     // 测试所有错误类型都能正确转换为响应
-    let errors = vec![
+    let errors: Vec<BaseError> = vec![
         BaseError::PluginNotFound("test".to_string()),
-        BaseError::DatabaseQueryFailed("test".to_string()),
+        BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("test".to_string())),
         BaseError::HttpTimeout,
         BaseError::TokenExpired,
         BaseError::JsonSerializeFailed("test".to_string()),

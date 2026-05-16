@@ -56,6 +56,9 @@
 //! }
 //! ```
 
+// 强制公开 API 文档覆盖率检查：所有公开项必须有文档注释
+#![warn(missing_docs)]
+
 pub mod action;
 pub mod database;
 pub mod error;

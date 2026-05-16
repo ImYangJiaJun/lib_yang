@@ -33,6 +33,7 @@
 //! assert!(email_validator.validate("email", &json!("user@example.com")).is_ok());
 //! ```
 
+mod dynamic_row;
 mod field_config;
 mod field_type;
 mod query_params;
@@ -43,6 +44,7 @@ mod validator;
 #[cfg(test)]
 mod __tests__;
 
+pub use dynamic_row::DynamicRow;
 pub use field_config::{FieldConfig, FieldPermissions, RelationConfig, RelationType};
 pub use field_type::FieldType;
 pub use query_params::{PaginatedResult, QueryParams, WhereCondition};

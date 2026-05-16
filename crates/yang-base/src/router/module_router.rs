@@ -6,8 +6,6 @@
 //!
 //! ```rust,ignore
 //! use yang_base::router::ModuleRouter;
-//! use yang_base::action::builtin::{AddAction, GetAction, SelectAction};
-//! use yang_base::action::{Action, ActionContext};
 //! use yang_base::table::{TableConfig, FieldConfig, FieldType};
 //! use std::sync::Arc;
 //!
@@ -18,24 +16,25 @@
 //!         .field(FieldConfig::new("username", FieldType::String { max_length: 50 }))
 //! );
 //!
-//! // 创建模块路由器
-//! let mut router = ModuleRouter::new("user", "用户管理")
-//!     .table_config(table_config.clone())
-//!     .default_permissions(vec!["user:access".to_string()]);
-//!
-//! // 注册内置 CRUD Actions
-//! router = router.register_builtin_actions();
+//! // 创建模块路由器并注册内置 CRUD Actions
+//! let router = ModuleRouter::new("user", "用户管理")
+//!     .with_table_config(table_config.clone())
+//!     .default_permissions(vec!["user:access".to_string()])
+//!     .register_builtin_actions()?;
 //!
 //! // 分发请求
 //! let response = router.dispatch("add", context).await?;
 //! ```
 
+/// 内置 Action 名称常量
+///
+/// 包含所有内置 Action 的名称，用于注册和验证
+pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select", "table"];
+
 #[cfg(feature = "mysql")]
 use crate::action::builtin::TableAction;
 #[cfg(feature = "mysql")]
-use crate::action::builtin::{
-    AddAction, DelAction, GetAction, PutAction, SelectAction,
-};
+use crate::action::builtin::{AddAction, DelAction, GetAction, PutAction, SelectAction};
 use crate::action::{Action, ActionContext, ApiResponse, User};
 use crate::error::BaseError;
 use crate::table::TableConfig;
@@ -101,7 +100,7 @@ impl ModuleRouter {
         }
     }
 
-    /// 设置表配置
+    /// 设置表配置（builder setter）
     ///
     /// # 参数
     ///
@@ -125,6 +124,33 @@ impl ModuleRouter {
     pub fn with_table_config(mut self, config: Arc<TableConfig>) -> Self {
         self.table_config = Some(config);
         self
+    }
+
+    /// 设置表配置（链式 setter 别名，委托给 `with_table_config`）
+    ///
+    /// 与 `with_table_config` 功能相同，提供更简洁的链式调用语法。
+    ///
+    /// # 参数
+    ///
+    /// - `config`: 表配置
+    ///
+    /// # 返回
+    ///
+    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::router::ModuleRouter;
+    /// use yang_base::table::TableConfig;
+    /// use std::sync::Arc;
+    ///
+    /// let table_config = Arc::new(TableConfig::new("users"));
+    /// let router = ModuleRouter::new("user", "用户管理")
+    ///     .table_config(table_config);
+    /// ```
+    pub fn table_config(self, config: Arc<TableConfig>) -> Self {
+        self.with_table_config(config)
     }
 
     /// 设置默认权限要求
@@ -183,15 +209,18 @@ impl ModuleRouter {
     /// 注册所有内置 CRUD Actions
     ///
     /// 注册 add、put、del、get、select、table 六个内置 Action。
-    /// 需要先设置 table_config。
+    /// 需要先通过 `with_table_config` 或 `table_config` 设置表配置。
+    ///
+    /// 内置 Action 名称由 [`BUILTIN_ACTION_NAMES`] 常量定义。
     ///
     /// # 返回
     ///
-    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    /// - `Ok(Self)`: 注册成功，返回修改后的 ModuleRouter 实例（支持链式调用）
+    /// - `Err(BaseError::TableConfigNotSet)`: 未设置 table_config
     ///
-    /// # Panics
+    /// # 错误
     ///
-    /// 如果未设置 table_config 则会 panic
+    /// - `BaseError::TableConfigNotSet`: 调用前未设置表配置
     ///
     /// # 示例
     ///
@@ -202,44 +231,34 @@ impl ModuleRouter {
     ///
     /// let table_config = Arc::new(TableConfig::new("users"));
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .table_config(table_config)
-    ///     .register_builtin_actions();
+    ///     .with_table_config(table_config)
+    ///     .register_builtin_actions()?;
     /// ```
     #[cfg(feature = "mysql")]
-    pub fn register_builtin_actions(mut self) -> Self {
+    pub fn register_builtin_actions(mut self) -> Result<Self, BaseError> {
+        // 未设置 table_config 时返回错误，而非 panic
         let table_config = self
             .table_config
             .as_ref()
-            .expect("必须先设置 table_config 才能注册内置 Actions")
+            .ok_or(BaseError::TableConfigNotSet)?
             .clone();
 
-        // 注册内置 CRUD Actions
-        self.actions.insert(
-            "add".to_string(),
-            Box::new(AddAction::new(table_config.clone())),
-        );
-        self.actions.insert(
-            "put".to_string(),
-            Box::new(PutAction::new(table_config.clone())),
-        );
-        self.actions.insert(
-            "del".to_string(),
-            Box::new(DelAction::new(table_config.clone())),
-        );
-        self.actions.insert(
-            "get".to_string(),
-            Box::new(GetAction::new(table_config.clone())),
-        );
-        self.actions.insert(
-            "select".to_string(),
-            Box::new(SelectAction::new(table_config.clone())),
-        );
-        self.actions.insert(
-            "table".to_string(),
-            Box::new(TableAction::new(table_config)),
-        );
+        // 通过 BUILTIN_ACTION_NAMES 常量驱动注册循环，确保名称一致性
+        for action_name in BUILTIN_ACTION_NAMES {
+            let action: Box<dyn Action> = match *action_name {
+                "add" => Box::new(AddAction::new(table_config.clone())),
+                "put" => Box::new(PutAction::new(table_config.clone())),
+                "del" => Box::new(DelAction::new(table_config.clone())),
+                "get" => Box::new(GetAction::new(table_config.clone())),
+                "select" => Box::new(SelectAction::new(table_config.clone())),
+                "table" => Box::new(TableAction::new(table_config.clone())),
+                // 理论上不会到达此分支，因为 BUILTIN_ACTION_NAMES 是固定常量
+                _ => continue,
+            };
+            self.actions.insert(action_name.to_string(), action);
+        }
 
-        self
+        Ok(self)
     }
 
     /// 分发请求到对应的 Action
@@ -258,9 +277,9 @@ impl ModuleRouter {
     ///
     /// # 错误
     ///
-    /// - `ActionNotFound`: Action 不存在
-    /// - `Unauthorized`: 用户未认证（需要认证的 Action）
-    /// - `PermissionDenied`: 权限不足
+    /// - `BaseError::ActionNotFound`: Action 不存在
+    /// - `BaseError::Unauthorized`: 用户未认证（需要认证的 Action）
+    /// - `BaseError::PermissionDenied`: 权限不足
     ///
     /// # 示例
     ///
@@ -269,7 +288,8 @@ impl ModuleRouter {
     /// use yang_base::action::ActionContext;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .register_builtin_actions();
+    ///     .with_table_config(table_config)
+    ///     .register_builtin_actions()?;
     ///
     /// let response = router.dispatch("add", context).await?;
     /// ```
@@ -331,6 +351,54 @@ impl ModuleRouter {
         action.execute(context).await
     }
 
+    /// 使用全局单例分发请求
+    ///
+    /// 自动从全局单例获取 `GlobalTools`，无需手动传入。
+    /// 需要先调用 `GlobalTools::init` 初始化全局单例。
+    ///
+    /// # 参数
+    ///
+    /// - `action_name`: Action 名称
+    /// - `request`: 请求数据
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(ApiResponse)`: 执行成功
+    /// - `Err(BaseError)`: 执行失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError("GlobalTools 未初始化")`: 全局单例未初始化
+    /// - `BaseError::ActionNotFound`: Action 不存在
+    /// - `BaseError::Unauthorized`: 用户未认证
+    /// - `BaseError::PermissionDenied`: 权限不足
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::router::ModuleRouter;
+    /// use yang_base::action::{GlobalTools, Request};
+    ///
+    /// // 初始化全局单例
+    /// GlobalTools::init(token_manager)?;
+    ///
+    /// let router = ModuleRouter::new("user", "用户管理")
+    ///     .with_table_config(table_config)
+    ///     .register_builtin_actions()?;
+    ///
+    /// // 无需传入 tools，自动从全局单例获取
+    /// let response = router.dispatch_with_global("add", request).await?;
+    /// ```
+    pub async fn dispatch_with_global(
+        &self,
+        action_name: &str,
+        request: crate::action::Request,
+    ) -> Result<ApiResponse, BaseError> {
+        // 从全局单例获取 GlobalTools，自动构建上下文
+        let context = ActionContext::new_with_global_tools(request)?;
+        self.dispatch(action_name, context).await
+    }
+
     /// 检查用户权限
     ///
     /// # 参数
@@ -376,13 +444,13 @@ impl ModuleRouter {
         self.actions.keys().cloned().collect()
     }
 
-    /// 获取表配置
+    /// 获取表配置（getter，返回借用）
     ///
     /// # 返回
     ///
-    /// - `Some(Arc<TableConfig>)`: 表配置
+    /// - `Some(&Arc<TableConfig>)`: 表配置的借用
     /// - `None`: 未设置表配置
-    pub fn table_config(&self) -> Option<Arc<TableConfig>> {
-        self.table_config.clone()
+    pub fn get_table_config(&self) -> Option<&Arc<TableConfig>> {
+        self.table_config.as_ref()
     }
 }

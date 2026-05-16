@@ -80,11 +80,11 @@ impl Action for AddAction {
         // 执行插入操作
         let affected = query.insert(data_map).await?;
 
-        // 返回成功响应
+        // 返回成功响应（序列化失败时通过 ? 传播错误）
         Ok(ApiResponse::success(
             serde_json::json!({ "affected": affected }),
             "新增成功",
-        ))
+        )?)
     }
 
     fn name(&self) -> &str {

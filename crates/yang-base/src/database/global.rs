@@ -208,7 +208,7 @@ impl GlobalDatabase {
         Self::get()?
             .query(sql)
             .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(e.to_string()))
+            .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 执行原生 INSERT/UPDATE/DELETE 查询
@@ -254,7 +254,7 @@ impl GlobalDatabase {
         Self::get()?
             .execute(sql)
             .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(e.to_string()))
+            .map_err(BaseError::DatabaseExecuteFailed)
     }
 
     /// 开始事务
@@ -294,7 +294,7 @@ impl GlobalDatabase {
         Self::get()?
             .transaction()
             .await
-            .map_err(|e| BaseError::DatabaseTransactionFailed(e.to_string()))
+            .map_err(BaseError::DatabaseTransactionFailed)
     }
 }
 

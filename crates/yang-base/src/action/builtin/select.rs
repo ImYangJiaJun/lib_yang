@@ -33,8 +33,8 @@ use std::sync::Arc;
 /// - `fields`: 可选，要查询的字段列表
 /// - `where`: 可选，筛选条件
 /// - `order_by`: 可选，排序规则
-/// - `page`: 可选，页码（默认 1）
-/// - `page_size`: 可选，每页大小（默认 10）
+/// - `page`: 可选，页码（默认 1，范围 1..=i64::MAX）
+/// - `page_size`: 可选，每页大小（默认 10，范围 1..=100）
 ///
 /// # 返回
 ///
@@ -61,12 +61,60 @@ impl SelectAction {
     }
 }
 
+/// 安全解析分页参数
+///
+/// 从 ActionContext 中读取指定参数，进行范围校验，并安全转换为 usize。
+///
+/// # 参数
+///
+/// - `ctx`: Action 执行上下文
+/// - `key`: 参数名
+/// - `default`: 参数不存在时的默认值
+/// - `min`: 允许的最小值（含）
+/// - `max`: 允许的最大值（含）
+///
+/// # 返回
+///
+/// - `Ok(usize)`: 转换成功
+/// - `Err(BaseError::ParamInvalid)`: 参数值超出范围或无法转换为 usize
+fn parse_paging_param(
+    ctx: &ActionContext,
+    key: &str,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<usize, BaseError> {
+    // 从请求体中获取参数，不存在时使用默认值
+    let raw_value: i64 = ctx.param_optional::<i64>(key).unwrap_or(default);
+
+    // 范围校验：越界时返回 ParamInvalid 错误
+    if raw_value < min || raw_value > max {
+        return Err(BaseError::ParamInvalid(
+            key.to_string(),
+            format!(
+                "参数值 {} 超出允许范围 [{}, {}]",
+                raw_value, min, max
+            ),
+        ));
+    }
+
+    // 使用 usize::try_from 替代 as usize，避免截断
+    usize::try_from(raw_value).map_err(|_| {
+        BaseError::ParamInvalid(
+            key.to_string(),
+            format!("参数值 {} 无法转换为 usize", raw_value),
+        )
+    })
+}
+
 #[async_trait]
 impl Action for SelectAction {
     async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取分页参数
-        let page: usize = context.param_optional::<i64>("page").unwrap_or(1) as usize;
-        let page_size: usize = context.param_optional::<i64>("page_size").unwrap_or(10) as usize;
+        // 通过 parse_paging_param 安全获取分页参数
+        // page: 默认 1，范围 1..=i64::MAX
+        let page = parse_paging_param(&context, "page", 1, 1, i64::MAX)?;
+        // page_size: 默认 10，范围 1..=100
+        let page_size = parse_paging_param(&context, "page_size", 10, 1, 100)?;
 
         // 创建查询构建器
         let mut query = context.table_query()?;
@@ -123,18 +171,27 @@ impl Action for SelectAction {
         }
 
         // 设置分页参数
-        let _query = query.page(page, page_size)?;
+        let query = query.page(page, page_size)?;
 
-        // 注意：实际的 paginate 需要具体的类型，这里我们返回一个占位响应
-        // 在实际使用时，需要根据表结构定义具体的类型
+        // 使用 DynamicRow 类型执行分页查询
+        #[cfg(feature = "mysql")]
+        {
+            use crate::table::DynamicRow;
 
-        // TODO: 实际实现需要使用具体的结构体类型而不是 serde_json::Value
-        // 或者实现一个动态行类型来支持任意表结构
+            let result = query.paginate::<DynamicRow>().await?;
 
-        // 暂时返回错误提示需要实现
-        return Err(BaseError::Unknown(
-            "SelectAction 需要在实际使用时提供具体的数据类型实现".to_string(),
-        ));
+            // 将分页结果转换为 JSON 并返回
+            return ApiResponse::success(result, "查询成功");
+        }
+
+        // 未启用 mysql feature 时返回错误
+        #[cfg(not(feature = "mysql"))]
+        {
+            let _ = query;
+            Err(BaseError::Unknown(
+                "SelectAction 需要启用 mysql feature".to_string(),
+            ))
+        }
     }
 
     fn name(&self) -> &str {
@@ -182,7 +239,7 @@ impl Action for SelectAction {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "description": "每页大小（默认 10）"
+                    "description": "每页大小（默认 10，最大 100）"
                 }
             }
         }))

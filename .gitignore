@@ -1,4 +1,5 @@
 # 项目排除路径
 /target/
 .mcp.json
+.mcp.local.json
 */tests/

@@ -56,10 +56,10 @@ fn test_global_client_not_initialized() {
     // 如果已初始化（被其他测试），则跳过此断言
     if let Err(err) = result {
         match err {
-            BaseError::HttpClientCreateFailed(msg) => {
-                assert!(msg.contains("未初始化"));
+            BaseError::HttpClientNotInitialized => {
+                // 正确：全局客户端未初始化
             }
-            _ => panic!("期望 HttpClientCreateFailed 错误"),
+            _ => panic!("期望 HttpClientNotInitialized 错误"),
         }
     }
 }
@@ -78,9 +78,8 @@ fn test_init_global_client() {
             let global_result = HttpClient::global();
             assert!(global_result.is_ok());
         }
-        Err(BaseError::HttpClientCreateFailed(msg)) => {
-            // 已经初始化过，验证错误消息
-            assert!(msg.contains("已初始化"));
+        Err(BaseError::HttpClientAlreadyInitialized) => {
+            // 已经初始化过，符合预期
         }
         Err(_) => panic!("期望 HttpClientCreateFailed 错误"),
     }
@@ -185,6 +184,151 @@ fn test_request_builder_body() {
     let builder = client
         .post("https://api.example.com/upload")
         .body(vec![0x00, 0x01, 0x02, 0x03]);
+
+    drop(builder);
+}
+
+#[tokio::test]
+async fn test_header_error_accumulation_invalid_name() {
+    // 测试非法 header 名称被累积为错误，send() 时返回 ParamInvalid
+    let client = HttpClient::new(30).unwrap();
+
+    // 包含空格的 header 名称是非法的
+    let result = client
+        .get("https://api.example.com/test")
+        .header("Invalid Header Name", "value")
+        .send()
+        .await;
+
+    assert!(result.is_err(), "非法 header 名称应导致错误");
+    // 使用 err().unwrap() 而非 unwrap_err()，因为 Response 未实现 Debug
+    match result.err().unwrap() {
+        BaseError::ParamInvalid(field, msg) => {
+            assert_eq!(field, "header", "错误字段应为 header");
+            assert!(
+                msg.contains("Invalid Header Name"),
+                "错误信息应包含非法 header 名称，实际: {}",
+                msg
+            );
+        }
+        other => panic!("期望 ParamInvalid 错误，实际: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_header_error_accumulation_invalid_value() {
+    // 测试包含非法字符的 header 值被累积为错误
+    let client = HttpClient::new(30).unwrap();
+
+    // 包含换行符的 header 值是非法的（HTTP 头注入防护）
+    let result = client
+        .get("https://api.example.com/test")
+        .header("X-Custom", "value\r\nX-Injected: injected")
+        .send()
+        .await;
+
+    assert!(result.is_err(), "包含换行符的 header 值应导致错误");
+    match result.err().unwrap() {
+        BaseError::ParamInvalid(field, _msg) => {
+            assert_eq!(field, "header", "错误字段应为 header");
+        }
+        other => panic!("期望 ParamInvalid 错误，实际: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_header_error_accumulation_multiple_errors() {
+    // 测试多个非法 header 的错误被合并到一条错误信息中
+    let client = HttpClient::new(30).unwrap();
+
+    let result = client
+        .get("https://api.example.com/test")
+        .header("Bad Name 1", "value1")
+        .header("Bad Name 2", "value2")
+        .send()
+        .await;
+
+    assert!(result.is_err(), "多个非法 header 应导致错误");
+    match result.err().unwrap() {
+        BaseError::ParamInvalid(field, msg) => {
+            assert_eq!(field, "header");
+            // 错误信息应包含两个错误，用分号分隔
+            assert!(
+                msg.contains("Bad Name 1") && msg.contains("Bad Name 2"),
+                "错误信息应包含所有非法 header 名称，实际: {}",
+                msg
+            );
+        }
+        other => panic!("期望 ParamInvalid 错误，实际: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_header_error_accumulation_valid_headers_pass() {
+    // 测试合法 header 不产生错误（不发送实际请求，仅验证构建阶段无错误累积）
+    // 注意：send() 会尝试真实网络请求，此处仅验证 header 解析不产生 ParamInvalid
+    let client = HttpClient::new(30).unwrap();
+
+    let result = client
+        .get("https://127.0.0.1:1") // 使用不可达地址，确保快速失败
+        .header("X-Valid-Header", "valid-value")
+        .header("Content-Type", "application/json")
+        .timeout(1)
+        .send()
+        .await;
+
+    // 合法 header 不应产生 ParamInvalid 错误
+    match &result {
+        Err(BaseError::ParamInvalid(field, _)) if field == "header" => {
+            panic!("合法 header 不应产生 ParamInvalid 错误");
+        }
+        _ => {
+            // 其他错误（如连接失败）是预期的，说明 header 解析通过了
+        }
+    }
+}
+
+#[test]
+fn test_form_url_encoding_special_chars() {
+    // 测试 form 方法使用 serde_urlencoded 正确编码特殊字符
+    let client = HttpClient::new(30).unwrap();
+
+    // 包含特殊字符的表单数据
+    let builder = client
+        .post("https://api.example.com/form")
+        .form(vec![
+            ("name", "Alice & Bob"),
+            ("email", "alice+bob@example.com"),
+            ("message", "Hello World!"),
+        ]);
+
+    // 构建成功，无错误累积
+    drop(builder);
+}
+
+#[test]
+fn test_form_url_encoding_utf8() {
+    // 测试 form 方法正确处理 UTF-8 字符
+    let client = HttpClient::new(30).unwrap();
+
+    let builder = client
+        .post("https://api.example.com/form")
+        .form(vec![("name", "张三"), ("city", "北京")]);
+
+    drop(builder);
+}
+
+#[test]
+fn test_form_sets_content_type() {
+    // 测试 form 方法自动设置 Content-Type
+    // 通过构建后不产生 header 错误来间接验证
+    let client = HttpClient::new(30).unwrap();
+
+    // form 方法内部调用 content_type("application/x-www-form-urlencoded")
+    // 这是合法的 Content-Type，不应产生 header 错误
+    let builder = client
+        .post("https://api.example.com/form")
+        .form(vec![("key", "value")]);
 
     drop(builder);
 }

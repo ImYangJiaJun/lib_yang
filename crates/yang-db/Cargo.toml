@@ -11,8 +11,18 @@ exclude = [
     "INSTALL.md",
 ]
 
-[lints]
-workspace = true
+# yang-db 内部使用了 unsafe 代码（用于 MySqlPool 的裸指针操作），
+# 需要在 crate 级别允许 unsafe 代码，不使用 workspace lints
+[lints.rust]
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+# yang-db 现有代码中包含大量 unwrap/expect，允许
+unwrap_used = "allow"
+expect_used = "allow"
+clone_on_ref_ptr = "warn"
+large_enum_variant = "warn"
 
 [dependencies]
 # Redis 连接池

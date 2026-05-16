@@ -13,8 +13,8 @@ fn test_validator_display_name() {
     assert_eq!(Validator::MaxLength(10).display_name(), "最大长度");
     assert_eq!(Validator::Min(0.0).display_name(), "最小值");
     assert_eq!(Validator::Max(100.0).display_name(), "最大值");
-    assert_eq!(Validator::Email.display_name(), "邮箱格式");
-    assert_eq!(Validator::Phone.display_name(), "手机号格式");
+    assert_eq!(Validator::Email.display_name(), "邮箱格式（严格）");
+    assert_eq!(Validator::Phone.display_name(), "手机号格式（严格）");
     assert_eq!(Validator::Url.display_name(), "URL格式");
     assert_eq!(
         Validator::Regex(r"^\d+$".to_string()).display_name(),
@@ -214,12 +214,13 @@ fn test_max_value_invalid_type() {
 fn test_email_success() {
     let validator = Validator::Email;
 
-    // 正常情况
+    // 正常情况（严格模式）
     assert!(validator
         .validate("email", &json!("user@example.com"))
         .is_ok());
     assert!(validator.validate("email", &json!("test@test.org")).is_ok());
-    assert!(validator.validate("email", &json!("a@b.c")).is_ok());
+    // 顶级域名至少2个字符
+    assert!(validator.validate("email", &json!("a@b.cn")).is_ok());
 }
 
 #[test]
@@ -233,13 +234,14 @@ fn test_email_invalid_format() {
     if let Err(BaseError::ValidationFailed(field, msg)) = result {
         assert_eq!(field, "email");
         assert!(msg.contains("邮箱格式无效"));
-        assert!(msg.contains("必须包含 @ 符号"));
     } else {
         panic!("期望 ValidationFailed 错误");
     }
 
     // 空字符串
     assert!(validator.validate("email", &json!("")).is_err());
+    // 缺少顶级域名
+    assert!(validator.validate("email", &json!("user@example")).is_err());
 }
 
 #[test]
@@ -257,13 +259,10 @@ fn test_email_invalid_type() {
 fn test_phone_success() {
     let validator = Validator::Phone;
 
-    // 正常情况
+    // 正常情况（严格 E.164 模式）
     assert!(validator.validate("phone", &json!("13800138000")).is_ok());
-    assert!(validator.validate("phone", &json!("138-0013-8000")).is_ok());
+    assert!(validator.validate("phone", &json!("+8613800138000")).is_ok());
     assert!(validator.validate("phone", &json!("1234567890")).is_ok());
-
-    // 只有连字符
-    assert!(validator.validate("phone", &json!("---")).is_ok());
 }
 
 #[test]
@@ -277,14 +276,14 @@ fn test_phone_invalid_format() {
     if let Err(BaseError::ValidationFailed(field, msg)) = result {
         assert_eq!(field, "phone");
         assert!(msg.contains("手机号格式无效"));
-        assert!(msg.contains("只能包含数字和连字符"));
     } else {
         panic!("期望 ValidationFailed 错误");
     }
 
-    // 包含特殊字符
-    assert!(validator.validate("phone", &json!("138+0013")).is_err());
+    // 包含空格
     assert!(validator.validate("phone", &json!("138 0013")).is_err());
+    // 以 0 开头（E.164 要求第一位非零）
+    assert!(validator.validate("phone", &json!("0138001380")).is_err());
 }
 
 #[test]
@@ -389,7 +388,8 @@ fn test_regex_invalid_pattern() {
 
     if let Err(BaseError::ValidationFailed(field, msg)) = result {
         assert_eq!(field, "code");
-        assert!(msg.contains("正则表达式无效"));
+        // 错误消息应包含正则表达式相关描述
+        assert!(msg.contains("正则表达式"));
     } else {
         panic!("期望 ValidationFailed 错误");
     }

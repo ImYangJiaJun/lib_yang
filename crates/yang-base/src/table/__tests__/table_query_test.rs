@@ -1,4 +1,4 @@
-//! TableQuery 单元测试
+﻿//! TableQuery 单元测试
 //!
 //! 测试查询构建器的功能，包括：
 //! - 查询构建方法的链式调用
@@ -54,7 +54,7 @@ fn create_test_table_config() -> Arc<TableConfig> {
 #[test]
 fn test_table_query_new() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config.clone(), vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config.clone(), Arc::from(vec!["user".to_string()]), None);
 
     assert_eq!(query.get_table_config().table_name, "users");
     assert_eq!(query.get_user_roles(), &["user"]);
@@ -66,7 +66,7 @@ fn test_table_query_new() {
 #[test]
 fn test_select_fields_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.select_fields(&["id", "name", "email"]);
     assert!(result.is_ok());
@@ -82,7 +82,7 @@ fn test_select_fields_success() {
 #[test]
 fn test_select_fields_not_found() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.select_fields(&["id", "nonexistent"]);
     assert!(result.is_err());
@@ -99,7 +99,7 @@ fn test_select_fields_not_found() {
 #[test]
 fn test_select_fields_permission_denied() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // salary 字段只有 admin 可读
     let result = query.select_fields(&["id", "salary"]);
@@ -118,7 +118,7 @@ fn test_select_fields_permission_denied() {
 #[test]
 fn test_select_fields_admin_can_read_all() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // admin 可以读取所有字段
     let result = query.select_fields(&["id", "name", "salary", "secret"]);
@@ -132,7 +132,7 @@ fn test_select_fields_admin_can_read_all() {
 #[test]
 fn test_where_eq_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_eq("name", json!("alice"));
     assert!(result.is_ok());
@@ -144,7 +144,7 @@ fn test_where_eq_success() {
 #[test]
 fn test_where_eq_field_not_found() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_eq("nonexistent", json!("value"));
     assert!(result.is_err());
@@ -161,7 +161,7 @@ fn test_where_eq_field_not_found() {
 #[test]
 fn test_where_eq_permission_denied() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // salary 字段只有 admin 可筛选
     let result = query.where_eq("salary", json!(50000));
@@ -180,7 +180,7 @@ fn test_where_eq_permission_denied() {
 #[test]
 fn test_where_in_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_in("name", vec![json!("alice"), json!("bob"), json!("charlie")]);
     assert!(result.is_ok());
@@ -192,7 +192,7 @@ fn test_where_in_success() {
 #[test]
 fn test_where_in_permission_denied() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_in("salary", vec![json!(50000), json!(60000)]);
     assert!(result.is_err());
@@ -206,7 +206,7 @@ fn test_where_in_permission_denied() {
 #[test]
 fn test_where_like_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_like("name", "%alice%".to_string());
     assert!(result.is_ok());
@@ -218,7 +218,7 @@ fn test_where_like_success() {
 #[test]
 fn test_where_like_permission_denied() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // secret 字段没有筛选权限
     let result = query.where_like("secret", "%test%".to_string());
@@ -233,7 +233,7 @@ fn test_where_like_permission_denied() {
 #[test]
 fn test_order_by_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.order_by("name", SortOrder::Asc);
     assert!(result.is_ok());
@@ -247,7 +247,7 @@ fn test_order_by_success() {
 #[test]
 fn test_order_by_field_not_found() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.order_by("nonexistent", SortOrder::Asc);
     assert!(result.is_err());
@@ -264,7 +264,7 @@ fn test_order_by_field_not_found() {
 #[test]
 fn test_order_by_permission_denied() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // salary 字段只有 admin 可排序
     let result = query.order_by("salary", SortOrder::Desc);
@@ -283,7 +283,7 @@ fn test_order_by_permission_denied() {
 #[test]
 fn test_order_by_no_sort_permission() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // secret 字段没有排序权限
     let result = query.order_by("secret", SortOrder::Asc);
@@ -298,7 +298,7 @@ fn test_order_by_no_sort_permission() {
 #[test]
 fn test_page_success() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.page(1, 20);
     assert!(result.is_ok());
@@ -311,7 +311,7 @@ fn test_page_success() {
 #[test]
 fn test_chained_calls() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // 测试链式调用
     let result = query
@@ -334,7 +334,7 @@ fn test_chained_calls() {
 #[test]
 fn test_multiple_where_conditions() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query
         .where_eq("name", json!("alice"))
@@ -350,7 +350,7 @@ fn test_multiple_where_conditions() {
 #[test]
 fn test_multiple_order_by() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query
         .order_by("name", SortOrder::Asc)
@@ -369,7 +369,7 @@ fn test_multiple_order_by() {
 #[test]
 fn test_admin_can_use_all_fields() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // admin 可以使用所有字段
     let result = query
@@ -383,7 +383,7 @@ fn test_admin_can_use_all_fields() {
 #[test]
 fn test_empty_user_roles() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec![], None);
+    let query = TableQuery::new(table_config, Arc::from(vec![]), None);
 
     // 空角色列表应该可以访问没有权限限制的字段
     let result = query.select_fields(&["id", "name"]);
@@ -391,7 +391,7 @@ fn test_empty_user_roles() {
 
     // 但不能访问有权限限制的字段
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config, vec![], None);
+    let query = TableQuery::new(table_config, Arc::from(vec![]), None);
     let result = query.select_fields(&["salary"]);
     assert!(result.is_err());
 }
@@ -435,7 +435,7 @@ fn test_update_validate_field_not_found() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("nonexistent".to_string(), json!("value"));
@@ -459,7 +459,7 @@ fn test_update_validate_permission_denied() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -484,7 +484,7 @@ fn test_update_validate_success() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -501,7 +501,7 @@ fn test_update_validate_admin_can_write_all() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -517,7 +517,7 @@ fn test_update_validate_type_validation() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -538,7 +538,7 @@ fn test_build_update_sql_basic() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -550,10 +550,10 @@ fn test_build_update_sql_basic() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含 UPDATE 和 SET
-    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("UPDATE `users`"));
     assert!(sql.contains("SET"));
-    assert!(sql.contains("name = ?"));
-    assert!(sql.contains("email = ?"));
+    assert!(sql.contains("`name` = ?"));
+    assert!(sql.contains("`email` = ?"));
 
     // 检查参数数量
     assert_eq!(params.len(), 2);
@@ -564,7 +564,7 @@ fn test_build_update_sql_with_where() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -578,10 +578,10 @@ fn test_build_update_sql_with_where() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含 WHERE 子句
-    assert!(sql.contains("UPDATE users"));
-    assert!(sql.contains("SET name = ?"));
+    assert!(sql.contains("UPDATE `users`"));
+    assert!(sql.contains("SET `name` = ?"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("`id` = ?"));
 
     // 检查参数数量：1个 SET 参数 + 1个 WHERE 参数
     assert_eq!(params.len(), 2);
@@ -592,7 +592,7 @@ fn test_build_update_sql_with_multiple_where() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -611,12 +611,12 @@ fn test_build_update_sql_with_multiple_where() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含多个 WHERE 条件
-    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("UPDATE `users`"));
     assert!(sql.contains("SET"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("`id` = ?"));
     assert!(sql.contains("AND"));
-    assert!(sql.contains("email LIKE ?"));
+    assert!(sql.contains("`email` LIKE ?"));
 
     // 检查参数数量：2个 SET 参数 + 2个 WHERE 参数
     assert_eq!(params.len(), 4);
@@ -627,7 +627,7 @@ fn test_build_update_sql_with_in_condition() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
@@ -643,10 +643,10 @@ fn test_build_update_sql_with_in_condition() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含 IN 子句
-    assert!(sql.contains("UPDATE users"));
-    assert!(sql.contains("SET name = ?"));
+    assert!(sql.contains("UPDATE `users`"));
+    assert!(sql.contains("SET `name` = ?"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id IN (?, ?, ?)"));
+    assert!(sql.contains("`id` IN (?, ?, ?)"));
 
     // 检查参数数量：1个 SET 参数 + 3个 IN 参数
     assert_eq!(params.len(), 4);
@@ -657,7 +657,7 @@ fn test_update_partial_fields() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     // UPDATE 只更新部分字段，不需要提供所有字段
     let mut data = HashMap::new();
@@ -672,7 +672,7 @@ fn test_update_empty_data() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, vec!["user".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let data = HashMap::new(); // 空数据
 
@@ -684,7 +684,7 @@ fn test_update_empty_data() {
     assert!(result.is_ok());
 
     let (sql, params) = result.unwrap();
-    assert!(sql.contains("UPDATE users"));
+    assert!(sql.contains("UPDATE `users`"));
     assert!(sql.contains("SET"));
     assert_eq!(params.len(), 0);
 }
@@ -732,7 +732,7 @@ fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
 #[test]
 fn test_build_delete_sql_basic() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     let result = query.build_delete_sql();
     assert!(result.is_ok());
@@ -740,14 +740,14 @@ fn test_build_delete_sql_basic() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句
-    assert_eq!(sql, "DELETE FROM logs");
+    assert_eq!(sql, "DELETE FROM `logs`");
     assert_eq!(params.len(), 0);
 }
 
 #[test]
 fn test_build_delete_sql_with_where_eq() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // 添加 WHERE 条件
     let query = query.where_eq("id", json!(1)).unwrap();
@@ -758,9 +758,9 @@ fn test_build_delete_sql_with_where_eq() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含 WHERE 子句
-    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("DELETE FROM `logs`"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("`id` = ?"));
 
     // 检查参数数量
     assert_eq!(params.len(), 1);
@@ -769,7 +769,7 @@ fn test_build_delete_sql_with_where_eq() {
 #[test]
 fn test_build_delete_sql_with_multiple_where() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // 添加多个 WHERE 条件
     let query = query
@@ -784,11 +784,11 @@ fn test_build_delete_sql_with_multiple_where() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含多个 WHERE 条件
-    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("DELETE FROM `logs`"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("`id` = ?"));
     assert!(sql.contains("AND"));
-    assert!(sql.contains("message LIKE ?"));
+    assert!(sql.contains("`message` LIKE ?"));
 
     // 检查参数数量
     assert_eq!(params.len(), 2);
@@ -797,7 +797,7 @@ fn test_build_delete_sql_with_multiple_where() {
 #[test]
 fn test_build_delete_sql_with_in_condition() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // 添加 IN 条件
     let query = query
@@ -810,9 +810,9 @@ fn test_build_delete_sql_with_in_condition() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句包含 IN 子句
-    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("DELETE FROM `logs`"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id IN (?, ?, ?)"));
+    assert!(sql.contains("`id` IN (?, ?, ?)"));
 
     // 检查参数数量
     assert_eq!(params.len(), 3);
@@ -821,7 +821,7 @@ fn test_build_delete_sql_with_in_condition() {
 #[test]
 fn test_build_delete_sql_with_is_null() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // 添加 IS NULL 条件
     let query = query.where_eq("id", json!(1)).unwrap();
@@ -832,9 +832,9 @@ fn test_build_delete_sql_with_is_null() {
     let (sql, params) = result.unwrap();
 
     // 检查 SQL 语句
-    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("DELETE FROM `logs`"));
     assert!(sql.contains("WHERE"));
-    assert!(sql.contains("id = ?"));
+    assert!(sql.contains("`id` = ?"));
 
     // 检查参数数量
     assert_eq!(params.len(), 1);
@@ -862,7 +862,7 @@ fn test_hard_delete_field_not_configured() {
 #[test]
 fn test_delete_sql_all_where_conditions() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, vec!["admin".to_string()], None);
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
     // 测试所有 WHERE 条件类型
     let query = query.where_eq("id", json!(1)).unwrap();
@@ -871,7 +871,7 @@ fn test_delete_sql_all_where_conditions() {
     assert!(result.is_ok());
 
     let (sql, params) = result.unwrap();
-    assert!(sql.contains("DELETE FROM logs"));
+    assert!(sql.contains("DELETE FROM `logs`"));
     assert!(sql.contains("WHERE"));
     assert_eq!(params.len(), 1);
 }
