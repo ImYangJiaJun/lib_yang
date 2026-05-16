@@ -26,6 +26,7 @@ async fn test_crud_sql_generation() {
             .field("id")
             .field("name")
             .where_and("status", "=", "active")
+            .unwrap()
             .to_sql();
         assert!(select_sql.contains("SELECT"), "应该包含 SELECT");
         assert!(select_sql.contains("WHERE"), "应该包含 WHERE");
@@ -105,6 +106,7 @@ async fn test_crud_with_real_table() {
                 let update_result = db
                     .table(table_name)
                     .where_and("id", "=", id as i64)
+                    .unwrap()
                     .update(&update_data)
                     .await;
 
@@ -117,6 +119,7 @@ async fn test_crud_with_real_table() {
                 let delete_result = db
                     .table(table_name)
                     .where_and("id", "=", id as i64)
+                    .unwrap()
                     .delete()
                     .await;
 
@@ -208,14 +211,16 @@ async fn test_where_conditions() {
 
     if let Ok(db) = result {
         // 测试各种 WHERE 条件的 SQL 生成
-        let sql1 = db.table("users").where_and("age", ">", 18).to_sql();
+        let sql1 = db.table("users").where_and("age", ">", 18).unwrap().to_sql();
         assert!(sql1.contains("WHERE"), "应该包含 WHERE");
         println!("✓ WHERE > 条件: {}", sql1);
 
         let sql2 = db
             .table("users")
             .where_and("status", "=", "active")
+            .unwrap()
             .where_and("age", ">=", 18)
+            .unwrap()
             .to_sql();
         assert!(sql2.contains("WHERE"), "应该包含 WHERE");
         println!("✓ 多个 WHERE 条件: {}", sql2);
@@ -223,6 +228,7 @@ async fn test_where_conditions() {
         let sql3 = db
             .table("users")
             .where_and("name", "like", "%test%")
+            .unwrap()
             .to_sql();
         println!("✓ WHERE LIKE 条件: {}", sql3);
 

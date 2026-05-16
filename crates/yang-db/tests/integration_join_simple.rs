@@ -134,6 +134,7 @@ async fn test_join_with_where() {
             .field("orders.product")
             .join("orders", "users.id = orders.user_id")
             .where_and("orders.amount", ">", 100.0)
+            .unwrap()
             .to_sql();
 
         println!("生成的 JOIN + WHERE SQL: {}", sql);
@@ -244,7 +245,9 @@ async fn test_complex_join_query() {
             .join("orders AS o", "u.id = o.user_id")
             .left_join("products AS p", "o.product_id = p.id")
             .where_and("u.status", "=", "active")
+            .unwrap()
             .where_and("o.amount", ">", 50.0)
+            .unwrap()
             .order("o.created_at", false)
             .limit(20)
             .to_sql();

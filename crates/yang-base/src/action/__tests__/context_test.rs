@@ -371,9 +371,8 @@ fn test_global_tools_singleton() {
     // 注意：这个测试可能在其他测试已初始化单例后运行，所以我们先检查当前状态
     let initial_state = GlobalTools::get();
 
-    if initial_state.is_err() {
+    if let Err(err) = initial_state {
         // 单例尚未初始化，测试未初始化场景
-        let err = initial_state.unwrap_err();
         assert!(
             matches!(err, crate::error::BaseError::ConfigError(_)),
             "未初始化时应返回 ConfigError，实际返回: {:?}",

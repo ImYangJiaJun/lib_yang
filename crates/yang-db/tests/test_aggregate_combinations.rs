@@ -168,6 +168,7 @@ async fn test_avg_with_where() {
     let avg_age = db
         .table("users")
         .where_and("status", "=", 1)
+        .unwrap()
         .avg("age")
         .await
         .unwrap();
@@ -204,6 +205,7 @@ async fn test_min_with_where() {
     let result = db
         .table("orders")
         .where_and("status", "=", "completed")
+        .unwrap()
         .field("CAST(MIN(amount) AS DOUBLE) as min_amount")
         .select::<MinResult>()
         .await
@@ -242,6 +244,7 @@ async fn test_max_with_where() {
     let result = db
         .table("orders")
         .where_and("status", "=", "completed")
+        .unwrap()
         .field("CAST(MAX(amount) AS DOUBLE) as max_amount")
         .select::<MaxResult>()
         .await
@@ -332,6 +335,7 @@ async fn test_multiple_aggregates() {
     let result = db
         .table("orders")
         .where_and("status", "=", "completed")
+        .unwrap()
         .field("CAST(AVG(amount) AS DOUBLE) as avg_amount")
         .field("CAST(MIN(amount) AS DOUBLE) as min_amount")
         .field("CAST(MAX(amount) AS DOUBLE) as max_amount")
@@ -366,7 +370,9 @@ async fn test_sql_order_with_aggregates() {
     let avg_age = db
         .table("users")
         .where_and("status", "=", 1)
+        .unwrap()
         .where_and("age", ">", 25)
+        .unwrap()
         .avg("age")
         .await
         .unwrap();

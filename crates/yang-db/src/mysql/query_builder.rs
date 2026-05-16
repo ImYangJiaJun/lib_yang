@@ -5432,7 +5432,7 @@ mod property_tests {
             let expected_chunk_count = if n == 0 {
                 0
             } else {
-                (n + b - 1) / b  // 等价于 ceil(n / b)
+                n.div_ceil(b)  // 等价于 ceil(n / b)
             };
 
             // 验证分批数等于 ceil(n / b)
