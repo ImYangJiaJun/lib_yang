@@ -1,6 +1,6 @@
 # lib_yang — Project Knowledge Base
 
-**Generated:** 2026-05-02
+**Generated:** 2026-05-25
 **Commit:** 10e3a1a
 **Branch:** master
 
@@ -31,10 +31,10 @@ lib_yang/
 | Table config | `crates/yang-base/src/table/` | Table structs, field configuration |
 | Router | `crates/yang-base/src/router/` | Router configuration |
 | Error types | `crates/yang-base/src/error/` + `crates/yang-db/src/error.rs` | BaseError (yang-base), DbError (yang-db) |
-| Root-level docs | `DOCS_CLEANUP_PLAN.md`, `*.md` | Summaries of dependency updates, testcontainers fixes, optimization plans |
+| Root-level docs | `docs/yang-db.md`, `docs/yang-base.md` | 完整 API 参考文档（2026-05-25 生成） |
 
 ## CONVENTIONS
-- **Edition**: yang-base = 2021; yang-db/yang-pcg use 2024 (non-standard, should be 2021)
+- **Edition**: yang-base = 2021; yang-db/yang-pcg specify `edition = "2021"` (workspace standard)
 - **License**: MIT OR Apache-2.0 (all crates)
 - **Linting**: `cargo clippy --all-targets --all-features -- -D warnings` (must pass clean)
 - **Formatting**: `cargo fmt` (Rust defaults, no custom rustfmt.toml)
@@ -44,12 +44,11 @@ lib_yang/
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - **CRITICAL**: `RedisConfig` connection pool params never applied — fix before touching Redis
-- **CRITICAL**: `insert_batch` lacks auto-batching — large datasets exceed `max_allowed_packet`
-- **TODO**: Plugin JSON Schema validation not implemented (`src/plugin/mod.rs:451`)
+- **FIXED**: `insert_batch` now has auto-batching via `insert_batch_with_size` (default batch_size=500)
 - **TODO**: `builtin/select.rs` and `builtin/get.rs` use `serde_json::Value` instead of concrete types
 - **NEVER**: Use `unwrap()` in production code — tests have 20+ unwrap() calls to fix
 - **NEVER**: Hardcode credentials — `.mcp.json` contains MySQL password "111111"
-- `having()` method uses raw strings without SQL injection protection
+- `having_cond_unchecked` does not validate operator — use `having_cond` (returns Result) instead
 - Redis Pipeline/Transaction/Lua should use `redis::pipe()`/`redis::Script` APIs, not custom impl
 
 ## COMMANDS
