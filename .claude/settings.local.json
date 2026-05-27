@@ -9,7 +9,9 @@
       "Bash(find / -name cargo -maxdepth 10 -type f)",
       "Bash(cargo.exe *)",
       "Bash(git -C /mnt/d/code/lib_yang diff HEAD -- crates/yang-db)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(cargo --version)",
+      "Bash(cargo clippy *)"
     ]
   }
 }
