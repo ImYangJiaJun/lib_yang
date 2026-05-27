@@ -41,6 +41,13 @@ jsonschema = "0.29"
 # JSON Schema 派生
 schemars = { version = "0.8", features = ["chrono"] }
 
+# 派生宏基础设施
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+darling = "0.20"
+proc-macro-error = "1.0"
+
 # Workspace 统一 lint 配置
 [workspace.lints.rust]
 # 忽略 Result 返回值视为编译错误

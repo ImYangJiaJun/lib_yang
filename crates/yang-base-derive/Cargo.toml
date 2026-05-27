@@ -1,0 +1,19 @@
+[package]
+name = "yang-base-derive"
+version = "0.1.0"
+edition = "2021"
+description = "yang-base 类型化派生宏（TableEntity / Action）"
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+darling = { workspace = true }
+proc-macro-error = { workspace = true }

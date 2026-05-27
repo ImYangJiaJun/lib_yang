@@ -1,59 +1,19 @@
-//! 手写 TableEntity 实现验证（步骤 2，无派生宏）
+//! 派生 TableEntity 实现验证（Task 4 之后）
 #![cfg(feature = "mysql")]
 
 use crate::table::entity::*;
-use crate::table::{TableConfig, FieldConfig, FieldType};
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow)]
+#[derive(
+    Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow,
+    yang_base_derive::TableEntity,
+)]
+#[table(name = "test_users")]
 pub struct TestUser {
+    #[entity(primary_key)]
     pub id: i64,
+    #[entity(max_length = 50, unique)]
     pub username: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TestUserField { Id, Username }
-
-impl AsColumnName for TestUserField {
-    fn column_name(&self) -> &'static str {
-        match self {
-            TestUserField::Id => "id",
-            TestUserField::Username => "username",
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "field", content = "cond", rename_all = "snake_case")]
-pub enum TestUserWhere {
-    Id(WhereOp<i64>),
-    Username(StringWhereOp),
-}
-
-impl IntoSqlCondition for TestUserWhere {
-    fn into_sql_condition(self) -> SqlCondition {
-        match self {
-            TestUserWhere::Id(op) => op.to_sql_condition("id"),
-            TestUserWhere::Username(op) => op.to_sql_condition("username"),
-        }
-    }
-}
-
-impl TableEntity for TestUser {
-    type Pk = i64;
-    type Field = TestUserField;
-    type WhereCond = TestUserWhere;
-    const TABLE_NAME: &'static str = "test_users";
-    const PK_FIELD: &'static str = "id";
-    fn table_config() -> &'static TableConfig {
-        static C: OnceLock<TableConfig> = OnceLock::new();
-        C.get_or_init(|| TableConfig::new("test_users")
-            .primary_key("id")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("username", FieldType::String { max_length: 50 })))
-    }
 }
 
 #[test]

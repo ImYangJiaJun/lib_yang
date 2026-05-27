@@ -59,6 +59,9 @@
 // 强制公开 API 文档覆盖率检查：所有公开项必须有文档注释
 #![warn(missing_docs)]
 
+// 让派生宏内部的 `::yang_base::...` 路径在 yang-base 自身的测试中正常解析。
+extern crate self as yang_base;
+
 pub mod action;
 pub mod database;
 pub mod error;
@@ -72,3 +75,6 @@ pub mod token;
 
 // 重新导出插件系统的核心类型，方便用户直接使用
 pub use plugin::{Plugin, PluginManager, PluginManagerBuilder, PluginRegistry};
+
+// 重新导出 TableEntity 派生宏
+pub use yang_base_derive::TableEntity;
