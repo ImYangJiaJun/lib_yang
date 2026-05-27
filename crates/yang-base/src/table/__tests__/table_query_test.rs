@@ -897,6 +897,8 @@ fn test_new_where_methods_build_sql() {
         .where_null("name")
         .unwrap()
         .where_not_null("age")
+        .unwrap()
+        .where_not_in("id", vec![serde_json::json!(5), serde_json::json!(6)])
         .unwrap();
     let (sql, _) = q.build_select_sql_for_test().expect("build sql");
     assert!(sql.contains("`age` < ?"), "Expected `age` < ? in: {}", sql);
@@ -919,6 +921,11 @@ fn test_new_where_methods_build_sql() {
     assert!(
         sql.contains("`age` IS NOT NULL"),
         "Expected IS NOT NULL in: {}",
+        sql
+    );
+    assert!(
+        sql.contains("`id` NOT IN (?, ?)"),
+        "Expected NOT IN in: {}",
         sql
     );
 }

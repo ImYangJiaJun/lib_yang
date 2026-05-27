@@ -751,7 +751,7 @@ impl TableQuery {
         let page_size = self.query_params.page_size.unwrap_or(20);
 
         // 3. 执行 COUNT(*) 查询获取总记录数
-        let total = self.count().await?;
+        let total = self.count_internal().await?;
 
         // 4. 如果总记录数为 0，直接返回空结果
         if total == 0 {
@@ -767,7 +767,7 @@ impl TableQuery {
         ))
     }
 
-    /// 执行 COUNT 查询获取总记录数
+    /// 执行 COUNT 查询获取总记录数（内部方法，供 paginate 使用）
     ///
     /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
     ///
@@ -780,18 +780,7 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// let total = query
-    ///     .where_eq("status", serde_json::json!("active"))?
-    ///     .count()
-    ///     .await?;
-    ///
-    /// println!("总记录数: {}", total);
-    /// ```
-    async fn count(&self) -> Result<usize, BaseError> {
+    async fn count_internal(&self) -> Result<usize, BaseError> {
         // 1. 检查数据库连接池是否存在
         let pool = self
             .pool
@@ -816,6 +805,34 @@ impl TableQuery {
             .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
 
         Ok(count as usize)
+    }
+
+    /// 执行 COUNT 查询获取总记录数
+    ///
+    /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(u64)`：查询成功，返回总记录数
+    /// - `Err(BaseError)`：查询失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
+    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let total = query
+    ///     .where_eq("status", serde_json::json!("active"))?
+    ///     .count()
+    ///     .await?;
+    ///
+    /// println!("总记录数: {}", total);
+    /// ```
+    pub async fn count(self) -> Result<u64, BaseError> {
+        self.count_internal().await.map(|n| n as u64)
     }
 
     /// 统一拼接 WHERE 子句到 SQL 字符串
