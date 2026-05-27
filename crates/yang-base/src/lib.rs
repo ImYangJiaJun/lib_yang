@@ -76,5 +76,5 @@ pub mod token;
 // 重新导出插件系统的核心类型，方便用户直接使用
 pub use plugin::{Plugin, PluginManager, PluginManagerBuilder, PluginRegistry};
 
-// 重新导出 TableEntity 派生宏
-pub use yang_base_derive::TableEntity;
+// 重新导出派生宏
+pub use yang_base_derive::{Action, TableEntity};
