@@ -232,5 +232,5 @@ impl StringWhereOp {
 }
 
 fn to_v<V: serde::Serialize>(v: V) -> serde_json::Value {
-    serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
+    serde_json::to_value(v).expect("WhereOp 参数序列化失败：Serialize 实现有缺陷")
 }

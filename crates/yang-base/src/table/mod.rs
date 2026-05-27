@@ -33,7 +33,7 @@
 //! assert!(email_validator.validate("email", &json!("user@example.com")).is_ok());
 //! ```
 
-pub mod entity;
+mod entity;
 mod dynamic_row;
 mod field_config;
 mod field_type;

@@ -67,7 +67,10 @@ fn test_where_op_deserialize() {
 fn test_where_op_in_deserialize() {
     let json = r#"{"op":"in","value":[1,2,3]}"#;
     let op: WhereOp<i64> = serde_json::from_str(json).unwrap();
-    assert!(matches!(op, WhereOp::In(_)));
+    match op {
+        WhereOp::In(vs) => assert_eq!(vs, vec![1i64, 2, 3]),
+        other => panic!("expected WhereOp::In, got {:?}", other),
+    }
 }
 
 #[test]
