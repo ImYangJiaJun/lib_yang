@@ -11,16 +11,17 @@ exclude = [
     "INSTALL.md",
 ]
 
-# yang-db 内部使用了 unsafe 代码（用于 MySqlPool 的裸指针操作），
-# 需要在 crate 级别允许 unsafe 代码，不使用 workspace lints
+# yang-db lint 配置：
+# - unsafe_code 已升级为 deny，测试中的 MaybeUninit unsafe 已全部替换为 connect_lazy
+# - unwrap_used/expect_used 升级为 warn；测试代码中的 unwrap 暂不清理（M-1 范围）
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "deny"
 unused_must_use = "deny"
 
 [lints.clippy]
-# yang-db 现有代码中包含大量 unwrap/expect，允许
-unwrap_used = "allow"
-expect_used = "allow"
+# 已知测试代码中仍有 unwrap/expect；生产路径新增的 expect 均有不变量注释
+unwrap_used = "warn"
+expect_used = "warn"
 clone_on_ref_ptr = "warn"
 large_enum_variant = "warn"
 

@@ -4,14 +4,18 @@
 **来源**：基于完整代码审查 + 架构评估对话（见 AGENTS.md）
 
 > 优先级：🔴 Critical（生产风险）/ 🟠 High（设计缺陷）/ 🟡 Medium（代码质量）/ 🟢 Low（改进建议）
+> 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
+> 最近更新：2026-05-27，基于当前工作区实现与 `cargo test --lib -p yang-base`、`cargo test --lib -p yang-db` 验证结果。
 
 ---
 
 ## 🔴 Critical — 生产风险
 
-### [C-1] RedisConfig 连接池参数静默失效
+### ✅ [C-1] RedisConfig 连接池参数静默失效
 
 **文件**：`crates/yang-db/src/redis/config.rs`、`crates/yang-db/src/redis/client.rs`
+
+**状态**：✅ 已完成。`RedisClient::connect_with_config()` 已将 `RedisConfig::max_connections`、`connect_timeout`、`wait_timeout` 写入 `deadpool_redis::PoolConfig`，并新增 `pool_status().max_size` 验证。
 
 **问题**：`RedisConfig` 中定义的 `pool_size`、`min_idle`、`idle_timeout` 等连接池参数在构建 `deadpool_redis::Pool` 时**未被读取**，实际连接池使用库默认值。用户配置了参数却完全不生效，属于静默失效（silent no-op）。
 
@@ -40,9 +44,11 @@ let pool_config = deadpool_redis::Config {
 
 ---
 
-### [C-2] yang-db 包含未审查的 unsafe 代码
+### ✅ [C-2] yang-db 包含未审查的 unsafe 代码
 
 **文件**：`crates/yang-db/src/mysql/` 内某处（MySqlPool 裸指针操作）
+
+**状态**：✅ 已完成。`yang-db` 已将 `unsafe_code` 提升为 `deny`，原测试中的 `MaybeUninit` 裸指针池替换为 `connect_lazy()` 懒连接池。
 
 **问题**：`yang-db` 的 `Cargo.toml` 中 `unsafe_code = "allow"`，注释说明是"用于 MySqlPool 的裸指针操作"，但裸指针操作在数据库连接池场景下存在潜在的并发安全风险（Use-After-Free、数据竞争）。
 
@@ -60,7 +66,7 @@ let pool_config = deadpool_redis::Config {
 
 ## 🟠 High — 设计缺陷
 
-### [H-1] builtin Action 使用 serde_json::Value 而非具体类型
+### ⏳ [H-1] builtin Action 使用 serde_json::Value 而非具体类型
 
 **文件**：
 - `crates/yang-base/src/action/builtin/select.rs`
@@ -80,7 +86,7 @@ let pool_config = deadpool_redis::Config {
 
 ---
 
-### [H-2] Redis Pipeline/Transaction 是自定义实现而非 redis::pipe()
+### ⏳ [H-2] Redis Pipeline/Transaction 是自定义实现而非 redis::pipe()
 
 **文件**：
 - `crates/yang-db/src/redis/pipeline.rs`
@@ -116,7 +122,7 @@ impl RedisPipeline {
 
 ---
 
-### [H-3] GlobalDatabase / GlobalRedis 无统一初始化入口
+### ⏳ [H-3] GlobalDatabase / GlobalRedis 无统一初始化入口
 
 **文件**：`crates/yang-base/src/database/`
 
@@ -130,7 +136,7 @@ impl RedisPipeline {
 
 ---
 
-### [H-4] Token 系统缺少 Token 撤销/黑名单机制
+### ⏳ [H-4] Token 系统缺少 Token 撤销/黑名单机制
 
 **文件**：`crates/yang-base/src/token/manager.rs`
 
@@ -145,7 +151,7 @@ impl RedisPipeline {
 
 ---
 
-### [H-5] Router 层缺少中间件/拦截器机制
+### ⏳ [H-5] Router 层缺少中间件/拦截器机制
 
 **文件**：`crates/yang-base/src/router/module_router.rs`
 
@@ -166,12 +172,14 @@ impl ModuleRouter {
 
 ---
 
-### [H-6] Cargo.toml 中 Edition 标注有矛盾
+### ✅ [H-6] Cargo.toml 中 Edition 标注有矛盾
 
 **文件**：
 - `crates/yang-db/Cargo.toml`
 - `crates/yang-pcg/Cargo.toml`
 - `AGENTS.md`（NOTES 节）
+
+**状态**：✅ 已完成。Workspace 与各 crate 当前统一为 `edition = "2021"`，`AGENTS.md` 已保留一致描述。
 
 **问题**：`AGENTS.md` 的 NOTES 节仍写着 `edition = "2024"` 是 bug，但 CONVENTIONS 节已更新说 edition 是 2021。需要实际确认两个 crate 的 Cargo.toml 当前值。
 
@@ -181,7 +189,7 @@ impl ModuleRouter {
 
 ## 🟡 Medium — 代码质量
 
-### [M-1] 测试代码中 unwrap() 调用过多（20+）
+### ⏳ [M-1] 测试代码中 unwrap() 调用过多（20+）
 
 **文件**：`crates/yang-db/tests/`、`crates/yang-base/tests/`
 
@@ -200,9 +208,11 @@ let user = result?;  // 配合 #[tokio::test] 返回 Result<(), Box<dyn Error>>
 
 ---
 
-### [M-2] having_cond_unchecked 无操作符验证
+### ✅ [M-2] having_cond_unchecked 无操作符验证
 
 **文件**：`crates/yang-db/src/mysql/query_builder.rs`
+
+**状态**：✅ 已完成。`having_cond_unchecked()` 已标记 `#[deprecated]`，文档引导使用返回 `Result` 的 `having_cond()`。
 
 **问题**：`having_cond_unchecked()` 接受任意字符串操作符而不验证，传入非法操作符会生成无效 SQL，只在数据库执行时才报错（而不是在构建时）。
 
@@ -212,9 +222,11 @@ let user = result?;  // 配合 #[tokio::test] 返回 Result<(), Box<dyn Error>>
 
 ---
 
-### [M-3] 生产代码中存在 unwrap() 调用
+### 🟨 [M-3] 生产代码中存在 unwrap() 调用
 
 **文件**：`crates/yang-db/`（lints 已通过 `unwrap_used = "allow"` 豁免）
+
+**状态**：🟨 部分完成。`yang-db` 已将 `unwrap_used` / `expect_used` 从 `allow` 调整为 `warn`，并替换了已审查的单元素条件分支 `unwrap()`；完整生产路径 panic 点审计仍需继续。
 
 **问题**：`yang-db/Cargo.toml` 中 clippy lint 显式允许 `unwrap_used` 和 `expect_used`，意味着生产代码路径中可能存在 panic 点。
 
@@ -225,9 +237,11 @@ let user = result?;  // 配合 #[tokio::test] 返回 Result<(), Box<dyn Error>>
 
 ---
 
-### [M-4] Workspace 无共享依赖表
+### ✅ [M-4] Workspace 无共享依赖表
 
 **文件**：`Cargo.toml`（workspace 根）
+
+**状态**：✅ 已完成。根 `Cargo.toml` 已增加 `[workspace.dependencies]`，主要公共依赖已通过 `workspace = true` 统一引用。
 
 **问题**：各 crate 的依赖版本分散在各自的 `Cargo.toml` 中，`sqlx`、`tokio`、`serde` 等公共依赖版本需要手动保持同步，容易出现版本漂移。
 
@@ -248,9 +262,11 @@ sqlx = { workspace = true }
 
 ## 🟢 Low — 改进建议
 
-### [L-1] GlobalDatabase::query / execute 缺乏参数化查询快捷方法
+### ✅ [L-1] GlobalDatabase::query / execute 缺乏参数化查询快捷方法
 
 **文件**：`crates/yang-base/src/database/global.rs`
+
+**状态**：✅ 已完成。`GlobalDatabase` 已新增 `query_with_params()` 与 `execute_with_params()` 委托方法，并覆盖未初始化错误测试。
 
 **现状**：`GlobalDatabase::query()` 和 `GlobalDatabase::execute()` 只接受裸 SQL 字符串，没有 `query_with_params` / `execute_with_params` 的快捷封装（底层 `Database` 有，但 `GlobalDatabase` 未透传）。
 
@@ -260,7 +276,7 @@ sqlx = { workspace = true }
 
 ---
 
-### [L-2] Router 层缺少 refresh_token 内置 Action
+### ⏳ [L-2] Router 层缺少 refresh_token 内置 Action
 
 **文件**：`crates/yang-base/src/action/builtin/`
 
@@ -272,9 +288,11 @@ sqlx = { workspace = true }
 
 ---
 
-### [L-3] FieldType 对 Date/DateTime/Timestamp 缺乏 validate 实现
+### ✅ [L-3] FieldType 对 Date/DateTime/Timestamp 缺乏 validate 实现
 
 **文件**：`crates/yang-base/src/table/field_type.rs`
+
+**状态**：✅ 已完成。`Date`、`DateTime`、`Timestamp` 已接入格式/类型校验，并新增对应单元测试。
 
 **现状**：`FieldType::validate()` 对 `Date`、`DateTime`、`Timestamp`、`Text`、`ForeignKey` 类型直接返回 `Ok(())`（注释说"暂不验证"）。
 
@@ -296,7 +314,7 @@ FieldType::Date => {
 
 ---
 
-### [L-4] HttpClient 缺少重试 / 熔断 / 超时策略配置
+### ⏳ [L-4] HttpClient 缺少重试 / 熔断 / 超时策略配置
 
 **文件**：`crates/yang-base/src/http/client.rs`
 
@@ -315,9 +333,11 @@ pub struct RetryConfig {
 
 ---
 
-### [L-5] AGENTS.md NOTES 节中 Edition 描述矛盾
+### ✅ [L-5] AGENTS.md NOTES 节中 Edition 描述矛盾
 
 **文件**：`AGENTS.md`
+
+**状态**：✅ 已完成。Edition 描述已与当前 Cargo.toml 保持一致。
 
 **问题**：NOTES 节仍保留 `"Edition 2024 bug": yang-db and yang-pcg specify edition = "2024" — needs fixing to "2021"`，但 CONVENTIONS 节已更新说 edition 是 2021。两处描述不一致，需要验证实际 Cargo.toml 并删除过时的 NOTES 条目。
 
@@ -325,22 +345,22 @@ pub struct RetryConfig {
 
 ## 汇总表
 
-| ID | 优先级 | Crate | 文件 | 一句话描述 |
-|----|--------|-------|------|------------|
-| C-1 | 🔴 Critical | yang-db | redis/client.rs | RedisConfig 连接池参数静默不生效 |
-| C-2 | 🔴 Critical | yang-db | mysql/（某处） | unsafe 裸指针代码未经充分审查 |
-| H-1 | 🟠 High | yang-base | action/builtin/select+get.rs | 返回值使用 Value 而非具体类型，类型安全弱 |
-| H-2 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 自定义 Pipeline/Transaction 实现应替换为 redis::pipe() |
-| H-3 | 🟠 High | yang-base | database/ | GlobalDatabase/GlobalRedis 无统一初始化入口 |
-| H-4 | 🟠 High | yang-base | token/manager.rs | 缺少 Token 撤销/黑名单机制 |
-| H-5 | 🟠 High | yang-base | router/module_router.rs | Router 层缺少中间件/拦截器机制 |
-| H-6 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 |
-| M-1 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap() 过多，错误信息不清 |
-| M-2 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 |
-| M-3 | 🟡 Medium | yang-db | （生产代码） | 生产路径存在 unwrap()，lints 已豁免 |
-| M-4 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 |
-| L-1 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 |
-| L-2 | 🟢 Low | yang-base | action/builtin/ | 缺少认证相关内置 Action（login/refresh/logout） |
-| L-3 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate |
-| L-4 | 🟢 Low | yang-base | http/client.rs | HttpClient 缺少重试/熔断策略 |
-| L-5 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 |
+| ID | 状态 | 优先级 | Crate | 文件 | 一句话描述 |
+|----|------|--------|-------|------|------------|
+| C-1 | ✅ 已完成 | 🔴 Critical | yang-db | redis/client.rs | RedisConfig 连接池参数静默不生效 |
+| C-2 | ✅ 已完成 | 🔴 Critical | yang-db | mysql/（某处） | unsafe 裸指针代码未经充分审查 |
+| H-1 | ⏳ 待处理 | 🟠 High | yang-base | action/builtin/select+get.rs | 返回值使用 Value 而非具体类型，类型安全弱 |
+| H-2 | ⏳ 待处理 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 自定义 Pipeline/Transaction 实现应替换为 redis::pipe() |
+| H-3 | ⏳ 待处理 | 🟠 High | yang-base | database/ | GlobalDatabase/GlobalRedis 无统一初始化入口 |
+| H-4 | ⏳ 待处理 | 🟠 High | yang-base | token/manager.rs | 缺少 Token 撤销/黑名单机制 |
+| H-5 | ⏳ 待处理 | 🟠 High | yang-base | router/module_router.rs | Router 层缺少中间件/拦截器机制 |
+| H-6 | ✅ 已完成 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 |
+| M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap() 过多，错误信息不清 |
+| M-2 | ✅ 已完成 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 |
+| M-3 | 🟨 部分完成 | 🟡 Medium | yang-db | （生产代码） | 生产路径存在 unwrap()，lints 已豁免 |
+| M-4 | ✅ 已完成 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 |
+| L-1 | ✅ 已完成 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 |
+| L-2 | ⏳ 待处理 | 🟢 Low | yang-base | action/builtin/ | 缺少认证相关内置 Action（login/refresh/logout） |
+| L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate |
+| L-4 | ⏳ 待处理 | 🟢 Low | yang-base | http/client.rs | HttpClient 缺少重试/熔断策略 |
+| L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 |

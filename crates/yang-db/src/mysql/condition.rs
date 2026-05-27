@@ -286,7 +286,10 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
             if conditions.len() == 1 {
                 // 只有一个条件时，直接递归处理，避免多余括号
                 let mut iter = conditions.into_iter();
-                return condition_to_sql_owned(iter.next().unwrap(), params);
+                return condition_to_sql_owned(
+                    iter.next().expect("already checked len == 1"),
+                    params,
+                );
             }
             // AND 条件需要括号以确保优先级，递归调用自身消费子条件
             let parts: Vec<String> = conditions
@@ -302,7 +305,10 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
             if conditions.len() == 1 {
                 // 只有一个条件时，直接递归处理，避免多余括号
                 let mut iter = conditions.into_iter();
-                return condition_to_sql_owned(iter.next().unwrap(), params);
+                return condition_to_sql_owned(
+                    iter.next().expect("already checked len == 1"),
+                    params,
+                );
             }
             // OR 条件需要括号，递归调用自身消费子条件
             let parts: Vec<String> = conditions

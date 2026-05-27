@@ -973,7 +973,10 @@ impl<'a> QueryBuilder<'a> {
             let existing = std::mem::take(&mut self.conditions);
             self.conditions.push(Condition::Or(vec![
                 if existing.len() == 1 {
-                    existing.into_iter().next().unwrap()
+                    existing
+                        .into_iter()
+                        .next()
+                        .expect("already checked len == 1")
                 } else {
                     Condition::And(existing)
                 },
@@ -1120,10 +1123,33 @@ impl<'a> QueryBuilder<'a> {
     /// 与 `having_cond` 相同，但遇到不支持的操作符时直接 panic，
     /// 保持原有行为，供需要链式调用且确定操作符合法的场景使用。
     ///
+    /// # 弃用说明
+    ///
+    /// 请改用 [`having_cond`]，它在操作符非法时返回 `Err` 而非 panic，
+    /// 可安全地在链式调用中传播错误：
+    ///
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct Row;
+    /// let result = db.table("orders")
+    ///     .group("user_id")
+    ///     .having_cond("cnt", ">", 5i64)?  // 返回 Result，而非 panic
+    ///     .select::<Row>()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # 参数
     /// - `field`: 聚合字段或聚合表达式
     /// - `op`: 比较运算符（必须是支持的操作符，否则 panic）
     /// - `value`: 比较值
+    #[deprecated(
+        since = "0.1.3",
+        note = "使用 `having_cond` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
+    )]
     pub fn having_cond_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
@@ -2847,13 +2873,36 @@ mod tests {
     use super::*;
     use sqlx::mysql::MySqlPoolOptions;
 
-    // 创建测试用的数据库连接池
+    // 创建测试用的数据库连接池（真实连接，用于 async 集成测试）
     async fn create_test_pool() -> MySqlPool {
         MySqlPoolOptions::new()
             .max_connections(1)
             .connect("mysql://root:111111@localhost:3306/test")
             .await
             .expect("无法连接到测试数据库")
+    }
+
+    /// 获取或创建共享懒连接池（仅验证 URL，不立即建立连接）。
+    /// 用于只测试 SQL 生成逻辑、不需要真实数据库连接的单元测试。
+    /// 使用 OnceLock + 静态 Tokio 运行时确保池在有效上下文中创建和驻留。
+    fn make_sync_test_pool() -> &'static MySqlPool {
+        use std::sync::OnceLock;
+        static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        static POOL: OnceLock<MySqlPool> = OnceLock::new();
+        let rt = RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("无法创建测试用 Tokio 运行时")
+        });
+        POOL.get_or_init(|| {
+            rt.block_on(async {
+                MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://root:111111@localhost:3306/test")
+                    .expect("无法解析测试数据库 URL")
+            })
+        })
     }
 
     #[tokio::test]
@@ -3185,8 +3234,7 @@ mod tests {
 
     #[test]
     fn test_where_null_generates_is_null_sql() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false).where_null("deleted_at");
         let sql = builder.to_sql();
         assert!(sql.contains("deleted_at IS NULL"));
@@ -3194,8 +3242,7 @@ mod tests {
 
     #[test]
     fn test_where_not_null_generates_is_not_null_sql() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false).where_not_null("email");
         let sql = builder.to_sql();
         assert!(sql.contains("email IS NOT NULL"));
@@ -3203,8 +3250,7 @@ mod tests {
 
     #[test]
     fn test_is_null_with_and_condition() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
             .where_and_unchecked("status", "=", 1i64)
             .where_null("deleted_at");
@@ -3215,8 +3261,7 @@ mod tests {
 
     #[test]
     fn test_having_clause_sql_generation() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
             .field("user_id")
             .field("COUNT(*) as cnt")
@@ -3229,8 +3274,7 @@ mod tests {
 
     #[test]
     fn test_having_without_group_returns_error() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
@@ -3243,8 +3287,7 @@ mod tests {
 
     #[test]
     fn test_having_clause_order() {
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
             .group("user_id")
             .having_cond_unchecked("cnt", ">", 5i64)
@@ -3891,6 +3934,29 @@ mod property_tests {
                 .connect("mysql://root:111111@localhost:3306/test")
                 .await
                 .expect("无法连接到测试数据库")
+        })
+    }
+
+    /// 获取或创建共享懒连接池（仅验证 URL，不立即建立连接）。
+    /// 用于只测试 SQL 生成逻辑、不需要真实数据库连接的单元测试。
+    /// 使用 OnceLock + 静态 Tokio 运行时确保池在有效上下文中创建和驻留。
+    fn make_sync_test_pool() -> &'static MySqlPool {
+        use std::sync::OnceLock;
+        static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        static POOL: OnceLock<MySqlPool> = OnceLock::new();
+        let rt = RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("无法创建测试用 Tokio 运行时")
+        });
+        POOL.get_or_init(|| {
+            rt.block_on(async {
+                MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://root:111111@localhost:3306/test")
+                    .expect("无法解析测试数据库 URL")
+            })
         })
     }
 
@@ -5199,8 +5265,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_eq() {
         // 验证需求: 5.8  支持的操作符 = 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", "=", 18i64);
         assert!(result.is_ok(), "操作符 '=' 应该返回 Ok");
@@ -5211,8 +5276,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_ne() {
         // 验证需求: 5.8  支持的操作符 != 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("status", "!=", 0i64);
         assert!(result.is_ok(), "操作符 '!=' 应该返回 Ok");
@@ -5221,8 +5285,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_gt() {
         // 验证需求: 5.8  支持的操作符 > 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", ">", 18i64);
         assert!(result.is_ok(), "操作符 '>' 应该返回 Ok");
@@ -5231,8 +5294,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_lt() {
         // 验证需求: 5.8  支持的操作符 < 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", "<", 65i64);
         assert!(result.is_ok(), "操作符 '<' 应该返回 Ok");
@@ -5241,8 +5303,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_gte() {
         // 验证需求: 5.8  支持的操作符 >= 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("score", ">=", 60i64);
         assert!(result.is_ok(), "操作符 '>=' 应该返回 Ok");
@@ -5251,8 +5312,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_lte() {
         // 验证需求: 5.8  支持的操作符 <= 行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("score", "<=", 100i64);
         assert!(result.is_ok(), "操作符 '<=' 应该返回 Ok");
@@ -5261,8 +5321,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_like_lowercase() {
         // 验证需求: 5.8  支持的操作符 like（小写）行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("name", "like", "%test%");
         assert!(result.is_ok(), "操作符 'like' 应该返回 Ok");
@@ -5271,8 +5330,7 @@ mod property_tests {
     #[test]
     fn test_where_and_supported_operators_like_uppercase() {
         // 验证需求: 5.8  支持的操作符 LIKE（大写）行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("name", "LIKE", "%test%");
         assert!(result.is_ok(), "操作符 'LIKE' 应该返回 Ok");
@@ -5281,8 +5339,7 @@ mod property_tests {
     #[test]
     fn test_where_and_unsupported_operator_returns_error() {
         // 验证需求: 5.1  不支持的操作符返回 Err(DbError::UnsupportedOperator)
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", "BETWEEN", 18i64);
         assert!(
@@ -5294,8 +5351,7 @@ mod property_tests {
     #[test]
     fn test_where_and_unsupported_operator_error_message() {
         // 验证需求: 5.1  错误消息包含操作符名称
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", "XOR", 1i64);
         match result {
@@ -5309,8 +5365,7 @@ mod property_tests {
     #[test]
     fn test_where_or_unsupported_operator_returns_error() {
         // 验证需求: 5.2  where_or 遇到不支持操作符时返回 Err
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_or("age", "IN", 18i64);
         assert!(
@@ -5322,8 +5377,7 @@ mod property_tests {
     #[test]
     fn test_where_or_supported_operators_work() {
         // 验证需求: 5.8  where_or 支持的操作符行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_or("status", "=", 1i64);
         assert!(result.is_ok(), "where_or 操作符 '=' 应该返回 Ok");
@@ -5334,8 +5388,7 @@ mod property_tests {
     #[test]
     fn test_having_cond_unsupported_operator_returns_error() {
         // 验证需求: 5.3  having_cond 遇到不支持操作符时返回 Err
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "orders", false)
             .having_cond("cnt", "LIKE", 5i64);
         assert!(
@@ -5347,8 +5400,7 @@ mod property_tests {
     #[test]
     fn test_having_cond_supported_operators_work() {
         // 验证需求: 5.8  having_cond 支持的操作符行为不变
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "orders", false)
             .having_cond("cnt", ">", 5i64);
         assert!(result.is_ok(), "having_cond 操作符 '>' 应该返回 Ok");
@@ -5359,8 +5411,7 @@ mod property_tests {
     #[test]
     fn test_where_and_unchecked_works_with_valid_operator() {
         // 验证需求: 5.4  where_and_unchecked 对合法操作符正常工作
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
             .where_and_unchecked("age", "=", 18i64);
         assert_eq!(builder.conditions.len(), 1);
@@ -5369,8 +5420,7 @@ mod property_tests {
     #[test]
     fn test_where_or_unchecked_works_with_valid_operator() {
         // 验证需求: 5.5  where_or_unchecked 对合法操作符正常工作
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
             .where_or_unchecked("status", "=", 1i64)
             .where_or_unchecked("status", "=", 2i64);
@@ -5381,8 +5431,7 @@ mod property_tests {
     #[test]
     fn test_having_cond_unchecked_works_with_valid_operator() {
         // 验证需求: 5.6  having_cond_unchecked 对合法操作符正常工作
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
             .having_cond_unchecked("cnt", ">", 5i64);
         assert_eq!(builder.having_clause.len(), 1);
@@ -5391,8 +5440,7 @@ mod property_tests {
     #[test]
     fn test_where_and_chaining_with_result() {
         // 验证需求: 5.1  where_and 返回 Result 后可以链式调用
-        let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-        let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+        let pool = make_sync_test_pool();
         let result = QueryBuilder::new(pool, "users", false)
             .where_and("age", ">", 18i64)
             .and_then(|b| b.where_and("status", "=", 1i64));
@@ -5471,11 +5519,9 @@ mod property_tests {
         // 使用 tokio 运行时执行异步测试
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            // 创建一个内存中的虚拟池（不需要真实连接）
-            // 注意：此处使用 MaybeUninit 是不安全的，但对于测试入口验证是安全的
-            // 因为 batch_size == 0 的检查在任何数据库操作之前就会返回
-            let pool_storage = std::mem::MaybeUninit::<MySqlPool>::uninit();
-            let pool: &MySqlPool = unsafe { &*pool_storage.as_ptr() };
+            // 创建一个懒连接池（不需要真实连接）
+            // batch_size == 0 的检查在任何数据库操作之前就会返回
+            let pool = make_sync_test_pool();
             let builder = QueryBuilder::new(pool, "users", false);
 
             // 准备测试数据

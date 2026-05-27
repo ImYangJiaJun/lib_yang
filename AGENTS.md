@@ -1,72 +1,93 @@
 # lib_yang — Project Knowledge Base
 
-**Generated:** 2026-05-25
-**Commit:** 10e3a1a
+**Generated:** 2026-05-27
+**Commit:** 6e3cda0
 **Branch:** master
 
 ## OVERVIEW
-YANG 后端框架 — Rust workspace with 3 crates providing database abstraction (MySQL/Redis), plugin-based backend services, and map generation utilities.
+YANG 后端框架 — Rust workspace with three crates: `yang-db` database abstraction, `yang-base` backend service primitives, and `yang-pcg` UE5/Roguelike procedural map generation.
 
 ## STRUCTURE
-```
+```text
 lib_yang/
-├── Cargo.toml              # Workspace root (resolver=2)
+├── Cargo.toml              # workspace root, resolver=2, shared deps/lints
 ├── crates/
-│   ├── yang-base/          # Backend services (plugin, HTTP, token, action, table, router)
-│   ├── yang-db/            # Database abstraction (MySQL query builder + Redis client)
-│   └── yang-pcg/           # Placeholder — map generation (unimplemented)
-└── target/                 # Build artifacts (gitignored)
+│   ├── yang-db/            # MySQL query builder + Redis client
+│   ├── yang-base/          # plugins, actions, tables, router, token, HTTP, global DB
+│   └── yang-pcg/           # deterministic PCG map generator + UE5 adapter
+├── .kiro/                  # requirements/design/tasks specs + steering hooks
+└── docs/                   # workspace API references and backlog
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| MySQL queries | `crates/yang-db/src/mysql/` | QueryBuilder, Database, Condition, Transaction |
-| Redis operations | `crates/yang-db/src/redis/` | RedisClient, pipeline, transactions, pub/sub |
-| Database connection init | `crates/yang-base/src/database/` | GlobalDatabase, GlobalRedis |
-| HTTP client | `crates/yang-base/src/http/` | HttpClient with global singleton |
-| JWT tokens | `crates/yang-base/src/token/` | TokenManager, Claims |
-| Plugin system | `crates/yang-base/src/plugin/` | Plugin trait, PluginManager |
-| Action system | `crates/yang-base/src/action/` | Action trait, builtin actions (select, get, etc.) |
-| Table config | `crates/yang-base/src/table/` | Table structs, field configuration |
-| Router | `crates/yang-base/src/router/` | Router configuration |
-| Error types | `crates/yang-base/src/error/` + `crates/yang-db/src/error.rs` | BaseError (yang-base), DbError (yang-db) |
-| Root-level docs | `docs/yang-db.md`, `docs/yang-base.md` | 完整 API 参考文档（2026-05-25 生成） |
+| MySQL queries | `crates/yang-db/src/mysql/` | `query_builder.rs` is the 4.8k-line hotspot; `condition.rs` owns WHERE/HAVING expressions |
+| Redis operations | `crates/yang-db/src/redis/` | `client.rs` is the main API; pipeline/transaction wrap `redis::pipe()` patterns |
+| Backend globals | `crates/yang-base/src/database/` | `GlobalDatabase`, `GlobalRedis`, `DatabaseInitializer` |
+| Plugin system | `crates/yang-base/src/plugin/mod.rs` | single-file plugin lifecycle/registry implementation |
+| Action system | `crates/yang-base/src/action/` | child AGENTS.md covers trait, context, builtin CRUD |
+| Table system | `crates/yang-base/src/table/` | child AGENTS.md covers FieldType/FieldConfig/TableQuery/DynamicRow |
+| Router | `crates/yang-base/src/router/` | `ModuleRouter`, `AppRouter` |
+| Tokens | `crates/yang-base/src/token/` | JWT `TokenManager`, feature-gated |
+| HTTP client | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
+| PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |
+| PCG terrain | `crates/yang-pcg/src/terrain/` | child AGENTS.md covers strategies, fallback, known connectivity gaps |
+| Specs/backlog | `.kiro/specs/`, `docs/BACKLOG.md` | requirements/design/tasks; some root summary docs are historical artifacts |
+| API docs | `docs/yang-db.md`, `docs/yang-base.md` | broad generated API references |
+
+## CODE MAP
+| Symbol | Type | Location | Role |
+|--------|------|----------|------|
+| `QueryBuilder` | struct | `crates/yang-db/src/mysql/query_builder.rs` | MySQL CRUD/select/aggregate/batch SQL builder |
+| `Condition` / `SqlValue` | enum | `crates/yang-db/src/mysql/condition.rs` | WHERE/HAVING expression tree and bind values |
+| `RedisClient` | struct | `crates/yang-db/src/redis/client.rs` | Redis string/hash/list/set/zset/pubsub/script API |
+| `Database` | struct | `crates/yang-db/src/mysql/database.rs` | sqlx MySQL pool wrapper and raw query entry |
+| `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/mod.rs` | build-time registration, dependency checks, runtime registry |
+| `Action` | trait | `crates/yang-base/src/action/action_trait.rs` | backend action extension point |
+| `ActionContext` | struct | `crates/yang-base/src/action/context.rs` | request/user/tools/table context passed to actions |
+| `TableQuery` | struct | `crates/yang-base/src/table/table_query.rs` | table-aware query builder with permissions |
+| `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL field validation and type mapping |
+| `MapGenerator` | struct | `crates/yang-pcg/src/generator.rs` | PCG orchestration entry point |
+| `GenerationConfig` | struct | `crates/yang-pcg/src/config.rs` | PCG config normalization and defaults |
+| `PcgError` | enum | `crates/yang-pcg/src/error.rs` | PCG structured error codes/context |
+| `run_full_validation` | function | `crates/yang-pcg/src/validation.rs` | reachability/overlap/connectivity/spawn invariant report |
 
 ## CONVENTIONS
-- **Edition**: yang-base = 2021; yang-db/yang-pcg specify `edition = "2021"` (workspace standard)
-- **License**: MIT OR Apache-2.0 (all crates)
-- **Linting**: `cargo clippy --all-targets --all-features -- -D warnings` (must pass clean)
-- **Formatting**: `cargo fmt` (Rust defaults, no custom rustfmt.toml)
-- **Comments**: Chinese throughout
-- **Tests**: `__tests__/` colocated for unit tests, `tests/` for integration tests; `#[ignore]` for Docker-dependent tests
-- **Requirement tracing**: Test comments reference requirement numbers (e.g., `验证需求: 4.1`)
+- Edition is `2021` for all crates.
+- Comments and public docs are mostly Chinese; preserve that style in Rust code and tests.
+- `yang-base` inherits workspace lints and has `#![warn(missing_docs)]`.
+- `yang-db` and `yang-pcg` override clippy to allow `unwrap_used`/`expect_used`; do not treat that as permission for new production panics.
+- Unit tests are colocated in `__tests__/`; integration tests live in crate `tests/`; `yang-pcg` also has `tests_task26/`, `tests_task27/`, and `chunked_tests.rs`.
+- Requirement tracing comments use `验证需求: X.Y`.
+- Docker tests are `#[ignore]` and should run single-threaded.
+- `proptest-regressions/` is intentional for `yang-db` and `yang-pcg`.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- **CRITICAL**: `RedisConfig` connection pool params never applied — fix before touching Redis
-- **FIXED**: `insert_batch` now has auto-batching via `insert_batch_with_size` (default batch_size=500)
-- **TODO**: `builtin/select.rs` and `builtin/get.rs` use `serde_json::Value` instead of concrete types
-- **NEVER**: Use `unwrap()` in production code — tests have 20+ unwrap() calls to fix
-- **NEVER**: Hardcode credentials — `.mcp.json` contains MySQL password "111111"
-- `having_cond_unchecked` does not validate operator — use `having_cond` (returns Result) instead
-- Redis Pipeline/Transaction/Lua should use `redis::pipe()`/`redis::Script` APIs, not custom impl
+- Do not add production `unwrap()`/`expect()` even where crate lints allow them; existing hotspots include `query_builder.rs`, `plugin/mod.rs`, `validation.rs`, and `grammar/selector.rs`.
+- Do not use `_unchecked` query helpers unless caller already validated operators; prefer `having_cond`, `where_and`, `where_or` Result-returning APIs.
+- Do not weaken or delete ignored property tests in `yang-pcg`; they document known algorithm gaps.
+- Do not hardcode credentials outside Docker/test examples; use `MYSQL_TEST_PASSWORD` or local ignored config.
+- Do not document `RedisConfig` pool params or `insert_batch` auto-batching as currently broken; current code applies pool config and `insert_batch` batches at 500 rows by default.
+- Builtin actions still use `serde_json::Value` in several paths; do not expand that pattern without a deliberate type-safety decision.
+- Root summary markdown files are historical work logs unless referenced by AGENTS.md or docs.
 
 ## COMMANDS
 ```bash
-cargo clippy --all-targets --all-features -- -D warnings   # Lint (must pass)
-cargo test --lib                                              # Unit tests (no Docker)
-cargo test --lib -p yang-base                                 # yang-base unit tests
-cargo test --lib -p yang-db                                   # yang-db unit tests
-cargo test --test <name> -- --ignored --test-threads=1       # Integration tests (requires Docker)
-cargo fmt                                                     # Format code
-cargo check                                                   # Compile check
+cargo fmt
+cargo check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib
+cargo test --lib -p yang-base
+cargo test --lib -p yang-db
+cargo test --lib -p yang-pcg
+cargo test --test <name> -- --ignored --test-threads=1
+cargo run --example <name> -p <crate>
 ```
 
 ## NOTES
-- **Edition 2024 bug**: yang-db and yang-pcg specify `edition = "2024"` — needs fixing to "2021"
-- yang-pcg (`crates/yang-pcg/`) is a placeholder with 7 lines of code — safe to ignore
-- No CI/CD configured — tests must be run locally
-- Root-level `*.md` files are work-in-progress summaries, not formal documentation
-- Integration tests require Docker + MySQL 8.0 (via testcontainers)
-- Workspace has no shared dependency table — dependencies duplicated across crates
-- Requires Docker for full test suite; unit tests run without Docker
+- No CI, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, Makefile, justfile, Dockerfile, or docker-compose file exists.
+- LSP rust-analyzer was unavailable in this environment; CodeGraph is indexed and should be preferred for structural lookup.
+- `.gitignore` includes `*/tests/`, which is unusual for Rust; be careful when reasoning about tracked integration tests.
+- `.kiro/` contains real requirements/design/tasks context, not throwaway docs.
+- Full Docker tests require MySQL 8.0 and Redis via testcontainers or the `.kiro/steering` standard containers.

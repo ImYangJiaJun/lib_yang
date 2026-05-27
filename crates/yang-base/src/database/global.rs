@@ -211,6 +211,25 @@ impl GlobalDatabase {
             .map_err(BaseError::DatabaseQueryFailed)
     }
 
+    /// 执行参数化 SELECT 查询
+    ///
+    /// # 参数
+    ///
+    /// - `sql`: 包含 `?` 占位符的 SQL 查询语句
+    /// - `params`: 按占位符顺序绑定的参数
+    pub async fn query_with_params<T>(
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<Vec<T>, BaseError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        Self::get()?
+            .query_with_params(sql, params)
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
+    }
+
     /// 执行原生 INSERT/UPDATE/DELETE 查询
     ///
     /// # 参数
@@ -253,6 +272,22 @@ impl GlobalDatabase {
     pub async fn execute(sql: &str) -> Result<u64, BaseError> {
         Self::get()?
             .execute(sql)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)
+    }
+
+    /// 执行参数化 INSERT/UPDATE/DELETE 查询
+    ///
+    /// # 参数
+    ///
+    /// - `sql`: 包含 `?` 占位符的 SQL 语句
+    /// - `params`: 按占位符顺序绑定的参数
+    pub async fn execute_with_params(
+        sql: &str,
+        params: Vec<serde_json::Value>,
+    ) -> Result<u64, BaseError> {
+        Self::get()?
+            .execute_with_params(sql, params)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)
     }
@@ -314,6 +349,30 @@ mod tests {
     fn test_table_not_initialized() {
         // 测试未初始化时调用 table 方法
         let result = GlobalDatabase::table("users");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(BaseError::DatabaseNotInitialized)));
+    }
+
+    #[tokio::test]
+    async fn test_query_with_params_not_initialized() {
+        // 测试未初始化时调用参数化查询方法
+        let result = GlobalDatabase::query_with_params::<(i32,)>(
+            "SELECT id FROM users WHERE id = ?",
+            vec![serde_json::json!(1)],
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(BaseError::DatabaseNotInitialized)));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_params_not_initialized() {
+        // 测试未初始化时调用参数化执行方法
+        let result = GlobalDatabase::execute_with_params(
+            "DELETE FROM users WHERE id = ?",
+            vec![serde_json::json!(1)],
+        )
+        .await;
         assert!(result.is_err());
         assert!(matches!(result, Err(BaseError::DatabaseNotInitialized)));
     }

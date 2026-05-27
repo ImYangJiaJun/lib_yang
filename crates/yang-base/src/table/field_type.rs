@@ -485,6 +485,15 @@ impl FieldType {
                 }
             }
 
+            // 日期类型验证
+            FieldType::Date => validate_date(field_name, value),
+
+            // 日期时间类型验证
+            FieldType::DateTime => validate_datetime(field_name, value),
+
+            // 时间戳类型验证
+            FieldType::Timestamp => validate_timestamp(field_name, value),
+
             // 枚举类型验证
             FieldType::Enum { values } => {
                 if let Some(s) = value.as_str() {
@@ -529,10 +538,67 @@ impl FieldType {
                 }
             }
 
-            // 其他类型暂不验证（Date, DateTime, Timestamp, Text, ForeignKey）
+            // 其他类型暂不验证（Text, ForeignKey）
             // 这些类型的验证逻辑较为复杂，将在后续任务中实现
             _ => Ok(()),
         }
+    }
+}
+
+fn validate_date(field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
+    if let Some(s) = value.as_str() {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map(|_| ())
+            .map_err(|_| {
+                BaseError::InvalidFieldType(
+                    field_name.to_string(),
+                    format!("日期格式无效，期望 YYYY-MM-DD，实际: {}", s),
+                )
+            })
+    } else {
+        Err(BaseError::InvalidFieldType(
+            field_name.to_string(),
+            format!("期望日期字符串类型，实际类型: {}", value_type_name(value)),
+        ))
+    }
+}
+
+fn validate_datetime(field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
+    if let Some(s) = value.as_str() {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .map(|_| ())
+            .map_err(|_| {
+                BaseError::InvalidFieldType(
+                    field_name.to_string(),
+                    format!("日期时间格式无效，期望 YYYY-MM-DD HH:MM:SS，实际: {}", s),
+                )
+            })
+    } else {
+        Err(BaseError::InvalidFieldType(
+            field_name.to_string(),
+            format!(
+                "期望日期时间字符串类型，实际类型: {}",
+                value_type_name(value)
+            ),
+        ))
+    }
+}
+
+fn validate_timestamp(field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
+    if let Some(ts) = value.as_i64() {
+        chrono::DateTime::<chrono::Utc>::from_timestamp_secs(ts)
+            .map(|_| ())
+            .ok_or_else(|| {
+                BaseError::InvalidFieldType(
+                    field_name.to_string(),
+                    format!("时间戳超出有效范围，实际: {}", ts),
+                )
+            })
+    } else {
+        Err(BaseError::InvalidFieldType(
+            field_name.to_string(),
+            format!("期望 Unix 时间戳整数，实际类型: {}", value_type_name(value)),
+        ))
     }
 }
 
@@ -846,6 +912,77 @@ mod tests {
         assert!(field_type
             .validate("active", &serde_json::json!(0))
             .is_err());
+    }
+
+    #[test]
+    fn test_validate_date_success() {
+        let field_type = FieldType::Date;
+
+        assert!(field_type
+            .validate("birthday", &serde_json::json!("2026-05-27"))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_date_invalid_format() {
+        let field_type = FieldType::Date;
+
+        let result = field_type.validate("birthday", &serde_json::json!("2026/05/27"));
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(BaseError::InvalidFieldType(ref field, _)) if field == "birthday")
+        );
+    }
+
+    #[test]
+    fn test_validate_date_invalid_type() {
+        let field_type = FieldType::Date;
+
+        let result = field_type.validate("birthday", &serde_json::json!(20260527));
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(BaseError::InvalidFieldType(ref field, _)) if field == "birthday")
+        );
+    }
+
+    #[test]
+    fn test_validate_datetime_success() {
+        let field_type = FieldType::DateTime;
+
+        assert!(field_type
+            .validate("created_at", &serde_json::json!("2026-05-27 13:45:30"))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_datetime_invalid_format() {
+        let field_type = FieldType::DateTime;
+
+        let result = field_type.validate("created_at", &serde_json::json!("2026-05-27T13:45:30"));
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(BaseError::InvalidFieldType(ref field, _)) if field == "created_at")
+        );
+    }
+
+    #[test]
+    fn test_validate_timestamp_success() {
+        let field_type = FieldType::Timestamp;
+
+        assert!(field_type
+            .validate("created_at", &serde_json::json!(1_764_221_130_i64))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_timestamp_invalid_type() {
+        let field_type = FieldType::Timestamp;
+
+        let result = field_type.validate("created_at", &serde_json::json!("2026-05-27 13:45:30"));
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(BaseError::InvalidFieldType(ref field, _)) if field == "created_at")
+        );
     }
 
     #[test]

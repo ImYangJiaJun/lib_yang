@@ -2153,17 +2153,24 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_status_creation() {
-        let status = PoolStatus {
-            max_size: 10,
-            size: 5,
-            available: 3,
-            waiting: 2,
-        };
-        assert_eq!(status.max_size, 10);
-        assert_eq!(status.size, 5);
-        assert_eq!(status.available, 3);
-        assert_eq!(status.waiting, 2);
+    fn test_pool_status_reflects_configured_max_size() {
+        let config = RedisConfig::new(25, 8, 12, true);
+        let mut pool_config = Config::from_url("redis://127.0.0.1:6379");
+        pool_config.pool = Some(PoolConfig {
+            max_size: config.max_connections,
+            timeouts: Timeouts {
+                wait: Some(Duration::from_secs(config.wait_timeout)),
+                create: Some(Duration::from_secs(config.connect_timeout)),
+                recycle: Some(Duration::from_secs(config.connect_timeout)),
+            },
+            ..Default::default()
+        });
+        let pool = pool_config
+            .create_pool(Some(Runtime::Tokio1))
+            .expect("无法创建测试连接池");
+        let client = RedisClient { pool, config };
+
+        assert_eq!(client.pool_status().max_size, 25);
     }
 
     #[test]
