@@ -278,9 +278,9 @@ impl ActionContext {
     /// - 参数存在且类型匹配：返回 `Ok(Some(T))`
     /// - 参数存在但类型不匹配：返回 `Err(BaseError::ParamInvalid)`
     ///
-    /// 与 [`param_optional`] 的区别：
-    /// - `param_optional`：类型不匹配时静默返回 `None`（宽松模式）
-    /// - `param_optional_strict`：类型不匹配时返回错误（严格模式），适用于需要明确感知类型错误的场景
+    /// > **H-1 迁移说明**：此方法是 H-1 重构期间保留的旧式严格可选提取变体。
+    /// > 新代码请使用 [`ActionContext::extract_input`]，它通过强类型输入结构体统一处理所有参数提取。
+    /// > 本方法将在 Task 6/7 完成后移除。
     ///
     /// # 参数
     ///
@@ -291,6 +291,8 @@ impl ActionContext {
     /// - `Ok(Some(T))`: 参数存在且类型匹配
     /// - `Ok(None)`: 参数不存在
     /// - `Err(BaseError::ParamInvalid)`: 参数存在但类型不匹配
+    #[deprecated(note = "H-1 重构期间停用，将在 Task 6/7 后移除；请改用 extract_input")]
+    #[allow(dead_code)]
     pub fn param_optional_strict<T: DeserializeOwned>(
         &self,
         key: &str,
@@ -339,26 +341,6 @@ impl ActionContext {
                 format!("路径参数 '{}' 无法转换为目标类型，原始值: {}", key, raw),
             )
         })
-    }
-
-    /// 获取请求体参数，不存在时返回默认值
-    ///
-    /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回提供的默认值。
-    ///
-    /// # 参数
-    ///
-    /// - `key`: 参数名
-    /// - `default`: 参数不存在或类型不匹配时的默认值
-    ///
-    /// # 返回
-    ///
-    /// - `T`: 参数值或默认值
-    pub fn param_or<T: DeserializeOwned>(&self, key: &str, default: T) -> T {
-        self.request
-            .body
-            .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or(default)
     }
 
     /// 创建表查询构建器

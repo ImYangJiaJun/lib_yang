@@ -287,21 +287,7 @@ fn test_action_context_query_param() {
     let _ = create_test_tools();
 }
 
-#[test]
-fn test_action_context_param_or() {
-    let request = Request::new(json!({ "page": 2 }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // 参数存在时返回参数值
-    let page: i64 = context.param_or("page", 1);
-    assert_eq!(page, 2);
-
-    // 参数不存在时返回默认值
-    let limit: i64 = context.param_or("limit", 10);
-    assert_eq!(limit, 10);
-}
-
+#[allow(deprecated)]
 #[test]
 fn test_action_context_param_optional_strict() {
     let request = Request::new(json!({
