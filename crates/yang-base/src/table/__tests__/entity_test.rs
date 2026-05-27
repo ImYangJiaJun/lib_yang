@@ -58,3 +58,22 @@ fn test_string_like_works() {
     assert!(matches!(sql_cond.op, SqlOp::Like));
     assert_eq!(sql_cond.params[0].as_str(), Some("%alice%"));
 }
+
+#[test]
+fn test_derived_table_constants() {
+    use crate::table::TableEntity;
+    assert_eq!(TestUser::TABLE_NAME, "test_users");
+    assert_eq!(TestUser::PK_FIELD, "id");
+}
+
+#[test]
+fn test_derived_table_config() {
+    use crate::table::TableEntity;
+    let cfg = TestUser::table_config();
+    assert_eq!(cfg.table_name, "test_users");
+    assert_eq!(cfg.primary_key, "id");
+    assert!(cfg.fields.contains_key("id"), "应包含 id 字段");
+    assert!(cfg.fields.contains_key("username"), "应包含 username 字段");
+    // unique 字段应该在 unique_indexes 中
+    assert_eq!(cfg.unique_indexes.len(), 1, "username 标记 unique，应有 1 个唯一索引");
+}

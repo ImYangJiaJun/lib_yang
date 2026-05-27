@@ -1,5 +1,7 @@
 //! yang-base 派生宏入口。
 
+#![warn(missing_docs)]
+
 use proc_macro::TokenStream;
 use proc_macro_error::proc_macro_error;
 use syn::{parse_macro_input, DeriveInput};
@@ -27,8 +29,8 @@ mod util;
 /// - `required = true/false`：覆盖"非 Option 默认必填"的推断。
 /// - `column = "..."`: 指定列名（默认同字段名）。
 /// - `skip`：跳过此字段，不出现在枚举和 TableConfig 中。
-#[proc_macro_derive(TableEntity, attributes(table, entity))]
 #[proc_macro_error]
+#[proc_macro_derive(TableEntity, attributes(table, entity))]
 pub fn derive_table_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     table_entity::expand(input).into()

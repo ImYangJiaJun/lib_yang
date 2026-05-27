@@ -45,6 +45,9 @@ struct FieldOpts {
     /// 跳过此字段，不生成到枚举和 TableConfig 中（默认 false）。
     #[darling(default)]
     skip: bool,
+    /// 字段默认值（当前版本保留语法但暂不生成 SQL DEFAULT 子句，规划中的功能）。
+    #[darling(default)]
+    default: Option<String>,
 }
 
 /// 展开 `#[derive(TableEntity)]`。
@@ -67,6 +70,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             Ok(o) => o,
             Err(e) => return e.write_errors(),
         };
+        let _ = &opt.default; // 保留语法但暂不生成代码，抑制 unused 警告
         if opt.skip {
             continue;
         }
