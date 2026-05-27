@@ -15,7 +15,6 @@ use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
@@ -261,62 +260,15 @@ impl ActionContext {
         self
     }
 
-    /// 获取请求体参数（必填）
+    /// 把整个请求体反序列化为 `I`。新类型化 Action 系统的统一参数提取入口。
     ///
-    /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回错误。
+    /// # 错误
     ///
-    /// # 参数
-    ///
-    /// - `key`: 参数名
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(T)`: 参数值
-    /// - `Err(BaseError::ParamMissing)`: 参数不存在
-    /// - `Err(BaseError::ParamInvalid)`: 参数类型不匹配
-    pub fn param<T: DeserializeOwned>(&self, key: &str) -> Result<T, BaseError> {
-        let value = self
-            .request
-            .body
-            .get(key)
-            .ok_or_else(|| BaseError::ParamMissing(key.to_string()))?;
-
-        serde_json::from_value(value.clone()).map_err(|_| {
-            BaseError::ParamInvalid(key.to_string(), "无法将参数转换为目标类型".to_string())
+    /// - `BaseError::ParamInvalid("body", ...)`: 反序列化失败（缺字段/类型错/未知字段等）
+    pub fn extract_input<I: DeserializeOwned>(&self) -> Result<I, BaseError> {
+        serde_json::from_value(self.request.body.clone()).map_err(|e| {
+            BaseError::ParamInvalid("body".to_string(), e.to_string())
         })
-    }
-
-    /// 获取请求体参数（可选，宽松模式）
-    ///
-    /// 从请求体中获取指定参数，如果参数不存在或类型不匹配则返回 None。
-    /// 类型不匹配时会记录 warn 日志，但不返回错误。
-    ///
-    /// 与 [`param_optional_strict`] 的区别：
-    /// - `param_optional`：类型不匹配时静默返回 `None`（宽松模式）
-    /// - `param_optional_strict`：类型不匹配时返回 `Err`（严格模式）
-    ///
-    /// # 参数
-    ///
-    /// - `key`: 参数名
-    ///
-    /// # 返回
-    ///
-    /// - `Some(T)`: 参数值
-    /// - `None`: 参数不存在或类型不匹配
-    pub fn param_optional<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        let result = self
-            .request
-            .body
-            .get(key)
-            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok());
-        // 若参数存在但类型不匹配，记录警告日志
-        if result.is_none() && self.request.body.get(key).is_some() {
-            log::warn!(
-                "param_optional: 参数 '{}' 存在但类型不匹配，已静默返回 None",
-                key
-            );
-        }
-        result
     }
 
     /// 获取请求体参数（可选，严格模式）
@@ -385,36 +337,6 @@ impl ActionContext {
             BaseError::ParamInvalid(
                 key.to_string(),
                 format!("路径参数 '{}' 无法转换为目标类型，原始值: {}", key, raw),
-            )
-        })
-    }
-
-    /// 获取查询参数（必填）
-    ///
-    /// 从 `request.query` 中获取指定查询参数，并通过 `FromStr` 解析为目标类型。
-    ///
-    /// # 参数
-    ///
-    /// - `key`: 查询参数名
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(T)`: 参数值
-    /// - `Err(BaseError::ParamMissing)`: 查询参数不存在
-    /// - `Err(BaseError::ParamInvalid)`: 参数值无法解析为目标类型
-    pub fn query_param<T: FromStr>(&self, key: &str) -> Result<T, BaseError> {
-        // 从查询参数中获取字符串值
-        let raw = self
-            .request
-            .query
-            .get(key)
-            .ok_or_else(|| BaseError::ParamMissing(key.to_string()))?;
-
-        // 通过 FromStr 解析为目标类型
-        raw.parse::<T>().map_err(|_| {
-            BaseError::ParamInvalid(
-                key.to_string(),
-                format!("查询参数 '{}' 无法解析为目标类型，原始值: {}", key, raw),
             )
         })
     }

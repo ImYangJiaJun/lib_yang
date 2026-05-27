@@ -206,49 +206,25 @@ fn test_action_context_with_user() {
     assert_eq!(context.user.unwrap().id, 1);
 }
 
+#[ignore = "H-1 重构期间停用：param 已移除，Task 6 后用 extract_input 重写"]
 #[test]
 fn test_action_context_param() {
-    let request = Request::new(json!({
-        "name": "alice",
-        "age": 30
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // 测试获取必填参数
-    let name: String = context.param("name").unwrap();
-    assert_eq!(name, "alice");
-
-    let age: i64 = context.param("age").unwrap();
-    assert_eq!(age, 30);
+    // H-1: param 方法已移除，此测试保留占位；Task 6 后用 extract_input 重写
+    let _ = create_test_tools();
 }
 
+#[ignore = "H-1 重构期间停用：param 已移除，Task 6 后用 extract_input 重写"]
 #[test]
 fn test_action_context_param_missing() {
-    let request = Request::new(json!({}));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // 测试获取不存在的参数
-    let result: Result<String, _> = context.param("name");
-    assert!(result.is_err());
+    // H-1: param 方法已移除，此测试保留占位；Task 6 后用 extract_input 重写
+    let _ = create_test_tools();
 }
 
+#[ignore = "H-1 重构期间停用：param_optional 已移除，Task 6 后用 extract_input 重写"]
 #[test]
 fn test_action_context_param_optional() {
-    let request = Request::new(json!({
-        "name": "alice"
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // 测试获取存在的可选参数
-    let name: Option<String> = context.param_optional("name");
-    assert_eq!(name, Some("alice".to_string()));
-
-    // 测试获取不存在的可选参数
-    let email: Option<String> = context.param_optional("email");
-    assert_eq!(email, None);
+    // H-1: param_optional 方法已移除，此测试保留占位；Task 6 后用 extract_input 重写
+    let _ = create_test_tools();
 }
 
 #[test]
@@ -304,23 +280,11 @@ fn test_action_context_path_param() {
     assert!(result.is_err());
 }
 
+#[ignore = "H-1 重构期间停用：query_param 已移除，Task 6 后用新 API 重写"]
 #[test]
 fn test_action_context_query_param() {
-    let request = Request::new(json!({})).query("page", "2");
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // 获取存在的查询参数
-    let page: u32 = context.query_param("page").unwrap();
-    assert_eq!(page, 2);
-
-    // 获取不存在的查询参数
-    let result: Result<u32, _> = context.query_param("nonexistent");
-    assert!(result.is_err());
-
-    // 类型不匹配
-    let result: Result<u32, _> = context.query_param("page");
-    assert!(result.is_ok()); // "2" 可以解析为 u32
+    // H-1: query_param 方法已移除，此测试保留占位；Task 6 后用新 API 重写
+    let _ = create_test_tools();
 }
 
 #[test]

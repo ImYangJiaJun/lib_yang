@@ -2,3 +2,4 @@
 
 mod action_trait_test;
 mod context_test;
+mod typed_test;

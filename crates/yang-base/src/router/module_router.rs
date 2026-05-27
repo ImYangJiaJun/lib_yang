@@ -31,10 +31,6 @@
 /// 包含所有内置 Action 的名称，用于注册和验证
 pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select", "table"];
 
-#[cfg(feature = "mysql")]
-use crate::action::builtin::TableAction;
-#[cfg(feature = "mysql")]
-use crate::action::builtin::{AddAction, DelAction, GetAction, PutAction, SelectAction};
 use crate::action::{Action, ActionContext, ApiResponse, User};
 use crate::error::BaseError;
 use crate::table::TableConfig;
@@ -235,30 +231,11 @@ impl ModuleRouter {
     ///     .register_builtin_actions()?;
     /// ```
     #[cfg(feature = "mysql")]
-    pub fn register_builtin_actions(mut self) -> Result<Self, BaseError> {
-        // 未设置 table_config 时返回错误，而非 panic
-        let table_config = self
-            .table_config
-            .as_ref()
-            .ok_or(BaseError::TableConfigNotSet)?
-            .clone();
-
-        // 通过 BUILTIN_ACTION_NAMES 常量驱动注册循环，确保名称一致性
-        for action_name in BUILTIN_ACTION_NAMES {
-            let action: Box<dyn Action> = match *action_name {
-                "add" => Box::new(AddAction::new(table_config.clone())),
-                "put" => Box::new(PutAction::new(table_config.clone())),
-                "del" => Box::new(DelAction::new(table_config.clone())),
-                "get" => Box::new(GetAction::new(table_config.clone())),
-                "select" => Box::new(SelectAction::new(table_config.clone())),
-                "table" => Box::new(TableAction::new(table_config.clone())),
-                // 理论上不会到达此分支，因为 BUILTIN_ACTION_NAMES 是固定常量
-                _ => continue,
-            };
-            self.actions.insert(action_name.to_string(), action);
-        }
-
-        Ok(self)
+    pub fn register_builtin_actions(self) -> Result<Self, BaseError> {
+        // Task 6 之后用 table_typed::<T>() 替换；此方法暂废
+        Err(BaseError::Unknown(
+            "旧 register_builtin_actions 在 H-1 重构期间禁用，请使用 table_typed::<T>()".into(),
+        ))
     }
 
     /// 分发请求到对应的 Action

@@ -1,3 +1,5 @@
+// 暂禁 — Task 6 之后用新类型化 builtin 替换；与 #![cfg(any())] 保持同步
+#![cfg(any())]
 //! 内置 CRUD Actions 单元测试
 
 use crate::action::builtin::{

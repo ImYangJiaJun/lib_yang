@@ -51,10 +51,9 @@ impl TestAction {
 
 #[async_trait]
 impl Action for TestAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 简单的测试实现：返回请求参数
-        let name: String = context.param("name")?;
-        Ok(ApiResponse::success(json!({ "name": name }), "执行成功")?)
+    async fn execute(&self, _context: ActionContext) -> Result<ApiResponse, BaseError> {
+        // H-1 重构期间：param 已移除，此处占位；Task 6 用 extract_input 重写
+        Ok(ApiResponse::success(serde_json::json!({ "placeholder": true }), "执行成功")?)
     }
 
     fn name(&self) -> &str {
@@ -167,6 +166,7 @@ mod tests {
         assert!(action.is_public());
     }
 
+    #[ignore = "H-1 重构期间停用：param 已移除，Task 6 后用 extract_input 重写"]
     #[tokio::test]
     async fn test_action_execute_success() {
         let action = TestAction::new("test_action");
@@ -195,6 +195,7 @@ mod tests {
         assert_eq!(data["name"], "Alice");
     }
 
+    #[ignore = "H-1 重构期间停用：param 已移除，Task 6 后用 extract_input 重写"]
     #[tokio::test]
     async fn test_action_execute_param_missing() {
         let action = TestAction::new("test_action");
