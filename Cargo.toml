@@ -38,6 +38,9 @@ jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 # JSON Schema 验证
 jsonschema = "0.29"
 
+# JSON Schema 派生
+schemars = { version = "0.8", features = ["chrono"] }
+
 # Workspace 统一 lint 配置
 [workspace.lints.rust]
 # 忽略 Result 返回值视为编译错误

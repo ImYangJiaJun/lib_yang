@@ -14,3 +14,6 @@ mod query_params_test;
 
 #[cfg(test)]
 mod table_query_test;
+
+#[cfg(test)]
+mod entity_test;

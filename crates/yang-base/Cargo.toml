@@ -74,6 +74,9 @@ regex = { workspace = true, optional = true }
 # JSON Schema 验证（可选，通过 "plugin-schema" feature 启用）
 jsonschema = { workspace = true, optional = true }
 
+# JSON Schema 派生
+schemars = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 testcontainers = "0.27.3"
