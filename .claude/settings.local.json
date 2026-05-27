@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__codegraph__codegraph_explore",
+      "Bash(xxd)",
+      "Bash(cargo test *)",
+      "Bash(~/.cargo/bin/cargo test *)",
+      "Read(//root/.cargo/**)",
+      "Bash(find / -name cargo -maxdepth 10 -type f)",
+      "Bash(cargo.exe *)",
+      "Bash(git -C /mnt/d/code/lib_yang diff HEAD -- crates/yang-db)",
+      "Bash(git *)"
+    ]
+  }
+}
