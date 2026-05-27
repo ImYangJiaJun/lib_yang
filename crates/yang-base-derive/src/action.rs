@@ -57,49 +57,66 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     let perm_consts: Vec<TokenStream> = perms
         .iter()
         .map(|p| {
-            quote! { ::yang_base::action::action_trait::Permission::from_static(#p) }
+            quote! { ::yang_base::action::Permission::from_static(#p) }
         })
         .collect();
 
     quote! {
+        impl #impl_g #struct_name #ty_g #where_clause {
+            /// 框架内部使用，由 #[derive(Action)] 派生。
+            #[doc(hidden)]
+            fn __action_permissions_static() -> &'static [::yang_base::action::Permission] {
+                static PERMS: ::std::sync::OnceLock<::std::vec::Vec<::yang_base::action::Permission>>
+                    = ::std::sync::OnceLock::new();
+                PERMS.get_or_init(|| ::std::vec![ #( #perm_consts ),* ])
+            }
+
+            /// 框架内部使用，由 #[derive(Action)] 派生。
+            #[doc(hidden)]
+            fn __action_input_schema_static() -> &'static ::schemars::schema::RootSchema {
+                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema>
+                    = ::std::sync::OnceLock::new();
+                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Input))
+            }
+
+            /// 框架内部使用，由 #[derive(Action)] 派生。
+            #[doc(hidden)]
+            fn __action_output_schema_static() -> &'static ::schemars::schema::RootSchema {
+                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema>
+                    = ::std::sync::OnceLock::new();
+                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Output))
+            }
+        }
+
         impl #impl_g ::yang_base::action::TypedAction for #struct_name #ty_g #where_clause {
             fn name(&self) -> &'static str { #name }
             fn display_name(&self) -> &'static str { #display_name }
             fn description(&self) -> &'static str { #description }
             fn is_public(&self) -> bool { #is_public }
 
-            fn permissions(&self) -> &'static [::yang_base::action::action_trait::Permission] {
-                static PERMS: ::std::sync::OnceLock<::std::vec::Vec<::yang_base::action::action_trait::Permission>>
-                    = ::std::sync::OnceLock::new();
-                PERMS.get_or_init(|| ::std::vec![ #( #perm_consts ),* ])
+            fn permissions(&self) -> &'static [::yang_base::action::Permission] {
+                Self::__action_permissions_static()
             }
 
             fn input_schema(&self) -> &'static ::schemars::schema::RootSchema {
-                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema> = ::std::sync::OnceLock::new();
-                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Input))
+                Self::__action_input_schema_static()
             }
 
             fn output_schema(&self) -> &'static ::schemars::schema::RootSchema {
-                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema> = ::std::sync::OnceLock::new();
-                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Output))
+                Self::__action_output_schema_static()
             }
 
             fn meta_static(&self) -> &'static ::yang_base::action::ActionMeta {
-                static M: ::std::sync::OnceLock<::yang_base::action::ActionMeta> = ::std::sync::OnceLock::new();
-                M.get_or_init(|| {
-                    static PERMS2: ::std::sync::OnceLock<::std::vec::Vec<::yang_base::action::action_trait::Permission>>
-                        = ::std::sync::OnceLock::new();
-                    static ISCHEMA: ::std::sync::OnceLock<::schemars::schema::RootSchema> = ::std::sync::OnceLock::new();
-                    static OSCHEMA: ::std::sync::OnceLock<::schemars::schema::RootSchema> = ::std::sync::OnceLock::new();
-                    ::yang_base::action::ActionMeta {
-                        name: #name,
-                        display_name: #display_name,
-                        description: #description,
-                        permissions: PERMS2.get_or_init(|| ::std::vec![ #( #perm_consts ),* ]),
-                        is_public: #is_public,
-                        input_schema: ISCHEMA.get_or_init(|| ::schemars::schema_for!(<#struct_name #ty_g as ::yang_base::action::TypedHandler>::Input)),
-                        output_schema: OSCHEMA.get_or_init(|| ::schemars::schema_for!(<#struct_name #ty_g as ::yang_base::action::TypedHandler>::Output)),
-                    }
+                static M: ::std::sync::OnceLock<::yang_base::action::ActionMeta>
+                    = ::std::sync::OnceLock::new();
+                M.get_or_init(|| ::yang_base::action::ActionMeta {
+                    name: #name,
+                    display_name: #display_name,
+                    description: #description,
+                    permissions: Self::__action_permissions_static(),
+                    is_public: #is_public,
+                    input_schema: Self::__action_input_schema_static(),
+                    output_schema: Self::__action_output_schema_static(),
                 })
             }
         }

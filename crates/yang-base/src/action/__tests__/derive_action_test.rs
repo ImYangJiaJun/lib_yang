@@ -55,9 +55,10 @@ fn test_derive_action_meta_static_dyn() {
     let m = a.meta();
     assert_eq!(m.name, "ping");
     assert!(m.is_public);
-    // schema 非空
-    let v = serde_json::to_value(m.input_schema).unwrap();
-    assert!(v.is_object());
+    let v_in = serde_json::to_value(m.input_schema).unwrap();
+    assert!(v_in.is_object(), "input_schema 应序列化为 JSON object");
+    let v_out = serde_json::to_value(m.output_schema).unwrap();
+    assert!(v_out.is_object(), "output_schema 应序列化为 JSON object");
 }
 
 #[test]
