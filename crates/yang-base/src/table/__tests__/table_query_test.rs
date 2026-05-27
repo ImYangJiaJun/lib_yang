@@ -875,3 +875,50 @@ fn test_delete_sql_all_where_conditions() {
     assert!(sql.contains("WHERE"));
     assert_eq!(params.len(), 1);
 }
+
+#[test]
+fn test_new_where_methods_build_sql() {
+    use crate::table::{FieldConfig, FieldType, TableConfig};
+    let config = std::sync::Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("age", FieldType::Integer))
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 })),
+    );
+    let q = crate::table::TableQuery::new_without_pool(config)
+        .where_lt("age", serde_json::json!(18))
+        .unwrap()
+        .where_gte("id", serde_json::json!(1))
+        .unwrap()
+        .where_ne("name", serde_json::json!("admin"))
+        .unwrap()
+        .where_between("id", serde_json::json!(10), serde_json::json!(20))
+        .unwrap()
+        .where_null("name")
+        .unwrap()
+        .where_not_null("age")
+        .unwrap();
+    let (sql, _) = q.build_select_sql_for_test().expect("build sql");
+    assert!(sql.contains("`age` < ?"), "Expected `age` < ? in: {}", sql);
+    assert!(sql.contains("`id` >= ?"), "Expected `id` >= ? in: {}", sql);
+    assert!(
+        sql.contains("`name` <> ?"),
+        "Expected `name` <> ? in: {}",
+        sql
+    );
+    assert!(
+        sql.contains("`id` BETWEEN ? AND ?"),
+        "Expected BETWEEN in: {}",
+        sql
+    );
+    assert!(
+        sql.contains("`name` IS NULL"),
+        "Expected IS NULL in: {}",
+        sql
+    );
+    assert!(
+        sql.contains("`age` IS NOT NULL"),
+        "Expected IS NOT NULL in: {}",
+        sql
+    );
+}

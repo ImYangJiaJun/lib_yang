@@ -206,6 +206,48 @@ pub enum WhereCondition {
         /// 字段名
         field: String,
     },
+
+    /// 不等于条件 (field <> value)
+    ///
+    /// # 字段
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    Ne {
+        /// 字段名
+        field: String,
+        /// 比较值
+        value: Value,
+    },
+
+    /// 区间条件 (field BETWEEN lo AND hi)
+    ///
+    /// # 字段
+    ///
+    /// - `field`：字段名
+    /// - `lo`：区间下界
+    /// - `hi`：区间上界
+    Between {
+        /// 字段名
+        field: String,
+        /// 区间下界
+        lo: Value,
+        /// 区间上界
+        hi: Value,
+    },
+
+    /// 不在列表条件 (field NOT IN (values))
+    ///
+    /// # 字段
+    ///
+    /// - `field`：字段名
+    /// - `values`：值列表
+    NotIn {
+        /// 字段名
+        field: String,
+        /// 值列表
+        values: Vec<Value>,
+    },
 }
 
 impl WhereCondition {
@@ -238,7 +280,10 @@ impl WhereCondition {
             | WhereCondition::Lt { field, .. }
             | WhereCondition::Lte { field, .. }
             | WhereCondition::IsNull { field }
-            | WhereCondition::IsNotNull { field } => field,
+            | WhereCondition::IsNotNull { field }
+            | WhereCondition::Ne { field, .. }
+            | WhereCondition::Between { field, .. }
+            | WhereCondition::NotIn { field, .. } => field,
         }
     }
 }

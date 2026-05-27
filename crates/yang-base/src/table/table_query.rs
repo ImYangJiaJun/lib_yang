@@ -408,6 +408,112 @@ impl TableQuery {
         Ok(self)
     }
 
+    /// 添加不等于条件 (WHERE field <> value)
+    pub fn where_ne(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params.where_conditions.push(WhereCondition::Ne {
+            field: field.to_string(),
+            value,
+        });
+        Ok(self)
+    }
+
+    /// 添加小于条件 (WHERE field < value)
+    pub fn where_lt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params.where_conditions.push(WhereCondition::Lt {
+            field: field.to_string(),
+            value,
+        });
+        Ok(self)
+    }
+
+    /// 添加小于等于条件 (WHERE field <= value)
+    pub fn where_lte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::Lte {
+                field: field.to_string(),
+                value,
+            });
+        Ok(self)
+    }
+
+    /// 添加大于条件 (WHERE field > value)
+    pub fn where_gt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params.where_conditions.push(WhereCondition::Gt {
+            field: field.to_string(),
+            value,
+        });
+        Ok(self)
+    }
+
+    /// 添加大于等于条件 (WHERE field >= value)
+    pub fn where_gte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::Gte {
+                field: field.to_string(),
+                value,
+            });
+        Ok(self)
+    }
+
+    /// 添加区间条件 (WHERE field BETWEEN lo AND hi)
+    pub fn where_between(
+        mut self,
+        field: &str,
+        lo: Value,
+        hi: Value,
+    ) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::Between {
+                field: field.to_string(),
+                lo,
+                hi,
+            });
+        Ok(self)
+    }
+
+    /// 添加空值判断 (WHERE field IS NULL)
+    pub fn where_null(mut self, field: &str) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::IsNull {
+                field: field.to_string(),
+            });
+        Ok(self)
+    }
+
+    /// 添加非空值判断 (WHERE field IS NOT NULL)
+    pub fn where_not_null(mut self, field: &str) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::IsNotNull {
+                field: field.to_string(),
+            });
+        Ok(self)
+    }
+
+    /// 添加不在列表条件 (WHERE field NOT IN (values))
+    pub fn where_not_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+        self.validate_filter_field(field)?;
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::NotIn {
+                field: field.to_string(),
+                values,
+            });
+        Ok(self)
+    }
+
     /// 添加排序规则 (ORDER BY field direction)
     ///
     /// 添加排序规则，并验证：
@@ -550,6 +656,14 @@ impl TableQuery {
     #[allow(dead_code)]
     pub fn get_user_roles(&self) -> &[String] {
         &self.user_roles
+    }
+
+    /// 创建仅有表配置、无数据库连接池的查询构建器（测试用）
+    ///
+    /// 使用空的用户角色列表，适合访问无权限限制字段的单元测试。
+    #[cfg(test)]
+    pub fn new_without_pool(table_config: Arc<TableConfig>) -> Self {
+        Self::new(table_config, Arc::from(vec![]), None)
     }
 }
 
@@ -784,6 +898,25 @@ impl TableQuery {
                 WhereCondition::IsNotNull { field } => {
                     let quoted = self.quote_identifier(field)?;
                     sql.push_str(&format!("{} IS NOT NULL", quoted));
+                }
+                WhereCondition::Ne { field, value } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} <> ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
+                WhereCondition::Between { field, lo, hi } => {
+                    let quoted = self.quote_identifier(field)?;
+                    sql.push_str(&format!("{} BETWEEN ? AND ?", quoted));
+                    params.push(SqlParam::from_json(lo)?);
+                    params.push(SqlParam::from_json(hi)?);
+                }
+                WhereCondition::NotIn { field, values } => {
+                    let quoted = self.quote_identifier(field)?;
+                    let placeholders = vec!["?"; values.len()].join(", ");
+                    sql.push_str(&format!("{} NOT IN ({})", quoted, placeholders));
+                    for value in values {
+                        params.push(SqlParam::from_json(value)?);
+                    }
                 }
             }
         }
@@ -1630,6 +1763,13 @@ impl TableQuery {
     #[allow(private_interfaces)]
     pub fn build_delete_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
         self.build_delete_sql_impl()
+    }
+
+    /// 构建 SELECT SQL 语句（仅供测试使用）
+    #[cfg(test)]
+    #[allow(private_interfaces)]
+    pub fn build_select_sql_for_test(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
+        self.build_select_sql()
     }
 
     /// 构建 DELETE SQL 语句（内部实现）
