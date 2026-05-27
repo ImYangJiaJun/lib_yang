@@ -409,6 +409,25 @@ impl TableQuery {
     }
 
     /// 添加不等于条件 (WHERE field <> value)
+    ///
+    /// 添加 WHERE 不等于条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_ne(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params.where_conditions.push(WhereCondition::Ne {
@@ -419,6 +438,25 @@ impl TableQuery {
     }
 
     /// 添加小于条件 (WHERE field < value)
+    ///
+    /// 添加 WHERE 小于条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_lt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params.where_conditions.push(WhereCondition::Lt {
@@ -429,6 +467,25 @@ impl TableQuery {
     }
 
     /// 添加小于等于条件 (WHERE field <= value)
+    ///
+    /// 添加 WHERE 小于等于条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_lte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
@@ -441,6 +498,25 @@ impl TableQuery {
     }
 
     /// 添加大于条件 (WHERE field > value)
+    ///
+    /// 添加 WHERE 大于条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_gt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params.where_conditions.push(WhereCondition::Gt {
@@ -451,6 +527,25 @@ impl TableQuery {
     }
 
     /// 添加大于等于条件 (WHERE field >= value)
+    ///
+    /// 添加 WHERE 大于等于条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `value`：比较值
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_gte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
@@ -463,6 +558,28 @@ impl TableQuery {
     }
 
     /// 添加区间条件 (WHERE field BETWEEN lo AND hi)
+    ///
+    /// 添加 WHERE BETWEEN 条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// 当 `lo > hi` 时 BETWEEN 返回空集（MySQL 标准行为，框架不做特殊处理）。
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `lo`：区间下界（包含）
+    /// - `hi`：区间上界（包含）
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_between(
         mut self,
         field: &str,
@@ -481,6 +598,24 @@ impl TableQuery {
     }
 
     /// 添加空值判断 (WHERE field IS NULL)
+    ///
+    /// 添加 WHERE IS NULL 条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_null(mut self, field: &str) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
@@ -492,6 +627,24 @@ impl TableQuery {
     }
 
     /// 添加非空值判断 (WHERE field IS NOT NULL)
+    ///
+    /// 添加 WHERE IS NOT NULL 条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_not_null(mut self, field: &str) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
@@ -503,6 +656,25 @@ impl TableQuery {
     }
 
     /// 添加不在列表条件 (WHERE field NOT IN (values))
+    ///
+    /// 添加 WHERE NOT IN 条件，并验证：
+    /// 1. 字段是否存在于表配置中
+    /// 2. 用户是否有字段的筛选权限
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `values`：排除值列表
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败，返回错误
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：字段不存在
+    /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_not_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
@@ -770,6 +942,8 @@ impl TableQuery {
     /// 执行 COUNT 查询获取总记录数（内部方法，供 paginate 使用）
     ///
     /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
+    /// 返回 `usize` 以与 `PaginatedResult::new` 的 `total: usize` 参数直接匹配；
+    /// 公开接口 `count()` 通过 `as u64` 适配。
     ///
     /// # 返回值
     ///
@@ -837,7 +1011,7 @@ impl TableQuery {
 
     /// 统一拼接 WHERE 子句到 SQL 字符串
     ///
-    /// 集中处理 9 种 WHERE 条件（Eq/In/Like/Gt/Gte/Lt/Lte/IsNull/IsNotNull）的 SQL 拼接，
+    /// 集中处理 12 种 WHERE 条件（Eq/Ne/In/NotIn/Like/Gt/Gte/Lt/Lte/Between/IsNull/IsNotNull）的 SQL 拼接，
     /// 并通过 `quote_identifier` 对字段名进行反引号转义，防止 SQL 注入。
     ///
     /// # 参数
