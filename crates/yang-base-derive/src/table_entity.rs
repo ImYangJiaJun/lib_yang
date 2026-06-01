@@ -83,13 +83,14 @@ pub fn expand(input: DeriveInput) -> TokenStream {
 
     // 校验主键
     let pk_count = field_opts.iter().filter(|(_, o)| o.primary_key).count();
-    if pk_count == 0 {
-        abort!(input, "TableEntity 必须有一个字段标注 #[entity(primary_key)]");
-    }
     if pk_count > 1 {
         abort!(input, "TableEntity 只能有一个主键");
     }
-    let pk_idx = field_opts.iter().position(|(_, o)| o.primary_key).unwrap();
+    // 用 position 的结果直接驱动「缺少主键」校验，避免独立的 unwrap
+    let pk_idx = match field_opts.iter().position(|(_, o)| o.primary_key) {
+        Some(i) => i,
+        None => abort!(input, "TableEntity 必须有一个字段标注 #[entity(primary_key)]"),
+    };
     let pk_column = field_opts[pk_idx].1.column.clone()
         .unwrap_or_else(|| field_opts[pk_idx].0.clone());
     let pk_type = field_opts[pk_idx].1.ty.clone();

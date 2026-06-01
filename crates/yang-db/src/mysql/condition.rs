@@ -279,17 +279,14 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
         }
         Condition::IsNull(field) => format!("{} IS NULL", field),
         Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
-        Condition::And(conditions) => {
+        Condition::And(mut conditions) => {
             if conditions.is_empty() {
                 return "1 = 1".to_string();
             }
             if conditions.len() == 1 {
                 // 只有一个条件时，直接递归处理，避免多余括号
-                let mut iter = conditions.into_iter();
-                return condition_to_sql_owned(
-                    iter.next().expect("already checked len == 1"),
-                    params,
-                );
+                // remove(0) 在 len == 1 时安全，不会 panic
+                return condition_to_sql_owned(conditions.remove(0), params);
             }
             // AND 条件需要括号以确保优先级，递归调用自身消费子条件
             let parts: Vec<String> = conditions
@@ -298,17 +295,14 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
                 .collect();
             format!("({})", parts.join(" AND "))
         }
-        Condition::Or(conditions) => {
+        Condition::Or(mut conditions) => {
             if conditions.is_empty() {
                 return "1 = 0".to_string();
             }
             if conditions.len() == 1 {
                 // 只有一个条件时，直接递归处理，避免多余括号
-                let mut iter = conditions.into_iter();
-                return condition_to_sql_owned(
-                    iter.next().expect("already checked len == 1"),
-                    params,
-                );
+                // remove(0) 在 len == 1 时安全，不会 panic
+                return condition_to_sql_owned(conditions.remove(0), params);
             }
             // OR 条件需要括号，递归调用自身消费子条件
             let parts: Vec<String> = conditions

@@ -202,6 +202,9 @@ pub struct TransactionQueryBuilder<'a> {
     table: String,
     conditions: Vec<Condition>,
     field_types: HashMap<String, FieldType>,
+    /// 延迟错误：链式 setter（如 `where_and`）无法返回 `Result`，
+    /// 故将首个错误暂存于此，在终端方法（insert/update/delete）统一返回。
+    error: Option<DbError>,
 }
 
 impl<'a> TransactionQueryBuilder<'a> {
@@ -212,6 +215,7 @@ impl<'a> TransactionQueryBuilder<'a> {
             table: table_name.to_string(),
             conditions: Vec::new(),
             field_types: HashMap::new(),
+            error: None,
         }
     }
 
@@ -255,6 +259,9 @@ impl<'a> TransactionQueryBuilder<'a> {
     }
 
     /// 添加 AND 条件
+    ///
+    /// 遇到不支持的操作符时不会 panic，而是将错误暂存，由终端方法
+    /// （insert/update/delete）返回 `Err(DbError::UnsupportedOperator)`。
     pub fn where_and<V>(mut self, field: &str, op: &str, value: V) -> Self
     where
         V: Into<SqlValue>,
@@ -274,7 +281,13 @@ impl<'a> TransactionQueryBuilder<'a> {
                     Condition::Like(field.to_string(), format!("{:?}", sql_value))
                 }
             }
-            _ => panic!("不支持的操作符: {}", op),
+            _ => {
+                // 仅记录首个错误，保持链式调用可继续
+                if self.error.is_none() {
+                    self.error = Some(DbError::UnsupportedOperator(op.to_string()));
+                }
+                return self;
+            }
         };
 
         self.conditions.push(condition);
@@ -298,6 +311,11 @@ impl<'a> TransactionQueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
+        // 先返回链式调用中暂存的错误（如不支持的操作符）
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
         // 记录日志
         if self.tx.enable_logging {
             log::debug!("事务中执行 insert() 操作，表: {}", self.table);
@@ -361,6 +379,11 @@ impl<'a> TransactionQueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
+        // 先返回链式调用中暂存的错误（如不支持的操作符）
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
         // 记录日志
         if self.tx.enable_logging {
             log::debug!("事务中执行 update() 操作，表: {}", self.table);
@@ -421,6 +444,11 @@ impl<'a> TransactionQueryBuilder<'a> {
     /// - Ok(u64): 删除成功，返回受影响的行数
     /// - Err(DbError): 删除失败
     pub async fn delete(self) -> Result<u64, DbError> {
+        // 先返回链式调用中暂存的错误（如不支持的操作符）
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
         // 记录日志
         if self.tx.enable_logging {
             log::debug!("事务中执行 delete() 操作，表: {}", self.table);

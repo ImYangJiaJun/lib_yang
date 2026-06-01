@@ -970,13 +970,11 @@ impl<'a> QueryBuilder<'a> {
 
         // 如果已有条件，将新条件与现有条件用 OR 组合
         if !self.conditions.is_empty() {
-            let existing = std::mem::take(&mut self.conditions);
+            let mut existing = std::mem::take(&mut self.conditions);
             self.conditions.push(Condition::Or(vec![
                 if existing.len() == 1 {
-                    existing
-                        .into_iter()
-                        .next()
-                        .expect("already checked len == 1")
+                    // remove(0) 在 len == 1 时安全，不会 panic
+                    existing.remove(0)
                 } else {
                     Condition::And(existing)
                 },
