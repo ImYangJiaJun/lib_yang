@@ -2598,3 +2598,68 @@ git commit -m "feat(yang-base): H-1 类型化 Action 系统完成
 **2. Inline Execution** - 在当前会话内顺序执行所有任务，每个 Task 结束做 checkpoint 让你审一遍。上下文连续，但主会话 context 消耗大。
 
 **Which approach?**
+
+---
+
+## 进度日志
+
+> 在 subagent-driven execution 中持续更新，方便跨会话断点续作。
+
+### 已完成
+
+| Task | 状态 | 提交 | 测试状态 |
+|---|---|---|---|
+| Task 1 — TableQuery 缺失方法 + count | ✅ | `51bfd9f` feat, `51f67c6` fix(count→u64+测试), `bf85670` refactor(注释+doc) | 335 passed |
+| Task 2 — TableEntity 类型骨架 + schemars 依赖 | ✅ | `9f65a26` feat, `152dc80` refactor(to_v expect + entity 模块改私有) | 340 passed |
+| Task 3 — TypedHandler/TypedAction/DynAction + ActionContext 改造 | ✅ | `b0586d8` feat, `6763bbf` refactor(删 param_or + 修 doc) | 306 passed / 6 ignored |
+| Task 4 — yang-base-derive + #[derive(TableEntity)] | ✅ | `4fb3f7e` feat, `460e3a6` refactor(FieldOpts.default + 补 doc/test) | 308 passed / 6 ignored |
+| Task 5 — #[derive(Action)] 派生宏 | ✅ | `93160ed` feat, `377cf83` refactor(Permission 公开路径 + 共享 OnceLock helpers) | 311 passed / 6 ignored |
+| Task 6 — 重写六个内置 Action 为泛型类型化版本 | ✅ | 工作区已落地（六个 builtin 去掉 `#![cfg(any())]`，`sql_bridge.rs` 新建，`mod.rs` 恢复 re-export） | — |
+| Task 7 — ModuleRouter 集成 + `table_typed::<T>()` | ✅ | 工作区已落地（`register_action<A: TypedAction>`、`actions: Arc<dyn DynAction>`、`table_typed::<T>()`、`dispatch` 读 `ActionMeta` + 中间件链） | — |
+| Task 8 — trybuild + 快照 + 集成测试 + 文档收尾 | ✅ | 本会话完成（见下） | 322 passed / 6 ignored |
+
+### Task 8 完成记录（2026-05-31 本会话）
+
+- **删除 LegacyAction**：`action_trait.rs` 仅保留 `Permission`，旧对象安全 `Action` trait 移除；`action/mod.rs` 导出改为 `pub use action_trait::Permission;`；`action_trait_test.rs` 收敛为 Permission 测试；`builtin_actions_test.rs`（原 `#![cfg(any())]` 全禁）重写为类型化 builtin 的 meta 断言。
+- **trybuild**：`tests/trybuild.rs` + `tests/compile_fail/{missing_primary_key,where_invalid_field,where_type_mismatch,like_on_int}.rs` 四个编译失败用例，`.stderr` 基线已生成并复跑校验通过。`where_type_mismatch.stderr` 含内部行号，rustc 升级后可能需 `TRYBUILD=overwrite` 刷新（已在 harness 头注释）。
+- **insta 快照**：`tests/schema_snapshots.rs` 固定实体 schema 与 `SelectQuery<T>` 契约（封闭字段枚举 + 按列类型化 WhereOp + 仅字符串字段有 Like）。
+- **端到端集成测试**：`tests/typed_action_integration.rs`，testcontainers 跑 add→get→put→select→del→table 全流程，`#[ignore]`（需 Docker）。
+- **依赖**：workspace 新增 `trybuild` / `insta`，yang-base dev-deps 引用。
+- **顺带修复的真实 bug（关键）**：`ActionContext::table_query()` 原先硬编码 `pool: None`，而所有执行方法在无 pool 时返回 `DatabaseNotInitialized`——**类型化 builtin 经 router 派发时根本无法触达数据库**。已修：yang-db `Database::pool()` 暴露连接池引用；`table_query()` 在 `mysql` feature 下从 `GlobalDatabase` 注入共享连接池（未初始化则 `None`，保留原优雅降级）。无 mysql feature 路径同样编译通过。
+
+### 历史断点记录（已被上面取代，保留供追溯）
+
+**Task 6 — 重写六个内置 Action 为泛型类型化版本**
+
+- 状态：**Plan 起草完毕，subagent 派发被用户中断（未执行）**。
+- 上次中断时的工作目录最新提交：`377cf83`。
+- 已经摸清的现状（在派发 prompt 里写死的事实，下次续作时可信）：
+  - `ActionContext::table_query()` 返回 `Result<TableQuery, BaseError>`
+  - `TableQuery::select_fields(&[&str])`, `order_by(&str, SortOrder)`, `page(usize, usize)`
+  - `select::<T>()` 用于 fetch-all、`paginate::<T>()` 返回 `PaginatedResult<T>`、`fetch_optional::<T>()` 单条
+  - `insert(map)` / `update(map)` / `delete()` 返回 `u64`
+  - `count()` 返回 `u64`（Task 1 加，消费 self）
+  - `PaginatedResult<T>`: `data/total/page/page_size/total_pages`，`total: usize`
+  - `paginate::<T>` 要求 `T: Serialize`，符合 `T: TableEntity` 的 bound
+- 待重写文件清单：
+  - 新建 `crates/yang-base/src/action/sql_bridge.rs`
+  - 替换 6 个 builtin（去掉 `#![cfg(any())]`）：`get.rs / add.rs / put.rs / del.rs / select.rs / table.rs`
+  - 修 `action/builtin/mod.rs` 恢复 re-exports
+  - 修 `action/mod.rs` 加 `pub mod sql_bridge;`
+- 完整派发 prompt 草稿见会话历史。续作时可直接重新派发。
+
+### 待开始
+
+| Task | 概要 |
+|---|---|
+| Task 7 — ModuleRouter 集成 + `table_typed::<T>()` | 把 `DynAction` 重命名为 `Action`；`actions` 存 `Arc<dyn Action>`；新增 `table_typed::<T>()` 一行注册全套；`dispatch` 改为读 `ActionMeta` |
+| Task 8 — trybuild + 快照 + 集成测试 + 文档收尾 | 4 个 compile_fail 用例、insta 快照、testcontainers 端到端测试、删除 LegacyAction、更新 BACKLOG/AGENTS/yang-base.md |
+
+### 续作提示
+
+- 续作时先跑 `cargo test --lib -p yang-base` 确认 baseline 仍是 311 passed / 6 ignored，再派发 Task 6 实施者。
+- 派发顺序仍是 Task 6 → 7 → 8。
+- 整体执行模式仍是 subagent-driven（implementer → spec/quality reviewer → 修复 → 标记完成 → 下一 task）。
+- 凡是需要真实数据库的测试（Task 8 端到端测试）都走 `testcontainers`，不假设 host MySQL/Redis（已记入 user memory）。
+- 工作树有大量无关 `.kiro/` 改动，所有 commit 都**显式 `git add <具体文件>`**，禁止 `git add -A`。
+

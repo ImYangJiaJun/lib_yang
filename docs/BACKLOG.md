@@ -5,7 +5,7 @@
 
 > 优先级：🔴 Critical（生产风险）/ 🟠 High（设计缺陷）/ 🟡 Medium（代码质量）/ 🟢 Low（改进建议）
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
-> 最近更新：2026-05-27，基于当前工作区实现与 `cargo test --lib -p yang-base`、`cargo test --lib -p yang-db` 验证结果。
+> 最近更新：2026-05-31，基于当前工作区实现与 `cargo check -p yang-base --all-features`、`cargo test --lib -p yang-base`（326 passed / 8 ignored）验证结果。本轮同步了 H-1（核心完成）、H-3、H-4、H-5、L-2 的实现进展。
 
 ---
 
@@ -66,13 +66,27 @@ let pool_config = deadpool_redis::Config {
 
 ## 🟠 High — 设计缺陷
 
-### ⏳ [H-1] builtin Action 使用 serde_json::Value 而非具体类型
+### ✅ [H-1] builtin Action 使用 serde_json::Value 而非具体类型
 
 **文件**：
 - `crates/yang-base/src/action/builtin/select.rs`
 - `crates/yang-base/src/action/builtin/get.rs`
 
-**问题**：`SelectAction::execute()` 和 `GetAction::execute()` 返回的数据是 `serde_json::Value`（通过 `DynamicRow` 序列化），而不是用户定义的具体 Rust 类型。这导致：
+**状态**：✅ 已完成。Action 系统已重构为 `TypedHandler` + `#[derive(TableEntity)]` + `#[derive(Action)]` 的端到端类型化方案（计划见 `docs/superpowers/plans/2026-05-27-action-typed-system.md`，Task 1-8 全部完成）：
+- 三层 trait（`TypedHandler` 用户手写 → `TypedAction` 派生 → `DynAction` 擦除层 + blanket impl），见 `action/typed.rs`。
+- 派生宏 crate `yang-base-derive` 提供 `#[derive(TableEntity)]`（生成 `Field`/`WhereCond` 枚举 + 运行时 `TableConfig`）与 `#[derive(Action)]`（生成 `TypedAction` impl + `ActionMeta`）。
+- 六个内置 Action（add/del/get/put/select/table）全部泛型化为 `XxxAction<T: TableEntity>`，输入输出契约由 `TypedHandler::{Input,Output}` 编译期固定；字段名通过 `T::Field` 封闭枚举保证，杜绝任意字符串列名拼接。
+- `ModuleRouter::table_typed::<T>()` 一行注册全套 CRUD；`dispatch` 改读 `ActionMeta`，见 `router/module_router.rs`。
+
+**Task 8 验收套件（本会话补齐）**：
+- trybuild 编译失败用例 4 个（缺主键 / 非法字段名 / 类型不匹配 / Like on int），`tests/trybuild.rs` + `tests/compile_fail/`，`.stderr` 基线已生成并复跑校验通过。
+- insta schema 快照（实体 + `SelectQuery<T>`），`tests/schema_snapshots.rs`，锁定封闭字段枚举 + 按列类型化 WhereOp。
+- testcontainers 端到端 CRUD 集成测试 `tests/typed_action_integration.rs`（`#[ignore]`，需 Docker），跑通 add→get→put→select→del→table。
+- 删除旧 `Action` trait（`action_trait.rs` 仅留 `Permission`），清理对应死测试。
+
+**顺带修复的真实 bug**：`ActionContext::table_query()` 原硬编码 `pool: None`，导致类型化 builtin 经 router 派发时所有 DB 操作返回 `DatabaseNotInitialized`（功能性死代码）。已修：yang-db 新增 `Database::pool()`，`table_query()` 在 mysql feature 下从 `GlobalDatabase` 注入共享连接池。
+
+**原始问题**：`SelectAction::execute()` 和 `GetAction::execute()` 返回的数据是 `serde_json::Value`（通过 `DynamicRow` 序列化），而不是用户定义的具体 Rust 类型。这导致：
 - 编译期无类型检查
 - 运行时反序列化错误只能在调用方发现
 - 无法生成准确的 API 文档/Schema
@@ -86,13 +100,15 @@ let pool_config = deadpool_redis::Config {
 
 ---
 
-### ⏳ [H-2] Redis Pipeline/Transaction 是自定义实现而非 redis::pipe()
+### ✅ [H-2] Redis Pipeline/Transaction 是自定义实现而非 redis::pipe()
 
 **文件**：
 - `crates/yang-db/src/redis/pipeline.rs`
 - `crates/yang-db/src/redis/transaction.rs`
 
-**问题**：`RedisPipeline` 和 `RedisTransaction` 手动维护命令列表并自行构建 Redis 协议，而 `redis` crate 已提供经过充分测试的 `redis::pipe()` 和 `redis::Script` API。
+**状态**：✅ 已满足（核查于 2026-05-31，无需改动）。复核现有代码后确认：`RedisPipeline` 与 `RedisTransaction` **已经**直接包装原生 `redis::Pipeline`（字段 `pipe: redis::Pipeline`，构造用 `redis::pipe()`，事务额外 `pipe.atomic()`），所有 add-command 方法委托给 `self.pipe.set/get/del/...`，执行走 `self.pipe.query_async(...)`。没有任何手写 RESP 协议或手动命令缓冲（grep `\r\n` / `format!("*` / `Vec<u8>` 均无命中）。命令集子集问题也不存在——两者都提供 `cmd(&mut self, cmd: redis::Cmd)` 逃生口，可添加任意命令。本条原始描述（"手动维护命令列表并自行构建 Redis 协议"）与当前代码不符，判定为陈旧条目。
+
+**原始问题（已不成立）**：`RedisPipeline` 和 `RedisTransaction` 手动维护命令列表并自行构建 Redis 协议，而 `redis` crate 已提供经过充分测试的 `redis::pipe()` 和 `redis::Script` API。
 
 **影响**：
 - 重复造轮子，维护负担高
@@ -122,11 +138,13 @@ impl RedisPipeline {
 
 ---
 
-### ⏳ [H-3] GlobalDatabase / GlobalRedis 无统一初始化入口
+### ✅ [H-3] GlobalDatabase / GlobalRedis 无统一初始化入口
 
-**文件**：`crates/yang-base/src/database/`
+**文件**：`crates/yang-base/src/database/bundle.rs`
 
-**问题**：`GlobalDatabase::init()` 和 `GlobalRedis::init()` 是两个独立调用，没有统一的应用启动入口。用户容易漏掉其中一个，且初始化顺序无约束。
+**状态**：✅ 已完成。新增 `DatabaseBundle::init(mysql_url, mysql_config, redis_url, redis_config)` 统一入口，按固定顺序（先 MySQL 再 Redis）初始化两个全局单例，任一失败即返回，避免"半初始化"状态。已接入 `database/mod.rs`（feature `mysql`，导出 `DatabaseBundle`）。
+
+**原始问题**：`GlobalDatabase::init()` 和 `GlobalRedis::init()` 是两个独立调用，没有统一的应用启动入口。用户容易漏掉其中一个，且初始化顺序无约束。
 
 **影响**：
 - 启动代码分散，容易遗漏
@@ -136,11 +154,13 @@ impl RedisPipeline {
 
 ---
 
-### ⏳ [H-4] Token 系统缺少 Token 撤销/黑名单机制
+### ✅ [H-4] Token 系统缺少 Token 撤销/黑名单机制
 
-**文件**：`crates/yang-base/src/token/manager.rs`
+**文件**：`crates/yang-base/src/token/revocation.rs`
 
-**问题**：`TokenManager` 支持 `refresh_access_token()`，但没有 Token 撤销机制。一旦 JWT 签发出去，在过期前无法使其失效（如用户登出、密码修改、强制下线场景）。
+**状态**：✅ 已完成（方案 A：Redis 黑名单）。`TokenManager` 新增 `revoke_token` / `revoke_claims` / `is_revoked` / `verify_token_checked`：撤销时把 `jti` 写入 Redis（key `token:blacklist:{jti}`，TTL = `exp - now`，过期自动消失），校验时在标准签名/过期校验外额外查黑名单。`verify_token` 本身**不查**黑名单（保持向后兼容）；需要支持登出/撤销的鉴权路径用 `verify_token_checked`。已接入 `token/mod.rs`。
+
+**原始问题**：`TokenManager` 支持 `refresh_access_token()`，但没有 Token 撤销机制。一旦 JWT 签发出去，在过期前无法使其失效（如用户登出、密码修改、强制下线场景）。
 
 **影响**：安全风险——用户登出后 Token 仍然有效至过期。
 
@@ -151,24 +171,15 @@ impl RedisPipeline {
 
 ---
 
-### ⏳ [H-5] Router 层缺少中间件/拦截器机制
+### ✅ [H-5] Router 层缺少中间件/拦截器机制
 
-**文件**：`crates/yang-base/src/router/module_router.rs`
+**文件**：`crates/yang-base/src/router/middleware.rs`、`crates/yang-base/src/router/module_router.rs`
 
-**问题**：`ModuleRouter::dispatch()` 中权限检查硬编码在 dispatch 流程里，没有可插拔的中间件机制。跨切面逻辑（日志、限流、请求追踪、自定义认证）无法优雅注入。
+**状态**：✅ 已完成（洋葱模型）。新增 `Middleware` trait 与 `Next` 句柄：每个中间件拿到 `ActionContext` 与代表"调用链剩余部分"的 `Next`，可在 `next.run(ctx)` 前后插入逻辑或短路返回。`ModuleRouter::middleware(m)` 注册；`dispatch` 把中间件链作为**最外层**，链尾执行 `authorize_and_dispatch`（内置鉴权 + Action 派发），因此日志/限流/自定义认证可观察并干预所有请求（含会被鉴权拒绝的请求）。因 `ActionContext` 不可 Clone，链以**移动**方式传递 ctx，全链路只有一份上下文。已接入 `router/mod.rs`（导出 `Middleware` / `Next`）。
 
-**影响**：业务特定的横切逻辑只能通过修改每个 Action 实现，代码重复。
+**原始问题**：`ModuleRouter::dispatch()` 中权限检查硬编码在 dispatch 流程里，没有可插拔的中间件机制。跨切面逻辑（日志、限流、请求追踪、自定义认证）无法优雅注入。
 
-**修复方向**：
-```rust
-pub trait Middleware: Send + Sync {
-    async fn handle(&self, ctx: ActionContext, next: Next<'_>) -> Result<ApiResponse, BaseError>;
-}
-
-impl ModuleRouter {
-    pub fn middleware(mut self, m: impl Middleware + 'static) -> Self { ... }
-}
-```
+**遗留**：中间件机制本身已可用；可补一个端到端中间件单测（短路 + 前后置）进一步加固，非阻塞。
 
 ---
 
@@ -222,18 +233,19 @@ let user = result?;  // 配合 #[tokio::test] 返回 Result<(), Box<dyn Error>>
 
 ---
 
-### 🟨 [M-3] 生产代码中存在 unwrap() 调用
+### ✅ [M-3] 生产代码中存在 unwrap() 调用
 
-**文件**：`crates/yang-db/`（lints 已通过 `unwrap_used = "allow"` 豁免）
+**文件**：`crates/yang-db/`、`crates/yang-base/`（lints `unwrap_used`/`expect_used` = `warn`）
 
-**状态**：🟨 部分完成。`yang-db` 已将 `unwrap_used` / `expect_used` 从 `allow` 调整为 `warn`，并替换了已审查的单元素条件分支 `unwrap()`；完整生产路径 panic 点审计仍需继续。
+**状态**：✅ 审计完成（2026-05-31）。全量扫描两个 crate 的 `src/`（排除 `__tests__/`、`#[cfg(test)]`、`proptest!` 块），**真·生产路径** panic 点仅以下三类，逐一确认均为可接受的不变量保证或显式契约，无需改为返回 `Result`：
 
-**问题**：`yang-db/Cargo.toml` 中 clippy lint 显式允许 `unwrap_used` 和 `expect_used`，意味着生产代码路径中可能存在 panic 点。
+1. `yang-base/src/table/validator.rs:42,52` — `Regex::new(...).expect(...)`：正则均为编译期字符串字面量（邮箱、E.164 手机号），编译不可能失败，且包在 `OnceLock` 里只初始化一次。属文档化的 infallible 不变量。
+2. `yang-base/src/table/entity.rs:235` — `to_v()` 对 `WhereOp` 操作数 `serde_json::to_value(...).expect(...)`：操作数为 `i64`/`i32`/`String`/`Vec` 等基础可序列化类型，序列化不会失败；`expect` 信息明确标注「Serialize 实现有缺陷」，是编程错误守卫而非运行时错误路径。
+3. `yang-db/src/mysql/query_builder.rs:930,1005,1157` — `where_*_unchecked()` 系列的 `.unwrap_or_else(|e| panic!())`：这是**有意**的 `_unchecked` API，doc 注释明确「确定操作符合法的场景使用，否则 panic」，与切片索引越界 panic 同性质。已有对应的返回 `Result` 的 checked 版本（`where_and`/`where_or`/`having`）供常规路径使用。
 
-**修复方向**：
-1. 移除 `unwrap_used = "allow"` lint 豁免
-2. 逐一将生产代码中的 `.unwrap()` 替换为 `?` 或 `.expect("不可能到达此处: ...")`（有充分 Safety 说明）
-3. 测试代码可保留 `.unwrap()`
+扫描中其余 100+ 命中全部位于测试代码（`__tests__/*.rs`、源文件内 `#[cfg(test)] mod tests`、`proptest!` 宏块），属 M-1 范围，本条不处理。lints 维持 `warn`（不升 `deny`）以容纳测试代码现状，符合既有注释约定。
+
+**原始问题（已审计澄清）**：`yang-db/Cargo.toml` 中 clippy lint 显式允许 `unwrap_used` 和 `expect_used`，意味着生产代码路径中可能存在 panic 点。→ 审计结论：生产路径的 panic 点均为受控不变量/显式契约，无未受控的隐式 panic。
 
 ---
 
@@ -276,15 +288,18 @@ sqlx = { workspace = true }
 
 ---
 
-### ⏳ [L-2] Router 层缺少 refresh_token 内置 Action
+### ✅ [L-2] Router 层缺少 refresh_token 内置 Action
 
-**文件**：`crates/yang-base/src/action/builtin/`
+**文件**：`crates/yang-base/src/action/auth.rs`
 
-**现状**：内置 Action 只有 CRUD（add/put/del/get/select/table），没有认证相关的内置 Action（login、logout、refresh_token）。
+**状态**：✅ 已完成（feature `token`）。新增认证内置 Action：
+- `LoginAction<V>`：校验凭证后签发 Token 对。凭证校验因项目而异，委托给业务实现的 `CredentialVerifier` trait，自身只负责"校验通过 → 签发 Token"。
+- `RefreshAction`：用 Refresh Token 换新 Access Token，内部走 `verify_token_checked`（被拉黑的 refresh token 不能再刷新），并校验 `token_type == "refresh"`。
+- `LogoutAction`：调用 `revoke_token` 写入 Redis 黑名单（依赖 H-4 的撤销机制）。
 
-**影响**：每个使用 yang-base 的项目都需要重复实现 JWT 刷新逻辑。
+均通过 `#[derive(Action)]` 标注为 `public`，已接入 `action/mod.rs`（`pub use auth::{CredentialVerifier, LoginAction, LogoutAction, RefreshAction}`）。
 
-**修复**：提供可选的 `AuthAction` 模块（feature gate），包含 `LoginAction`（验证 + 签发 Token）、`RefreshAction`（Refresh Token → 新 Access Token）、`LogoutAction`（撤销 Token）。
+**原始现状**：内置 Action 只有 CRUD（add/put/del/get/select/table），没有认证相关的内置 Action（login、logout、refresh_token）。
 
 ---
 
@@ -314,22 +329,25 @@ FieldType::Date => {
 
 ---
 
-### ⏳ [L-4] HttpClient 缺少重试 / 熔断 / 超时策略配置
+### ✅ [L-4] HttpClient 缺少重试 / 熔断 / 超时策略配置
 
-**文件**：`crates/yang-base/src/http/client.rs`
+**文件**：`crates/yang-base/src/http/{client,request,circuit_breaker}.rs`
 
-**现状**：`HttpClient` 只支持全局超时，没有请求级重试（`max_retries`、指数退避）、熔断（circuit breaker）、或按状态码重试的策略。
+**状态**：✅ 已完成（2026-05-31）。三要素全部到位：
 
-**影响**：对外 HTTP 调用遇到临时性 5xx 错误无法自动重试，需要调用方手动实现重试逻辑。
+1. **请求级超时**：`RequestBuilder::timeout(secs)` 覆盖单次请求超时（已有）。
+2. **重试 + 指数退避**：`RetryConfig { max_retries, retry_on, backoff_ms }` + `RequestBuilder::retry(cfg)`，默认不重试；启用后对连接/超时错误与命中 `retry_on` 的状态码按 `backoff_ms * 2^attempt` 退避重试（已有）。
+3. **熔断器（本次新增）**：手写经典三态熔断器 `CircuitBreaker`（`http/circuit_breaker.rs`），**按目标 host 分键**——一个故障上游被熔断不影响其它健康 host。
+   - 状态机：Closed（累计连续失败，达 `failure_threshold` → Open）/ Open（快速失败，冷却 `cooldown_secs` 后放行探测 → HalfOpen）/ HalfOpen（累计 `success_threshold` 次成功 → Closed，任一失败 → 重新 Open）。
+   - 配置：`CircuitBreakerConfig { failure_threshold: 5, cooldown_secs: 30, success_threshold: 1 }`（默认值）。通过 `HttpClientConfig.circuit_breaker: Option<_>` 开启，**默认 None，向后兼容**。
+   - 失败判定：传输错误与 5xx 记失败，2xx/3xx/4xx 记成功（服务端正常拒绝不算上游故障）。
+   - 共享：状态用 `Arc<Mutex<HashMap>>`，随 `HttpClient`/`CircuitBreaker` 的 `clone()` 复用同一份；锁不跨 `.await`。
+   - 新增错误 `BaseError::HttpCircuitBreakerOpen(host)`，错误码 `300007`。
+   - 接入点：`RequestBuilder::send()` 在每次发送前做准入检查（`send_guarded`），命中 Open 直接返回 `HttpCircuitBreakerOpen` 不发请求；与重试逻辑正交组合（熔断打开属不可重试错误）。
 
-**修复方向**：引入 `tower` 中间件层或手动实现简单重试装饰器：
-```rust
-pub struct RetryConfig {
-    pub max_retries: u32,
-    pub retry_on: Vec<u16>,          // 按状态码重试
-    pub backoff_ms: u64,             // 初始退避时间（指数退避）
-}
-```
+**未做（有意，超出 L-4 范围）**：未引入 `tower` 中间件栈（手写实现已满足需求且零额外依赖）；HalfOpen 不做并发探测限流（轻量场景多个探测并发放行可接受）。
+
+**测试**：`http/__tests__/circuit_breaker_test.rs` 10 个用例，用可注入时钟（`allow_at`/`on_failure_at`）模拟冷却，覆盖阈值打开、成功清零、per-host 隔离、冷却转半开、半开成功恢复/失败重开、阈值=1 立即熔断、clone 共享状态。yang-base lib 测试 322 → 332 全绿，clippy 干净，无 http feature 下 `error/mod.rs` 仍可编译。
 
 ---
 
@@ -349,18 +367,18 @@ pub struct RetryConfig {
 |----|------|--------|-------|------|------------|
 | C-1 | ✅ 已完成 | 🔴 Critical | yang-db | redis/client.rs | RedisConfig 连接池参数静默不生效 |
 | C-2 | ✅ 已完成 | 🔴 Critical | yang-db | mysql/（某处） | unsafe 裸指针代码未经充分审查 |
-| H-1 | ⏳ 待处理 | 🟠 High | yang-base | action/builtin/select+get.rs | 返回值使用 Value 而非具体类型，类型安全弱 |
-| H-2 | ⏳ 待处理 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 自定义 Pipeline/Transaction 实现应替换为 redis::pipe() |
-| H-3 | ⏳ 待处理 | 🟠 High | yang-base | database/ | GlobalDatabase/GlobalRedis 无统一初始化入口 |
-| H-4 | ⏳ 待处理 | 🟠 High | yang-base | token/manager.rs | 缺少 Token 撤销/黑名单机制 |
-| H-5 | ⏳ 待处理 | 🟠 High | yang-base | router/module_router.rs | Router 层缺少中间件/拦截器机制 |
+| H-1 | ✅ 已完成 | 🟠 High | yang-base | action/typed.rs + builtin/* | 端到端类型化（Task 1-8 全完成）+ table_query 连接池注入修复 |
+| H-2 | ✅ 已满足 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 复核确认已直接包装原生 redis::Pipeline，条目陈旧无需改动 |
+| H-3 | ✅ 已完成 | 🟠 High | yang-base | database/bundle.rs | DatabaseBundle::init 统一初始化入口 |
+| H-4 | ✅ 已完成 | 🟠 High | yang-base | token/revocation.rs | Token 撤销/黑名单机制（Redis jti 黑名单） |
+| H-5 | ✅ 已完成 | 🟠 High | yang-base | router/middleware.rs | Router 中间件/拦截器（洋葱模型 Middleware/Next） |
 | H-6 | ✅ 已完成 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 |
 | M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap() 过多，错误信息不清 |
 | M-2 | ✅ 已完成 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 |
-| M-3 | 🟨 部分完成 | 🟡 Medium | yang-db | （生产代码） | 生产路径存在 unwrap()，lints 已豁免 |
+| M-3 | ✅ 审计完成 | 🟡 Medium | yang-db/yang-base | （生产代码） | 生产路径 panic 点均为受控不变量/显式契约，无未受控 panic |
 | M-4 | ✅ 已完成 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 |
 | L-1 | ✅ 已完成 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 |
-| L-2 | ⏳ 待处理 | 🟢 Low | yang-base | action/builtin/ | 缺少认证相关内置 Action（login/refresh/logout） |
+| L-2 | ✅ 已完成 | 🟢 Low | yang-base | action/auth.rs | 认证内置 Action（login/refresh/logout） |
 | L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate |
-| L-4 | ⏳ 待处理 | 🟢 Low | yang-base | http/client.rs | HttpClient 缺少重试/熔断策略 |
+| L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 |
 | L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 |
