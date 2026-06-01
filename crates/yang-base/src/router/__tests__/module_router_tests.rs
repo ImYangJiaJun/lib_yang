@@ -1,31 +1,38 @@
-// 暂禁 — Task 7 之后随 router 改造一起重写
-#![cfg(any())]
-//! ModuleRouter 集成测试
+//! ModuleRouter 集成测试（H-1 类型化迁移后重写）
+#![cfg(feature = "mysql")]
 
-use crate::action::builtin::{AddAction, GetAction};
-use crate::action::{ActionContext, GlobalTools, Request, User};
+use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::error::BaseError;
-use crate::router::ModuleRouter;
-use crate::table::{FieldConfig, FieldType, TableConfig};
+use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
+use crate::table::TableEntity;
 use crate::token::TokenManager;
+use async_trait::async_trait;
 use jsonwebtoken::Algorithm;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-/// 创建测试用的表配置
-fn create_test_table_config() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::Integer).required(true))
-            .field(
-                FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true),
-            )
-            .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(false))
-            .primary_key("id"),
-    )
+// ──────────────────────────────────────────────────────────────────────────────
+// 测试用类型化实体
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(
+    Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow, yang_base_derive::TableEntity,
+)]
+#[table(name = "test_users", display_name = "测试用户表")]
+pub struct TestUser {
+    #[entity(primary_key)]
+    pub id: i64,
+    #[entity(max_length = 50, unique)]
+    pub username: String,
+    #[entity(max_length = 100)]
+    pub email: Option<String>,
 }
 
-/// 创建测试用的用户
+// ──────────────────────────────────────────────────────────────────────────────
+// 测试辅助
+// ──────────────────────────────────────────────────────────────────────────────
+
 fn create_test_user() -> User {
     User {
         id: 1,
@@ -41,7 +48,6 @@ fn create_test_user() -> User {
     }
 }
 
-/// 创建测试用的 GlobalTools
 fn create_test_tools() -> Arc<GlobalTools> {
     let token_manager = TokenManager::new_symmetric(
         "test_secret_key",
@@ -54,303 +60,43 @@ fn create_test_tools() -> Arc<GlobalTools> {
     Arc::new(GlobalTools::new(token_manager))
 }
 
+/// 构造一个注册了全部内置 Action 的路由器（带 table_config）。
+fn router_with_builtins() -> ModuleRouter {
+    ModuleRouter::new("user", "用户管理")
+        .with_table_config(Arc::new(TestUser::table_config().clone()))
+        .table_typed::<TestUser>()
+        .expect("注册内置 Actions 应该成功")
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 构建器与注册
+// ──────────────────────────────────────────────────────────────────────────────
+
 #[test]
 fn test_module_router_new() {
     let router = ModuleRouter::new("user", "用户管理");
 
     assert_eq!(router.module_name(), "user");
     assert_eq!(router.display_name(), "用户管理");
-    // 使用新的 get_table_config getter
     assert!(router.get_table_config().is_none());
     assert_eq!(router.action_names().len(), 0);
 }
 
 #[test]
 fn test_module_router_with_table_config() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理").with_table_config(table_config.clone());
-
-    // 使用新的 get_table_config getter
-    assert!(router.get_table_config().is_some());
-    assert_eq!(
-        router.get_table_config().unwrap().table_name,
-        "test_users"
-    );
-}
-
-#[test]
-fn test_module_router_table_config_alias() {
-    let table_config = create_test_table_config();
-    // 测试 table_config 链式 setter 别名
-    let router = ModuleRouter::new("user", "用户管理").table_config(table_config.clone());
-
-    assert!(router.get_table_config().is_some());
-    assert_eq!(
-        router.get_table_config().unwrap().table_name,
-        "test_users"
-    );
-}
-
-#[test]
-fn test_module_router_register_action() {
-    let table_config = create_test_table_config();
-    let add_action = AddAction::new(table_config.clone());
-
-    let router = ModuleRouter::new("user", "用户管理").register_action(add_action);
-
-    let action_names = router.action_names();
-    assert_eq!(action_names.len(), 1);
-    assert!(action_names.contains(&"add".to_string()));
-}
-
-#[test]
-fn test_module_router_register_builtin_actions() {
-    let table_config = create_test_table_config();
-    // register_builtin_actions 现在返回 Result，需要处理
     let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
+        .with_table_config(Arc::new(TestUser::table_config().clone()));
+
+    assert!(router.get_table_config().is_some());
+    assert_eq!(router.get_table_config().unwrap().table_name, "test_users");
+}
+
+#[test]
+fn test_table_typed_registers_six_actions() {
+    let router = router_with_builtins();
 
     let action_names = router.action_names();
     assert_eq!(action_names.len(), 6);
-    assert!(action_names.contains(&"add".to_string()));
-    assert!(action_names.contains(&"put".to_string()));
-    assert!(action_names.contains(&"del".to_string()));
-    assert!(action_names.contains(&"get".to_string()));
-    assert!(action_names.contains(&"select".to_string()));
-    assert!(action_names.contains(&"table".to_string()));
-}
-
-#[test]
-fn test_module_router_default_permissions() {
-    let _router =
-        ModuleRouter::new("user", "用户管理").default_permissions(vec!["user:access".to_string()]);
-
-    // 默认权限是私有字段，无法直接测试，但可以通过 dispatch 测试
-    // 这里只测试构建器方法不会 panic
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_action_not_found() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
-
-    let request = Request::new(json!({}));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    let result = router.dispatch("nonexistent", context).await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        BaseError::ActionNotFound(name) => {
-            assert_eq!(name, "nonexistent");
-        }
-        _ => panic!("期望 ActionNotFound 错误"),
-    }
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_public_action() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
-
-    let request = Request::new(json!({}));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // table action 是公开的，不需要认证
-    let result = router.dispatch("table", context).await;
-
-    // 由于没有设置数据库连接，这里会返回错误，但不是 Unauthorized 错误
-    // 我们只测试能够找到 action 并尝试执行
-    assert!(result.is_ok() || !matches!(result.unwrap_err(), BaseError::Unauthorized(_)));
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_unauthorized() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
-
-    let request = Request::new(json!({
-        "data": {
-            "username": "alice",
-            "email": "alice@example.com"
-        }
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools);
-
-    // add action 需要认证，但没有提供用户信息
-    let result = router.dispatch("add", context).await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        BaseError::Unauthorized(_) => {}
-        _ => panic!("期望 Unauthorized 错误"),
-    }
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_with_user() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
-
-    let user = create_test_user();
-    let request = Request::new(json!({
-        "data": {
-            "id": 1,
-            "username": "alice",
-            "email": "alice@example.com"
-        }
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools).with_user(user);
-
-    // 有用户信息，但没有数据库连接，会返回其他错误（不是 Unauthorized）
-    let result = router.dispatch("add", context).await;
-
-    // 我们只测试不是 Unauthorized 错误
-    if let Err(e) = result {
-        assert!(!matches!(e, BaseError::Unauthorized(_)));
-    }
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_permission_denied() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功")
-        .default_permissions(vec!["admin:access".to_string()]);
-
-    // 创建没有 admin:access 权限的用户
-    let user = User {
-        id: 1,
-        username: "test_user".to_string(),
-        nickname: "测试用户".to_string(),
-        email: "test@example.com".to_string(),
-        roles: vec!["user".to_string()],
-        permissions: vec!["user:read".to_string()],
-    };
-
-    let request = Request::new(json!({
-        "data": {
-            "id": 1,
-            "username": "alice",
-            "email": "alice@example.com"
-        }
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools).with_user(user);
-
-    // 用户没有 admin:access 权限
-    let result = router.dispatch("add", context).await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        BaseError::PermissionDenied(_) => {}
-        _ => panic!("期望 PermissionDenied 错误"),
-    }
-}
-
-#[tokio::test]
-async fn test_module_router_dispatch_with_sufficient_permissions() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功")
-        .default_permissions(vec!["user:access".to_string()]);
-
-    // 创建有 user:access 权限的用户
-    let user = User {
-        id: 1,
-        username: "test_user".to_string(),
-        nickname: "测试用户".to_string(),
-        email: "test@example.com".to_string(),
-        roles: vec!["user".to_string()],
-        permissions: vec!["user:access".to_string(), "user:write".to_string()],
-    };
-
-    let request = Request::new(json!({
-        "data": {
-            "id": 1,
-            "username": "alice",
-            "email": "alice@example.com"
-        }
-    }));
-    let tools = create_test_tools();
-    let context = ActionContext::new(request, tools).with_user(user);
-
-    // 用户有足够的权限，但没有数据库连接，会返回其他错误（不是 PermissionDenied）
-    let result = router.dispatch("add", context).await;
-
-    // 我们只测试不是权限相关的错误
-    if let Err(e) = result {
-        assert!(!matches!(e, BaseError::PermissionDenied(_)));
-        assert!(!matches!(e, BaseError::Unauthorized(_)));
-    }
-}
-
-#[test]
-fn test_module_router_action_names() {
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config.clone())
-        .register_action(AddAction::new(table_config.clone()))
-        .register_action(GetAction::new(table_config));
-
-    let action_names = router.action_names();
-    assert_eq!(action_names.len(), 2);
-    assert!(action_names.contains(&"add".to_string()));
-    assert!(action_names.contains(&"get".to_string()));
-}
-
-/// 测试未设置 table_config 时 register_builtin_actions 返回 Err
-#[test]
-fn test_module_router_register_builtin_actions_without_table_config() {
-    // 验证需求: 2.1, 2.2 - 未设置 table_config 时返回 Err 而非 panic
-    let result = ModuleRouter::new("user", "用户管理").register_builtin_actions();
-
-    assert!(result.is_err());
-    match result.err().unwrap() {
-        BaseError::TableConfigNotSet => {}
-        e => panic!("期望 TableConfigNotSet 错误，实际得到: {:?}", e),
-    }
-}
-
-/// 测试 BUILTIN_ACTION_NAMES 常量驱动注册的一致性
-#[test]
-fn test_builtin_action_names_consistency() {
-    use crate::router::BUILTIN_ACTION_NAMES;
-
-    let table_config = create_test_table_config();
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(table_config)
-        .register_builtin_actions()
-        .expect("注册内置 Actions 应该成功");
-
-    let action_names = router.action_names();
-
-    // 验证注册的 Action 数量与常量一致
-    assert_eq!(action_names.len(), BUILTIN_ACTION_NAMES.len());
-
-    // 验证每个常量名称都已注册
     for name in BUILTIN_ACTION_NAMES {
         assert!(
             action_names.contains(&name.to_string()),
@@ -359,3 +105,177 @@ fn test_builtin_action_names_consistency() {
         );
     }
 }
+
+#[test]
+fn test_builtin_action_names_consistency() {
+    let router = router_with_builtins();
+    assert_eq!(router.action_names().len(), BUILTIN_ACTION_NAMES.len());
+}
+
+/// 未设置 table_config 时 table_typed 返回 Err 而非 panic。
+#[test]
+fn test_table_typed_without_table_config() {
+    // 验证需求: 2.1, 2.2
+    let result = ModuleRouter::new("user", "用户管理").table_typed::<TestUser>();
+
+    assert!(result.is_err());
+    match result.err().unwrap() {
+        BaseError::TableConfigNotSet => {}
+        e => panic!("期望 TableConfigNotSet 错误，实际得到: {:?}", e),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// dispatch 鉴权路径（不触达数据库）
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_dispatch_action_not_found() {
+    let router = router_with_builtins();
+    let context = ActionContext::new(Request::new(json!({})), create_test_tools());
+
+    let result = router.dispatch("nonexistent", context).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        BaseError::ActionNotFound(name) => assert_eq!(name, "nonexistent"),
+        e => panic!("期望 ActionNotFound 错误，实际: {:?}", e),
+    }
+}
+
+#[tokio::test]
+async fn test_dispatch_unauthorized() {
+    let router = router_with_builtins();
+    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let context = ActionContext::new(request, create_test_tools());
+
+    // add 需要认证，但未提供用户信息 → Unauthorized（在触达数据库前返回）
+    let result = router.dispatch("add", context).await;
+
+    assert!(matches!(result, Err(BaseError::Unauthorized(_))));
+}
+
+#[tokio::test]
+async fn test_dispatch_permission_denied() {
+    let router = router_with_builtins().default_permissions(vec!["admin:access".to_string()]);
+
+    let user = User {
+        id: 1,
+        username: "test_user".to_string(),
+        nickname: "测试用户".to_string(),
+        email: "test@example.com".to_string(),
+        roles: vec!["user".to_string()],
+        permissions: vec!["user:read".to_string()],
+    };
+    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let context = ActionContext::new(request, create_test_tools()).with_user(user);
+
+    // 用户缺少 admin:access → PermissionDenied（在触达数据库前返回）
+    let result = router.dispatch("add", context).await;
+
+    assert!(matches!(result, Err(BaseError::PermissionDenied(_))));
+}
+
+#[tokio::test]
+async fn test_dispatch_with_sufficient_permissions_passes_authz() {
+    let router = router_with_builtins().default_permissions(vec!["user:write".to_string()]);
+
+    let user = create_test_user();
+    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let context = ActionContext::new(request, create_test_tools()).with_user(user);
+
+    // 鉴权通过后会因无数据库连接而失败，但绝不应是鉴权类错误
+    let result = router.dispatch("add", context).await;
+    if let Err(e) = result {
+        assert!(!matches!(e, BaseError::Unauthorized(_)));
+        assert!(!matches!(e, BaseError::PermissionDenied(_)));
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 中间件机制（H-5）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// 短路中间件：不调用 next，直接返回成功，避免触达数据库。
+struct ShortCircuitMiddleware {
+    payload: String,
+}
+
+#[async_trait]
+impl Middleware for ShortCircuitMiddleware {
+    async fn handle(
+        &self,
+        _ctx: ActionContext,
+        _next: Next<'_>,
+    ) -> Result<ApiResponse, BaseError> {
+        Ok(ApiResponse::success_value(
+            json!({ "from": self.payload }),
+            "ok",
+        ))
+    }
+}
+
+/// 记录进入/离开顺序的中间件。
+struct OrderRecordingMiddleware {
+    id: usize,
+    log: Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+#[async_trait]
+impl Middleware for OrderRecordingMiddleware {
+    async fn handle(
+        &self,
+        ctx: ActionContext,
+        next: Next<'_>,
+    ) -> Result<ApiResponse, BaseError> {
+        self.log.lock().unwrap().push(self.id);
+        let result = next.run(ctx).await;
+        // 离开时记录负向标记（id + 1000）以区分进入/离开
+        self.log.lock().unwrap().push(self.id + 1000);
+        result
+    }
+}
+
+#[tokio::test]
+async fn test_middleware_short_circuit() {
+    let router = router_with_builtins().middleware(ShortCircuitMiddleware {
+        payload: "intercepted".to_string(),
+    });
+
+    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let context = ActionContext::new(request, create_test_tools());
+
+    // 短路中间件在鉴权后立即返回，不触达 add 的数据库逻辑，也不报 Unauthorized
+    let result = router.dispatch("add", context).await;
+    assert!(result.is_ok(), "短路中间件应直接返回成功: {:?}", result);
+}
+
+#[tokio::test]
+async fn test_middleware_onion_order() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // 先注册的最先进入、最后离开（洋葱模型）；链尾用短路中间件终止，避免 DB。
+    let router = router_with_builtins()
+        .middleware(OrderRecordingMiddleware {
+            id: 1,
+            log: log.clone(),
+        })
+        .middleware(OrderRecordingMiddleware {
+            id: 2,
+            log: log.clone(),
+        })
+        .middleware(ShortCircuitMiddleware {
+            payload: "end".to_string(),
+        });
+
+    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let context = ActionContext::new(request, create_test_tools());
+
+    let result = router.dispatch("add", context).await;
+    assert!(result.is_ok());
+
+    // 期望顺序：进入1 -> 进入2 -> (短路) -> 离开2 -> 离开1
+    let recorded = log.lock().unwrap().clone();
+    assert_eq!(recorded, vec![1, 2, 1002, 1001]);
+}
+

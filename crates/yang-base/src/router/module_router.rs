@@ -20,7 +20,7 @@
 //! let router = ModuleRouter::new("user", "用户管理")
 //!     .with_table_config(table_config.clone())
 //!     .default_permissions(vec!["user:access".to_string()])
-//!     .register_builtin_actions()?;
+//!     .table_typed::<User>()?;
 //!
 //! // 分发请求
 //! let response = router.dispatch("add", context).await?;
@@ -31,8 +31,9 @@
 /// 包含所有内置 Action 的名称，用于注册和验证
 pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select", "table"];
 
-use crate::action::{Action, ActionContext, ApiResponse, User};
+use crate::action::{ActionContext, ApiResponse, DynAction, User};
 use crate::error::BaseError;
+use crate::router::middleware::{Middleware, Next};
 use crate::table::TableConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,12 +60,15 @@ pub struct ModuleRouter {
     table_config: Option<Arc<TableConfig>>,
 
     /// Action 注册表
-    /// Key: action 名称, Value: Action 实例
-    actions: HashMap<String, Box<dyn Action>>,
+    /// Key: action 名称, Value: 类型化擦除后的 DynAction 实例
+    actions: HashMap<String, Arc<dyn DynAction>>,
 
     /// 默认权限要求
     /// 所有 Action 都需要满足这些权限（除非 Action 是公开的）
     default_permissions: Vec<String>,
+
+    /// 中间件链（按注册顺序构成洋葱模型，先注册的最先进入、最后离开）
+    middlewares: Vec<Arc<dyn Middleware>>,
 }
 
 impl ModuleRouter {
@@ -93,6 +97,7 @@ impl ModuleRouter {
             table_config: None,
             actions: HashMap::new(),
             default_permissions: Vec::new(),
+            middlewares: Vec::new(),
         }
     }
 
@@ -196,46 +201,115 @@ impl ModuleRouter {
     /// let router = ModuleRouter::new("user", "用户管理")
     ///     .register_action(add_action);
     /// ```
-    pub fn register_action<A: Action + 'static>(mut self, action: A) -> Self {
-        let name = action.name().to_string();
-        self.actions.insert(name, Box::new(action));
+    /// 注册一个类型化 Action
+    ///
+    /// 接受任意实现 [`TypedAction`](crate::action::TypedAction) 的类型
+    /// （通常由 `#[derive(Action)]` 派生），通过 blanket impl 自动转为
+    /// `Arc<dyn DynAction>` 存入注册表。
+    ///
+    /// # 参数
+    ///
+    /// - `action`: 类型化 Action 实例
+    ///
+    /// # 返回
+    ///
+    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::router::ModuleRouter;
+    /// use yang_base::action::builtin::AddAction;
+    ///
+    /// let router = ModuleRouter::new("user", "用户管理")
+    ///     .register_action(AddAction::<User>::new());
+    /// ```
+    pub fn register_action<A>(mut self, action: A) -> Self
+    where
+        A: crate::action::TypedAction,
+    {
+        let action: Arc<dyn DynAction> = Arc::new(action);
+        let name = action.meta().name.to_string();
+        self.actions.insert(name, action);
         self
     }
 
-    /// 注册所有内置 CRUD Actions
+    /// 注册一个中间件（builder setter）
     ///
-    /// 注册 add、put、del、get、select、table 六个内置 Action。
-    /// 需要先通过 `with_table_config` 或 `table_config` 设置表配置。
+    /// 中间件按注册顺序构成洋葱模型：先注册的最先进入、最后离开。
+    /// 中间件在鉴权**之后**、目标 Action 执行**之前**包裹整条调用链
+    /// （见 [`dispatch`](Self::dispatch)）。
+    ///
+    /// # 参数
+    ///
+    /// - `middleware`: 实现 [`Middleware`](crate::router::Middleware) 的实例
+    ///
+    /// # 返回
+    ///
+    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let router = ModuleRouter::new("user", "用户管理")
+    ///     .middleware(LoggingMiddleware)
+    ///     .middleware(RateLimitMiddleware);
+    /// ```
+    pub fn middleware<M>(mut self, middleware: M) -> Self
+    where
+        M: Middleware,
+    {
+        self.middlewares.push(Arc::new(middleware));
+        self
+    }
+
+    /// 为指定实体类型 `T` 注册全部六个内置 CRUD Actions
+    ///
+    /// 注册 add、put、del、get、select、table 六个类型化内置 Action。
+    /// 调用前需先通过 `with_table_config` / `table_config` 设置表配置——
+    /// 内置 Action 在 dispatch 时通过 `ActionContext::table_query()` 取用该配置。
     ///
     /// 内置 Action 名称由 [`BUILTIN_ACTION_NAMES`] 常量定义。
+    ///
+    /// # 类型参数
+    ///
+    /// - `T`: 实现 [`TableEntity`](crate::table::TableEntity) 的实体类型
+    ///   （通常由 `#[derive(TableEntity)]` 派生）
     ///
     /// # 返回
     ///
     /// - `Ok(Self)`: 注册成功，返回修改后的 ModuleRouter 实例（支持链式调用）
     /// - `Err(BaseError::TableConfigNotSet)`: 未设置 table_config
     ///
-    /// # 错误
-    ///
-    /// - `BaseError::TableConfigNotSet`: 调用前未设置表配置
-    ///
     /// # 示例
     ///
     /// ```rust,ignore
     /// use yang_base::router::ModuleRouter;
-    /// use yang_base::table::TableConfig;
-    /// use std::sync::Arc;
     ///
-    /// let table_config = Arc::new(TableConfig::new("users"));
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .with_table_config(table_config)
-    ///     .register_builtin_actions()?;
+    ///     .with_table_config(user_table_config)
+    ///     .table_typed::<User>()?;
     /// ```
     #[cfg(feature = "mysql")]
-    pub fn register_builtin_actions(self) -> Result<Self, BaseError> {
-        // Task 6 之后用 table_typed::<T>() 替换；此方法暂废
-        Err(BaseError::Unknown(
-            "旧 register_builtin_actions 在 H-1 重构期间禁用，请使用 table_typed::<T>()".into(),
-        ))
+    pub fn table_typed<T>(self) -> Result<Self, BaseError>
+    where
+        T: crate::table::TableEntity,
+    {
+        use crate::action::builtin::{
+            AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
+        };
+
+        if self.table_config.is_none() {
+            return Err(BaseError::TableConfigNotSet);
+        }
+
+        Ok(self
+            .register_action(AddAction::<T>::new())
+            .register_action(PutAction::<T>::new())
+            .register_action(DelAction::<T>::new())
+            .register_action(GetAction::<T>::new())
+            .register_action(SelectAction::<T>::new())
+            .register_action(TableAction::<T>::new()))
     }
 
     /// 分发请求到对应的 Action
@@ -266,7 +340,7 @@ impl ModuleRouter {
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
     ///     .with_table_config(table_config)
-    ///     .register_builtin_actions()?;
+    ///     .table_typed::<User>()?;
     ///
     /// let response = router.dispatch("add", context).await?;
     /// ```
@@ -275,57 +349,77 @@ impl ModuleRouter {
         action_name: &str,
         mut context: ActionContext,
     ) -> Result<ApiResponse, BaseError> {
-        // 1. 查找 Action
+        // 1. 查找 Action（克隆 Arc，便于后续移动进中间件链 / 执行）
         let action = self
             .actions
             .get(action_name)
-            .ok_or_else(|| BaseError::ActionNotFound(action_name.to_string()))?;
+            .ok_or_else(|| BaseError::ActionNotFound(action_name.to_string()))?
+            .clone();
 
         // 2. 设置表配置到上下文
         if let Some(table_config) = &self.table_config {
             context = context.with_table_config(table_config.clone());
         }
 
-        // 3. 检查是否为公开 Action
-        if action.is_public() {
-            // 公开 Action，直接执行
-            return action.execute(context).await;
-        }
+        // 3. 进入中间件链（最外层）。链尾执行内置鉴权 + Action 派发，
+        //    使日志/限流/自定义认证等中间件能观察并干预所有请求。
+        let next = Next {
+            remaining: &self.middlewares,
+            router: self,
+            action,
+        };
+        next.run(context).await
+    }
 
-        // 4. 检查用户是否已认证
-        let user = context
-            .user
-            .as_ref()
-            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+    /// 中间件链的终点：执行内置鉴权后派发 Action。
+    ///
+    /// 由 [`Next::run`] 在中间件耗尽时调用。公开 Action 跳过鉴权；非公开
+    /// Action 依次校验「已登录 -> 模块默认权限 -> Action 权限」，全部通过后
+    /// 调用 `action.dispatch`。
+    pub(crate) async fn authorize_and_dispatch(
+        &self,
+        action: Arc<dyn DynAction>,
+        context: ActionContext,
+    ) -> Result<ApiResponse, BaseError> {
+        let meta = action.meta();
 
-        // 5. 检查默认权限
-        if !self.default_permissions.is_empty()
-            && !self.check_permissions(user, &self.default_permissions)
-        {
-            return Err(BaseError::PermissionDenied(format!(
-                "缺少模块权限: {:?}",
-                self.default_permissions
-            )));
-        }
+        // 公开 Action 跳过登录/权限检查
+        if !meta.is_public {
+            // 检查用户是否已认证
+            let user = context
+                .user
+                .as_ref()
+                .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
 
-        // 6. 检查 Action 权限
-        let action_permissions = action.permissions();
-        if !action_permissions.is_empty() {
-            let permission_names: Vec<String> = action_permissions
-                .iter()
-                .map(|p| p.name().to_string())
-                .collect();
-
-            if !self.check_permissions(user, &permission_names) {
+            // 检查默认权限
+            if !self.default_permissions.is_empty()
+                && !self.check_permissions(user, &self.default_permissions)
+            {
                 return Err(BaseError::PermissionDenied(format!(
-                    "缺少 Action 权限: {:?}",
-                    permission_names
+                    "缺少模块权限: {:?}",
+                    self.default_permissions
                 )));
+            }
+
+            // 检查 Action 权限
+            if !meta.permissions.is_empty() {
+                let permission_names: Vec<String> = meta
+                    .permissions
+                    .iter()
+                    .map(|p| p.name().to_string())
+                    .collect();
+
+                if !self.check_permissions(user, &permission_names) {
+                    return Err(BaseError::PermissionDenied(format!(
+                        "缺少 Action 权限: {:?}",
+                        permission_names
+                    )));
+                }
             }
         }
 
-        // 7. 执行 Action
-        action.execute(context).await
+        // 执行 Action 派发
+        action.dispatch(context).await
     }
 
     /// 使用全局单例分发请求
@@ -361,7 +455,7 @@ impl ModuleRouter {
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
     ///     .with_table_config(table_config)
-    ///     .register_builtin_actions()?;
+    ///     .table_typed::<User>()?;
     ///
     /// // 无需传入 tools，自动从全局单例获取
     /// let response = router.dispatch_with_global("add", request).await?;

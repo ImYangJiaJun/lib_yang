@@ -518,7 +518,7 @@ pub struct IndexConfig {
 /// 排序方向
 ///
 /// 定义查询结果的排序方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum SortOrder {
     /// 升序排序
     Asc,

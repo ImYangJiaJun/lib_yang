@@ -21,7 +21,7 @@
 //! // 创建模块路由器
 //! let user_router = ModuleRouter::new("user", "用户管理")
 //!     .with_table_config(table_config.clone())
-//!     .register_builtin_actions()?;
+//!     .table_typed::<User>()?;
 //!
 //! // 创建应用路由器并注册模块
 //! let app_router = AppRouter::new()
@@ -44,7 +44,7 @@ use std::collections::HashMap;
 ///
 /// `AppRouter` 自动满足 `Send + Sync`，因为：
 /// - `HashMap<String, ModuleRouter>` 在 `ModuleRouter: Send + Sync` 时满足 `Send + Sync`
-/// - `ModuleRouter` 中的 `Box<dyn Action>` 要求 `Action: Send + Sync`
+/// - `ModuleRouter` 中的 `Arc<dyn DynAction>` 要求 `DynAction: Send + Sync`
 ///
 /// # 字段
 ///
