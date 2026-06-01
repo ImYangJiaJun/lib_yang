@@ -1,0 +1,8 @@
+error[E0599]: no variant or associated item named `NoSuchField` found for enum `UWhere` in the current scope
+  --> tests/compile_fail/where_invalid_field.rs:24:21
+   |
+14 |     DeriveTableEntity,
+   |     ----------------- variant or associated item `NoSuchField` not found for this enum
+...
+24 |     let _ = UWhere::NoSuchField(WhereOp::Eq(1));
+   |                     ^^^^^^^^^^^ variant or associated item not found in `UWhere`

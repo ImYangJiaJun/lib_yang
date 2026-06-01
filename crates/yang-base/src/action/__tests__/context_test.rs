@@ -317,18 +317,17 @@ fn test_action_context_param_optional_strict() {
 /// 需求: 3.1, 3.2, 3.3, 3.4
 #[test]
 fn test_global_tools_singleton() {
-    // 步骤 1：在初始化之前，获取应返回错误
-    // 注意：这个测试可能在其他测试已初始化单例后运行，所以我们先检查当前状态
-    let initial_state = GlobalTools::get();
+    // GlobalTools 是进程级 OnceLock 单例，多个测试并发运行时存在 TOCTOU 竞态：
+    // 「检查未初始化」与「执行初始化」之间，另一个测试可能抢先初始化。
+    // 因此这里只断言不随竞态变化的不变量，对「未初始化」消息做机会性校验。
 
-    if let Err(err) = initial_state {
-        // 单例尚未初始化，测试未初始化场景
+    // 步骤 1（机会性）：若恰好观察到未初始化状态，校验其错误信息
+    if let Err(err) = GlobalTools::get() {
         assert!(
             matches!(err, crate::error::BaseError::ConfigError(_)),
             "未初始化时应返回 ConfigError，实际返回: {:?}",
             err
         );
-        // 验证错误信息包含预期内容
         if let crate::error::BaseError::ConfigError(msg) = err {
             assert!(
                 msg.contains("GlobalTools 未初始化"),
@@ -336,56 +335,31 @@ fn test_global_tools_singleton() {
                 msg
             );
         }
+    }
 
-        // 步骤 2：初始化单例
-        let token_manager = create_test_token_manager();
-        let result = GlobalTools::init(token_manager);
-        assert!(result.is_ok(), "第一次初始化应成功，实际错误: {:?}", result.err());
+    // 步骤 2：确保单例已初始化（由本测试或并发测试完成均可，init 幂等失败无害）
+    if GlobalTools::get().is_err() {
+        let _ = GlobalTools::init(create_test_token_manager());
+    }
 
-        // 步骤 3：初始化后获取应成功
-        let tools = GlobalTools::get();
-        assert!(tools.is_ok(), "初始化后获取应成功，实际错误: {:?}", tools.err());
+    // 步骤 3：初始化后获取必定成功
+    let tools = GlobalTools::get();
+    assert!(tools.is_ok(), "初始化后获取应成功，实际错误: {:?}", tools.err());
 
-        // 步骤 4：重复初始化应返回错误
-        let token_manager2 = create_test_token_manager();
-        let result2 = GlobalTools::init(token_manager2);
-        assert!(result2.is_err(), "重复初始化应返回错误");
-        let err2 = result2.unwrap_err();
+    // 步骤 4：重复初始化必定返回 ConfigError("已初始化")
+    let err2 = GlobalTools::init(create_test_token_manager())
+        .expect_err("已初始化后重复初始化应返回错误");
+    assert!(
+        matches!(err2, crate::error::BaseError::ConfigError(_)),
+        "重复初始化应返回 ConfigError，实际: {:?}",
+        err2
+    );
+    if let crate::error::BaseError::ConfigError(msg) = err2 {
         assert!(
-            matches!(err2, crate::error::BaseError::ConfigError(_)),
-            "重复初始化应返回 ConfigError，实际: {:?}",
-            err2
+            msg.contains("GlobalTools 已初始化"),
+            "错误信息应包含 '已初始化'，实际: {}",
+            msg
         );
-        if let crate::error::BaseError::ConfigError(msg) = err2 {
-            assert!(
-                msg.contains("GlobalTools 已初始化"),
-                "错误信息应包含 '已初始化'，实际: {}",
-                msg
-            );
-        }
-    } else {
-        // 单例已经初始化（其他测试先运行了）
-        // 测试重复初始化应返回错误
-        let token_manager = create_test_token_manager();
-        let result = GlobalTools::init(token_manager);
-        assert!(result.is_err(), "已初始化后重复初始化应返回错误");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, crate::error::BaseError::ConfigError(_)),
-            "重复初始化应返回 ConfigError，实际: {:?}",
-            err
-        );
-        if let crate::error::BaseError::ConfigError(msg) = err {
-            assert!(
-                msg.contains("GlobalTools 已初始化"),
-                "错误信息应包含 '已初始化'，实际: {}",
-                msg
-            );
-        }
-
-        // 单例已初始化，获取应成功
-        let tools = GlobalTools::get();
-        assert!(tools.is_ok(), "已初始化后获取应成功，实际错误: {:?}", tools.err());
     }
 }
 

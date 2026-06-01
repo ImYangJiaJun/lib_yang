@@ -48,6 +48,10 @@ quote = "1.0"
 darling = "0.20"
 proc-macro-error = "1.0"
 
+# 测试基础设施
+trybuild = "1.0"
+insta = { version = "1.39", features = ["json"] }
+
 # Workspace 统一 lint 配置
 [workspace.lints.rust]
 # 忽略 Result 返回值视为编译错误

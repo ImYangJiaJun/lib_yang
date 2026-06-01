@@ -1,0 +1,877 @@
+---
+source: crates/yang-base/tests/schema_snapshots.rs
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SelectQuery_for_SnapshotUser",
+  "description": "SelectAction 的输入。",
+  "type": "object",
+  "required": [
+    "count_total",
+    "order_by",
+    "page",
+    "page_size",
+    "where_clause"
+  ],
+  "properties": {
+    "count_total": {
+      "description": "是否额外执行 COUNT 查询",
+      "type": "boolean"
+    },
+    "fields": {
+      "description": "选择字段子集（缺省返回全部）",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/SnapshotUserField"
+      }
+    },
+    "order_by": {
+      "description": "排序规则列表",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/OrderByItem_for_SnapshotUser"
+      }
+    },
+    "page": {
+      "description": "页码（1 起步），缺省 1",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "page_size": {
+      "description": "每页条数，缺省 10，必须 1..=100",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "where_clause": {
+      "description": "where 条件列表（AND 连接），JSON key 为 `\"where\"`",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SnapshotUserWhere"
+      }
+    }
+  },
+  "definitions": {
+    "OrderByItem_for_SnapshotUser": {
+      "description": "排序条目（JSON 形态：`{\"field\": \"id\", \"direction\": \"desc\"}`）。",
+      "type": "object",
+      "required": [
+        "direction",
+        "field"
+      ],
+      "properties": {
+        "direction": {
+          "description": "方向，缺省为 Asc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SortOrder"
+            }
+          ]
+        },
+        "field": {
+          "description": "字段名枚举",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SnapshotUserField"
+            }
+          ]
+        }
+      }
+    },
+    "SnapshotUserField": {
+      "type": "string",
+      "enum": [
+        "id",
+        "username",
+        "age"
+      ]
+    },
+    "SnapshotUserWhere": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "cond",
+            "field"
+          ],
+          "properties": {
+            "cond": {
+              "$ref": "#/definitions/WhereOp_for_int64"
+            },
+            "field": {
+              "type": "string",
+              "enum": [
+                "id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "cond",
+            "field"
+          ],
+          "properties": {
+            "cond": {
+              "$ref": "#/definitions/StringWhereOp"
+            },
+            "field": {
+              "type": "string",
+              "enum": [
+                "username"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "cond",
+            "field"
+          ],
+          "properties": {
+            "cond": {
+              "$ref": "#/definitions/WhereOp_for_int32"
+            },
+            "field": {
+              "type": "string",
+              "enum": [
+                "age"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "SortOrder": {
+      "description": "排序方向\n\n定义查询结果的排序方向",
+      "oneOf": [
+        {
+          "description": "升序排序",
+          "type": "string",
+          "enum": [
+            "Asc"
+          ]
+        },
+        {
+          "description": "降序排序",
+          "type": "string",
+          "enum": [
+            "Desc"
+          ]
+        }
+      ]
+    },
+    "StringWhereOp": {
+      "description": "字符串字段专用 where 操作符（额外含 Like）。",
+      "oneOf": [
+        {
+          "description": "等于（`= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "不等于（`<> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "ne"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "小于（`< v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lt"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "小于等于（`<= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lte"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "大于（`> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gt"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "大于等于（`>= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gte"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "在集合中（`IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "description": "不在集合中（`NOT IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "not_in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "description": "区间（`BETWEEN a AND b`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "between"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2
+            }
+          }
+        },
+        {
+          "description": "模糊匹配（`LIKE pattern`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "like"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "为 NULL（`IS NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_null"
+              ]
+            }
+          }
+        },
+        {
+          "description": "不为 NULL（`IS NOT NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_not_null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "WhereOp_for_int32": {
+      "description": "通用 where 操作符。\n\nJSON 形态由 `#[serde(tag = \"op\", content = \"value\")]` 决定： `{ \"op\": \"eq\", \"value\": 42 }` / `{ \"op\": \"in\", \"value\": [1,2,3] }` / `{ \"op\": \"between\", \"value\": [10, 20] }` / `{ \"op\": \"is_null\" }`",
+      "oneOf": [
+        {
+          "description": "等于（`= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "不等于（`<> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "ne"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "小于（`< v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lt"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "小于等于（`<= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lte"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "大于（`> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gt"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "大于等于（`>= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gte"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        },
+        {
+          "description": "在集合中（`IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        },
+        {
+          "description": "不在集合中（`NOT IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "not_in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        },
+        {
+          "description": "区间（`BETWEEN a AND b`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "between"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2
+            }
+          }
+        },
+        {
+          "description": "为 NULL（`IS NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_null"
+              ]
+            }
+          }
+        },
+        {
+          "description": "不为 NULL（`IS NOT NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_not_null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "WhereOp_for_int64": {
+      "description": "通用 where 操作符。\n\nJSON 形态由 `#[serde(tag = \"op\", content = \"value\")]` 决定： `{ \"op\": \"eq\", \"value\": 42 }` / `{ \"op\": \"in\", \"value\": [1,2,3] }` / `{ \"op\": \"between\", \"value\": [10, 20] }` / `{ \"op\": \"is_null\" }`",
+      "oneOf": [
+        {
+          "description": "等于（`= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "不等于（`<> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "ne"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "小于（`< v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lt"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "小于等于（`<= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lte"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "大于（`> v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gt"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "大于等于（`>= v`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "gte"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        {
+          "description": "在集合中（`IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        },
+        {
+          "description": "不在集合中（`NOT IN (v1, v2, ...)`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "not_in"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        },
+        {
+          "description": "区间（`BETWEEN a AND b`）。",
+          "type": "object",
+          "required": [
+            "op",
+            "value"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "between"
+              ]
+            },
+            "value": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2
+            }
+          }
+        },
+        {
+          "description": "为 NULL（`IS NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_null"
+              ]
+            }
+          }
+        },
+        {
+          "description": "不为 NULL（`IS NOT NULL`）。",
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "is_not_null"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

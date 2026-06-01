@@ -1,0 +1,27 @@
+---
+source: crates/yang-base/tests/schema_snapshots.rs
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SnapshotUser",
+  "type": "object",
+  "required": [
+    "age",
+    "id",
+    "username"
+  ],
+  "properties": {
+    "age": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "id": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "username": {
+      "type": "string"
+    }
+  }
+}
