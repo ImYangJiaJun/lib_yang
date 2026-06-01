@@ -86,7 +86,7 @@ GenerationRequest
 - `proptest-regressions/` 目录（`yang-db`、`yang-pcg`）是有意保留的回归语料，不要删。
 - `.gitignore` 含 `*/tests/` 这一不寻常项，推断"哪些集成测试被跟踪"时要小心。
 - 不要在 Docker/test 示例之外硬编码凭据；测试用 `MYSQL_TEST_PASSWORD` 等环境变量或 ignored 配置。
-- Token 系统**没有**吊销/黑名单机制，不要在文档/注释里暗示登出会让现有 JWT 失效（除非确实在做这个特性）。
+- Token 系统现已提供基于 Redis 的吊销/黑名单机制（`TokenManager::revoke_token` / `is_revoked` / `verify_token_checked`，见 `token/revocation.rs`）。`verify_token` 本身**不查**黑名单（保持向后兼容）；需要支持登出/撤销的鉴权路径必须用 `verify_token_checked`。
 
 ## 仓库结构里的"陈旧"信号
 
