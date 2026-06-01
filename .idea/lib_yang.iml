@@ -12,6 +12,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-base/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-pcg/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-pcg/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/yang-base-derive/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
