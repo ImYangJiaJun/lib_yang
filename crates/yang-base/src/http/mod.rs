@@ -27,12 +27,14 @@
 //! let users: Vec<User> = response.json().await?;
 //! ```
 
+mod circuit_breaker;
 mod client;
 mod request;
 mod response;
 
-pub use client::HttpClient;
-pub use request::RequestBuilder;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+pub use client::{HttpClient, HttpClientConfig};
+pub use request::{RequestBuilder, RetryConfig};
 pub use response::Response;
 
 #[cfg(test)]

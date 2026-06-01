@@ -47,6 +47,10 @@ pub struct HttpClientConfig {
 
     /// 代理 URL，默认为 None（不使用代理）
     pub proxy_url: Option<String>,
+
+    /// 熔断器策略，默认 None（不启用）。设为 `Some(..)` 后，对连续失败的目标
+    /// host 快速失败（返回 `BaseError::HttpCircuitBreakerOpen`），按 host 分键。
+    pub circuit_breaker: Option<crate::http::CircuitBreakerConfig>,
 }
 
 impl Default for HttpClientConfig {
@@ -58,6 +62,7 @@ impl Default for HttpClientConfig {
             user_agent: None,
             accept_invalid_certs: false,
             proxy_url: None,
+            circuit_breaker: None,
         }
     }
 }
@@ -93,6 +98,9 @@ pub struct HttpClient {
 
     /// 默认 Token（可选）
     default_token: Arc<RwLock<Option<String>>>,
+
+    /// 熔断器（可选，默认 None）。clone 时共享同一份状态。
+    circuit_breaker: Option<crate::http::CircuitBreaker>,
 }
 
 impl HttpClient {
@@ -143,10 +151,15 @@ impl HttpClient {
             .build()
             .map_err(BaseError::HttpClientCreateFailed)?;
 
+        let circuit_breaker = cfg
+            .circuit_breaker
+            .map(crate::http::CircuitBreaker::new);
+
         Ok(Self {
             client,
             default_timeout: Duration::from_secs(cfg.timeout_secs),
             default_token: Arc::new(RwLock::new(None)),
+            circuit_breaker,
         })
     }
 
@@ -288,6 +301,7 @@ impl HttpClient {
             url.to_string(),
             self.default_timeout,
             self.get_default_token(),
+            self.circuit_breaker.clone(),
         )
     }
 

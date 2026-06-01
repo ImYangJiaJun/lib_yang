@@ -193,3 +193,49 @@ fn test_multiple_headers() {
     ]);
     drop(batch_builder);
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 重试策略（L-4）
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_retry_config_default() {
+    let cfg = crate::http::RetryConfig::default();
+    assert_eq!(cfg.max_retries, 3);
+    assert_eq!(cfg.backoff_ms, 100);
+    assert_eq!(cfg.retry_on, vec![502, 503, 504]);
+}
+
+#[test]
+fn test_request_builder_with_retry() {
+    let client = HttpClient::new(30).unwrap();
+    // .retry() 是链式 setter，应能与其他链式方法组合
+    let builder = client
+        .get("https://api.example.com/data")
+        .retry(crate::http::RetryConfig {
+            max_retries: 5,
+            retry_on: vec![500, 503],
+            backoff_ms: 10,
+        })
+        .header("X-Test", "1");
+    drop(builder);
+}
+
+/// 验证传输错误（连接失败）会触发重试并最终返回 Err，且不 panic。
+/// 标记 ignore：发起真实连接，依赖网络栈行为，默认跳过。
+#[tokio::test]
+#[ignore = "依赖网络栈行为，发起真实连接；默认跳过"]
+async fn test_retry_exhausts_on_connection_error() {
+    let client = HttpClient::new(1).unwrap();
+    let result = client
+        .get("http://127.0.0.1:1/never")
+        .retry(crate::http::RetryConfig {
+            max_retries: 2,
+            retry_on: vec![],
+            backoff_ms: 1,
+        })
+        .send()
+        .await;
+    assert!(result.is_err(), "连接失败重试耗尽后应返回 Err");
+}
+

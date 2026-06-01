@@ -148,6 +148,10 @@ pub enum BaseError {
     #[error("HTTP 客户端未初始化")]
     HttpClientNotInitialized,
 
+    /// HTTP 熔断器打开：目标 host 近期连续失败，请求被快速拒绝
+    #[error("HTTP 熔断器已打开，目标主机暂不可用: {0}")]
+    HttpCircuitBreakerOpen(String),
+
     // ==================== Token 管理错误 ====================
     /// Token 密钥无效
     #[error("Token 密钥无效: {0}")]
@@ -186,6 +190,10 @@ pub enum BaseError {
     /// Token 已过期
     #[error("Token 已过期")]
     TokenExpired,
+
+    /// Token 已被撤销（命中黑名单）
+    #[error("Token 已被撤销")]
+    TokenRevoked,
 
     /// Token 类型无效
     #[error("Token 类型无效: {0}")]
@@ -445,6 +453,7 @@ impl BaseError {
             BaseError::HttpTimeout => 300004,
             BaseError::HttpClientAlreadyInitialized => 300005,
             BaseError::HttpClientNotInitialized => 300006,
+            BaseError::HttpCircuitBreakerOpen(_) => 300007,
 
             // ==================== Token 管理错误 (4xxxxx) ====================
             BaseError::TokenKeyInvalid(_) => 400001,
@@ -453,6 +462,7 @@ impl BaseError {
             BaseError::TokenParseFailed(_) => 400004,
             BaseError::TokenExpired => 400005,
             BaseError::TokenTypeInvalid(_) => 400006,
+            BaseError::TokenRevoked => 400007,
 
             // ==================== 序列化错误 (5xxxxx) ====================
             BaseError::JsonSerializeFailed(_) => 500001,

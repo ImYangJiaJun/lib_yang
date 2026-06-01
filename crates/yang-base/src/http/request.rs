@@ -9,6 +9,45 @@ use reqwest::{Client, Method};
 use serde::Serialize;
 use std::time::Duration;
 
+/// 请求级重试策略配置（L-4）。
+///
+/// 对临时性失败（连接错误、可重试的 5xx 等）按指数退避自动重试。
+/// 默认不重试——只有显式调用 [`RequestBuilder::retry`] 才启用。
+///
+/// 注意：当前仅实现「重试 + 指数退避」。熔断（circuit breaker）尚未实现，
+/// 如需熔断请在调用方或网关层处理。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::http::RetryConfig;
+///
+/// let cfg = RetryConfig {
+///     max_retries: 3,
+///     retry_on: vec![502, 503, 504],
+///     backoff_ms: 100, // 第 n 次重试前等待 backoff_ms * 2^(n-1) 毫秒
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// 最大重试次数（不含首次请求）。0 等价于不重试。
+    pub max_retries: u32,
+    /// 命中这些 HTTP 状态码时重试（如 `[502, 503, 504]`）。
+    pub retry_on: Vec<u16>,
+    /// 初始退避毫秒数，按 `backoff_ms * 2^attempt` 指数增长。
+    pub backoff_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            retry_on: vec![502, 503, 504],
+            backoff_ms: 100,
+        }
+    }
+}
+
 /// HTTP 请求构建器
 ///
 /// 提供链式调用接口构建 HTTP 请求。
@@ -63,6 +102,12 @@ pub struct RequestBuilder {
 
     /// Token（可选）
     token: Option<String>,
+
+    /// 重试策略（可选，默认不重试）
+    retry: Option<RetryConfig>,
+
+    /// 熔断器（可选，默认 None）。来自创建该构建器的 HttpClient，共享状态。
+    circuit_breaker: Option<crate::http::CircuitBreaker>,
 }
 
 impl RequestBuilder {
@@ -75,12 +120,14 @@ impl RequestBuilder {
     /// - `url`: 请求 URL
     /// - `timeout`: 超时时间
     /// - `token`: 默认 Token
+    /// - `circuit_breaker`: 熔断器（可选，来自 HttpClient）
     pub(crate) fn new(
         client: Client,
         method: Method,
         url: String,
         timeout: Duration,
         token: Option<String>,
+        circuit_breaker: Option<crate::http::CircuitBreaker>,
     ) -> Self {
         Self {
             client,
@@ -92,6 +139,8 @@ impl RequestBuilder {
             body: None,
             timeout,
             token,
+            retry: None,
+            circuit_breaker,
         }
     }
 
@@ -430,6 +479,30 @@ impl RequestBuilder {
         self
     }
 
+    /// 设置请求级重试策略（L-4）。
+    ///
+    /// 默认不重试。启用后，对连接错误与命中 `retry_on` 的状态码按指数退避重试。
+    ///
+    /// # 参数
+    ///
+    /// - `config`: 重试策略
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::http::RetryConfig;
+    ///
+    /// let response = client
+    ///     .get("https://api.example.com/users")
+    ///     .retry(RetryConfig::default())
+    ///     .send()
+    ///     .await?;
+    /// ```
+    pub fn retry(mut self, config: RetryConfig) -> Self {
+        self.retry = Some(config);
+        self
+    }
+
     /// 发送请求
     ///
     /// 在发送前检查累积的 header 错误。若存在任何 header 解析错误，
@@ -458,18 +531,93 @@ impl RequestBuilder {
             ));
         }
 
+        let retry = self.retry.clone();
+
+        // 解析目标 host 用于熔断分键；无熔断器或解析失败时为 None（按无熔断处理）。
+        let host = self
+            .circuit_breaker
+            .as_ref()
+            .and_then(|_| reqwest::Url::parse(&self.url).ok())
+            .and_then(|u| u.host_str().map(|h| h.to_string()));
+
+        // 无重试策略：单次发送（与原行为一致，仅多一层熔断准入）
+        let Some(retry) = retry else {
+            return self.send_guarded(host.as_deref()).await;
+        };
+
+        // 有重试策略：最多发送 1 + max_retries 次
+        let mut attempt: u32 = 0;
+        loop {
+            let result = self.send_guarded(host.as_deref()).await;
+
+            let should_retry = match &result {
+                // 命中可重试状态码
+                Ok(resp) => retry.retry_on.contains(&resp.status()),
+                // 连接/超时等传输错误也重试
+                Err(BaseError::HttpRequestFailed(_)) => true,
+                // 熔断打开（HttpCircuitBreakerOpen）等其它错误不重试
+                Err(_) => false,
+            };
+
+            if !should_retry || attempt >= retry.max_retries {
+                return result;
+            }
+
+            // 指数退避：backoff_ms * 2^attempt
+            let backoff = retry.backoff_ms.saturating_mul(1u64 << attempt.min(20));
+            if backoff > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff)).await;
+            }
+            attempt += 1;
+        }
+    }
+
+    /// 在熔断器准入检查下发送一次请求，并按结果记录成功/失败。
+    ///
+    /// - 准入：若熔断器对该 host 处于 Open（且未冷却），直接返回
+    ///   `BaseError::HttpCircuitBreakerOpen`，不实际发请求。
+    /// - 记账：传输错误与 5xx 视为失败，2xx/3xx/4xx 视为成功。
+    ///
+    /// 当 `host` 为 `None`（无熔断器或 URL 解析不出 host）时，等价于直接 `send_once`。
+    async fn send_guarded(&self, host: Option<&str>) -> Result<Response, BaseError> {
+        let breaker = self.circuit_breaker.as_ref();
+
+        if let (Some(breaker), Some(host)) = (breaker, host) {
+            if !breaker.allow(host) {
+                return Err(BaseError::HttpCircuitBreakerOpen(host.to_string()));
+            }
+        }
+
+        let result = self.send_once().await;
+
+        if let (Some(breaker), Some(host)) = (breaker, host) {
+            match &result {
+                Ok(resp) if resp.status() >= 500 => breaker.on_failure(host),
+                Ok(_) => breaker.on_success(host),
+                Err(_) => breaker.on_failure(host),
+            }
+        }
+
+        result
+    }
+
+    /// 构建并发送一次请求（不含重试）。
+    ///
+    /// 因重试需要重复发送，这里借用 `&self` 并克隆可复用的请求部件
+    /// （headers / query / body 均可 clone；`client` 为 `Arc`，clone 复用连接池）。
+    async fn send_once(&self) -> Result<Response, BaseError> {
         // 构建请求
         // 注意：self.client.clone() 是 Arc::clone，复用同一底层连接池，不创建新的 TCP 连接池
         let mut request = self
             .client
-            .request(self.method, &self.url)
+            .request(self.method.clone(), &self.url)
             .timeout(self.timeout);
 
         // 添加请求头
-        request = request.headers(self.headers);
+        request = request.headers(self.headers.clone());
 
         // 添加 Token
-        if let Some(token) = self.token {
+        if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
 
@@ -479,15 +627,12 @@ impl RequestBuilder {
         }
 
         // 添加请求体
-        if let Some(body) = self.body {
-            request = request.body(body);
+        if let Some(body) = &self.body {
+            request = request.body(body.clone());
         }
 
         // 发送请求
-        let response = request
-            .send()
-            .await
-            .map_err(BaseError::HttpRequestFailed)?;
+        let response = request.send().await.map_err(BaseError::HttpRequestFailed)?;
 
         Ok(Response::new(response))
     }
