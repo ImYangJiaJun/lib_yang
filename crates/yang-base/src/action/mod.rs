@@ -48,14 +48,19 @@
 //! ```
 
 mod action_trait;
+#[cfg(feature = "token")]
+pub mod auth;
 pub mod builtin;
 mod context;
 pub mod meta;
 mod request;
 mod response;
+pub mod sql_bridge;
 pub mod typed;
 
-pub use action_trait::{Action, Permission};
+pub use action_trait::Permission;
+#[cfg(feature = "token")]
+pub use auth::{CredentialVerifier, LoginAction, LogoutAction, RefreshAction};
 pub use context::{ActionContext, GlobalTools, User};
 pub use meta::ActionMeta;
 pub use request::Request;

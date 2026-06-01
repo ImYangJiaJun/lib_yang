@@ -1,115 +1,62 @@
-#![cfg(any())]
-//! AddAction - 新增数据 Action
-//!
-//! 从请求中获取数据并插入到数据库表中。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::action::builtin::AddAction;
-//! use yang_base::action::{Action, ActionContext};
-//! use yang_base::table::TableConfig;
-//! use serde_json::json;
-//! use std::sync::Arc;
-//!
-//! let table_config = Arc::new(TableConfig::new("users"));
-//! let action = AddAction::new(table_config);
-//!
-//! // 在 ActionContext 中使用
-//! let response = action.execute(context).await?;
-//! ```
+//! AddAction - 插入单条记录
+#![cfg(feature = "mysql")]
 
-use crate::action::{Action, ActionContext, ApiResponse};
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::TableConfig;
+use crate::table::TableEntity;
 use async_trait::async_trait;
-use std::sync::Arc;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use yang_base_derive::Action;
 
-/// AddAction - 新增数据
-///
-/// 从请求体中获取 data 参数，验证后插入到数据库表中。
-///
-/// # 请求参数
-///
-/// - `data`: JSON 对象，包含要插入的字段和值
-///
-/// # 返回
-///
-/// - 成功：返回影响行数
-/// - 失败：返回错误信息
-#[allow(dead_code)]
-pub struct AddAction {
-    /// 表配置
-    table_config: Arc<TableConfig>,
+/// 通用受影响行数返回值。
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct AffectedResult {
+    /// 受影响行数
+    pub affected: u64,
 }
 
-impl AddAction {
-    /// 创建新的 AddAction
-    ///
-    /// # 参数
-    ///
-    /// - `table_config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 新的 AddAction 实例
-    pub fn new(table_config: Arc<TableConfig>) -> Self {
-        Self { table_config }
+/// 插入一条记录。Input 是整个实体（用户决定 Pk 字段是否 Option/自增）。
+#[derive(Action)]
+#[action(name = "add", display_name = "新增数据", description = "向表中插入一条记录")]
+pub struct AddAction<T: TableEntity> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: TableEntity> AddAction<T> {
+    /// 创建 AddAction 实例。
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: TableEntity> Default for AddAction<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl Action for AddAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取 data 参数
-        let data: serde_json::Value = context.param("data")?;
+impl<T: TableEntity> TypedHandler for AddAction<T> {
+    type Input = T;
+    type Output = AffectedResult;
 
-        // 确保 data 是对象类型
-        let data_obj = data.as_object().ok_or_else(|| {
-            BaseError::ParamInvalid("data".to_string(), "必须是对象类型".to_string())
-        })?;
-
-        // 转换为 HashMap
-        let mut data_map = std::collections::HashMap::new();
-        for (k, v) in data_obj {
-            data_map.insert(k.clone(), v.clone());
-        }
-
-        // 创建查询构建器
-        let query = context.table_query()?;
-
-        // 执行插入操作
-        let affected = query.insert(data_map).await?;
-
-        // 返回成功响应（序列化失败时通过 ? 传播错误）
-        Ok(ApiResponse::success(
-            serde_json::json!({ "affected": affected }),
-            "新增成功",
-        )?)
-    }
-
-    fn name(&self) -> &str {
-        "add"
-    }
-
-    fn display_name(&self) -> &str {
-        "新增数据"
-    }
-
-    fn description(&self) -> &str {
-        "向数据表中添加一条新记录"
-    }
-
-    fn params_schema(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "object",
-                    "description": "要插入的数据对象"
-                }
-            },
-            "required": ["data"]
-        }))
+    async fn handle(&self, ctx: ActionContext, input: T) -> Result<AffectedResult, BaseError> {
+        let value = serde_json::to_value(&input)
+            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
+        let map: HashMap<String, serde_json::Value> = match value {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => {
+                return Err(BaseError::ParamInvalid(
+                    "body".into(),
+                    "实体必须序列化为对象".into(),
+                ))
+            }
+        };
+        let affected = ctx.table_query()?.insert(map).await?;
+        Ok(AffectedResult { affected })
     }
 }

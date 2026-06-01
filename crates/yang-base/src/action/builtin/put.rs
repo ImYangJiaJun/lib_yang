@@ -1,124 +1,82 @@
-#![cfg(any())]
-//! PutAction - 更新数据 Action
-//!
-//! 根据主键更新数据库表中的记录。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::action::builtin::PutAction;
-//! use yang_base::action::{Action, ActionContext};
-//! use yang_base::table::TableConfig;
-//! use serde_json::json;
-//! use std::sync::Arc;
-//!
-//! let table_config = Arc::new(TableConfig::new("users"));
-//! let action = PutAction::new(table_config);
-//!
-//! // 在 ActionContext 中使用
-//! let response = action.execute(context).await?;
-//! ```
+//! PutAction - 按主键更新指定字段
+#![cfg(feature = "mysql")]
 
-use crate::action::{Action, ActionContext, ApiResponse};
+use crate::action::builtin::add::AffectedResult;
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::TableConfig;
+use crate::table::AsColumnName;
+use crate::table::TableEntity;
 use async_trait::async_trait;
-use std::sync::Arc;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use yang_base_derive::Action;
 
-/// PutAction - 更新数据
+/// PutAction 的输入：主键值 + 字段更新对列表。
 ///
-/// 从请求中获取主键值和更新数据，更新数据库表中的记录。
-///
-/// # 请求参数
-///
-/// - 主键字段：主键值（从请求体中获取）
-/// - `data`: JSON 对象，包含要更新的字段和值
-///
-/// # 返回
-///
-/// - 成功：返回影响行数
-/// - 失败：返回错误信息
-pub struct PutAction {
-    /// 表配置
-    table_config: Arc<TableConfig>,
+/// JSON 形态：
+/// ```json
+/// { "id": 1, "data": [["username", "alice"], ["age", 30]] }
+/// ```
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PutInput<T: TableEntity> {
+    /// 主键值
+    pub id: T::Pk,
+    /// 字段更新对：(字段名枚举, 新值)。空数组将被拒绝。
+    pub data: Vec<(T::Field, serde_json::Value)>,
 }
 
-impl PutAction {
-    /// 创建新的 PutAction
-    ///
-    /// # 参数
-    ///
-    /// - `table_config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 新的 PutAction 实例
-    pub fn new(table_config: Arc<TableConfig>) -> Self {
-        Self { table_config }
+/// 按主键更新记录。
+#[derive(Action)]
+#[action(name = "put", display_name = "更新数据", description = "按主键更新指定字段")]
+pub struct PutAction<T: TableEntity> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: TableEntity> PutAction<T> {
+    /// 创建 PutAction 实例。
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: TableEntity> Default for PutAction<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl Action for PutAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取主键字段名
-        let pk_field = &self.table_config.primary_key;
+impl<T: TableEntity> TypedHandler for PutAction<T> {
+    type Input = PutInput<T>;
+    type Output = AffectedResult;
 
-        // 获取主键值
-        let pk_value: serde_json::Value = context.param(pk_field)?;
-
-        // 获取 data 参数
-        let data: serde_json::Value = context.param("data")?;
-
-        // 确保 data 是对象类型
-        let data_obj = data.as_object().ok_or_else(|| {
-            BaseError::ParamInvalid("data".to_string(), "必须是对象类型".to_string())
-        })?;
-
-        // 转换为 HashMap
-        let mut data_map = std::collections::HashMap::new();
-        for (k, v) in data_obj {
-            data_map.insert(k.clone(), v.clone());
+    async fn handle(
+        &self,
+        ctx: ActionContext,
+        input: PutInput<T>,
+    ) -> Result<AffectedResult, BaseError> {
+        if input.data.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "data".into(),
+                "至少需要一个字段".into(),
+            ));
         }
-
-        // 创建查询构建器
-        let mut query = context.table_query()?;
-
-        // 添加主键 WHERE 条件
-        query = query.where_eq(pk_field.as_str(), pk_value)?;
-
-        // 执行更新操作
-        let affected = query.update(data_map).await?;
-
-        // 返回成功响应（序列化失败时通过 ? 传播错误）
-        Ok(ApiResponse::success(
-            serde_json::json!({ "affected": affected }),
-            "更新成功",
-        )?)
-    }
-
-    fn name(&self) -> &str {
-        "put"
-    }
-
-    fn display_name(&self) -> &str {
-        "更新数据"
-    }
-
-    fn description(&self) -> &str {
-        "根据主键更新数据表中的记录"
-    }
-
-    fn params_schema(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "object",
-                    "description": "要更新的数据对象"
-                }
-            },
-            "required": ["data"]
-        }))
+        let pk_value = serde_json::to_value(&input.id)
+            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
+        let data: HashMap<String, serde_json::Value> = input
+            .data
+            .into_iter()
+            .map(|(field, value)| (field.column_name().to_string(), value))
+            .collect();
+        let affected = ctx
+            .table_query()?
+            .where_eq(T::PK_FIELD, pk_value)?
+            .update(data)
+            .await?;
+        Ok(AffectedResult { affected })
     }
 }

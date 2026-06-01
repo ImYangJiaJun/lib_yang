@@ -1,110 +1,76 @@
-#![cfg(any())]
-//! TableAction - 获取表元数据 Action
-//!
-//! 返回数据表的元数据信息，包括字段列表、索引、权限等。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::action::builtin::TableAction;
-//! use yang_base::action::{Action, ActionContext};
-//! use yang_base::table::TableConfig;
-//! use serde_json::json;
-//! use std::sync::Arc;
-//!
-//! let table_config = Arc::new(TableConfig::new("users"));
-//! let action = TableAction::new(table_config);
-//!
-//! // 在 ActionContext 中使用
-//! let response = action.execute(context).await?;
-//! ```
+//! TableAction - 返回表的元信息
+#![cfg(feature = "mysql")]
 
-use crate::action::{Action, ActionContext, ApiResponse};
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::TableConfig;
+use crate::table::TableEntity;
 use async_trait::async_trait;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
+use yang_base_derive::Action;
 
-/// TableAction - 获取表元数据
-///
-/// 返回数据表的元数据信息，根据用户角色过滤字段权限。
-/// 这是一个公开 Action，不需要认证。
-///
-/// # 返回
-///
-/// - 成功：返回表元数据（表名、字段列表、索引等）
-/// - 失败：返回错误信息
-pub struct TableAction {
-    /// 表配置
-    table_config: Arc<TableConfig>,
+/// TableAction 的空输入（接受 `{}` 或 `null`）。
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[serde(default)]
+pub struct EmptyInput {}
+
+/// 表元信息响应。
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct TableSchemaResponse {
+    /// 表名
+    pub table_name: String,
+    /// 主键字段名
+    pub primary_key: String,
+    /// 入参 JSON Schema（实体本身）
+    pub input_schema: serde_json::Value,
+    /// 出参 JSON Schema
+    pub output_schema: serde_json::Value,
 }
 
-impl TableAction {
-    /// 创建新的 TableAction
-    ///
-    /// # 参数
-    ///
-    /// - `table_config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 新的 TableAction 实例
-    pub fn new(table_config: Arc<TableConfig>) -> Self {
-        Self { table_config }
+/// 返回表的元信息。
+#[derive(Action)]
+#[action(
+    name = "table",
+    display_name = "表元信息",
+    description = "返回表结构与字段 schema"
+)]
+pub struct TableAction<T: TableEntity> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: TableEntity> TableAction<T> {
+    /// 创建 TableAction 实例。
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: TableEntity> Default for TableAction<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl Action for TableAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取用户角色
-        let user_roles = context.user_roles();
+impl<T: TableEntity> TypedHandler for TableAction<T> {
+    type Input = EmptyInput;
+    type Output = TableSchemaResponse;
 
-        // 构建字段元数据列表
-        let mut fields = Vec::new();
-        for (field_name, field_config) in &self.table_config.fields {
-            // 检查字段读取权限
-            let can_read = field_config.permissions.can_read(&user_roles);
-
-            if can_read {
-                fields.push(serde_json::json!({
-                    "name": field_name,
-                    "display_name": field_config.display_name,
-                    "field_type": format!("{:?}", field_config.field_type),
-                    "required": field_config.required,
-                    "default_value": field_config.default_value,
-                }));
-            }
-        }
-
-        // 构建表元数据
-        let metadata = serde_json::json!({
-            "table_name": self.table_config.table_name,
-            "display_name": self.table_config.display_name,
-            "primary_key": self.table_config.primary_key,
-            "fields": fields,
-            "unique_indexes": self.table_config.unique_indexes,
-            "indexes": self.table_config.indexes,
-            "soft_delete_field": self.table_config.soft_delete_field,
-        });
-
-        // 返回成功响应（metadata 已是 serde_json::Value，直接使用 success_value 避免额外序列化）
-        Ok(ApiResponse::success_value(metadata, "获取表元数据成功"))
-    }
-
-    fn name(&self) -> &str {
-        "table"
-    }
-
-    fn display_name(&self) -> &str {
-        "获取表元数据"
-    }
-
-    fn description(&self) -> &str {
-        "返回数据表的元数据信息，包括字段列表、索引、权限等"
-    }
-
-    fn is_public(&self) -> bool {
-        true // 表元数据是公开的
+    async fn handle(
+        &self,
+        _ctx: ActionContext,
+        _input: EmptyInput,
+    ) -> Result<TableSchemaResponse, BaseError> {
+        let schema = schemars::schema_for!(T);
+        let schema_value = serde_json::to_value(&schema)
+            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
+        Ok(TableSchemaResponse {
+            table_name: T::TABLE_NAME.to_string(),
+            primary_key: T::PK_FIELD.to_string(),
+            input_schema: schema_value.clone(),
+            output_schema: schema_value,
+        })
     }
 }

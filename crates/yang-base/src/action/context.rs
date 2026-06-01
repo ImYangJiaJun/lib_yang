@@ -345,7 +345,11 @@ impl ActionContext {
 
     /// 创建表查询构建器
     ///
-    /// 基于当前上下文的表配置和用户角色创建 TableQuery 实例。
+    /// 基于当前上下文的表配置和用户角色创建 TableQuery 实例。启用 `mysql`
+    /// feature 时，自动从 [`GlobalDatabase`](crate::database::GlobalDatabase)
+    /// 注入共享连接池，使内置 CRUD Action 能直接执行数据库操作；若全局数据库
+    /// 尚未初始化，则连接池为 `None`，相关执行方法会在调用时返回
+    /// `BaseError::DatabaseNotInitialized`。
     ///
     /// # 返回
     ///
@@ -360,7 +364,15 @@ impl ActionContext {
         // 通过 user_roles_slice 获取借用，再转换为 Arc<[String]>
         let user_roles: Arc<[String]> = Arc::from(self.user_roles_slice().to_vec());
 
-        Ok(TableQuery::new(config.clone(), user_roles, None))
+        // 启用 mysql feature 时，从全局数据库注入连接池（未初始化则为 None）。
+        #[cfg(feature = "mysql")]
+        let pool = crate::database::GlobalDatabase::get()
+            .ok()
+            .map(|db| Arc::new(db.pool().clone()));
+        #[cfg(not(feature = "mysql"))]
+        let pool = None;
+
+        Ok(TableQuery::new(config.clone(), user_roles, pool))
     }
 
     /// 获取用户角色列表（克隆）

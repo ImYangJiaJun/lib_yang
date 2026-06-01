@@ -110,6 +110,15 @@ impl Database {
         QueryBuilder::new(&self.pool, table_name, self.config.enable_logging)
     }
 
+    /// 获取底层 sqlx 连接池的引用
+    ///
+    /// sqlx 的 `MySqlPool` 内部基于 `Arc`，克隆代价低廉。上层（如 yang-base 的
+    /// `ActionContext::table_query`）需要把连接池注入 `TableQuery` 时，可用
+    /// `db.pool().clone()` 获得一个共享同一连接池的句柄。
+    pub fn pool(&self) -> &MySqlPool {
+        &self.pool
+    }
+
     /// 执行原生 SELECT 查询
     pub async fn query<T>(&self, sql: &str) -> Result<Vec<T>, DbError>
     where

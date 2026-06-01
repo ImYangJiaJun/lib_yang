@@ -1,248 +1,177 @@
-#![cfg(any())]
-//! SelectAction - 查询列表 Action
-//!
-//! 根据查询参数分页查询数据库表中的记录列表。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::action::builtin::SelectAction;
-//! use yang_base::action::{Action, ActionContext};
-//! use yang_base::table::TableConfig;
-//! use serde_json::json;
-//! use std::sync::Arc;
-//!
-//! let table_config = Arc::new(TableConfig::new("users"));
-//! let action = SelectAction::new(table_config);
-//!
-//! // 在 ActionContext 中使用
-//! let response = action.execute(context).await?;
-//! ```
+//! SelectAction - 分页查询带 where 条件 + 排序
+#![cfg(feature = "mysql")]
 
-use crate::action::{Action, ActionContext, ApiResponse};
+use crate::action::sql_bridge::{apply_sql_condition, count_with_conditions};
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::{SortOrder, TableConfig};
+use crate::table::{AsColumnName, IntoSqlCondition, SqlCondition, SortOrder, TableEntity};
 use async_trait::async_trait;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
+use yang_base_derive::Action;
 
-/// SelectAction - 查询列表
-///
-/// 从请求中解析查询参数，执行分页查询并返回结果列表。
-///
-/// # 请求参数
-///
-/// - `fields`: 可选，要查询的字段列表
-/// - `where`: 可选，筛选条件
-/// - `order_by`: 可选，排序规则
-/// - `page`: 可选，页码（默认 1，范围 1..=i64::MAX）
-/// - `page_size`: 可选，每页大小（默认 10，范围 1..=100）
-///
-/// # 返回
-///
-/// - 成功：返回分页结果（包含数据列表、总数、页码等）
-/// - 失败：返回错误信息
-#[allow(dead_code)]
-pub struct SelectAction {
-    /// 表配置
-    table_config: Arc<TableConfig>,
+fn default_page() -> u32 {
+    1
+}
+fn default_page_size() -> u32 {
+    10
+}
+fn default_sort_order() -> SortOrder {
+    SortOrder::Asc
 }
 
-impl SelectAction {
-    /// 创建新的 SelectAction
-    ///
-    /// # 参数
-    ///
-    /// - `table_config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 新的 SelectAction 实例
-    pub fn new(table_config: Arc<TableConfig>) -> Self {
-        Self { table_config }
+/// 排序条目（JSON 形态：`{"field": "id", "direction": "desc"}`）。
+#[derive(schemars::JsonSchema)]
+pub struct OrderByItem<T: TableEntity> {
+    /// 字段名枚举
+    pub field: T::Field,
+    /// 方向，缺省为 Asc
+    pub direction: SortOrder,
+}
+
+impl<'de, T: TableEntity> Deserialize<'de> for OrderByItem<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw<F> {
+            field: F,
+            #[serde(default = "default_sort_order")]
+            direction: SortOrder,
+        }
+        let raw = Raw::<T::Field>::deserialize(d)?;
+        Ok(OrderByItem { field: raw.field, direction: raw.direction })
     }
 }
 
-/// 安全解析分页参数
-///
-/// 从 ActionContext 中读取指定参数，进行范围校验，并安全转换为 usize。
-///
-/// # 参数
-///
-/// - `ctx`: Action 执行上下文
-/// - `key`: 参数名
-/// - `default`: 参数不存在时的默认值
-/// - `min`: 允许的最小值（含）
-/// - `max`: 允许的最大值（含）
-///
-/// # 返回
-///
-/// - `Ok(usize)`: 转换成功
-/// - `Err(BaseError::ParamInvalid)`: 参数值超出范围或无法转换为 usize
-fn parse_paging_param(
-    ctx: &ActionContext,
-    key: &str,
-    default: i64,
-    min: i64,
-    max: i64,
-) -> Result<usize, BaseError> {
-    // 从请求体中获取参数，不存在时使用默认值
-    let raw_value: i64 = ctx.param_optional::<i64>(key).unwrap_or(default);
+/// SelectAction 的输入。
+#[derive(schemars::JsonSchema)]
+pub struct SelectQuery<T: TableEntity> {
+    /// 页码（1 起步），缺省 1
+    pub page: u32,
+    /// 每页条数，缺省 10，必须 1..=100
+    pub page_size: u32,
+    /// 选择字段子集（缺省返回全部）
+    pub fields: Option<Vec<T::Field>>,
+    /// where 条件列表（AND 连接），JSON key 为 `"where"`
+    pub where_clause: Vec<T::WhereCond>,
+    /// 排序规则列表
+    pub order_by: Vec<OrderByItem<T>>,
+    /// 是否额外执行 COUNT 查询
+    pub count_total: bool,
+}
 
-    // 范围校验：越界时返回 ParamInvalid 错误
-    if raw_value < min || raw_value > max {
-        return Err(BaseError::ParamInvalid(
-            key.to_string(),
-            format!(
-                "参数值 {} 超出允许范围 [{}, {}]",
-                raw_value, min, max
-            ),
-        ));
+impl<'de, T: TableEntity> Deserialize<'de> for SelectQuery<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw<F, W, OI> {
+            #[serde(default = "default_page")]
+            page: u32,
+            #[serde(default = "default_page_size")]
+            page_size: u32,
+            fields: Option<Vec<F>>,
+            #[serde(rename = "where", default = "Vec::new")]
+            where_clause: Vec<W>,
+            #[serde(default = "Vec::new")]
+            order_by: Vec<OI>,
+            #[serde(default)]
+            count_total: bool,
+        }
+        let raw = Raw::<T::Field, T::WhereCond, OrderByItem<T>>::deserialize(d)?;
+        Ok(SelectQuery {
+            page: raw.page,
+            page_size: raw.page_size,
+            fields: raw.fields,
+            where_clause: raw.where_clause,
+            order_by: raw.order_by,
+            count_total: raw.count_total,
+        })
     }
+}
 
-    // 使用 usize::try_from 替代 as usize，避免截断
-    usize::try_from(raw_value).map_err(|_| {
-        BaseError::ParamInvalid(
-            key.to_string(),
-            format!("参数值 {} 无法转换为 usize", raw_value),
-        )
-    })
+/// 查询结果。
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct SelectResult<T> {
+    /// 数据列表
+    pub items: Vec<T>,
+    /// 当前页码
+    pub page: u32,
+    /// 每页条数
+    pub page_size: u32,
+    /// 总数（仅 count_total=true 时返回）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+/// 分页 + 多条件 AND 查询。
+#[derive(Action)]
+#[action(name = "select", display_name = "查询列表", description = "分页 + 多条件 AND 查询")]
+pub struct SelectAction<T: TableEntity> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: TableEntity> SelectAction<T> {
+    /// 创建 SelectAction 实例。
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: TableEntity> Default for SelectAction<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
-impl Action for SelectAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 通过 parse_paging_param 安全获取分页参数
-        // page: 默认 1，范围 1..=i64::MAX
-        let page = parse_paging_param(&context, "page", 1, 1, i64::MAX)?;
-        // page_size: 默认 10，范围 1..=100
-        let page_size = parse_paging_param(&context, "page_size", 10, 1, 100)?;
+impl<T: TableEntity> TypedHandler for SelectAction<T> {
+    type Input = SelectQuery<T>;
+    type Output = SelectResult<T>;
 
-        // 创建查询构建器
-        let mut query = context.table_query()?;
-
-        // 应用字段选择
-        if let Some(fields) = context.param_optional::<Vec<String>>("fields") {
-            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            query = query.select_fields(&field_refs)?;
+    async fn handle(
+        &self,
+        ctx: ActionContext,
+        input: SelectQuery<T>,
+    ) -> Result<SelectResult<T>, BaseError> {
+        if input.page == 0 || input.page_size == 0 || input.page_size > 100 {
+            return Err(BaseError::ParamInvalid(
+                "page/page_size".into(),
+                "page>=1, 1<=page_size<=100".into(),
+            ));
         }
 
-        // 应用筛选条件
-        if let Some(where_conditions) = context.param_optional::<serde_json::Value>("where") {
-            if let Some(obj) = where_conditions.as_object() {
-                for (field, value) in obj {
-                    query = query.where_eq(field.as_str(), value.clone())?;
-                }
-            }
+        let conditions: Vec<SqlCondition> = input
+            .where_clause
+            .into_iter()
+            .map(|c| c.into_sql_condition())
+            .collect();
+
+        let total = if input.count_total {
+            Some(count_with_conditions(&ctx, &conditions).await?)
+        } else {
+            None
+        };
+
+        let mut q = ctx.table_query()?;
+        if let Some(fields) = input.fields {
+            let names: Vec<&str> = fields.iter().map(|f| f.column_name()).collect();
+            q = q.select_fields(&names)?;
         }
-
-        // 应用排序规则
-        if let Some(order_by) = context.param_optional::<Vec<serde_json::Value>>("order_by") {
-            for order in order_by {
-                if let Some(obj) = order.as_object() {
-                    if let (Some(field), Some(direction)) = (obj.get("field"), obj.get("direction"))
-                    {
-                        let field_str = field.as_str().ok_or_else(|| {
-                            BaseError::ParamInvalid(
-                                "order_by".to_string(),
-                                "field 必须是字符串".to_string(),
-                            )
-                        })?;
-                        let direction_str = direction.as_str().ok_or_else(|| {
-                            BaseError::ParamInvalid(
-                                "order_by".to_string(),
-                                "direction 必须是字符串".to_string(),
-                            )
-                        })?;
-
-                        let sort_order = match direction_str.to_lowercase().as_str() {
-                            "asc" => SortOrder::Asc,
-                            "desc" => SortOrder::Desc,
-                            _ => {
-                                return Err(BaseError::ParamInvalid(
-                                    "order_by".to_string(),
-                                    "direction 必须是 'asc' 或 'desc'".to_string(),
-                                ))
-                            }
-                        };
-
-                        query = query.order_by(field_str, sort_order)?;
-                    }
-                }
-            }
+        for cond in &conditions {
+            q = apply_sql_condition(q, cond)?;
         }
-
+        for OrderByItem { field, direction } in input.order_by {
+            q = q.order_by(field.column_name(), direction)?;
+        }
         // 设置分页参数
-        let query = query.page(page, page_size)?;
-
-        // 使用 DynamicRow 类型执行分页查询
-        #[cfg(feature = "mysql")]
-        {
-            use crate::table::DynamicRow;
-
-            let result = query.paginate::<DynamicRow>().await?;
-
-            // 将分页结果转换为 JSON 并返回
-            return ApiResponse::success(result, "查询成功");
-        }
-
-        // 未启用 mysql feature 时返回错误
-        #[cfg(not(feature = "mysql"))]
-        {
-            let _ = query;
-            Err(BaseError::Unknown(
-                "SelectAction 需要启用 mysql feature".to_string(),
-            ))
-        }
-    }
-
-    fn name(&self) -> &str {
-        "select"
-    }
-
-    fn display_name(&self) -> &str {
-        "查询列表"
-    }
-
-    fn description(&self) -> &str {
-        "分页查询数据表中的记录列表"
-    }
-
-    fn params_schema(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "fields": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "要查询的字段列表"
-                },
-                "where": {
-                    "type": "object",
-                    "description": "筛选条件"
-                },
-                "order_by": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "field": { "type": "string" },
-                            "direction": { "type": "string", "enum": ["asc", "desc"] }
-                        }
-                    },
-                    "description": "排序规则"
-                },
-                "page": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "页码（默认 1）"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "description": "每页大小（默认 10，最大 100）"
-                }
-            }
-        }))
+        q = q.page(input.page as usize, input.page_size as usize)?;
+        let items: Vec<T> = q.select::<T>().await?;
+        Ok(SelectResult {
+            items,
+            page: input.page,
+            page_size: input.page_size,
+            total,
+        })
     }
 }
