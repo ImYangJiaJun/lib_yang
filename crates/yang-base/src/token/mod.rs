@@ -36,6 +36,7 @@
 //! ```
 
 mod manager;
+mod revocation;
 
 pub use manager::TokenManager;
 

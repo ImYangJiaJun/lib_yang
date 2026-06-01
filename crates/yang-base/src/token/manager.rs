@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// 当系统时钟早于 1970-01-01 00:00:00 UTC 时返回错误，
 /// 这通常意味着系统时钟配置异常。
-fn current_unix_timestamp() -> Result<u64, BaseError> {
+pub(crate) fn current_unix_timestamp() -> Result<u64, BaseError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

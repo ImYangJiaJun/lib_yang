@@ -39,11 +39,15 @@
 //! ```
 
 #[cfg(feature = "mysql")]
+mod bundle;
+#[cfg(feature = "mysql")]
 mod global;
 mod global_redis;
 #[cfg(feature = "mysql")]
 mod initializer;
 
+#[cfg(feature = "mysql")]
+pub use bundle::DatabaseBundle;
 #[cfg(feature = "mysql")]
 pub use global::GlobalDatabase;
 pub use global_redis::GlobalRedis;
