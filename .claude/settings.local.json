@@ -57,7 +57,11 @@
       "Bash(sed -n '95,140p' crates/yang-base/src/http/request.rs)",
       "Bash(sed -n '30,66p' crates/yang-base/src/http/client.rs)",
       "Bash(grep -E \"test result|error\\\\[|error:|warning:|FAILED|running [0-9]+ test|::.*ok$\")",
-      "Bash(cd *)"
+      "Bash(cd *)",
+      "mcp__codegraph__codegraph_context",
+      "Bash(echo \"name: $\\(git config user.name\\)\")",
+      "Bash(echo \"email: $\\(git config user.email\\)\")",
+      "Bash(cargo metadata *)"
     ]
   }
 }

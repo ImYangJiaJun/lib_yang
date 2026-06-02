@@ -10,11 +10,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库总览
 
-`lib_yang` 是一个 Rust workspace（`resolver = "2"`，edition `2021`），包含三个互相依赖的 crate：
+`lib_yang` 是一个 Rust workspace（`resolver = "2"`，edition `2021`，共享依赖集中在根 `Cargo.toml` 的 `[workspace.dependencies]`），包含四个 crate：
 
 - `crates/yang-db/` — MySQL 查询构建器 + Redis 客户端，下游 crate 的数据访问基础。
 - `crates/yang-base/` — 在 `yang-db` 之上的后端服务原语：插件、全局 DB/Redis、表配置/查询、Action 调度、路由，以及可选的 HTTP 客户端和 JWT Token。
-- `crates/yang-pcg/` — UE5 / Roguelike 程序化地图生成库（确定性 PCG 管线）。三者解耦：PCG 不依赖 db/base。
+- `crates/yang-base-derive/` — `yang-base` 的 proc-macro crate，提供 `#[derive(TableEntity)]` 与 `#[derive(Action)]`（类型化 Action 系统的派生基础设施）。仅被 `yang-base` 依赖。
+- `crates/yang-pcg/` — UE5 / Roguelike 程序化地图生成库（确定性 PCG 管线）。与 db/base 解耦：PCG 不依赖它们。
 
 每个 crate 根目录都有一份 `AGENTS.md`，部分子模块（`yang-base/src/action`、`yang-base/src/table`、`yang-pcg/src/terrain`）还有更细粒度的 `AGENTS.md`。**修改对应模块前先读那份 AGENTS.md**，里面记录了该模块的 hotspot、anti-pattern 和约定，本文件不重复展开。
 
@@ -48,10 +49,18 @@ cargo run --example <name> -p <crate>
 ## 架构要点（多文件视角）
 
 ### yang-base 的请求执行链路
-请求经由 `router::ModuleRouter` 分发到对应模块的 `Action`（`action::Action` trait），Action 拿到 `ActionContext`（包含 user/tools/table 上下文），通过 `database::GlobalDatabase` / `GlobalRedis` 访问数据，再用 `table::TableQuery` 做带权限校验的查询。该路径上几乎所有的 builtin action 仍然在用 `serde_json::Value` 传值，不要在没有明确类型安全决策的情况下扩散这种用法。
+请求经由 `router::ModuleRouter::dispatch` 进入：先穿过注册的中间件链（`router::middleware` 的 `Middleware`/`Next` 洋葱模型，最外层），链尾 `authorize_and_dispatch` 做内置鉴权 + Action 派发。Action 现在是**端到端类型化**的（H-1 重构已落地）：
+
+- 旧的对象安全 `Action` trait 已删除，`action/action_trait.rs` 只剩 `Permission`。
+- 三层 trait 在 `action/typed.rs`：用户手写 `TypedHandler`（声明关联类型 `Input`/`Output`）→ 派生层 `TypedAction` → 类型擦除层 `DynAction`（注册表存 `Arc<dyn DynAction>`）。
+- 字段名走 `#[derive(TableEntity)]` 生成的封闭 `<Name>Field` / `<Name>Where` 枚举，杜绝任意字符串列名拼接；`#[derive(Action)]` 生成 `TypedAction` impl 与 `ActionMeta`。两个派生宏都在 `yang-base-derive`。
+- 六个内置 Action（add/put/del/get/select/table，`action/builtin/`）已泛型化为 `XxxAction<T: TableEntity>`；`ModuleRouter::table_typed::<T>()` 一行注册全套 CRUD。
+- 启用 `token` feature 时另有认证内置 Action（`action/auth.rs`）：`LoginAction<V>`（凭证校验委托业务实现的 `CredentialVerifier`）、`RefreshAction`、`LogoutAction`。
+
+Action 通过 `ActionContext`（user/tools/table 上下文）访问 `database::GlobalDatabase` / `GlobalRedis`，再用 `table::TableQuery` 做带权限校验的查询。注意 `action/AGENTS.md` 与 `docs/`、`docs/yang-base.md` 部分内容写于 H-1 重构之前，仍按旧 `Action` trait + `serde_json::Value` 描述——以 `action/typed.rs`、`action/mod.rs`、`builtin/` 的实际代码为准。
 
 ### 全局单例与 feature gate
-`GlobalDatabase` / `GlobalRedis` 用 `OnceLock` 实现，重复初始化必须返回 `BaseError`，不要 panic。crate 通过 feature 切换功能：`token`（JWT）、`http`（reqwest 包装）、`mysql`、`validator`、`plugin-schema`，默认全开。修改这些模块时确认 feature gate 不被破坏。
+`GlobalDatabase` / `GlobalRedis` 用 `OnceLock` 实现，重复初始化必须返回 `BaseError`，不要 panic。统一启动入口是 `database::DatabaseBundle::init(mysql_url, mysql_config, redis_url, redis_config)`（mysql feature 下），按固定顺序先 MySQL 再 Redis 初始化两个单例，任一失败即返回，避免"半初始化"——新代码组装应用时优先用它而非分别调用两个 `init()`。crate 通过 feature 切换功能：`token`（JWT）、`http`（reqwest 包装）、`mysql`、`validator`、`plugin-schema`，默认全开。修改这些模块时确认 feature gate 不被破坏。
 
 ### yang-db 的 SQL/Redis hotspot
 - `crates/yang-db/src/mysql/query_builder.rs` 是 4.8k 行的巨型文件，几乎所有 SQL 行为都从这里出。**不要在做功能时顺手拆分它**，耦合很高，拆分必须配套测试。
@@ -91,6 +100,7 @@ GenerationRequest
 ## 仓库结构里的"陈旧"信号
 
 - 根目录有若干 `*_SUMMARY.md` / `DOCS_*` / `API_COMPATIBILITY_CHECK_SUMMARY.md` 等是**历史工作日志**，不是当前规范源，不要把它们当 spec。
+- `docs/BACKLOG.md` 是带状态标记（✅/🟨/⏳）的问题追踪表，记录了 C/H/M/L 各项的修复进展。遇到"某文档说 X 坏了/缺失"时先查这里——很多旧描述（`serde_json::Value` Action、RedisConfig 静默失效、edition 2024、缺撤销机制等）都已修复，BACKLOG 给出当前真相。唯一仍 ⏳ 未处理的是 M-1（测试里 `unwrap()` 过多）。
 - `.kiro/specs/` 下的 requirements/design/tasks 是**真**的产品/设计源，PCG 部分的真理在 `.kiro/specs/ue5-roguelike-map-generator/`。
 - `crates/yang-pcg/INSTALL.md.md` 是双扩展名遗留产物。
 - `docs/yang-db.md` / `docs/yang-base.md` 是较广的生成参考，速查可看；细节以代码为准。

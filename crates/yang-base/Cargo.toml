@@ -5,6 +5,12 @@ edition = "2021"
 
 description = "个人使用构建后端服务器"
 license = "MIT OR Apache-2.0"
+authors = ["YANG <1604024101@qq.com>"]
+repository = "https://github.com/ImYangJiaJun/lib_yang"
+documentation = "https://docs.rs/yang-base"
+readme = "README.md"
+keywords = ["backend", "web", "action", "router", "jwt"]
+categories = ["web-programming"]
 
 #排除文件
 exclude = [
