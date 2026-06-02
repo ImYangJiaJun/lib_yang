@@ -1,13 +1,14 @@
 [package]
 name = "yang-pcg"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 description = "个人使用地图生成"
-license = "MIT OR Apache-2.0"
-authors = ["YANG <1604024101@qq.com>"]
-repository = "https://github.com/ImYangJiaJun/lib_yang"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/yang-pcg"
+readme = "README.md"
 keywords = ["pcg", "procedural", "roguelike", "map", "ue5"]
 categories = ["game-development"]
 

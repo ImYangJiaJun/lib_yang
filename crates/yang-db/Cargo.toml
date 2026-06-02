@@ -1,12 +1,12 @@
 [package]
 name = "yang-db"
 version = "0.1.3"
-edition = "2021"
+edition.workspace = true
 
 description = "个人使用数据库操作"
-license = "MIT OR Apache-2.0"
-authors = ["YANG <1604024101@qq.com>"]
-repository = "https://github.com/ImYangJiaJun/lib_yang"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/yang-db"
 readme = "README.md"
 keywords = ["mysql", "redis", "database", "sqlx", "query-builder"]

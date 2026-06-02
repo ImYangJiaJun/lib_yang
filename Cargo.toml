@@ -3,6 +3,13 @@ resolver = "2"
 
 members = ["crates/*"]
 
+# 各 crate 共享的包元数据，crate 内通过 `xxx.workspace = true` 引用
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["YANG <1604024101@qq.com>"]
+repository = "https://github.com/ImYangJiaJun/lib_yang"
+
 # 集中声明共享依赖，各 crate 通过 `xxx.workspace = true` 引用
 [workspace.dependencies]
 # 异步运行时

@@ -1,12 +1,13 @@
 [package]
 name = "yang-base-derive"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "yang-base 类型化派生宏（TableEntity / Action）"
-license = "MIT OR Apache-2.0"
-authors = ["YANG <1604024101@qq.com>"]
-repository = "https://github.com/ImYangJiaJun/lib_yang"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/yang-base-derive"
+readme = "README.md"
 keywords = ["derive", "macro", "proc-macro", "yang-base"]
 categories = ["development-tools::procedural-macro-helpers"]
 

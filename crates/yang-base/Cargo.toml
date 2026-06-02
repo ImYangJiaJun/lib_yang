@@ -1,12 +1,12 @@
 [package]
 name = "yang-base"
 version = "0.1.1"
-edition = "2021"
+edition.workspace = true
 
 description = "个人使用构建后端服务器"
-license = "MIT OR Apache-2.0"
-authors = ["YANG <1604024101@qq.com>"]
-repository = "https://github.com/ImYangJiaJun/lib_yang"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/yang-base"
 readme = "README.md"
 keywords = ["backend", "web", "action", "router", "jwt"]
