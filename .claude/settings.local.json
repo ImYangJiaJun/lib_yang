@@ -61,7 +61,20 @@
       "mcp__codegraph__codegraph_context",
       "Bash(echo \"name: $\\(git config user.name\\)\")",
       "Bash(echo \"email: $\\(git config user.email\\)\")",
-      "Bash(cargo metadata *)"
+      "Bash(cargo metadata *)",
+      "Bash(cargo fmt *)",
+      "Bash(grep -A4 \"unused import: \\\\`sqlx::postgres::PgPool\\\\`\")",
+      "Bash(docker rm *)",
+      "Bash(docker run *)",
+      "Bash(echo \"=== fmt exit: $? ===\")",
+      "Bash(echo \"=== fmt applied, exit: $? ===\")",
+      "Bash(grep -E \"FAILED$\")",
+      "Bash(grep -cE \"FAILED$\")",
+      "Bash(docker exec *)",
+      "Bash(cargo run *)",
+      "Bash(rustfmt --edition 2021 --check crates/yang-db/src/postgres/condition.rs crates/yang-db/src/postgres/field.rs crates/yang-db/src/postgres/init.rs crates/yang-db/src/postgres/mod.rs crates/yang-db/src/postgres/database.rs crates/yang-db/src/postgres/transaction.rs crates/yang-db/src/postgres/query_builder.rs crates/yang-db/examples/pg_basic.rs crates/yang-db/tests/integration_pg_crud_simple.rs)",
+      "Bash(rustfmt --edition 2021 crates/yang-db/src/postgres/condition.rs crates/yang-db/src/postgres/transaction.rs crates/yang-db/src/postgres/query_builder.rs crates/yang-db/src/postgres/database.rs crates/yang-db/src/postgres/mod.rs crates/yang-db/src/postgres/field.rs crates/yang-db/src/postgres/init.rs crates/yang-db/examples/pg_basic.rs crates/yang-db/tests/integration_pg_crud_simple.rs)",
+      "Bash(rustfmt --edition 2021 --check crates/yang-db/src/postgres/*.rs crates/yang-db/examples/pg_basic.rs crates/yang-db/tests/integration_pg_crud_simple.rs)"
     ]
   }
 }
