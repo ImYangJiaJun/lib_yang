@@ -65,13 +65,11 @@ impl RedisConfig {
     }
 
     /// 获取连接超时 Duration
-    #[allow(dead_code)]
     pub(crate) fn connect_timeout_duration(&self) -> Duration {
         Duration::from_secs(self.connect_timeout)
     }
 
     /// 获取等待超时 Duration
-    #[allow(dead_code)]
     pub(crate) fn wait_timeout_duration(&self) -> Duration {
         Duration::from_secs(self.wait_timeout)
     }

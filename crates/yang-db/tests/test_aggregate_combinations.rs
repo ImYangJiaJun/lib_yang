@@ -4,7 +4,7 @@
 #[allow(dead_code)]
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use testcontainers::{GenericImage, ImageExt, runners::AsyncRunner};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_db::Database;
 
 /// 测试用户结构

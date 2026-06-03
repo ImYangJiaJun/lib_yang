@@ -163,10 +163,11 @@ impl From<redis::Value> for RedisValue {
             redis::Value::Nil => RedisValue::Nil,
             redis::Value::Int(i) => RedisValue::Int(i),
             redis::Value::BulkString(bytes) => {
-                // 尝试转换为 UTF-8 字符串
-                match String::from_utf8(bytes.clone()) {
+                // 尝试转换为 UTF-8 字符串：from_utf8 按值消费 bytes，
+                // 失败时通过 into_bytes() 取回原始字节，避免多余 clone
+                match String::from_utf8(bytes) {
                     Ok(s) => RedisValue::String(s),
-                    Err(_) => RedisValue::Bytes(bytes),
+                    Err(e) => RedisValue::Bytes(e.into_bytes()),
                 }
             }
             redis::Value::Array(values) => {

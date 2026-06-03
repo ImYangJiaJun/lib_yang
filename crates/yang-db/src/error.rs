@@ -103,7 +103,7 @@ impl From<sqlx::Error> for DbError {
 /// 从 redis::RedisError 转换为 DbError
 impl From<redis::RedisError> for DbError {
     fn from(err: redis::RedisError) -> Self {
-        // redis 1.1.0 中的 ErrorKind 是不同的，我们直接根据错误信息判断
+        // redis 1.2.0 中的 ErrorKind 是不同的，我们直接根据错误信息判断
         let err_str = format!("{}", err);
 
         if err_str.contains("IO error") || err_str.contains("Connection") {

@@ -61,8 +61,7 @@ fn test_clear_preserves_capacity() {
     let mut sql_gen = SqlGenerator::new();
 
     // 先写入一些内容以触发可能的扩容
-    let data =
-        serde_json::json!({"name": "test_user", "age": 18, "email": "test@example.com"});
+    let data = serde_json::json!({"name": "test_user", "age": 18, "email": "test@example.com"});
     sql_gen
         .build_insert("users", &data, &HashMap::new())
         .unwrap();
@@ -87,10 +86,7 @@ fn test_clear_preserves_capacity() {
     );
 
     // 内容应为空
-    assert!(
-        sql_gen.get_sql().is_empty(),
-        "clear() 后 sql 内容应为空"
-    );
+    assert!(sql_gen.get_sql().is_empty(), "clear() 后 sql 内容应为空");
     assert!(
         sql_gen.get_params().is_empty(),
         "clear() 后 params 内容应为空"
@@ -105,9 +101,7 @@ fn test_clear_does_not_use_new_allocation() {
 
     // 写入数据
     let data = serde_json::json!({"field1": "value1", "field2": 42});
-    sql_gen
-        .build_insert("tbl", &data, &HashMap::new())
-        .unwrap();
+    sql_gen.build_insert("tbl", &data, &HashMap::new()).unwrap();
 
     // clear 后容量应 >= 预分配值（256 和 8）
     sql_gen.clear_for_test();

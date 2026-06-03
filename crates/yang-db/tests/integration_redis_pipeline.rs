@@ -1,4 +1,4 @@
-use testcontainers::{GenericImage, runners::AsyncRunner};
+use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_db::{RedisClient, RedisValue};
 
 /// 启动 Redis 容器并返回连接 URL

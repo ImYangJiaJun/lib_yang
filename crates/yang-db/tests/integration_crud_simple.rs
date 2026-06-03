@@ -211,7 +211,11 @@ async fn test_where_conditions() {
 
     if let Ok(db) = result {
         // 测试各种 WHERE 条件的 SQL 生成
-        let sql1 = db.table("users").where_and("age", ">", 18).unwrap().to_sql();
+        let sql1 = db
+            .table("users")
+            .where_and("age", ">", 18)
+            .unwrap()
+            .to_sql();
         assert!(sql1.contains("WHERE"), "应该包含 WHERE");
         println!("✓ WHERE > 条件: {}", sql1);
 

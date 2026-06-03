@@ -1,7 +1,6 @@
 use crate::redis::{RedisPipeline, RedisTransaction};
 use crate::{DbError, RedisConfig, RedisValue, Result};
 use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
-use std::time::Duration;
 
 /// 连接池状态信息
 #[derive(Debug, Clone)]
@@ -23,9 +22,6 @@ pub struct PoolStatus {
 pub struct RedisClient {
     /// 连接池
     pool: Pool,
-    /// 配置
-    #[allow(dead_code)]
-    config: RedisConfig,
 }
 
 impl RedisClient {
@@ -82,9 +78,9 @@ impl RedisClient {
         cfg.pool = Some(PoolConfig {
             max_size: config.max_connections,
             timeouts: Timeouts {
-                wait: Some(Duration::from_secs(config.wait_timeout)),
-                create: Some(Duration::from_secs(config.connect_timeout)),
-                recycle: Some(Duration::from_secs(config.connect_timeout)),
+                wait: Some(config.wait_timeout_duration()),
+                create: Some(config.connect_timeout_duration()),
+                recycle: Some(config.connect_timeout_duration()),
             },
             ..Default::default()
         });
@@ -110,7 +106,7 @@ impl RedisClient {
             log::info!("Redis 连接成功: {}", url_str);
         }
 
-        Ok(Self { pool, config })
+        Ok(Self { pool })
     }
 
     /// 获取连接池引用
@@ -369,9 +365,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("INCR");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// INCRBY - 将键的值增加指定数量
@@ -382,9 +376,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("INCRBY");
         cmd.arg(key.into()).arg(increment);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// DECR - 将键的值减少 1
@@ -395,9 +387,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("DECR");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// DECRBY - 将键的值减少指定数量
@@ -408,9 +398,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("DECRBY");
         cmd.arg(key.into()).arg(decrement);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// APPEND - 将值追加到键的原值末尾
@@ -421,9 +409,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("APPEND");
         cmd.arg(key.into()).arg(value.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// STRLEN - 获取键存储的字符串长度
@@ -434,9 +420,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("STRLEN");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// GETRANGE - 获取字符串的子串
@@ -505,9 +489,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SETRANGE");
         cmd.arg(key.into()).arg(offset).arg(value.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// INCRBYFLOAT - 将键的浮点数值增加指定数量
@@ -627,9 +609,7 @@ impl RedisClient {
             cmd.arg(field);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// HEXISTS - 检查哈希表字段是否存在
@@ -689,7 +669,8 @@ impl RedisClient {
             let mut pairs = Vec::new();
             for i in (0..arr.len()).step_by(2) {
                 if i + 1 < arr.len() {
-                    if let (Some(field), Some(value)) = (arr[i].as_string(), arr[i + 1].as_string()) {
+                    if let (Some(field), Some(value)) = (arr[i].as_string(), arr[i + 1].as_string())
+                    {
                         pairs.push((field, value));
                     }
                 }
@@ -705,9 +686,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HLEN");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// HKEYS - 获取哈希表的所有字段名
@@ -715,11 +694,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HKEYS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// HVALS - 获取哈希表的所有值
@@ -727,11 +702,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HVALS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// HINCRBY - 将哈希表字段的整数值增加指定数量
@@ -744,9 +715,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HINCRBY");
         cmd.arg(key.into()).arg(field.into()).arg(increment);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// HINCRBYFLOAT - 将哈希表字段的浮点数值增加指定数量
@@ -783,9 +752,7 @@ impl RedisClient {
             cmd.arg(value);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// RPUSH - 将一个或多个值插入列表尾部
@@ -799,9 +766,7 @@ impl RedisClient {
             cmd.arg(value);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// LPOP - 移除并返回列表的头元素
@@ -842,11 +807,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// LLEN - 获取列表长度
@@ -854,9 +815,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LLEN");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// LINDEX - 获取列表指定索引的元素
@@ -930,9 +889,7 @@ impl RedisClient {
             .arg(pivot.into())
             .arg(value.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// LREM - 删除列表中的指定元素
@@ -971,9 +928,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LREM");
         cmd.arg(key.into()).arg(count).arg(value.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// RPOPLPUSH - 从源列表尾部弹出元素并插入到目标列表头部
@@ -1111,9 +1066,7 @@ impl RedisClient {
             cmd.arg(member);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// SREM - 移除集合中的一个或多个成员
@@ -1127,9 +1080,7 @@ impl RedisClient {
             cmd.arg(member);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// SMEMBERS - 获取集合的所有成员
@@ -1137,11 +1088,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SMEMBERS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// SISMEMBER - 检查元素是否是集合的成员
@@ -1165,9 +1112,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SCARD");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// SPOP - 移除并返回集合中的一个随机元素
@@ -1219,11 +1164,7 @@ impl RedisClient {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// SUNION - 返回多个集合的并集
@@ -1241,11 +1182,7 @@ impl RedisClient {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// SDIFF - 返回多个集合的差集
@@ -1263,11 +1200,7 @@ impl RedisClient {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// SMOVE - 将指定成员从源集合移动到目标集合
@@ -1336,9 +1269,7 @@ impl RedisClient {
             cmd.arg(score).arg(member);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZREM - 移除有序集合中的一个或多个成员
@@ -1352,9 +1283,7 @@ impl RedisClient {
             cmd.arg(member);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZSCORE - 获取成员的分数
@@ -1382,9 +1311,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZCARD");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZRANGE - 按索引范围获取有序集合的成员
@@ -1401,11 +1328,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// ZRANGEBYSCORE - 按分数范围获取有序集合的成员
@@ -1422,11 +1345,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZRANGEBYSCORE");
         cmd.arg(key.into()).arg(min).arg(max);
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// ZCOUNT - 计算分数范围内的成员数量
@@ -1434,9 +1353,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZCOUNT");
         cmd.arg(key.into()).arg(min).arg(max);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZINCRBY - 将成员的分数增加指定数量
@@ -1528,11 +1445,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZREVRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// ZRANGE WITHSCORES - 按索引范围获取有序集合的成员及其分数
@@ -1595,9 +1508,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZREMRANGEBYRANK");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZREMRANGEBYSCORE - 移除有序集合中指定分数范围的成员
@@ -1618,9 +1529,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZREMRANGEBYSCORE");
         cmd.arg(key.into()).arg(min).arg(max);
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// ZSCAN - 增量式迭代有序集合中的成员
@@ -1678,9 +1587,7 @@ impl RedisClient {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// EXISTS - 检查一个或多个键是否存在
@@ -1693,9 +1600,7 @@ impl RedisClient {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// EXPIRE - 设置键的过期时间（秒）
@@ -1720,9 +1625,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("TTL");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// PERSIST - 移除键的过期时间
@@ -1748,11 +1651,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("KEYS");
         cmd.arg(pattern.into());
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().filter_map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        Ok(collect_string_array(&result))
     }
 
     /// SCAN - 增量式迭代数据库中的所有键
@@ -1817,9 +1716,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("PUBLISH");
         cmd.arg(channel.into()).arg(message.into());
         let result = self.execute(&cmd).await?;
-        result
-            .as_i64()
-            .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+        require_i64(&result)
     }
 
     /// 健康检查 - 验证 Redis 连接是否正常
@@ -2019,6 +1916,25 @@ impl RedisClient {
     }
 }
 
+/// 将 RedisValue 提取为整数，失败时返回统一的类型转换错误
+///
+/// 抽出 client 中大量重复的 `as_i64().ok_or_else(整数错误)` 样板
+fn require_i64(value: &RedisValue) -> Result<i64> {
+    value
+        .as_i64()
+        .ok_or_else(|| DbError::RedisTypeConversionError("无法转换为整数".to_string()))
+}
+
+/// 将 RedisValue 数组中的元素收集为字符串列表，非数组时返回空列表
+///
+/// 抽出 client 中大量重复的 `as_array → filter_map(as_string) → collect` 样板
+fn collect_string_array(value: &RedisValue) -> Vec<String> {
+    match value.as_array() {
+        Some(arr) => arr.iter().filter_map(|v| v.as_string()).collect(),
+        None => Vec::new(),
+    }
+}
+
 /// 解析 SCAN/SSCAN 结果
 fn parse_scan_result(result: &RedisValue) -> crate::Result<(i64, Vec<String>)> {
     if let Some(arr) = result.as_array() {
@@ -2060,6 +1976,7 @@ fn parse_with_scores(result: &RedisValue) -> Vec<(String, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_redis_client_clone() {
@@ -2168,7 +2085,7 @@ mod tests {
         let pool = pool_config
             .create_pool(Some(Runtime::Tokio1))
             .expect("无法创建测试连接池");
-        let client = RedisClient { pool, config };
+        let client = RedisClient { pool };
 
         assert_eq!(client.pool_status().max_size, 25);
     }

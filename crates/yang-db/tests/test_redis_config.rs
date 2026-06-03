@@ -156,7 +156,7 @@ async fn test_concurrent_connection_limit() {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         drop(conn1); // 释放连接 1
-        // 确保连接被返回到池中
+                     // 确保连接被返回到池中
         let _ = pool_clone.get().await;
     });
 

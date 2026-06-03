@@ -1,4 +1,4 @@
-﻿use crate::mysql::condition::{Condition, SqlValue};
+use crate::mysql::condition::{Condition, SqlValue};
 use crate::mysql::field::{FieldType, JoinClause, OrderClause};
 use sqlx::mysql::MySqlPool;
 use std::collections::HashMap;
@@ -179,12 +179,14 @@ impl SqlGenerator {
 
         // LIMIT 子句
         if let Some(limit) = builder.limit {
-            self.append(&format!(" LIMIT {}", limit));
+            self.append(" LIMIT ");
+            self.append(&limit.to_string());
         }
 
         // OFFSET 子句
         if let Some(offset) = builder.offset {
-            self.append(&format!(" OFFSET {}", offset));
+            self.append(" OFFSET ");
+            self.append(&offset.to_string());
         }
 
         Ok(())
@@ -205,14 +207,18 @@ impl SqlGenerator {
 
         self.append(" WHERE ");
 
-        // 如果有多个条件，用 AND 连接
+        // 这里 conditions 是借用，但 build_where 已经决定要消费它构造的临时 Condition，
+        // 故走 owned 版本：避免借用版内部对每个值再 clone 一次（消除多余的双重 clone）。
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql_owned(
+                conditions[0].clone(),
+                &mut self.params,
+            );
             self.append(&sql);
         } else {
             // 多个条件用 AND 连接
             let combined = Condition::And(conditions.to_vec());
-            let sql = crate::mysql::condition::condition_to_sql(&combined, &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
             self.append(&sql);
         }
 
@@ -251,15 +257,16 @@ impl SqlGenerator {
 
         self.append(" ORDER BY ");
 
-        let order_parts: Vec<String> = orders
-            .iter()
-            .map(|order| {
-                let direction = if order.asc { "ASC" } else { "DESC" };
-                format!("{} {}", order.field, direction)
-            })
-            .collect();
-
-        self.append(&order_parts.join(", "));
+        // 直接 push_str 写入 self.sql，避免先 collect Vec<String> 再 join 的中间分配，
+        // 与文件内 build_update_batch 的 push_str 风格一致。输出 SQL 完全不变。
+        for (i, order) in orders.iter().enumerate() {
+            if i > 0 {
+                self.sql.push_str(", ");
+            }
+            self.sql.push_str(&order.field);
+            self.sql.push(' ');
+            self.sql.push_str(if order.asc { "ASC" } else { "DESC" });
+        }
     }
 
     /// 生成 GROUP BY 子句
@@ -282,11 +289,16 @@ impl SqlGenerator {
             let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
             self.append(&sql);
         } else {
-            let parts: Vec<String> = conditions
-                .iter()
-                .map(|c| crate::mysql::condition::condition_to_sql(c, &mut self.params))
-                .collect();
-            self.append(&parts.join(" AND "));
+            // 直接 push_str 写入 self.sql，避免先 collect Vec<String> 再 join。
+            // 先把片段存入局部变量结束对 self.params 的可变借用，再 push_str 到 self.sql，
+            // 避免同时可变借用两个字段。参数 push 顺序与原 collect 顺序一致（均按 conditions 迭代序）。
+            for (i, c) in conditions.iter().enumerate() {
+                if i > 0 {
+                    self.sql.push_str(" AND ");
+                }
+                let frag = crate::mysql::condition::condition_to_sql(c, &mut self.params);
+                self.sql.push_str(&frag);
+            }
         }
         Ok(())
     }
@@ -578,7 +590,9 @@ impl SqlGenerator {
             // 为每条记录生成 WHEN id=? THEN ? 子句，直接追加，替代 format! 收集再 join 的模式
             for record in records {
                 let id_val = record.get(id_field).unwrap_or(&serde_json::Value::Null);
-                let field_val = record.get(field.as_str()).unwrap_or(&serde_json::Value::Null);
+                let field_val = record
+                    .get(field.as_str())
+                    .unwrap_or(&serde_json::Value::Null);
 
                 // 先转换参数值（避免借用冲突），再追加 SQL 片段和参数
                 let id_sql_val = self.json_value_to_sql_value(id_val, field_types.get(id_field))?;
@@ -644,27 +658,30 @@ impl SqlGenerator {
         let fields: Vec<String> = obj.keys().cloned().collect();
         let placeholders: Vec<&str> = fields.iter().map(|_| "?").collect();
 
-        self.append(&format!(
-            "INSERT INTO {} ({}) VALUES ({})",
-            table,
-            fields.join(", "),
-            placeholders.join(", ")
-        ));
+        // 统一用 push_str 风格拼接，避免 format! 的额外分配（输出 SQL 完全不变）
+        self.sql.push_str("INSERT INTO ");
+        self.sql.push_str(table);
+        self.sql.push_str(" (");
+        self.sql.push_str(&fields.join(", "));
+        self.sql.push_str(") VALUES (");
+        self.sql.push_str(&placeholders.join(", "));
+        self.sql.push(')');
 
         for field in &fields {
             let val = obj.get(field.as_str()).unwrap_or(&serde_json::Value::Null);
             self.add_param(self.json_value_to_sql_value(val, field_types.get(field.as_str()))?);
         }
 
-        let update_parts: Vec<String> = fields
-            .iter()
-            .map(|f| format!("{}=VALUES({})", f, f))
-            .collect();
-
-        self.append(&format!(
-            " ON DUPLICATE KEY UPDATE {}",
-            update_parts.join(", ")
-        ));
+        self.sql.push_str(" ON DUPLICATE KEY UPDATE ");
+        for (i, f) in fields.iter().enumerate() {
+            if i > 0 {
+                self.sql.push_str(", ");
+            }
+            self.sql.push_str(f);
+            self.sql.push_str("=VALUES(");
+            self.sql.push_str(f);
+            self.sql.push(')');
+        }
 
         Ok(())
     }
@@ -763,6 +780,24 @@ impl SqlGenerator {
                 Ok(SqlValue::Json(value.clone()))
             }
         }
+    }
+}
+
+/// 将 `(字段, 操作符, 值)` 映射为 6 个比较类 `Condition` 变体的共享助手。
+///
+/// 仅处理比较操作符（`=`、`!=`、`>`、`<`、`>=`、`<=`）。无法匹配时把 `value`
+/// 原样通过 `Err` 交还调用方，便于上层继续处理 like 等其它操作符而不丢失所有权。
+/// 抽出此助手以消除 `where_and` / `where_or` / `having_cond` 三处重复的映射 match。
+fn map_comparison_condition(field: &str, op: &str, value: SqlValue) -> Result<Condition, SqlValue> {
+    match op {
+        "=" => Ok(Condition::Eq(field.to_string(), value)),
+        "!=" => Ok(Condition::Ne(field.to_string(), value)),
+        ">" => Ok(Condition::Gt(field.to_string(), value)),
+        "<" => Ok(Condition::Lt(field.to_string(), value)),
+        ">=" => Ok(Condition::Gte(field.to_string(), value)),
+        "<=" => Ok(Condition::Lte(field.to_string(), value)),
+        // 非比较操作符：把值原样交还调用方处理
+        _ => Err(value),
     }
 }
 
@@ -882,30 +917,33 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
     /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_and<V>(mut self, field: &str, op: &str, value: V) -> Result<Self, crate::error::DbError>
+    pub fn where_and<V>(
+        mut self,
+        field: &str,
+        op: &str,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         use crate::mysql::condition::{Condition, SqlValue};
 
         let sql_value = value.into();
-        let condition = match op {
-            "=" => Condition::Eq(field.to_string(), sql_value),
-            "!=" => Condition::Ne(field.to_string(), sql_value),
-            ">" => Condition::Gt(field.to_string(), sql_value),
-            "<" => Condition::Lt(field.to_string(), sql_value),
-            ">=" => Condition::Gte(field.to_string(), sql_value),
-            "<=" => Condition::Lte(field.to_string(), sql_value),
-            "like" | "LIKE" => {
-                if let SqlValue::String(s) = sql_value {
-                    Condition::Like(field.to_string(), s)
-                } else {
-                    // 如果不是字符串，转换为字符串
-                    Condition::Like(field.to_string(), format!("{:?}", sql_value))
+        // 先尝试 6 个比较操作符的共享映射；Err 时拿回值继续判断 like
+        let condition = match map_comparison_condition(field, op, sql_value) {
+            Ok(c) => c,
+            Err(sql_value) => match op {
+                "like" | "LIKE" => {
+                    if let SqlValue::String(s) = sql_value {
+                        Condition::Like(field.to_string(), s)
+                    } else {
+                        // 如果不是字符串，转换为字符串
+                        Condition::Like(field.to_string(), format!("{:?}", sql_value))
+                    }
                 }
-            }
-            // 不支持的操作符：返回错误而非 panic
-            _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+                // 不支持的操作符：返回错误而非 panic
+                _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+            },
         };
 
         self.conditions.push(condition);
@@ -943,29 +981,32 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
     /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_or<V>(mut self, field: &str, op: &str, value: V) -> Result<Self, crate::error::DbError>
+    pub fn where_or<V>(
+        mut self,
+        field: &str,
+        op: &str,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         use crate::mysql::condition::{Condition, SqlValue};
 
         let sql_value = value.into();
-        let condition = match op {
-            "=" => Condition::Eq(field.to_string(), sql_value),
-            "!=" => Condition::Ne(field.to_string(), sql_value),
-            ">" => Condition::Gt(field.to_string(), sql_value),
-            "<" => Condition::Lt(field.to_string(), sql_value),
-            ">=" => Condition::Gte(field.to_string(), sql_value),
-            "<=" => Condition::Lte(field.to_string(), sql_value),
-            "like" | "LIKE" => {
-                if let SqlValue::String(s) = sql_value {
-                    Condition::Like(field.to_string(), s)
-                } else {
-                    Condition::Like(field.to_string(), format!("{:?}", sql_value))
+        // 先尝试 6 个比较操作符的共享映射；Err 时拿回值继续判断 like
+        let condition = match map_comparison_condition(field, op, sql_value) {
+            Ok(c) => c,
+            Err(sql_value) => match op {
+                "like" | "LIKE" => {
+                    if let SqlValue::String(s) = sql_value {
+                        Condition::Like(field.to_string(), s)
+                    } else {
+                        Condition::Like(field.to_string(), format!("{:?}", sql_value))
+                    }
                 }
-            }
-            // 不支持的操作符：返回错误而非 panic
-            _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+                // 不支持的操作符：返回错误而非 panic
+                _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+            },
         };
 
         // 如果已有条件，将新条件与现有条件用 OR 组合
@@ -1097,20 +1138,20 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn having_cond<V>(mut self, field: &str, op: &str, value: V) -> Result<Self, crate::error::DbError>
+    pub fn having_cond<V>(
+        mut self,
+        field: &str,
+        op: &str,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         let sql_value = value.into();
-        let condition = match op {
-            "=" => Condition::Eq(field.to_string(), sql_value),
-            "!=" => Condition::Ne(field.to_string(), sql_value),
-            ">" => Condition::Gt(field.to_string(), sql_value),
-            "<" => Condition::Lt(field.to_string(), sql_value),
-            ">=" => Condition::Gte(field.to_string(), sql_value),
-            "<=" => Condition::Lte(field.to_string(), sql_value),
-            // 不支持的操作符：返回错误而非 panic
-            _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+        // HAVING 仅支持 6 个比较操作符；like 等其它操作符仍返回 UnsupportedOperator（不 panic）
+        let condition = match map_comparison_condition(field, op, sql_value) {
+            Ok(c) => c,
+            Err(_) => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
         };
         self.having_clause.push(condition);
         Ok(self)
@@ -1412,6 +1453,54 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
+    /// 标量查询助手（内部）
+    ///
+    /// 统一 `value` / `sum` / `avg` / `min` / `max` 五个方法的样板：清空字段选择、
+    /// 只选 `select_expr`、自动加 `LIMIT 1`、生成 SELECT、绑定参数、执行单行单值查询。
+    ///
+    /// 类型参数 `C` 为 sqlx 解码目标类型：`value` 传 `T`（NULL 列触发解码错误的语义保持不变），
+    /// 聚合函数传 `Option<U>`（外层再 `Option::flatten`）。生成的 SQL 与参数与各方法原实现逐字节一致。
+    async fn fetch_scalar<C>(
+        mut self,
+        select_expr: &str,
+    ) -> Result<Option<C>, crate::error::DbError>
+    where
+        C: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
+    {
+        // 清空现有字段选择，只选择指定表达式
+        self.fields.clear();
+        self.fields.push(select_expr.to_string());
+
+        // 自动添加 LIMIT 1
+        self.limit = Some(1);
+
+        // 生成 SQL 语句
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&self)?;
+
+        let sql = generator.get_sql();
+        let params = generator.get_params();
+
+        if self.enable_logging {
+            log::debug!("执行标量查询: {}", sql);
+            log::debug!("参数: {:?}", params);
+        }
+
+        // query_scalar 直接获取单个值；bind_scalar_param 对任意输出类型通用
+        let mut query = sqlx::query_scalar::<_, C>(sql);
+        for param in params {
+            query = bind_scalar_param(query, param);
+        }
+
+        match query.fetch_optional(self.pool).await {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                log::error!("标量查询失败: {}", e);
+                Err(crate::error::DbError::from(e))
+            }
+        }
+    }
+
     /// 查询单个字段值
     ///
     /// 执行 SELECT 查询并返回指定字段的单个值。自动添加 LIMIT 1 到查询。
@@ -1455,57 +1544,16 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn value<T>(mut self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    pub async fn value<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
     {
-        // 清空现有字段选择，只选择指定字段
-        self.fields.clear();
-        self.fields.push(field.to_string());
-
-        // 自动添加 LIMIT 1
-        self.limit = Some(1);
-
-        // 生成 SQL 语句
-        let mut generator = SqlGenerator::new();
-        generator.build_select(&self)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
         if self.enable_logging {
-            log::debug!("执行 value() 查询: {}", sql);
-            log::debug!("参数: {:?}", params);
+            log::debug!("执行 value() 查询，字段: {}", field);
         }
 
-        // 构建查询 - 使用 query_scalar 直接获取单个值
-        let mut query = sqlx::query_scalar::<_, T>(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_scalar_param(query, param);
-        }
-
-        // 执行查询
-        let result = query.fetch_optional(self.pool).await;
-
-        match result {
-            Ok(value) => {
-                if self.enable_logging {
-                    if value.is_some() {
-                        log::debug!("value() 查询成功，返回字段值");
-                    } else {
-                        log::debug!("value() 查询成功，未找到匹配记录");
-                    }
-                }
-                Ok(value)
-            }
-            Err(e) => {
-                log::error!("value() 查询失败: {}", e);
-                Err(crate::error::DbError::from(e))
-            }
-        }
+        // 直接解码为 T（NULL 列触发解码错误的语义保持不变）
+        self.fetch_scalar::<T>(field).await
     }
 
     /// 统计记录数量
@@ -1604,62 +1652,11 @@ impl<'a> QueryBuilder<'a> {
         // 这样可以统一处理整数和浮点数字段的求和结果
         let sum_expr = format!("CAST(SUM({}) AS DOUBLE)", field);
 
-        // 清空现有字段选择，只选择 SUM 表达式
-        let mut builder = self;
-        builder.fields.clear();
-        builder.fields.push(sum_expr.clone());
-
-        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
-        builder.limit = Some(1);
-
-        // 生成 SQL 语句
-        let mut generator = SqlGenerator::new();
-        generator.build_select(&builder)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if builder.enable_logging {
-            log::debug!("执行 sum() 查询: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询 - 使用 Option<f64> 来处理 NULL 值
-        let mut query = sqlx::query_scalar::<_, Option<f64>>(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_scalar_param_option(query, param);
-        }
-
-        // 执行查询
-        let result = query.fetch_optional(builder.pool).await;
-
-        match result {
-            Ok(Some(value)) => {
-                // 查询成功，返回值（可能是 Some(f64) 或 None）
-                if builder.enable_logging {
-                    if value.is_some() {
-                        log::debug!("sum() 查询成功，返回总和");
-                    } else {
-                        log::debug!("sum() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
-                    }
-                }
-                Ok(value)
-            }
-            Ok(None) => {
-                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
-                if builder.enable_logging {
-                    log::debug!("sum() 查询成功，未找到匹配记录");
-                }
-                Ok(None)
-            }
-            Err(e) => {
-                log::error!("sum() 查询失败: {}", e);
-                Err(crate::error::DbError::from(e))
-            }
-        }
+        // 用 Option<f64> 解码处理 NULL；fetch_scalar 外层 Option 表示有无行，
+        // flatten 后与原 fetch_optional + match 的返回完全一致
+        self.fetch_scalar::<Option<f64>>(&sum_expr)
+            .await
+            .map(Option::flatten)
     }
 
     /// 计算字段平均值
@@ -1719,62 +1716,10 @@ impl<'a> QueryBuilder<'a> {
         // 这样可以统一处理整数和浮点数字段的平均值结果
         let avg_expr = format!("CAST(AVG({}) AS DOUBLE)", field);
 
-        // 清空现有字段选择，只选择 AVG 表达式
-        let mut builder = self;
-        builder.fields.clear();
-        builder.fields.push(avg_expr.clone());
-
-        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
-        builder.limit = Some(1);
-
-        // 生成 SQL 语句
-        let mut generator = SqlGenerator::new();
-        generator.build_select(&builder)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if builder.enable_logging {
-            log::debug!("执行 avg() 查询: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询 - 使用 Option<f64> 来处理 NULL 值
-        let mut query = sqlx::query_scalar::<_, Option<f64>>(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_scalar_param_option(query, param);
-        }
-
-        // 执行查询
-        let result = query.fetch_optional(builder.pool).await;
-
-        match result {
-            Ok(Some(value)) => {
-                // 查询成功，返回值（可能是 Some(f64) 或 None）
-                if builder.enable_logging {
-                    if value.is_some() {
-                        log::debug!("avg() 查询成功，返回平均值");
-                    } else {
-                        log::debug!("avg() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
-                    }
-                }
-                Ok(value)
-            }
-            Ok(None) => {
-                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
-                if builder.enable_logging {
-                    log::debug!("avg() 查询成功，未找到匹配记录");
-                }
-                Ok(None)
-            }
-            Err(e) => {
-                log::error!("avg() 查询失败: {}", e);
-                Err(crate::error::DbError::from(e))
-            }
-        }
+        // 用 Option<f64> 解码处理 NULL；flatten 后与原实现返回完全一致
+        self.fetch_scalar::<Option<f64>>(&avg_expr)
+            .await
+            .map(Option::flatten)
     }
 
     /// 获取字段最小值
@@ -1851,62 +1796,10 @@ impl<'a> QueryBuilder<'a> {
         // 构建 MIN(field) 表达式
         let min_expr = format!("MIN({})", field);
 
-        // 清空现有字段选择，只选择 MIN 表达式
-        let mut builder = self;
-        builder.fields.clear();
-        builder.fields.push(min_expr.clone());
-
-        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
-        builder.limit = Some(1);
-
-        // 生成 SQL 语句
-        let mut generator = SqlGenerator::new();
-        generator.build_select(&builder)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if builder.enable_logging {
-            log::debug!("执行 min() 查询: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询 - 使用 query_scalar 直接获取单个值
-        let mut query = sqlx::query_scalar::<_, Option<T>>(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_scalar_param_option(query, param);
-        }
-
-        // 执行查询
-        let result = query.fetch_optional(builder.pool).await;
-
-        match result {
-            Ok(Some(value)) => {
-                // 查询成功，返回值（可能是 Some(T) 或 None）
-                if builder.enable_logging {
-                    if value.is_some() {
-                        log::debug!("min() 查询成功，返回最小值");
-                    } else {
-                        log::debug!("min() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
-                    }
-                }
-                Ok(value)
-            }
-            Ok(None) => {
-                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
-                if builder.enable_logging {
-                    log::debug!("min() 查询成功，未找到匹配记录");
-                }
-                Ok(None)
-            }
-            Err(e) => {
-                log::error!("min() 查询失败: {}", e);
-                Err(crate::error::DbError::from(e))
-            }
-        }
+        // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
+        self.fetch_scalar::<Option<T>>(&min_expr)
+            .await
+            .map(Option::flatten)
     }
 
     /// 获取字段最大值
@@ -1983,62 +1876,10 @@ impl<'a> QueryBuilder<'a> {
         // 构建 MAX(field) 表达式
         let max_expr = format!("MAX({})", field);
 
-        // 清空现有字段选择，只选择 MAX 表达式
-        let mut builder = self;
-        builder.fields.clear();
-        builder.fields.push(max_expr.clone());
-
-        // 自动添加 LIMIT 1（虽然聚合函数只返回一行，但保持一致性）
-        builder.limit = Some(1);
-
-        // 生成 SQL 语句
-        let mut generator = SqlGenerator::new();
-        generator.build_select(&builder)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if builder.enable_logging {
-            log::debug!("执行 max() 查询: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询 - 使用 query_scalar 直接获取单个值
-        let mut query = sqlx::query_scalar::<_, Option<T>>(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_scalar_param_option(query, param);
-        }
-
-        // 执行查询
-        let result = query.fetch_optional(builder.pool).await;
-
-        match result {
-            Ok(Some(value)) => {
-                // 查询成功，返回值（可能是 Some(T) 或 None）
-                if builder.enable_logging {
-                    if value.is_some() {
-                        log::debug!("max() 查询成功，返回最大值");
-                    } else {
-                        log::debug!("max() 查询成功，返回 None（没有匹配记录或所有值为 NULL）");
-                    }
-                }
-                Ok(value)
-            }
-            Ok(None) => {
-                // 没有记录（理论上不应该发生，因为聚合函数总是返回一行）
-                if builder.enable_logging {
-                    log::debug!("max() 查询成功，未找到匹配记录");
-                }
-                Ok(None)
-            }
-            Err(e) => {
-                log::error!("max() 查询失败: {}", e);
-                Err(crate::error::DbError::from(e))
-            }
-        }
+        // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
+        self.fetch_scalar::<Option<T>>(&max_expr)
+            .await
+            .map(Option::flatten)
     }
 
     /// 插入数据
@@ -2217,71 +2058,10 @@ impl<'a> QueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
-        // 记录日志
-        if self.enable_logging {
-            log::debug!(
-                "执行 insert_batch() 操作，表: {}，记录数: {}",
-                self.table,
-                data.len()
-            );
-        }
-
-        // 检查数据是否为空
-        if data.is_empty() {
-            return Err(crate::error::DbError::SerializationError(
-                "批量插入数据不能为空".to_string(),
-            ));
-        }
-
-        // 如果数据量小于等于批次大小，直接插入
-        if data.len() <= INSERT_BATCH_SIZE {
-            return self.insert_chunk(data).await;
-        }
-
-        // 数据量大于批次大小，分批插入
-        let mut total_affected = 0u64;
-
-        // 使用 chunks() 方法将数据分批
-        for (batch_index, chunk) in data.chunks(INSERT_BATCH_SIZE).enumerate() {
-            if self.enable_logging {
-                log::debug!(
-                    "执行第 {} 批插入，本批记录数: {}",
-                    batch_index + 1,
-                    chunk.len()
-                );
-            }
-
-            // 为每个批次创建新的 QueryBuilder（因为 self 已经被 move）
-            // 我们需要保存必要的信息来重建 QueryBuilder
-            let chunk_builder = QueryBuilder {
-                pool: self.pool,
-                table: self.table.clone(),
-                fields: self.fields.clone(),
-                conditions: self.conditions.clone(),
-                joins: self.joins.clone(),
-                order_by: self.order_by.clone(),
-                group_by: self.group_by.clone(),
-                having_clause: self.having_clause.clone(),
-                limit: self.limit,
-                offset: self.offset,
-                distinct: self.distinct,
-                field_types: self.field_types.clone(),
-                enable_logging: self.enable_logging,
-            };
-
-            let affected = chunk_builder.insert_chunk(chunk).await?;
-            total_affected += affected;
-
-            if self.enable_logging {
-                log::debug!("第 {} 批插入成功，影响 {} 行", batch_index + 1, affected);
-            }
-        }
-
-        if self.enable_logging {
-            log::debug!("insert_batch() 全部完成，总共影响 {} 行", total_affected);
-        }
-
-        Ok(total_affected)
+        // 直接委托给可自定义批大小的实现，使用默认批大小常量。
+        // 空数据 / 分批 / 受影响行数累加等逻辑全部由 insert_batch_with_size 统一处理，
+        // 避免两处重复（且 insert_chunk 只借用 &self，无需为每批克隆整个 builder）。
+        self.insert_batch_with_size(data, INSERT_BATCH_SIZE).await
     }
 
     /// 批量插入数据（自定义批次大小）
@@ -2367,25 +2147,8 @@ impl<'a> QueryBuilder<'a> {
                 );
             }
 
-            // 为每个批次创建新的 QueryBuilder（复用当前 builder 的配置）
-            let chunk_builder = QueryBuilder {
-                pool: self.pool,
-                table: self.table.clone(),
-                fields: self.fields.clone(),
-                conditions: self.conditions.clone(),
-                joins: self.joins.clone(),
-                order_by: self.order_by.clone(),
-                group_by: self.group_by.clone(),
-                having_clause: self.having_clause.clone(),
-                limit: self.limit,
-                offset: self.offset,
-                distinct: self.distinct,
-                field_types: self.field_types.clone(),
-                enable_logging: self.enable_logging,
-            };
-
-            // 调用内部插入逻辑执行本批次
-            let affected = chunk_builder.insert_chunk(chunk).await?;
+            // insert_chunk 只借用 &self，无需为每批克隆整个 builder
+            let affected = self.insert_chunk(chunk).await?;
             total_affected += affected;
 
             if self.enable_logging {
@@ -2855,6 +2618,10 @@ where
 ///
 /// # 返回
 /// - 绑定参数后的查询对象
+///
+/// 注：聚合/标量方法现统一走 `fetch_scalar` + `bind_scalar_param`（后者对 `Option<T>`
+/// 输出类型同样适用），本函数暂无调用方但保留作为公开内部表面，标注 allow(dead_code)。
+#[allow(dead_code)]
 fn bind_scalar_param_option<'q, T>(
     query: sqlx::query::QueryScalar<'q, sqlx::MySql, Option<T>, sqlx::mysql::MySqlArguments>,
     param: &SqlValue,
@@ -3273,7 +3040,8 @@ mod tests {
     #[test]
     fn test_having_without_group_returns_error() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
+        let builder =
+            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
         assert!(result.is_err());
@@ -3744,8 +3512,11 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟多个聚合函数组合
-        let mut test_builder =
-            QueryBuilder::new(&pool, "orders", false).where_and_unchecked("status", "=", "completed");
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false).where_and_unchecked(
+            "status",
+            "=",
+            "completed",
+        );
         test_builder.fields.clear();
         test_builder
             .fields
@@ -3802,7 +3573,8 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 创建一个不会匹配任何记录的查询
-        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and_unchecked("id", "=", -1); // 假设 id 不会是负数
+        let mut test_builder =
+            QueryBuilder::new(&pool, "products", false).where_and_unchecked("id", "=", -1); // 假设 id 不会是负数
         test_builder.fields.clear();
         test_builder
             .fields
@@ -5264,8 +5036,7 @@ mod property_tests {
     fn test_where_and_supported_operators_eq() {
         // 验证需求: 5.8  支持的操作符 = 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", "=", 18i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("age", "=", 18i64);
         assert!(result.is_ok(), "操作符 '=' 应该返回 Ok");
         let builder = result.unwrap();
         assert_eq!(builder.conditions.len(), 1);
@@ -5275,8 +5046,7 @@ mod property_tests {
     fn test_where_and_supported_operators_ne() {
         // 验证需求: 5.8  支持的操作符 != 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("status", "!=", 0i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("status", "!=", 0i64);
         assert!(result.is_ok(), "操作符 '!=' 应该返回 Ok");
     }
 
@@ -5284,8 +5054,7 @@ mod property_tests {
     fn test_where_and_supported_operators_gt() {
         // 验证需求: 5.8  支持的操作符 > 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", ">", 18i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("age", ">", 18i64);
         assert!(result.is_ok(), "操作符 '>' 应该返回 Ok");
     }
 
@@ -5293,8 +5062,7 @@ mod property_tests {
     fn test_where_and_supported_operators_lt() {
         // 验证需求: 5.8  支持的操作符 < 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", "<", 65i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("age", "<", 65i64);
         assert!(result.is_ok(), "操作符 '<' 应该返回 Ok");
     }
 
@@ -5302,8 +5070,7 @@ mod property_tests {
     fn test_where_and_supported_operators_gte() {
         // 验证需求: 5.8  支持的操作符 >= 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("score", ">=", 60i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("score", ">=", 60i64);
         assert!(result.is_ok(), "操作符 '>=' 应该返回 Ok");
     }
 
@@ -5311,8 +5078,7 @@ mod property_tests {
     fn test_where_and_supported_operators_lte() {
         // 验证需求: 5.8  支持的操作符 <= 行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("score", "<=", 100i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("score", "<=", 100i64);
         assert!(result.is_ok(), "操作符 '<=' 应该返回 Ok");
     }
 
@@ -5320,8 +5086,7 @@ mod property_tests {
     fn test_where_and_supported_operators_like_lowercase() {
         // 验证需求: 5.8  支持的操作符 like（小写）行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("name", "like", "%test%");
+        let result = QueryBuilder::new(pool, "users", false).where_and("name", "like", "%test%");
         assert!(result.is_ok(), "操作符 'like' 应该返回 Ok");
     }
 
@@ -5329,8 +5094,7 @@ mod property_tests {
     fn test_where_and_supported_operators_like_uppercase() {
         // 验证需求: 5.8  支持的操作符 LIKE（大写）行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("name", "LIKE", "%test%");
+        let result = QueryBuilder::new(pool, "users", false).where_and("name", "LIKE", "%test%");
         assert!(result.is_ok(), "操作符 'LIKE' 应该返回 Ok");
     }
 
@@ -5338,8 +5102,7 @@ mod property_tests {
     fn test_where_and_unsupported_operator_returns_error() {
         // 验证需求: 5.1  不支持的操作符返回 Err(DbError::UnsupportedOperator)
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", "BETWEEN", 18i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("age", "BETWEEN", 18i64);
         assert!(
             matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
             "不支持的操作符 'BETWEEN' 应该返回 Err(DbError::UnsupportedOperator)"
@@ -5350,8 +5113,7 @@ mod property_tests {
     fn test_where_and_unsupported_operator_error_message() {
         // 验证需求: 5.1  错误消息包含操作符名称
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", "XOR", 1i64);
+        let result = QueryBuilder::new(pool, "users", false).where_and("age", "XOR", 1i64);
         match result {
             Err(crate::DbError::UnsupportedOperator(op)) => {
                 assert_eq!(op, "XOR", "错误消息应该包含操作符名称");
@@ -5364,8 +5126,7 @@ mod property_tests {
     fn test_where_or_unsupported_operator_returns_error() {
         // 验证需求: 5.2  where_or 遇到不支持操作符时返回 Err
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_or("age", "IN", 18i64);
+        let result = QueryBuilder::new(pool, "users", false).where_or("age", "IN", 18i64);
         assert!(
             matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
             "where_or 遇到不支持的操作符 'IN' 应该返回 Err(DbError::UnsupportedOperator)"
@@ -5376,8 +5137,7 @@ mod property_tests {
     fn test_where_or_supported_operators_work() {
         // 验证需求: 5.8  where_or 支持的操作符行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_or("status", "=", 1i64);
+        let result = QueryBuilder::new(pool, "users", false).where_or("status", "=", 1i64);
         assert!(result.is_ok(), "where_or 操作符 '=' 应该返回 Ok");
         let builder = result.unwrap();
         assert_eq!(builder.conditions.len(), 1);
@@ -5387,8 +5147,7 @@ mod property_tests {
     fn test_having_cond_unsupported_operator_returns_error() {
         // 验证需求: 5.3  having_cond 遇到不支持操作符时返回 Err
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "orders", false)
-            .having_cond("cnt", "LIKE", 5i64);
+        let result = QueryBuilder::new(pool, "orders", false).having_cond("cnt", "LIKE", 5i64);
         assert!(
             matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
             "having_cond 遇到不支持的操作符 'LIKE' 应该返回 Err(DbError::UnsupportedOperator)"
@@ -5399,8 +5158,7 @@ mod property_tests {
     fn test_having_cond_supported_operators_work() {
         // 验证需求: 5.8  having_cond 支持的操作符行为不变
         let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "orders", false)
-            .having_cond("cnt", ">", 5i64);
+        let result = QueryBuilder::new(pool, "orders", false).having_cond("cnt", ">", 5i64);
         assert!(result.is_ok(), "having_cond 操作符 '>' 应该返回 Ok");
         let builder = result.unwrap();
         assert_eq!(builder.having_clause.len(), 1);
@@ -5410,8 +5168,8 @@ mod property_tests {
     fn test_where_and_unchecked_works_with_valid_operator() {
         // 验证需求: 5.4  where_and_unchecked 对合法操作符正常工作
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false)
-            .where_and_unchecked("age", "=", 18i64);
+        let builder =
+            QueryBuilder::new(pool, "users", false).where_and_unchecked("age", "=", 18i64);
         assert_eq!(builder.conditions.len(), 1);
     }
 
@@ -5430,8 +5188,8 @@ mod property_tests {
     fn test_having_cond_unchecked_works_with_valid_operator() {
         // 验证需求: 5.6  having_cond_unchecked 对合法操作符正常工作
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "orders", false)
-            .having_cond_unchecked("cnt", ">", 5i64);
+        let builder =
+            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
         assert_eq!(builder.having_clause.len(), 1);
     }
 

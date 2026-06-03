@@ -280,6 +280,37 @@ impl Database {
     }
 }
 
+/// 共享 `serde_json::Value` 参数绑定逻辑的内部宏
+///
+/// `Query` 与 `QueryAs` 的 `bind` 是各自的固有方法、没有公共 trait，
+/// 无法用泛型函数复用，这里用宏共享同一套 `match` 体，
+/// 保证两类查询的绑定行为完全一致。
+macro_rules! bind_json_value {
+    ($query:expr, $param:expr) => {
+        match $param {
+            // 字符串类型直接绑定
+            serde_json::Value::String(s) => $query.bind(s.clone()),
+            // 数字类型转为 i64 绑定
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    $query.bind(i)
+                } else if let Some(f) = n.as_f64() {
+                    // 浮点数转为字符串绑定，避免精度丢失
+                    $query.bind(f.to_string())
+                } else {
+                    $query.bind(Option::<String>::None)
+                }
+            }
+            // 布尔类型绑定
+            serde_json::Value::Bool(b) => $query.bind(*b),
+            // NULL 类型绑定为 None
+            serde_json::Value::Null => $query.bind(Option::<String>::None),
+            // 数组和对象类型序列化为 JSON 字符串绑定
+            other => $query.bind(other.to_string()),
+        }
+    };
+}
+
 /// 将 `serde_json::Value` 参数绑定到 `query_as` 查询
 ///
 /// # 参数
@@ -295,27 +326,7 @@ fn bind_json_param_as<'q, T>(
 where
     T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
 {
-    match param {
-        // 字符串类型直接绑定
-        serde_json::Value::String(s) => query.bind(s.clone()),
-        // 数字类型转为 i64 绑定
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                query.bind(i)
-            } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
-            } else {
-                query.bind(Option::<String>::None)
-            }
-        }
-        // 布尔类型绑定
-        serde_json::Value::Bool(b) => query.bind(*b),
-        // NULL 类型绑定为 None
-        serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
-        other => query.bind(other.to_string()),
-    }
+    bind_json_value!(query, param)
 }
 
 /// 将 `serde_json::Value` 参数绑定到执行查询
@@ -330,25 +341,5 @@ fn bind_json_param<'q>(
     query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     param: &serde_json::Value,
 ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
-    match param {
-        // 字符串类型直接绑定
-        serde_json::Value::String(s) => query.bind(s.clone()),
-        // 数字类型转为 i64 绑定
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                query.bind(i)
-            } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
-            } else {
-                query.bind(Option::<String>::None)
-            }
-        }
-        // 布尔类型绑定
-        serde_json::Value::Bool(b) => query.bind(*b),
-        // NULL 类型绑定为 None
-        serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
-        other => query.bind(other.to_string()),
-    }
+    bind_json_value!(query, param)
 }

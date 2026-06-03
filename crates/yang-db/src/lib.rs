@@ -12,8 +12,8 @@ pub use error::DbError;
 
 // 重新导出 MySQL 核心类型
 pub use mysql::{
-    condition_to_sql_owned, Condition, Database, DatabaseConfig, FieldType, QueryBuilder,
-    SqlValue, Transaction,
+    condition_to_sql_owned, Condition, Database, DatabaseConfig, FieldType, QueryBuilder, SqlValue,
+    Transaction,
 };
 
 // 重新导出 Redis 核心类型

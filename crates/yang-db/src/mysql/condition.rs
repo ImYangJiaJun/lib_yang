@@ -134,86 +134,9 @@ where
 /// # 返回
 /// - SQL 字符串片段
 pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> String {
-    match condition {
-        Condition::Eq(field, value) => {
-            params.push(value.clone());
-            format!("{} = ?", field)
-        }
-        Condition::Ne(field, value) => {
-            params.push(value.clone());
-            format!("{} != ?", field)
-        }
-        Condition::Gt(field, value) => {
-            params.push(value.clone());
-            format!("{} > ?", field)
-        }
-        Condition::Lt(field, value) => {
-            params.push(value.clone());
-            format!("{} < ?", field)
-        }
-        Condition::Gte(field, value) => {
-            params.push(value.clone());
-            format!("{} >= ?", field)
-        }
-        Condition::Lte(field, value) => {
-            params.push(value.clone());
-            format!("{} <= ?", field)
-        }
-        Condition::In(field, values) => {
-            if values.is_empty() {
-                // IN 空列表总是返回 false
-                return "1 = 0".to_string();
-            }
-            let placeholders = values
-                .iter()
-                .map(|v| {
-                    params.push(v.clone());
-                    "?"
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{} IN ({})", field, placeholders)
-        }
-        Condition::Between(field, start, end) => {
-            params.push(start.clone());
-            params.push(end.clone());
-            format!("{} BETWEEN ? AND ?", field)
-        }
-        Condition::Like(field, pattern) => {
-            params.push(SqlValue::String(pattern.clone()));
-            format!("{} LIKE ?", field)
-        }
-        Condition::IsNull(field) => format!("{} IS NULL", field),
-        Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
-        Condition::And(conditions) => {
-            if conditions.is_empty() {
-                return "1 = 1".to_string();
-            }
-            if conditions.len() == 1 {
-                return condition_to_sql(&conditions[0], params);
-            }
-            // AND 条件需要括号以确保优先级
-            let parts: Vec<String> = conditions
-                .iter()
-                .map(|c| condition_to_sql(c, params))
-                .collect();
-            format!("({})", parts.join(" AND "))
-        }
-        Condition::Or(conditions) => {
-            if conditions.is_empty() {
-                return "1 = 0".to_string();
-            }
-            if conditions.len() == 1 {
-                return condition_to_sql(&conditions[0], params);
-            }
-            // OR 条件需要括号
-            let parts: Vec<String> = conditions
-                .iter()
-                .map(|c| condition_to_sql(c, params))
-                .collect();
-            format!("({})", parts.join(" OR "))
-        }
-    }
+    // 借用版本是消费版本的薄委托：整树 clone 一次后交给 owned 实现，
+    // 二者共享同一套 match 分支，避免逻辑重复。输出 SQL 与参数顺序完全一致。
+    condition_to_sql_owned(condition.clone(), params)
 }
 
 /// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
@@ -1035,6 +958,9 @@ mod property_tests {
             prop_assert_eq!(&sql1, &sql2);
             // 参数列表长度必须相等
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1049,6 +975,9 @@ mod property_tests {
             let sql2 = condition_to_sql(&cond, &mut p2);
             prop_assert_eq!(&sql1, &sql2);
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1063,6 +992,9 @@ mod property_tests {
             let sql2 = condition_to_sql(&cond, &mut p2);
             prop_assert_eq!(&sql1, &sql2);
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1078,6 +1010,9 @@ mod property_tests {
             let sql2 = condition_to_sql(&cond, &mut p2);
             prop_assert_eq!(&sql1, &sql2);
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1092,6 +1027,9 @@ mod property_tests {
             let sql2 = condition_to_sql(&cond, &mut p2);
             prop_assert_eq!(&sql1, &sql2);
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1113,6 +1051,9 @@ mod property_tests {
             prop_assert_eq!(&sql1, &sql2);
             // 参数列表长度必须相等
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1134,6 +1075,9 @@ mod property_tests {
             prop_assert_eq!(&sql1, &sql2);
             // 参数列表长度必须相等
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
 
         #[test]
@@ -1159,6 +1103,9 @@ mod property_tests {
             prop_assert_eq!(&sql1, &sql2);
             // 参数列表长度必须相等
             prop_assert_eq!(p1.len(), p2.len());
+            // 参数值与顺序也必须完全一致（SqlValue 未实现 PartialEq，用整向量 Debug 串比较，
+            // 一次同时覆盖元素值与顺序；sql_value_strategy 已把非有限 f64 归一为 0.0，Debug 确定）
+            prop_assert_eq!(format!("{:?}", &p1), format!("{:?}", &p2));
         }
     }
 }

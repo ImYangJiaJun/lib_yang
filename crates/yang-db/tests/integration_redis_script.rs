@@ -2,7 +2,7 @@
 //!
 //! 使用 testcontainers 测试 Redis Lua 脚本的实际执行
 
-use testcontainers::{GenericImage, runners::AsyncRunner};
+use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_db::RedisClient;
 
 /// 启动 Redis 容器并返回连接 URL
