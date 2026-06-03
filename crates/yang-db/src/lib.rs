@@ -4,6 +4,9 @@ pub mod error;
 // MySQL 数据库模块
 pub mod mysql;
 
+// PostgreSQL 数据库模块
+pub mod postgres;
+
 // Redis 数据库模块
 pub mod redis;
 
@@ -14,6 +17,15 @@ pub use error::DbError;
 pub use mysql::{
     condition_to_sql_owned, Condition, Database, DatabaseConfig, FieldType, QueryBuilder, SqlValue,
     Transaction,
+};
+
+// 重新导出 PostgreSQL 核心类型（以 Pg 前缀避免与 MySQL 同名类型冲突）。
+// 需要完整 PostgreSQL API 时也可直接使用 `yang_db::postgres::*`，
+// 其内部类型名与 `yang_db::mysql::*` 一致，调用方式保持统一。
+pub use postgres::{
+    condition_to_sql_owned as pg_condition_to_sql_owned, Condition as PgCondition,
+    Database as PgDatabase, DatabaseConfig as PgDatabaseConfig, FieldType as PgFieldType,
+    QueryBuilder as PgQueryBuilder, SqlValue as PgSqlValue, Transaction as PgTransaction,
 };
 
 // 重新导出 Redis 核心类型

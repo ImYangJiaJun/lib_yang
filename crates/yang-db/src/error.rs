@@ -67,11 +67,22 @@ impl From<sqlx::Error> for DbError {
                 let code = db_err.code().unwrap_or_default();
                 let message = db_err.message();
 
-                // MySQL 错误码映射
+                // 数据库错误码映射（同时覆盖 MySQL 与 PostgreSQL）
+                //
+                // MySQL 使用 ANSI SQLSTATE 子集，PostgreSQL 使用完整 SQLSTATE（5 位）。
+                // 两者在约束冲突 / 表不存在 / 语法错误上的常见码不同，这里统一映射，
+                // 使 yang-db 的 MySQL 与 PostgreSQL 后端返回一致的 DbError 语义。
                 match code.as_ref() {
-                    "23000" => DbError::ConstraintError(message.to_string()),
-                    "42S02" => DbError::TableNotFound(message.to_string()),
-                    "42000" => DbError::SqlSyntaxError(message.to_string()),
+                    // 约束冲突：MySQL 23000；PostgreSQL 类 23xxx（唯一/外键/非空/检查）
+                    "23000" | "23001" | "23502" | "23503" | "23505" | "23514" => {
+                        DbError::ConstraintError(message.to_string())
+                    }
+                    // 表/视图不存在：MySQL 42S02；PostgreSQL 42P01
+                    "42S02" | "42P01" => DbError::TableNotFound(message.to_string()),
+                    // 语法/访问规则错误：MySQL 42000；PostgreSQL 42601(语法) / 42703(列不存在) / 42P02
+                    "42000" | "42601" | "42703" | "42P02" => {
+                        DbError::SqlSyntaxError(message.to_string())
+                    }
                     _ => DbError::QueryError(format!("数据库错误 [{}]: {}", code, message)),
                 }
             }
