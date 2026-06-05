@@ -80,7 +80,9 @@
       "Read(//d/d/Code/lib_yang/crates/yang-base/**)",
       "Bash(rustfmt --check /tmp/put_head.rs)",
       "Bash(sed -n '259,266p' crates/yang-base/src/token/manager.rs)",
-      "Bash(sed -n '86,130p' crates/yang-base/src/token/mod.rs)"
+      "Bash(sed -n '86,130p' crates/yang-base/src/token/mod.rs)",
+      "Bash(grep -vi \"reqwest\\\\|//\\\\|doc\")",
+      "Bash(grep -iv \"custom\\\\|//\\\\|doc\\\\|test\")"
     ]
   }
 }
