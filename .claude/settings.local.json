@@ -82,7 +82,9 @@
       "Bash(sed -n '259,266p' crates/yang-base/src/token/manager.rs)",
       "Bash(sed -n '86,130p' crates/yang-base/src/token/mod.rs)",
       "Bash(grep -vi \"reqwest\\\\|//\\\\|doc\")",
-      "Bash(grep -iv \"custom\\\\|//\\\\|doc\\\\|test\")"
+      "Bash(grep -iv \"custom\\\\|//\\\\|doc\\\\|test\")",
+      "Bash(sed -n '8,12p' crates/yang-db/README.md)",
+      "Bash(sed -n '26,30p' docs/yang-base-engine-maturity-assessment.md)"
     ]
   }
 }
