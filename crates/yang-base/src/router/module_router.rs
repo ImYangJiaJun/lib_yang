@@ -177,35 +177,14 @@ impl ModuleRouter {
         self
     }
 
-    /// 注册 Action
-    ///
-    /// # 参数
-    ///
-    /// - `action`: Action 实例
-    ///
-    /// # 返回
-    ///
-    /// - 修改后的 ModuleRouter 实例（支持链式调用）
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::router::ModuleRouter;
-    /// use yang_base::action::builtin::AddAction;
-    /// use yang_base::table::TableConfig;
-    /// use std::sync::Arc;
-    ///
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    /// let add_action = AddAction::new(table_config.clone());
-    ///
-    /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .register_action(add_action);
-    /// ```
     /// 注册一个类型化 Action
     ///
     /// 接受任意实现 [`TypedAction`](crate::action::TypedAction) 的类型
     /// （通常由 `#[derive(Action)]` 派生），通过 blanket impl 自动转为
     /// `Arc<dyn DynAction>` 存入注册表。
+    ///
+    /// 若已存在同名 Action（含内置 CRUD：add/put/del/get/select/table），
+    /// 将覆盖先前注册。
     ///
     /// # 参数
     ///
@@ -237,8 +216,9 @@ impl ModuleRouter {
     /// 注册一个中间件（builder setter）
     ///
     /// 中间件按注册顺序构成洋葱模型：先注册的最先进入、最后离开。
-    /// 中间件在鉴权**之后**、目标 Action 执行**之前**包裹整条调用链
-    /// （见 [`dispatch`](Self::dispatch)）。
+    /// 中间件位于鉴权之外的**最外层**，先于内置登录/权限检查运行
+    /// （见 [`dispatch`](Self::dispatch)）。这意味着中间件的短路返回会
+    /// **跳过**内置鉴权，请谨慎使用。
     ///
     /// # 参数
     ///
@@ -402,19 +382,21 @@ impl ModuleRouter {
             }
 
             // 检查 Action 权限
-            if !meta.permissions.is_empty() {
-                let permission_names: Vec<String> = meta
+            //
+            // 热路径零分配：成功路径仅借用权限名做 `all` 判断，不构造任何
+            // 中间集合；仅当权限不足时才 collect 格式化中文错误信息。
+            if !meta.permissions.is_empty()
+                && !meta
                     .permissions
                     .iter()
-                    .map(|p| p.name().to_string())
-                    .collect();
-
-                if !self.check_permissions(user, &permission_names) {
-                    return Err(BaseError::PermissionDenied(format!(
-                        "缺少 Action 权限: {:?}",
-                        permission_names
-                    )));
-                }
+                    .all(|p| user.has_permission(p.name()))
+            {
+                let permission_names: Vec<&str> =
+                    meta.permissions.iter().map(|p| p.name()).collect();
+                return Err(BaseError::PermissionDenied(format!(
+                    "缺少 Action 权限: {:?}",
+                    permission_names
+                )));
             }
         }
 

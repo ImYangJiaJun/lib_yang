@@ -20,7 +20,7 @@
 //! // 创建模块路由器并注册内置 CRUD Actions
 //! let user_router = ModuleRouter::new("user", "用户管理")
 //!     .with_table_config(table_config.clone())
-//!     .register_builtin_actions()?
+//!     .table_typed::<User>()?
 //!     .default_permissions(vec!["user:access".to_string()]);
 //!
 //! // 创建应用路由器并注册模块

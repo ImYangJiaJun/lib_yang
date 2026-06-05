@@ -57,12 +57,12 @@ impl User {
 
     /// 检查是否有指定权限
     pub fn has_permission(&self, permission: &str) -> bool {
-        self.permissions.contains(&permission.to_string())
+        self.permissions.iter().any(|p| p == permission)
     }
 
     /// 检查是否有指定角色
     pub fn has_role(&self, role: &str) -> bool {
-        self.roles.contains(&role.to_string())
+        self.roles.iter().any(|r| r == role)
     }
 
     /// 检查是否有任一角色
