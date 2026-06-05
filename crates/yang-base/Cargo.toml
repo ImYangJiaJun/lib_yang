@@ -25,13 +25,13 @@ workspace = true
 default = ["token", "http", "mysql", "validator", "plugin-schema"]
 
 # JWT Token 管理功能
-token = ["dep:jsonwebtoken"]
+token = ["dep:jsonwebtoken", "dep:uuid"]
 
 # HTTP 客户端功能
 http = ["dep:reqwest", "dep:serde_urlencoded"]
 
 # MySQL 数据库功能
-mysql = ["dep:sqlx"]
+mysql = ["dep:sqlx", "dep:base64"]
 
 # 字段校验器正则支持
 validator = ["dep:regex"]
@@ -59,11 +59,10 @@ thiserror = { workspace = true }
 log = { workspace = true }
 
 # 工具库
-uuid = { workspace = true }
 chrono = { workspace = true }
 
-# Base64 编码（用于 DynamicRow 中 BLOB 类型的编码）
-base64 = "0.22"
+# Base64 编码（可选，通过 "mysql" feature 启用，用于 DynamicRow 中 BLOB 类型的编码）
+base64 = { workspace = true, optional = true }
 
 # HTTP 客户端（可选，通过 "http" feature 启用）
 reqwest = { workspace = true, optional = true }
@@ -71,6 +70,9 @@ serde_urlencoded = { workspace = true, optional = true }
 
 # JWT Token（可选，通过 "token" feature 启用）
 jsonwebtoken = { workspace = true, optional = true }
+
+# 唯一标识（可选，通过 "token" feature 启用）
+uuid = { workspace = true, optional = true }
 
 # 数据库（可选，通过 "mysql" feature 启用）
 sqlx = { workspace = true, optional = true }

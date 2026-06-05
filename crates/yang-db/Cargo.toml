@@ -50,7 +50,7 @@ chrono = { workspace = true }
 # 日志
 log = { workspace = true }
 # Base64 编解码
-base64 = "0.22.1"
+base64 = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.11.0"
