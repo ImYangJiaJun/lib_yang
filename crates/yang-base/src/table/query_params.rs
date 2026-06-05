@@ -494,6 +494,28 @@ impl QueryParams {
         self.page_size = Some(page_size);
         self
     }
+
+    /// 归一化分页参数
+    ///
+    /// 将 `page` 中小于 1 的值（含 0）归一为 1，避免直接构造 `QueryParams`
+    /// 时 `page == 0` 导致 LIMIT/OFFSET 计算下溢。`page_size` 保持原值。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_base::table::QueryParams;
+    ///
+    /// let mut params = QueryParams::new().with_pagination(0, 20);
+    /// params.normalize();
+    /// assert_eq!(params.page, Some(1));
+    /// ```
+    pub fn normalize(&mut self) {
+        if let Some(page) = self.page {
+            if page < 1 {
+                self.page = Some(1);
+            }
+        }
+    }
 }
 
 /// 分页结果结构体

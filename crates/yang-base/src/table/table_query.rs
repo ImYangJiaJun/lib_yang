@@ -107,6 +107,20 @@ pub struct TableQuery {
     /// 包含字段选择、WHERE 条件、排序规则和分页参数
     query_params: QueryParams,
 
+    /// 是否在读取路径包含软删除记录
+    ///
+    /// 默认 `false`：配置了 `soft_delete_field` 的表，软删行不出现在
+    /// select/count/paginate 结果中。置为 `true`（经 [`TableQuery::with_trashed`]）
+    /// 时读取全量（含已软删行）。
+    include_trashed: bool,
+
+    /// 是否允许无 WHERE 的全表 UPDATE/DELETE
+    ///
+    /// 默认 `false`：无 WHERE 的更新/删除会返回 [`BaseError::MissingWhereClause`]，
+    /// 与 yang-db 的安全网对齐。置为 `true`（经 [`TableQuery::allow_full_table`]）
+    /// 时显式放行全表操作。
+    allow_full_table: bool,
+
     /// 数据库连接池引用（预留）
     ///
     /// 暂未使用，预留用于后续实现 CRUD 操作
@@ -122,6 +136,7 @@ pub struct TableQuery {
 /// - 后续字符必须是 ASCII 字母、数字或下划线
 /// - 不能为空
 /// - 不能包含分号、`--`、空白字符
+#[cfg(feature = "mysql")]
 fn is_valid_identifier(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -148,6 +163,7 @@ impl TableQuery {
     ///
     /// - `Ok(String)`: 转义后的字段名，如 `` `field_name` ``
     /// - `Err(BaseError)`: 字段名非法
+    #[cfg(feature = "mysql")]
     fn quote_identifier(&self, field: &str) -> Result<String, BaseError> {
         if !is_valid_identifier(field) {
             return Err(BaseError::FieldNotFound(
@@ -157,6 +173,27 @@ impl TableQuery {
         }
         // 反引号转义：内部反引号变双反引号
         Ok(format!("`{}`", field.replace('`', "``")))
+    }
+
+    /// 对表名进行反引号转义（与字段名走同一条校验/转义路径）
+    ///
+    /// 防止非法表名破坏引号边界。表名虽来自开发者配置而非终端用户输入，
+    /// 但统一转义可消除字段名与表名处理的不一致（防御纵深）。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(String)`: 转义后的表名，如 `` `users` ``
+    /// - `Err(BaseError)`: 表名非法
+    #[cfg(feature = "mysql")]
+    fn quoted_table_name(&self) -> Result<String, BaseError> {
+        let name = &self.table_config.table_name;
+        if !is_valid_identifier(name) {
+            return Err(BaseError::FieldNotFound(
+                name.clone(),
+                "非法表名".to_string(),
+            ));
+        }
+        Ok(format!("`{}`", name.replace('`', "``")))
     }
 
     /// 创建新的查询构建器
@@ -180,6 +217,8 @@ impl TableQuery {
             table_config,
             user_roles,
             query_params: QueryParams::new(),
+            include_trashed: false,
+            allow_full_table: false,
             pool,
         }
     }
@@ -197,6 +236,8 @@ impl TableQuery {
             table_config,
             user_roles,
             query_params: QueryParams::new(),
+            include_trashed: false,
+            allow_full_table: false,
         }
     }
 
@@ -283,6 +324,35 @@ impl TableQuery {
         self.query_params.fields = Some(fields.iter().map(|s| s.to_string()).collect());
 
         Ok(self)
+    }
+
+    /// 强制校验当前用户对表内所有字段的读权限
+    ///
+    /// 内置 Get/Select Action 读取整实体（`SELECT *`）时，在执行查询前调用本方法，
+    /// 确保不会把用户无权读取的字段一并返回。遍历表配置中的每个字段，对
+    /// `readable_roles` 非空且用户不具备任一可读角色的字段返回
+    /// [`BaseError::FieldPermissionDenied`]。与 [`TableQuery::select_fields`] 的
+    /// `can_read` 判定机制保持一致。
+    ///
+    /// # 参数
+    ///
+    /// - `user`：当前用户（其 `roles` 用于权限判定）
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(())`：用户对全部字段可读
+    /// - `Err(BaseError::FieldPermissionDenied)`：存在不可读字段
+    pub fn ensure_fields_readable(&self, user: &crate::action::User) -> Result<(), BaseError> {
+        for (field_name, field_config) in &self.table_config.fields {
+            if !field_config.permissions.can_read(&user.roles) {
+                return Err(BaseError::FieldPermissionDenied(
+                    self.table_config.table_name.clone(),
+                    field_name.clone(),
+                    "用户无读取权限".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 添加等于条件 (WHERE field = value)
@@ -754,9 +824,43 @@ impl TableQuery {
     /// let query = query.page(1, 20)?;
     /// ```
     pub fn page(mut self, page: usize, page_size: usize) -> Result<Self, BaseError> {
+        if page == 0 || page_size == 0 {
+            return Err(BaseError::ParamInvalid(
+                "page".to_string(),
+                "页码与每页大小必须从 1 开始且大于 0".to_string(),
+            ));
+        }
         self.query_params.page = Some(page);
         self.query_params.page_size = Some(page_size);
         Ok(self)
+    }
+
+    /// 在读取路径包含软删除记录
+    ///
+    /// 默认情况下，配置了 `soft_delete_field` 的表会在 select/count/paginate
+    /// 时自动追加 `软删字段 IS NULL` 过滤，隐藏已软删行。调用本方法后，本次查询
+    /// 读取全量数据（含已软删行）。
+    ///
+    /// # 返回值
+    ///
+    /// 返回 self 支持链式调用
+    pub fn with_trashed(mut self) -> Self {
+        self.include_trashed = true;
+        self
+    }
+
+    /// 允许无 WHERE 条件的全表 UPDATE/DELETE
+    ///
+    /// 默认情况下，未设置任何 WHERE 条件的更新/删除会返回
+    /// [`BaseError::MissingWhereClause`] 以防止误操作整表。调用本方法显式放行
+    /// 全表操作（如批量初始化、清空表）。
+    ///
+    /// # 返回值
+    ///
+    /// 返回 self 支持链式调用
+    pub fn allow_full_table(mut self) -> Self {
+        self.allow_full_table = true;
+        self
     }
 
     /// 验证筛选字段的权限
@@ -1027,9 +1131,15 @@ impl TableQuery {
         &self,
         sql: &mut String,
         params: &mut Vec<SqlParam>,
+        apply_soft_delete: bool,
     ) -> Result<(), BaseError> {
-        // 如果没有 WHERE 条件，直接返回
-        if self.query_params.where_conditions.is_empty() {
+        // 计算是否需要追加软删过滤子句（仅读路径，且未显式 with_trashed）
+        let has_soft_delete = apply_soft_delete
+            && !self.include_trashed
+            && self.table_config.soft_delete_field.is_some();
+
+        // 既无 WHERE 条件也无需软删过滤，直接返回
+        if self.query_params.where_conditions.is_empty() && !has_soft_delete {
             return Ok(());
         }
 
@@ -1051,10 +1161,15 @@ impl TableQuery {
                 }
                 WhereCondition::In { field, values } => {
                     let quoted = self.quote_identifier(field)?;
-                    let placeholders = vec!["?"; values.len()].join(", ");
-                    sql.push_str(&format!("{} IN ({})", quoted, placeholders));
-                    for value in values {
-                        params.push(SqlParam::from_json(value)?);
+                    if values.is_empty() {
+                        // 空 IN 集合：等价于恒假，避免拼出非法的 `IN ()`
+                        sql.push_str("1=0");
+                    } else {
+                        let placeholders = vec!["?"; values.len()].join(", ");
+                        sql.push_str(&format!("{} IN ({})", quoted, placeholders));
+                        for value in values {
+                            params.push(SqlParam::from_json(value)?);
+                        }
                     }
                 }
                 WhereCondition::Like { field, pattern } => {
@@ -1103,12 +1218,28 @@ impl TableQuery {
                 }
                 WhereCondition::NotIn { field, values } => {
                     let quoted = self.quote_identifier(field)?;
-                    let placeholders = vec!["?"; values.len()].join(", ");
-                    sql.push_str(&format!("{} NOT IN ({})", quoted, placeholders));
-                    for value in values {
-                        params.push(SqlParam::from_json(value)?);
+                    if values.is_empty() {
+                        // 空 NOT IN 集合：等价于恒真，不排除任何行
+                        sql.push_str("1=1");
+                    } else {
+                        let placeholders = vec!["?"; values.len()].join(", ");
+                        sql.push_str(&format!("{} NOT IN ({})", quoted, placeholders));
+                        for value in values {
+                            params.push(SqlParam::from_json(value)?);
+                        }
                     }
                 }
+            }
+        }
+
+        // 读路径软删过滤：追加 `软删字段 IS NULL`（与已有条件用 AND 连接）
+        if has_soft_delete {
+            if let Some(field) = &self.table_config.soft_delete_field {
+                let quoted = self.quote_identifier(field)?;
+                if !first {
+                    sql.push_str(" AND ");
+                }
+                sql.push_str(&format!("{} IS NULL", quoted));
             }
         }
 
@@ -1125,11 +1256,11 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
     fn build_count_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        let mut sql = format!("SELECT COUNT(*) FROM `{}`", self.table_config.table_name);
+        let mut sql = format!("SELECT COUNT(*) FROM {}", self.quoted_table_name()?);
         let mut params = Vec::new();
 
-        // 通过统一方法拼接 WHERE 子句
-        self.append_where_to_sql(&mut sql, &mut params)?;
+        // 通过统一方法拼接 WHERE 子句（读路径，应用软删过滤）
+        self.append_where_to_sql(&mut sql, &mut params, true)?;
 
         Ok((sql, params))
     }
@@ -1152,6 +1283,7 @@ impl TableQuery {
             SqlParam::Null => query.bind(Option::<i32>::None),
             SqlParam::Bool(b) => query.bind(*b),
             SqlParam::Int(i) => query.bind(*i),
+            SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
         }
@@ -1227,7 +1359,7 @@ impl TableQuery {
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
         // 2. 构建 SQL 语句
-        let (sql, params) = self.build_select_sql()?;
+        let (sql, params) = self.build_select_sql(None)?;
 
         // 3. 创建查询
         let mut query = sqlx::query_as::<_, T>(&sql);
@@ -1255,7 +1387,7 @@ impl TableQuery {
     /// # 错误
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
-    fn build_select_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
+    fn build_select_sql(&self, hard_limit: Option<usize>) -> Result<(String, Vec<SqlParam>), BaseError> {
         let mut sql = String::from("SELECT ");
         let mut params = Vec::new();
 
@@ -1273,20 +1405,32 @@ impl TableQuery {
             sql.push('*');
         }
 
-        // 2. FROM 子句（表名使用反引号保护）
-        sql.push_str(&format!(" FROM `{}`", self.table_config.table_name));
+        // 2. FROM 子句（表名走统一转义路径）
+        sql.push_str(&format!(" FROM {}", self.quoted_table_name()?));
 
-        // 3. 通过统一方法拼接 WHERE 子句
-        self.append_where_to_sql(&mut sql, &mut params)?;
+        // 3. 通过统一方法拼接 WHERE 子句（读路径，应用软删过滤）
+        self.append_where_to_sql(&mut sql, &mut params, true)?;
 
-        // 4. ORDER BY 子句（通过 quote_identifier 转义字段名）
-        if !self.query_params.order_by.is_empty() {
+        // 4. ORDER BY 子句：显式 order_by 优先，否则回退到表配置的 default_order
+        let order_source = if !self.query_params.order_by.is_empty() {
+            Some(&self.query_params.order_by)
+        } else if !self.table_config.default_order.is_empty() {
+            Some(&self.table_config.default_order)
+        } else {
+            None
+        };
+        if let Some(orders) = order_source {
             sql.push_str(" ORDER BY ");
-            let order_clauses: Result<Vec<String>, BaseError> = self
-                .query_params
-                .order_by
+            let order_clauses: Result<Vec<String>, BaseError> = orders
                 .iter()
                 .map(|(field, order)| {
+                    // 校验字段存在，避免 default_order 配置错字段名拼出非法 SQL
+                    if self.table_config.get_field(field).is_none() {
+                        return Err(BaseError::FieldNotFound(
+                            self.table_config.table_name.clone(),
+                            field.clone(),
+                        ));
+                    }
                     let direction = match order {
                         SortOrder::Asc => "ASC",
                         SortOrder::Desc => "DESC",
@@ -1298,11 +1442,16 @@ impl TableQuery {
             sql.push_str(&order_clauses?.join(", "));
         }
 
-        // 5. LIMIT 和 OFFSET 子句
+        // 5. LIMIT 和 OFFSET 子句（分页与 hard_limit 互斥，避免拼出两段 LIMIT）
         if let (Some(page), Some(page_size)) = (self.query_params.page, self.query_params.page_size)
         {
-            let offset = (page - 1) * page_size;
+            // 使用 saturating_sub 防止 page==0 时 usize 下溢（纵深防御，
+            // 主校验在 page() 入口；直接构造 query_params 的调用方也安全）
+            let offset = page.saturating_sub(1) * page_size;
             sql.push_str(&format!(" LIMIT {} OFFSET {}", page_size, offset));
+        } else if let Some(limit) = hard_limit {
+            // 无分页时应用硬上限（如 fetch_optional 仅需 1 行）
+            sql.push_str(&format!(" LIMIT {}", limit));
         }
 
         Ok((sql, params))
@@ -1329,6 +1478,7 @@ impl TableQuery {
             SqlParam::Null => query.bind(Option::<i32>::None),
             SqlParam::Bool(b) => query.bind(*b),
             SqlParam::Int(i) => query.bind(*i),
+            SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
         }
@@ -1384,7 +1534,7 @@ impl TableQuery {
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
         // 2. 构建 SQL 语句（限制返回 1 条记录）
-        let (sql, params) = self.build_select_sql()?;
+        let (sql, params) = self.build_select_sql(Some(1))?;
 
         // 3. 创建查询
         let mut query = sqlx::query_as::<_, T>(&sql);
@@ -1472,8 +1622,8 @@ impl TableQuery {
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
-        // 2. 验证所有字段值的合法性和权限
-        self.validate_insert_data(&data)?;
+        // 2. 填充默认值/时间戳并校验（顺序：写权限→填充默认值→必填/类型校验）
+        let data = self.prepare_and_validate_insert(data)?;
 
         // 3. 构建 INSERT SQL 语句
         let (sql, params) = self.build_insert_sql(&data)?;
@@ -1495,9 +1645,10 @@ impl TableQuery {
         Ok(result.rows_affected())
     }
 
-    /// 验证插入数据
+    /// 执行 INSERT 操作并返回自增主键
     ///
-    /// 验证所有字段值的合法性和用户权限
+    /// 与 [`TableQuery::insert`] 完全一致的校验与拼 SQL 流程，但额外返回本次
+    /// INSERT 产生的自增主键值（`last_insert_id`），便于调用方拿到新建记录 ID。
     ///
     /// # 参数
     ///
@@ -1505,42 +1656,111 @@ impl TableQuery {
     ///
     /// # 返回值
     ///
-    /// - `Ok(())`：验证通过
-    /// - `Err(BaseError)`：验证失败
+    /// - `Ok((affected, id))`：插入成功，返回 (影响行数, 自增主键值)。
+    ///   表无自增列时 `id` 为 0。
+    /// - `Err(BaseError)`：插入失败
     ///
     /// # 错误
     ///
+    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
     /// - `BaseError::FieldRequired`：必填字段缺失
     /// - `BaseError::FieldPermissionDenied`：用户无字段写入权限
-    /// - `BaseError::ValidationFailed`：字段值验证失败
-    fn validate_insert_data(
-        &self,
-        data: &std::collections::HashMap<String, Value>,
-    ) -> Result<(), BaseError> {
-        // 遍历表配置中的所有字段
-        for (field_name, field_config) in &self.table_config.fields {
-            // 获取字段值，如果不存在则使用 null
-            let value = data.get(field_name).unwrap_or(&Value::Null);
+    /// - `BaseError::DatabaseExecuteFailed`：数据库执行失败
+    pub async fn insert_returning_id(
+        self,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<(u64, u64), BaseError> {
+        let pool = self
+            .pool
+            .as_ref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
 
-            // 检查写入权限
+        let data = self.prepare_and_validate_insert(data)?;
+        let (sql, params) = self.build_insert_sql(&data)?;
+
+        let mut query = sqlx::query(&sql);
+        for param in params {
+            query = Self::bind_execute_param(query, &param);
+        }
+
+        let result = query
+            .execute(pool.as_ref())
+            .await
+            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
+
+        Ok((result.rows_affected(), result.last_insert_id()))
+    }
+
+    /// 填充默认值/时间戳并验证插入数据
+    ///
+    /// 处理顺序（修复 required+default 字段被误报 FieldRequired 的问题）：
+    /// 1. 写权限校验：对调用方显式提供了非 null 值、但用户无写权限的字段拒绝
+    /// 2. 填充默认值：data 中缺失或为 null 且配置了 `default_value` 的字段补默认值
+    /// 3. 填充时间戳：`timestamp_fields` 配置且列存在、调用方未提供时，写入当前时间
+    /// 4. 必填/类型/验证器校验：在补齐后的数据上执行
+    ///
+    /// # 参数
+    ///
+    /// - `data`：调用方提供的原始插入数据
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(HashMap)`：补齐默认值与时间戳后的最终插入数据
+    /// - `Err(BaseError)`：权限或校验失败
+    fn prepare_and_validate_insert(
+        &self,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<std::collections::HashMap<String, Value>, BaseError> {
+        let mut prepared = data;
+
+        // 1. 写权限校验：仅拦截"无权限却显式赋了非 null 值"的字段
+        for (field_name, field_config) in &self.table_config.fields {
             if !field_config.permissions.can_write(&self.user_roles) {
-                // 如果用户没有写入权限，但提供了非 null 值，则拒绝
-                if !value.is_null() {
-                    return Err(BaseError::FieldPermissionDenied(
-                        self.table_config.table_name.clone(),
-                        field_name.clone(),
-                        "用户无写入权限".to_string(),
-                    ));
+                if let Some(v) = prepared.get(field_name) {
+                    if !v.is_null() {
+                        return Err(BaseError::FieldPermissionDenied(
+                            self.table_config.table_name.clone(),
+                            field_name.clone(),
+                            "用户无写入权限".to_string(),
+                        ));
+                    }
                 }
-                // 如果值为 null，跳过该字段的验证
+            }
+        }
+
+        // 2. 填充默认值（缺失或为 null 且配置了 default_value）
+        for (field_name, field_config) in &self.table_config.fields {
+            if let Some(default) = &field_config.default_value {
+                let missing = prepared.get(field_name).map(|v| v.is_null()).unwrap_or(true);
+                if missing {
+                    prepared.insert(field_name.clone(), default.clone());
+                }
+            }
+        }
+
+        // 3. 填充创建/更新时间戳（列存在且调用方未提供时）
+        if let Some(ts) = &self.table_config.timestamp_fields {
+            let now = chrono::Utc::now().timestamp();
+            for ts_field in [&ts.created_at, &ts.updated_at].into_iter().flatten() {
+                if self.table_config.fields.contains_key(ts_field) {
+                    let missing = prepared.get(ts_field).map(|v| v.is_null()).unwrap_or(true);
+                    if missing {
+                        prepared.insert(ts_field.clone(), Value::Number(now.into()));
+                    }
+                }
+            }
+        }
+
+        // 4. 在补齐后的数据上执行必填/类型/验证器校验
+        for (field_name, field_config) in &self.table_config.fields {
+            if !field_config.permissions.can_write(&self.user_roles) {
                 continue;
             }
-
-            // 验证字段值（包括必填检查、类型检查和验证器检查）
+            let value = prepared.get(field_name).unwrap_or(&Value::Null);
             field_config.validate(value)?;
         }
 
-        Ok(())
+        Ok(prepared)
     }
 
     /// 构建 INSERT SQL 语句
@@ -1574,15 +1794,8 @@ impl TableQuery {
                 ));
             }
 
-            // 检查用户是否有写入权限
-            if let Some(field_config) = self.table_config.fields.get(field_name) {
-                if !field_config.permissions.can_write(&self.user_roles) {
-                    // 如果没有权限且值不为 null，跳过该字段
-                    if !value.is_null() {
-                        continue;
-                    }
-                }
-            }
+            // 写入权限已在 validate_insert_data 集中校验（无权限且赋非 null 值会
+            // 直接报错），此处不再二次跳过，保证 data 中所有字段一致入列。
 
             // 对字段名进行反引号转义，防止 SQL 注入
             let quoted = self.quote_identifier(field_name)?;
@@ -1591,10 +1804,10 @@ impl TableQuery {
             params.push(SqlParam::from_json(value)?);
         }
 
-        // 构建 SQL 语句（表名使用反引号保护）
+        // 构建 SQL 语句（表名走统一转义路径）
         let sql = format!(
-            "INSERT INTO `{}` ({}) VALUES ({})",
-            self.table_config.table_name,
+            "INSERT INTO {} ({}) VALUES ({})",
+            self.quoted_table_name()?,
             fields.join(", "),
             placeholders.join(", ")
         );
@@ -1799,11 +2012,30 @@ impl TableQuery {
         &self,
         data: &std::collections::HashMap<String, Value>,
     ) -> Result<(String, Vec<SqlParam>), BaseError> {
+        // 0. 拒绝空更新：用户未提供任何可更新字段
+        if data.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "data".to_string(),
+                "无可更新字段".to_string(),
+            ));
+        }
+
+        // 1. 复制用户数据，并自动刷新 updated_at（若已配置且列存在于表）
+        let mut working: std::collections::HashMap<String, Value> = data.clone();
+        if let Some(ts) = &self.table_config.timestamp_fields {
+            if let Some(updated_at) = &ts.updated_at {
+                if self.table_config.fields.contains_key(updated_at) {
+                    let now = chrono::Utc::now().timestamp();
+                    working.insert(updated_at.clone(), Value::Number(now.into()));
+                }
+            }
+        }
+
         let mut set_clauses = Vec::new();
         let mut params = Vec::new();
 
-        // 1. 构建 SET 子句（通过 quote_identifier 转义字段名）
-        for (field_name, value) in data {
+        // 2. 构建 SET 子句（通过 quote_identifier 转义字段名）
+        for (field_name, value) in &working {
             // 检查字段是否存在于表配置中
             if !self.table_config.fields.contains_key(field_name) {
                 return Err(BaseError::FieldNotFound(
@@ -1818,15 +2050,20 @@ impl TableQuery {
             params.push(SqlParam::from_json(value)?);
         }
 
-        // 2. 构建基本 UPDATE 语句（表名使用反引号保护）
+        // 3. 构建基本 UPDATE 语句（表名走统一转义路径）
         let mut sql = format!(
-            "UPDATE `{}` SET {}",
-            self.table_config.table_name,
+            "UPDATE {} SET {}",
+            self.quoted_table_name()?,
             set_clauses.join(", ")
         );
 
-        // 3. 通过统一方法拼接 WHERE 子句
-        self.append_where_to_sql(&mut sql, &mut params)?;
+        // 4. WHERE 守卫：无 WHERE 且未显式放行全表，拒绝全表更新
+        if self.query_params.where_conditions.is_empty() && !self.allow_full_table {
+            return Err(BaseError::MissingWhereClause("UPDATE".to_string()));
+        }
+
+        // 5. 通过统一方法拼接 WHERE 子句（写路径，不应用软删过滤）
+        self.append_where_to_sql(&mut sql, &mut params, false)?;
 
         Ok((sql, params))
     }
@@ -1960,7 +2197,21 @@ impl TableQuery {
     #[cfg(test)]
     #[allow(private_interfaces)]
     pub fn build_select_sql_for_test(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        self.build_select_sql()
+        self.build_select_sql(None)
+    }
+
+    /// 构建 INSERT SQL 语句（仅供测试使用）
+    ///
+    /// 先经 `prepare_and_validate_insert` 补默认值/时间戳并校验，再拼 SQL，
+    /// 等价于 `insert`/`insert_returning_id` 的建句路径，但无需数据库连接。
+    #[cfg(test)]
+    #[allow(private_interfaces)]
+    pub fn build_insert_sql_for_test(
+        &self,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<(String, Vec<SqlParam>), BaseError> {
+        let prepared = self.prepare_and_validate_insert(data)?;
+        self.build_insert_sql(&prepared)
     }
 
     /// 构建 DELETE SQL 语句（内部实现）
@@ -1971,12 +2222,17 @@ impl TableQuery {
 
     /// 构建 DELETE SQL 语句的实际实现
     fn build_delete_sql_impl(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        // 表名使用反引号保护
-        let mut sql = format!("DELETE FROM `{}`", self.table_config.table_name);
+        // 表名走统一转义路径
+        let mut sql = format!("DELETE FROM {}", self.quoted_table_name()?);
         let mut params = Vec::new();
 
-        // 通过统一方法拼接 WHERE 子句
-        self.append_where_to_sql(&mut sql, &mut params)?;
+        // WHERE 守卫：无 WHERE 且未显式放行全表，拒绝全表物理删除
+        if self.query_params.where_conditions.is_empty() && !self.allow_full_table {
+            return Err(BaseError::MissingWhereClause("DELETE".to_string()));
+        }
+
+        // 通过统一方法拼接 WHERE 子句（写路径，不应用软删过滤）
+        self.append_where_to_sql(&mut sql, &mut params, false)?;
 
         Ok((sql, params))
     }
@@ -1999,6 +2255,7 @@ impl TableQuery {
             SqlParam::Null => query.bind(Option::<i32>::None),
             SqlParam::Bool(b) => query.bind(*b),
             SqlParam::Int(i) => query.bind(*i),
+            SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
         }
@@ -2018,6 +2275,8 @@ pub(crate) enum SqlParam {
     Bool(bool),
     /// 整数
     Int(i64),
+    /// 无符号整数（保留超出 i64 范围的 u64 值，避免精度丢失）
+    Uint(u64),
     /// 浮点数
     Float(f64),
     /// 字符串
@@ -2043,6 +2302,9 @@ impl SqlParam {
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Ok(SqlParam::Int(i))
+                } else if let Some(u) = n.as_u64() {
+                    // 超出 i64 范围的正整数，保留为 u64 避免精度丢失
+                    Ok(SqlParam::Uint(u))
                 } else if let Some(f) = n.as_f64() {
                     Ok(SqlParam::Float(f))
                 } else {

@@ -538,16 +538,24 @@ fn test_build_update_sql_basic() {
     use std::collections::HashMap;
 
     let table_config = create_test_table_config_for_insert();
-    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
 
     let mut data = HashMap::new();
     data.insert("name".to_string(), json!("张三"));
     data.insert("email".to_string(), json!("zhangsan@example.com"));
 
+    // 无 WHERE 条件且未放行全表：应被 WHERE 守卫拒绝
+    let query = TableQuery::new(
+        table_config.clone(),
+        Arc::from(vec!["user".to_string()]),
+        None,
+    );
     let result = query.build_update_sql(&data);
-    assert!(result.is_ok());
+    assert!(matches!(result, Err(BaseError::MissingWhereClause(op)) if op == "UPDATE"));
 
-    let (sql, params) = result.unwrap();
+    // 显式放行全表后应成功生成无 WHERE 的 UPDATE
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None)
+        .allow_full_table();
+    let (sql, params) = query.build_update_sql(&data).unwrap();
 
     // 检查 SQL 语句包含 UPDATE 和 SET
     assert!(sql.contains("UPDATE `users`"));
@@ -676,17 +684,9 @@ fn test_update_empty_data() {
 
     let data = HashMap::new(); // 空数据
 
-    let result = query.validate_update_data(&data);
-    assert!(result.is_ok()); // 验证应该成功（虽然没有实际意义）
-
-    // 但构建 SQL 应该成功（生成空的 SET 子句）
+    // 构建 SQL 应拒绝空更新，返回 ParamInvalid（无可更新字段）
     let result = query.build_update_sql(&data);
-    assert!(result.is_ok());
-
-    let (sql, params) = result.unwrap();
-    assert!(sql.contains("UPDATE `users`"));
-    assert!(sql.contains("SET"));
-    assert_eq!(params.len(), 0);
+    assert!(matches!(result, Err(BaseError::ParamInvalid(field, _)) if field == "data"));
 }
 
 // ==================== DELETE 操作测试 ====================
@@ -732,14 +732,20 @@ fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
 #[test]
 fn test_build_delete_sql_basic() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
+    let query = TableQuery::new(
+        table_config.clone(),
+        Arc::from(vec!["admin".to_string()]),
+        None,
+    );
 
+    // 无 WHERE 条件且未放行全表：应被 WHERE 守卫拒绝
     let result = query.build_delete_sql();
-    assert!(result.is_ok());
+    assert!(matches!(result, Err(BaseError::MissingWhereClause(op)) if op == "DELETE"));
 
-    let (sql, params) = result.unwrap();
-
-    // 检查 SQL 语句
+    // 显式放行全表后应成功生成无 WHERE 的 DELETE
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None)
+        .allow_full_table();
+    let (sql, params) = query.build_delete_sql().unwrap();
     assert_eq!(sql, "DELETE FROM `logs`");
     assert_eq!(params.len(), 0);
 }
@@ -926,6 +932,96 @@ fn test_new_where_methods_build_sql() {
     assert!(
         sql.contains("`id` NOT IN (?, ?)"),
         "Expected NOT IN in: {}",
+        sql
+    );
+}
+
+// ==================== 默认值 / 时间戳 / default_order 回归测试 ====================
+
+/// 创建带默认值与时间戳字段的插入测试表配置
+///
+/// - `name`：必填，无默认值
+/// - `status`：必填，但配置了默认值 "active"（验证 required+default 不误报）
+/// - `created_at`：时间戳字段，插入时自动填充
+fn create_test_table_config_with_defaults() -> Arc<TableConfig> {
+    Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
+            .field(
+                FieldConfig::new("status", FieldType::String { max_length: 20 })
+                    .required(true)
+                    .default_value(json!("active")),
+            )
+            .field(FieldConfig::new("created_at", FieldType::BigInt))
+            .timestamps(true, false, false),
+    )
+}
+
+#[test]
+fn test_insert_required_with_default_omitted_ok() {
+    use std::collections::HashMap;
+
+    let config = create_test_table_config_with_defaults();
+    let query = TableQuery::new_without_pool(config);
+
+    // 只提供 name，省略同样必填但有默认值的 status —— 不应误报 FieldRequired
+    let mut data = HashMap::new();
+    data.insert("name".to_string(), json!("张三"));
+
+    let (sql, params) = query
+        .build_insert_sql_for_test(data)
+        .expect("required+default 字段省略时应自动补默认值并通过校验");
+
+    // status 默认值与 created_at 时间戳都应被写入 INSERT
+    assert!(sql.contains("INSERT INTO `users`"));
+    assert!(sql.contains("`status`"), "status 默认值应入列: {}", sql);
+    assert!(
+        sql.contains("`created_at`"),
+        "created_at 应自动填充: {}",
+        sql
+    );
+    // name + status + created_at = 3 个参数
+    assert_eq!(params.len(), 3);
+}
+
+#[test]
+fn test_insert_missing_required_no_default_errors() {
+    use std::collections::HashMap;
+
+    let config = create_test_table_config_with_defaults();
+    let query = TableQuery::new_without_pool(config);
+
+    // 省略无默认值的必填字段 name —— 应返回 FieldRequired
+    let mut data = HashMap::new();
+    data.insert("status".to_string(), json!("active"));
+
+    let result = query.build_insert_sql_for_test(data);
+    assert!(
+        matches!(result, Err(BaseError::FieldRequired(ref f)) if f == "name"),
+        "省略无默认值的必填字段应报 FieldRequired，实际: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_select_falls_back_to_default_order() {
+    let config = Arc::new(
+        TableConfig::new("users")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
+            .default_order(vec![
+                ("name".to_string(), SortOrder::Asc),
+                ("id".to_string(), SortOrder::Desc),
+            ]),
+    );
+    let query = TableQuery::new_without_pool(config);
+
+    // 未显式指定 order_by，应回退到表配置的 default_order
+    let (sql, _) = query.build_select_sql_for_test().expect("build sql");
+    assert!(
+        sql.contains("ORDER BY `name` ASC, `id` DESC"),
+        "应回退到 default_order: {}",
         sql
     );
 }
