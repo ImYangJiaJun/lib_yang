@@ -331,6 +331,25 @@ impl GlobalDatabase {
             .await
             .map_err(BaseError::DatabaseTransactionFailed)
     }
+
+    /// 数据库健康检查
+    ///
+    /// 通过执行 `SELECT 1` 验证数据库连接是否可用。查询返回非空结果即视为健康。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(true)`: 数据库连接正常
+    /// - `Ok(false)`: 查询成功但未返回结果（异常状态）
+    /// - `Err(BaseError)`: 数据库未初始化或查询失败
+    ///
+    /// # 错误
+    ///
+    /// - `DatabaseNotInitialized`: 数据库未初始化，需要先调用 `init` 方法
+    /// - `DatabaseQueryFailed`: 健康检查查询执行失败
+    pub async fn health_check() -> Result<bool, BaseError> {
+        let rows = Self::query::<(i64,)>("SELECT 1").await?;
+        Ok(!rows.is_empty())
+    }
 }
 
 #[cfg(test)]

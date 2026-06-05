@@ -22,9 +22,9 @@
 //! GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
 //!
 //! // 使用全局数据库
-//! let users = GlobalDatabase::table("users")
-//!     .select()
-//!     .get()
+//! let users = GlobalDatabase::table("users")?
+//!     .field("id")
+//!     .select::<User>()
 //!     .await?;
 //!
 //! // 使用全局 Redis

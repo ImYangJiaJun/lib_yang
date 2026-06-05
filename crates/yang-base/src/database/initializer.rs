@@ -28,10 +28,34 @@
 //! initializer.initialize_all(&manager).await?;
 //! ```
 
+use crate::database::GlobalDatabase;
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginManager};
 use std::sync::Arc;
 use yang_db::Database;
+
+/// 数据库引用
+///
+/// 用于让 [`DatabaseInitializer`] 既能持有调用方传入的 owned [`Database`]，
+/// 也能引用进程级全局单例（`'static` 引用），二者共用同一套初始化逻辑。
+enum DbRef {
+    /// 调用方传入并交由初始化器持有的数据库实例
+    Owned(Database),
+    /// 指向全局单例 [`GlobalDatabase`] 的 `'static` 引用
+    Global(&'static Database),
+}
+
+impl DbRef {
+    /// 返回底层数据库实例的引用
+    ///
+    /// 两个变体统一收敛为 `&Database`，调用处无需关心数据库来源。
+    fn db(&self) -> &Database {
+        match self {
+            DbRef::Owned(db) => db,
+            DbRef::Global(db) => db,
+        }
+    }
+}
 
 /// 数据库初始化器
 ///
@@ -40,7 +64,7 @@ use yang_db::Database;
 ///
 /// # 字段
 ///
-/// - `db`: yang-db 数据库实例
+/// - `db`: 数据库引用（owned 实例或全局单例的 `'static` 引用）
 /// - `use_transaction`: 是否启用事务模式
 ///
 /// # 示例
@@ -53,8 +77,8 @@ use yang_db::Database;
 /// let initializer = DatabaseInitializer::new(db, true);
 /// ```
 pub struct DatabaseInitializer {
-    /// yang-db 数据库实例
-    db: Database,
+    /// 数据库引用（owned 实例或全局单例的 `'static` 引用）
+    db: DbRef,
 
     /// 是否启用事务模式
     use_transaction: bool,
@@ -81,16 +105,56 @@ impl DatabaseInitializer {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 创建事务模式的初始化器
-    /// let initializer = DatabaseInitializer::new(db.clone(), true);
+    /// let initializer = DatabaseInitializer::new(db, true);
     ///
     /// // 创建非事务模式的初始化器
-    /// let initializer = DatabaseInitializer::new(db, false);
+    /// let db2 = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let initializer = DatabaseInitializer::new(db2, false);
     /// ```
     pub fn new(db: Database, use_transaction: bool) -> Self {
         Self {
-            db,
+            db: DbRef::Owned(db),
             use_transaction,
         }
+    }
+
+    /// 基于全局数据库单例创建初始化器
+    ///
+    /// 直接引用 [`GlobalDatabase`] 持有的进程级单例，无需调用方再传入 owned 实例，
+    /// 适合应用已通过 [`GlobalDatabase::init`] 或 `DatabaseBundle::init` 完成初始化的场景。
+    ///
+    /// # 参数
+    ///
+    /// - `use_transaction`: 是否启用事务模式
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(DatabaseInitializer)`: 引用全局单例的初始化器
+    /// - `Err(BaseError)`: 全局数据库尚未初始化
+    ///
+    /// # 错误
+    ///
+    /// - `DatabaseNotInitialized`: 全局数据库未初始化，需要先调用 `init`
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::database::DatabaseInitializer;
+    ///
+    /// let initializer = DatabaseInitializer::from_global(true)?;
+    /// ```
+    pub fn from_global(use_transaction: bool) -> Result<Self, BaseError> {
+        Ok(Self {
+            db: DbRef::Global(GlobalDatabase::get()?),
+            use_transaction,
+        })
+    }
+
+    /// 返回底层数据库实例的引用
+    ///
+    /// 收敛 [`DbRef`] 的两个变体，初始化逻辑无需关心数据库来源（owned 或全局单例）。
+    fn db(&self) -> &Database {
+        self.db.db()
     }
 
     /// 初始化所有插件的数据库
@@ -165,7 +229,7 @@ impl DatabaseInitializer {
         plugins: &[Arc<dyn Plugin>],
     ) -> Result<(), BaseError> {
         let mut tx = self
-            .db
+            .db()
             .transaction()
             .await
             .map_err(BaseError::DatabaseTransactionFailed)?;
@@ -223,7 +287,7 @@ impl DatabaseInitializer {
 
             // 执行初始化 SQL（使用 yang-db::Database::execute）
             for sql in plugin.init_sql() {
-                if let Err(e) = self.db.execute(&sql).await {
+                if let Err(e) = self.db().execute(&sql).await {
                     log::error!("插件 {} 初始化失败: {}", name, e);
                     return Err(BaseError::PluginInitFailed(name.to_string(), e.to_string()));
                 }
@@ -264,7 +328,7 @@ impl DatabaseInitializer {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据库迁移记录表'
         "#;
 
-        self.db
+        self.db()
             .execute(sql)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
@@ -299,7 +363,7 @@ impl DatabaseInitializer {
             log::info!("执行迁移: {} v{}", module_name, version);
 
             // 执行迁移 SQL（使用 yang-db::Database::execute）
-            self.db.execute(&sql).await.map_err(|e| {
+            self.db().execute(&sql).await.map_err(|e| {
                 BaseError::MigrationFailed(module_name.to_string(), version.clone(), e.to_string())
             })?;
 
@@ -395,7 +459,7 @@ impl DatabaseInitializer {
 
         // 使用 yang-db::Database::query_with_params 方法
         let results: Vec<CountResult> = self
-            .db
+            .db()
             .query_with_params(sql, params)
             .await
             .map_err(BaseError::DatabaseQueryFailed)?;
@@ -430,7 +494,7 @@ impl DatabaseInitializer {
             serde_json::Value::String(version.to_string()),
         ];
 
-        self.db
+        self.db()
             .execute_with_params(sql, params)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;

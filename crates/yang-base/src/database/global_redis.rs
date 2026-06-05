@@ -122,6 +122,43 @@ impl GlobalRedis {
         GLOBAL_REDIS.get().ok_or(BaseError::RedisNotInitialized)
     }
 
+    /// Redis 健康检查
+    ///
+    /// 委托底层 [`RedisClient::health_check`]，通过 PING 命令验证连接可达性。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(true)`: Redis 连接正常
+    /// - `Ok(false)`: PING 响应异常
+    /// - `Err(BaseError)`: Redis 未初始化或无法获取连接
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    /// - `BaseError::RedisOperationFailed`: 无法获取连接
+    pub async fn health_check() -> Result<bool, BaseError> {
+        Self::client()?
+            .health_check()
+            .await
+            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+    }
+
+    /// 获取 Redis 连接池状态
+    ///
+    /// 委托底层 [`RedisClient::pool_status`]，返回连接池的实时统计信息。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(PoolStatus)`: 连接池状态（含 `max_size`/`size`/`available`/`waiting`）
+    /// - `Err(BaseError)`: Redis 未初始化
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    pub fn pool_status() -> Result<yang_db::redis::PoolStatus, BaseError> {
+        Ok(Self::client()?.pool_status())
+    }
+
     // ==================== String 操作 ====================
 
     /// 设置字符串值
@@ -130,7 +167,9 @@ impl GlobalRedis {
     ///
     /// - `key`: 键名
     /// - `value`: 值
-    /// - `expire_seconds`: 过期时间（秒），None 表示不过期
+    /// - `expire_seconds`: 过期时间（秒），None 表示不过期。秒数必须为正；
+    ///   `Some(0)` 或 `Some(负数)` 会被 Redis 拒绝并返回
+    ///   [`BaseError::RedisOperationFailed`]
     ///
     /// # 返回
     ///
@@ -848,7 +887,7 @@ impl GlobalRedis {
 
     // ==================== 新增 API：String 计数器操作 ====================
 
-    /// 将键的整数値增加 1（INCR）
+    /// 将键的整数值增加 1（INCR）
     ///
     /// # 参数
     ///
@@ -856,7 +895,7 @@ impl GlobalRedis {
     ///
     /// # 返回
     ///
-    /// - `Ok(i64)`: 增加后的値
+    /// - `Ok(i64)`: 增加后的值
     /// - `Err(BaseError)`: 操作失败
     ///
     /// # 错误
@@ -870,7 +909,7 @@ impl GlobalRedis {
             .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
     }
 
-    /// 将键的整数値减少 1（DECR）
+    /// 将键的整数值减少 1（DECR）
     ///
     /// # 参数
     ///
@@ -878,7 +917,7 @@ impl GlobalRedis {
     ///
     /// # 返回
     ///
-    /// - `Ok(i64)`: 减少后的値
+    /// - `Ok(i64)`: 减少后的值
     /// - `Err(BaseError)`: 操作失败
     ///
     /// # 错误
@@ -892,7 +931,7 @@ impl GlobalRedis {
             .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
     }
 
-    /// 将键的整数値增加指定数量（INCRBY）
+    /// 将键的整数值增加指定数量（INCRBY）
     ///
     /// # 参数
     ///
@@ -901,7 +940,7 @@ impl GlobalRedis {
     ///
     /// # 返回
     ///
-    /// - `Ok(i64)`: 增加后的値
+    /// - `Ok(i64)`: 增加后的值
     /// - `Err(BaseError)`: 操作失败
     ///
     /// # 错误
@@ -915,9 +954,55 @@ impl GlobalRedis {
             .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
     }
 
+    /// 将键的整数值减少指定数量（DECRBY）
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 键名
+    /// - `decrement`: 减量（可为负数）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(i64)`: 减少后的值
+    /// - `Err(BaseError)`: 操作失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败（如值不是整数）
+    pub async fn decrby(key: impl Into<String>, decrement: i64) -> Result<i64, BaseError> {
+        Self::client()?
+            .decrby(key, decrement)
+            .await
+            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+    }
+
+    /// 将键的浮点数值增加指定数量（INCRBYFLOAT）
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 键名
+    /// - `increment`: 增量（可为负数）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(f64)`: 增加后的值
+    /// - `Err(BaseError)`: 操作失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败（如值不是合法浮点数）
+    pub async fn incrbyfloat(key: impl Into<String>, increment: f64) -> Result<f64, BaseError> {
+        Self::client()?
+            .incrbyfloat(key, increment)
+            .await
+            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+    }
+
     // ==================== 新增 API：Hash 计数器操作 ====================
 
-    /// 将 Hash 字段的整数値增加指定数量（HINCRBY）
+    /// 将 Hash 字段的整数值增加指定数量（HINCRBY）
     ///
     /// # 参数
     ///
@@ -927,13 +1012,13 @@ impl GlobalRedis {
     ///
     /// # 返回
     ///
-    /// - `Ok(i64)`: 增加后的値
+    /// - `Ok(i64)`: 增加后的值
     /// - `Err(BaseError)`: 操作失败
     ///
     /// # 错误
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
-    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败（如字段値不是整数）
+    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败（如字段值不是整数）
     pub async fn hincrby(
         key: impl Into<String>,
         field: impl Into<String>,
@@ -945,9 +1030,37 @@ impl GlobalRedis {
             .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
     }
 
+    /// 将 Hash 字段的浮点数值增加指定数量（HINCRBYFLOAT）
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 键名
+    /// - `field`: 字段名
+    /// - `increment`: 增量（可为负数）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(f64)`: 增加后的值
+    /// - `Err(BaseError)`: 操作失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败（如字段值不是合法浮点数）
+    pub async fn hincrbyfloat(
+        key: impl Into<String>,
+        field: impl Into<String>,
+        increment: f64,
+    ) -> Result<f64, BaseError> {
+        Self::client()?
+            .hincrbyfloat(key, field, increment)
+            .await
+            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+    }
+
     // ==================== 新增 API：批量 String 操作 ====================
 
-    /// 批量获取多个键的値（MGET）
+    /// 批量获取多个键的值（MGET）
     ///
     /// # 参数
     ///
@@ -955,7 +1068,7 @@ impl GlobalRedis {
     ///
     /// # 返回
     ///
-    /// - `Ok(Vec<Option<String>>)`: 各键对应的値，不存在的键返回 `None`
+    /// - `Ok(Vec<Option<String>>)`: 各键对应的值，不存在的键返回 `None`
     /// - `Err(BaseError)`: 操作失败
     ///
     /// # 错误
@@ -971,11 +1084,11 @@ impl GlobalRedis {
             .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
     }
 
-    /// 批量设置多个键値对（MSET）
+    /// 批量设置多个键值对（MSET）
     ///
     /// # 参数
     ///
-    /// - `pairs`: 键値对数组，每个元素为 `(key, value)` 元组
+    /// - `pairs`: 键值对数组，每个元素为 `(key, value)` 元组
     ///
     /// # 返回
     ///
@@ -1106,7 +1219,7 @@ impl GlobalRedis {
     ///   .incr("counter");
     /// let results: (String, String, i64) = tx.exec().await?;
     ///
-    /// // 乘观锁事务
+    /// // 乐观锁事务
     /// let mut tx = GlobalRedis::transaction()?;
     /// tx.watch(&["balance".to_string()]);
     /// tx.set("balance", "900");
