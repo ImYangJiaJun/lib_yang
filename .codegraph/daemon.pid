@@ -1,6 +1,6 @@
 {
-  "pid": 11504,
-  "version": "0.9.6",
-  "socketPath": "/mnt/d/code/lib_yang/.codegraph/daemon.sock",
-  "startedAt": 1780133413372
+  "pid": 24696,
+  "version": "0.9.9",
+  "socketPath": "\\\\.\\pipe\\codegraph-2bb69371a1c0f3ab",
+  "startedAt": 1780567573778
 }
