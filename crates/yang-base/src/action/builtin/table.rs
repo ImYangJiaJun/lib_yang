@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use yang_base_derive::Action;
 
-/// TableAction 的空输入（接受 `{}` 或 `null`）。
+/// TableAction 的空输入（接受 `{}`）。
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 #[serde(default)]
 pub struct EmptyInput {}
@@ -23,7 +23,7 @@ pub struct TableSchemaResponse {
     pub primary_key: String,
     /// 入参 JSON Schema（实体本身）
     pub input_schema: serde_json::Value,
-    /// 出参 JSON Schema
+    /// 出参 JSON Schema（该表行实体 schema，供参考，并非某具体 Action 的真实出参）
     pub output_schema: serde_json::Value,
 }
 

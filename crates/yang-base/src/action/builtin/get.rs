@@ -1,7 +1,7 @@
 //! GetAction - 根据主键获取单条数据
 #![cfg(feature = "mysql")]
 
-use crate::action::{ActionContext, TypedHandler};
+use crate::action::{ActionContext, TypedHandler, User};
 use crate::error::BaseError;
 use crate::table::TableEntity;
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use yang_base_derive::Action;
 
 /// 按主键 ID 获取单条记录的输入。
 #[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetByPk<PK> {
     /// 主键值
     pub id: PK,
@@ -46,12 +47,18 @@ impl<T: TableEntity> TypedHandler for GetAction<T> {
     async fn handle(&self, ctx: ActionContext, input: GetByPk<T::Pk>) -> Result<T, BaseError> {
         let pk_value = serde_json::to_value(&input.id)
             .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
-        let query = ctx.table_query()?.where_eq(T::PK_FIELD, pk_value)?;
+        // 字段读权限强制：执行查询前确认当前用户对全部字段可读。
+        let anon = User::new(0, "");
+        let user = ctx.user.as_ref().unwrap_or(&anon);
+        let query = ctx.table_query()?;
+        query.ensure_fields_readable(user)?;
+        let query = query.where_eq(T::PK_FIELD, pk_value.clone())?;
         query.fetch_optional::<T>().await?.ok_or_else(|| {
             BaseError::RecordNotFound(format!(
-                "{} 中主键 {} 的记录不存在",
+                "{} 中主键 {}={} 的记录不存在",
                 T::TABLE_NAME,
-                T::PK_FIELD
+                T::PK_FIELD,
+                pk_value
             ))
         })
     }

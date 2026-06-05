@@ -1,5 +1,6 @@
 ---
 source: crates/yang-base/tests/schema_snapshots.rs
+assertion_line: 33
 expression: schema
 ---
 {
@@ -18,16 +19,6 @@ expression: schema
     "count_total": {
       "description": "是否额外执行 COUNT 查询",
       "type": "boolean"
-    },
-    "fields": {
-      "description": "选择字段子集（缺省返回全部）",
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "$ref": "#/definitions/SnapshotUserField"
-      }
     },
     "order_by": {
       "description": "排序规则列表",

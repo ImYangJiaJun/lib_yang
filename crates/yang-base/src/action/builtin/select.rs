@@ -2,7 +2,7 @@
 #![cfg(feature = "mysql")]
 
 use crate::action::sql_bridge::{apply_sql_condition, count_with_conditions};
-use crate::action::{ActionContext, TypedHandler};
+use crate::action::{ActionContext, TypedHandler, User};
 use crate::error::BaseError;
 use crate::table::{AsColumnName, IntoSqlCondition, SqlCondition, SortOrder, TableEntity};
 use async_trait::async_trait;
@@ -49,8 +49,6 @@ pub struct SelectQuery<T: TableEntity> {
     pub page: u32,
     /// 每页条数，缺省 10，必须 1..=100
     pub page_size: u32,
-    /// 选择字段子集（缺省返回全部）
-    pub fields: Option<Vec<T::Field>>,
     /// where 条件列表（AND 连接），JSON key 为 `"where"`
     pub where_clause: Vec<T::WhereCond>,
     /// 排序规则列表
@@ -63,12 +61,11 @@ impl<'de, T: TableEntity> Deserialize<'de> for SelectQuery<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Raw<F, W, OI> {
+        struct Raw<W, OI> {
             #[serde(default = "default_page")]
             page: u32,
             #[serde(default = "default_page_size")]
             page_size: u32,
-            fields: Option<Vec<F>>,
             #[serde(rename = "where", default = "Vec::new")]
             where_clause: Vec<W>,
             #[serde(default = "Vec::new")]
@@ -76,11 +73,10 @@ impl<'de, T: TableEntity> Deserialize<'de> for SelectQuery<T> {
             #[serde(default)]
             count_total: bool,
         }
-        let raw = Raw::<T::Field, T::WhereCond, OrderByItem<T>>::deserialize(d)?;
+        let raw = Raw::<T::WhereCond, OrderByItem<T>>::deserialize(d)?;
         Ok(SelectQuery {
             page: raw.page,
             page_size: raw.page_size,
-            fields: raw.fields,
             where_clause: raw.where_clause,
             order_by: raw.order_by,
             count_total: raw.count_total,
@@ -153,11 +149,12 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
             None
         };
 
+        // 字段读权限强制：始终走整实体 select，先确认当前用户对全部字段可读，
+        // 否则返回 FieldPermissionDenied（匿名访问以空角色用户判定）。
+        let anon = User::new(0, "");
+        let user = ctx.user.as_ref().unwrap_or(&anon);
         let mut q = ctx.table_query()?;
-        if let Some(fields) = input.fields {
-            let names: Vec<&str> = fields.iter().map(|f| f.column_name()).collect();
-            q = q.select_fields(&names)?;
-        }
+        q.ensure_fields_readable(user)?;
         for cond in &conditions {
             q = apply_sql_condition(q, cond)?;
         }

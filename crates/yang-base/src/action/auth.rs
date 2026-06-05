@@ -35,8 +35,10 @@
 //! let login = LoginAction::new(MyVerifier);
 //! ```
 
-use crate::action::{ActionContext, TypedHandler};
+use crate::action::{ActionContext, ApiResponse, TypedHandler, User};
 use crate::error::BaseError;
+use crate::router::{Middleware, Next};
+use crate::token::TokenClaims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use yang_base_derive::Action;
@@ -72,6 +74,7 @@ pub struct TokenPairResponse {
 
 /// 刷新输入。
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshInput {
     /// Refresh Token
     pub refresh_token: String,
@@ -85,10 +88,20 @@ pub struct AccessTokenResponse {
 }
 
 /// 登出输入。
+///
+/// 终止会话时建议**同时**传入 Access Token 与 Refresh Token：仅撤销 Access Token
+/// 会让攻击者仍能用未失效的 Refresh Token 刷出新的 Access Token，会话并未真正结束。
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LogoutInput {
     /// 待撤销的 Token（通常是 Access Token）
     pub token: String,
+    /// 待撤销的 Refresh Token（可选）
+    ///
+    /// 若提供，将与 `token` 一并写入黑名单，从而彻底终止整个会话；
+    /// 不提供时仅撤销 `token`。
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// 通用成功消息响应。
@@ -197,7 +210,76 @@ impl<V: CredentialVerifier> TypedHandler for LoginAction<V> {
 // RefreshAction
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// 刷新声明解析器：决定刷新出的新 Access Token 携带哪些自定义声明。
+///
+/// 刷新时若不重新解析声明，新 Access Token 会丢失角色/权限等自定义声明。业务方
+/// 实现本 trait，从已验证的 Refresh Token 主体（`sub`）出发（通常回查数据库取最新
+/// 角色），返回要写入新 Access Token 的自定义声明。
+#[async_trait]
+pub trait RefreshClaimsResolver: Send + Sync + 'static {
+    /// 解析新 Access Token 的自定义声明。
+    ///
+    /// # 参数
+    ///
+    /// - `ctx`: 动作上下文（可借此访问数据库等）
+    /// - `sub`: 已验证的 Refresh Token 主体（用户标识）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(Value)`: 写入新 Access Token 的自定义声明（`Value::Null` 表示无）
+    /// - `Err(BaseError)`: 解析失败（如用户已禁用）
+    async fn resolve(
+        &self,
+        ctx: &ActionContext,
+        sub: &str,
+    ) -> Result<serde_json::Value, BaseError>;
+}
+
+/// 默认刷新声明解析器：不附加任何自定义声明（零配置可用）。
+#[derive(Debug, Clone, Default)]
+pub struct DefaultRefreshClaims;
+
+#[async_trait]
+impl RefreshClaimsResolver for DefaultRefreshClaims {
+    async fn resolve(
+        &self,
+        _ctx: &ActionContext,
+        _sub: &str,
+    ) -> Result<serde_json::Value, BaseError> {
+        Ok(serde_json::Value::Null)
+    }
+}
+
 /// 刷新 Action：用 Refresh Token 换取新的 Access Token。公开。
+///
+/// 复用 [`TokenManager::verify_token_checked`](crate::token::TokenManager::verify_token_checked)
+/// 已验证（签名 + 过期 + 黑名单）并返回的声明，直接以其 `sub` 签发新 Access Token，
+/// 不再二次验证，避免重复解码。自定义声明由注入的 [`RefreshClaimsResolver`] 决定，
+/// 默认 [`DefaultRefreshClaims`] 不附加声明，零配置即可使用。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::action::auth::{RefreshAction, RefreshClaimsResolver};
+/// use yang_base::action::ActionContext;
+/// use yang_base::error::BaseError;
+/// use async_trait::async_trait;
+///
+/// // 零配置：默认 resolver
+/// let refresh = RefreshAction::default();
+///
+/// // 自定义：刷新时回查用户最新角色
+/// struct RoleResolver;
+/// #[async_trait]
+/// impl RefreshClaimsResolver for RoleResolver {
+///     async fn resolve(&self, _ctx: &ActionContext, sub: &str)
+///         -> Result<serde_json::Value, BaseError>
+///     {
+///         Ok(serde_json::json!({ "role": "user", "sub": sub }))
+///     }
+/// }
+/// let refresh = RefreshAction::new(RoleResolver);
+/// ```
 #[derive(Action, Default)]
 #[action(
     name = "refresh",
@@ -205,17 +287,19 @@ impl<V: CredentialVerifier> TypedHandler for LoginAction<V> {
     description = "用 Refresh Token 换取新的 Access Token",
     public
 )]
-pub struct RefreshAction;
+pub struct RefreshAction<R: RefreshClaimsResolver = DefaultRefreshClaims> {
+    resolver: R,
+}
 
-impl RefreshAction {
-    /// 创建 RefreshAction。
-    pub fn new() -> Self {
-        Self
+impl<R: RefreshClaimsResolver> RefreshAction<R> {
+    /// 用业务声明解析器创建 RefreshAction。
+    pub fn new(resolver: R) -> Self {
+        Self { resolver }
     }
 }
 
 #[async_trait]
-impl TypedHandler for RefreshAction {
+impl<R: RefreshClaimsResolver> TypedHandler for RefreshAction<R> {
     type Input = RefreshInput;
     type Output = AccessTokenResponse;
 
@@ -225,13 +309,14 @@ impl TypedHandler for RefreshAction {
         input: RefreshInput,
     ) -> Result<AccessTokenResponse, BaseError> {
         let manager = ctx.tools.token_manager();
-        // 撤销校验：被拉黑的 Refresh Token 不能再刷新
+        // 撤销校验：被拉黑的 Refresh Token 不能再刷新（已含签名 + 过期校验）
         let claims = manager.verify_token_checked(&input.refresh_token).await?;
         if claims.token_type != "refresh" {
             return Err(BaseError::TokenTypeInvalid("期望 refresh token".to_string()));
         }
-        let access_token =
-            manager.refresh_access_token(&input.refresh_token, serde_json::Value::Null)?;
+        // 复用已验证的 claims，按业务解析器决定新声明，直接签发——不再二次验证
+        let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
+        let access_token = manager.generate_access_token(&claims.sub, custom_claims)?;
         Ok(AccessTokenResponse { access_token })
     }
 }
@@ -241,6 +326,11 @@ impl TypedHandler for RefreshAction {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// 登出 Action：撤销 Token（写入 Redis 黑名单）。公开（凭 Token 自证）。
+///
+/// 彻底终止会话需**同时**撤销 Access Token 与 Refresh Token：只撤 Access Token
+/// 时，攻击者仍可用未失效的 Refresh Token 刷出新的 Access Token。因此调用方应在
+/// `token` 传 Access Token 的同时，于 `refresh_token` 传入 Refresh Token，本 Action
+/// 会将二者一并拉黑。
 #[derive(Action, Default)]
 #[action(
     name = "logout",
@@ -267,10 +357,101 @@ impl TypedHandler for LogoutAction {
         ctx: ActionContext,
         input: LogoutInput,
     ) -> Result<MessageResponse, BaseError> {
-        ctx.tools.token_manager().revoke_token(&input.token).await?;
+        let manager = ctx.tools.token_manager();
+        // 撤销 Access Token
+        manager.revoke_token(&input.token).await?;
+        // 若提供 Refresh Token，一并撤销以彻底终止会话
+        if let Some(refresh_token) = &input.refresh_token {
+            manager.revoke_token(refresh_token).await?;
+        }
         Ok(MessageResponse {
             message: "已登出".to_string(),
         })
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TokenAuthMiddleware
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Token 鉴权中间件：在 Action 派发前完成 JWT 三重校验并注入当前用户。
+///
+/// 挂到 [`ModuleRouter`](crate::router::ModuleRouter) 后，对该模块的每个请求：
+///
+/// 1. 从 [`Request::token`](crate::action::Request::token) 取 `Authorization: Bearer <token>`；
+///    缺失则短路返回 [`BaseError::Unauthorized`]。
+/// 2. 调用 [`TokenManager::verify_token_checked`](crate::token::TokenManager::verify_token_checked)
+///    完成 **签名 + 过期 + 黑名单** 三重校验；失败短路（`TokenVerifyFailed` /
+///    `TokenExpired` / `TokenRevoked` 等原样上抛）。
+/// 3. 用注入的 `claims -> User` 闭包，从已验证的 [`TokenClaims`] 构造
+///    [`User`](crate::action::User) 并填入 `ActionContext.user`，随后 `next.run(ctx)`。
+///
+/// 用户如何从声明映射（角色/权限放在哪个自定义字段）因项目而异，故由闭包 `F` 注入。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::action::{TokenAuthMiddleware, User};
+/// use yang_base::router::ModuleRouter;
+///
+/// // 从 JWT sub 取用户 ID，从自定义声明 "roles" 取角色
+/// let auth = TokenAuthMiddleware::new(|claims| {
+///     let roles = claims.custom.get("roles")
+///         .and_then(|v| v.as_array())
+///         .map(|a| a.iter().filter_map(|r| r.as_str().map(String::from)).collect())
+///         .unwrap_or_default();
+///     let mut user = User::new(claims.sub.parse().unwrap_or(0), claims.sub.clone());
+///     user.roles = roles;
+///     user
+/// });
+///
+/// let router = ModuleRouter::new("user", "用户管理").middleware(auth);
+/// ```
+pub struct TokenAuthMiddleware<F> {
+    /// 从已验证声明构造业务 [`User`](crate::action::User) 的闭包
+    build_user: F,
+}
+
+impl<F> TokenAuthMiddleware<F>
+where
+    F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
+{
+    /// 用「声明 -> 用户」闭包创建 Token 鉴权中间件。
+    pub fn new(build_user: F) -> Self {
+        Self { build_user }
+    }
+}
+
+#[async_trait]
+impl<F> Middleware for TokenAuthMiddleware<F>
+where
+    F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
+{
+    async fn handle(
+        &self,
+        mut ctx: ActionContext,
+        next: Next<'_>,
+    ) -> Result<ApiResponse, BaseError> {
+        // 1. 取 Bearer Token（owned，及早结束对 ctx 的借用）
+        let token = match ctx.request.token() {
+            Some(t) => t.to_string(),
+            None => {
+                return Err(BaseError::Unauthorized(
+                    "缺少 Authorization Bearer Token".to_string(),
+                ))
+            }
+        };
+
+        // 2. 签名 + 过期 + 黑名单三重校验（失败原样短路）
+        let claims = ctx
+            .tools
+            .token_manager()
+            .verify_token_checked(&token)
+            .await?;
+
+        // 3. 注入当前用户后继续调用链
+        ctx.user = Some((self.build_user)(&claims));
+        next.run(ctx).await
     }
 }
 
@@ -298,7 +479,7 @@ mod tests {
         assert_eq!(login.name(), "login");
         assert!(DynAction::meta(&login).is_public);
 
-        let refresh = RefreshAction::new();
+        let refresh = RefreshAction::<DefaultRefreshClaims>::default();
         assert_eq!(refresh.name(), "refresh");
         assert!(refresh.is_public());
 
