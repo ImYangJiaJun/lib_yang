@@ -10,6 +10,7 @@
 //! |-----------|----------|
 //! | INT / BIGINT | Number (i64) |
 //! | FLOAT / DOUBLE | Number (f64) |
+//! | DECIMAL / NUMERIC | String（保留精度，NEWDECIMAL 协议本就是字符串编码） |
 //! | VARCHAR / TEXT / CHAR | String |
 //! | BOOLEAN / TINYINT(1) | Bool |
 //! | DATE / DATETIME / TIMESTAMP | String (ISO 8601) |
@@ -99,6 +100,7 @@ impl From<DynamicRow> for serde_json::Value {
 /// 按 MySQL 列类型将值映射到对应的 JSON 类型：
 /// - INT/BIGINT → i64
 /// - FLOAT/DOUBLE → f64
+/// - DECIMAL/NUMERIC → String（保留精度）
 /// - VARCHAR/TEXT/CHAR → String
 /// - BOOLEAN/TINYINT(1) → Bool
 /// - DATE/DATETIME/TIMESTAMP → ISO 8601 字符串
@@ -175,14 +177,20 @@ fn decode_mysql_column(
         return Ok(serde_json::Value::Bool(val != 0));
     }
 
-    // 浮点类型：FLOAT、DOUBLE、DECIMAL、NUMERIC
-    if type_name == "FLOAT" || type_name == "DOUBLE" || type_name == "DECIMAL" || type_name == "NUMERIC" {
+    // 定点类型：DECIMAL、NUMERIC
+    // NEWDECIMAL 协议本就是字符串编码，读字符串以保留精度，避免 f64 舍入误差。
+    if type_name == "DECIMAL" || type_name == "NUMERIC" {
+        let val: String = row.try_get_unchecked(ordinal)?;
+        return Ok(serde_json::Value::String(val));
+    }
+
+    // 浮点类型：FLOAT、DOUBLE
+    if type_name == "FLOAT" || type_name == "DOUBLE" {
         let val: f64 = row.try_get(ordinal)?;
-        // 将 f64 转换为 JSON Number（处理 NaN 和 Infinity 的情况）
-        let json_num = serde_json::Number::from_f64(val).unwrap_or_else(|| {
-            // NaN 或 Infinity 无法表示为 JSON Number，转为 0
-            serde_json::Number::from(0i64)
-        });
+        // NaN 或 Infinity 无法编码为 JSON Number，返回结构化解码错误而非静默归零
+        let json_num = serde_json::Number::from_f64(val).ok_or_else(|| {
+            sqlx::Error::Decode("浮点数值为 NaN 或 Infinity 无法编码为 JSON Number".into())
+        })?;
         return Ok(serde_json::Value::Number(json_num));
     }
 

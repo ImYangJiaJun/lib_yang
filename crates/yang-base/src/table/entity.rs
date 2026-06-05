@@ -3,8 +3,10 @@
 //! 提供 `TableEntity` trait 以及 `WhereOp<V>`、`SqlCondition` 等类型，
 //! 用于 Action 系统的端到端类型安全（H-1）。
 
+#[cfg(feature = "mysql")]
 use crate::table::TableConfig;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "mysql")]
 use std::hash::Hash;
 
 /// 表实体契约：用户定义的行类型（一般通过 `#[derive(TableEntity)]` 派生）。

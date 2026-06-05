@@ -4,8 +4,18 @@
 //!
 //! # 模块
 //!
-//! - `field_type`：字段类型定义
-//! - `validator`：字段验证器
+//! 本模块公开重导出以下核心类型：
+//!
+//! - 字段类型与校验：[`FieldType`]、[`Validator`]（及自定义校验函数类型 [`ValidatorFn`]）
+//! - 字段元数据：[`FieldConfig`]、[`FieldPermissions`]、[`RelationConfig`]（及 [`RelationType`]）
+//! - 表结构：[`TableConfig`]、[`IndexConfig`]、[`SortOrder`]、[`TimestampFields`]
+//! - 查询请求模型：[`QueryParams`]、[`PaginatedResult`]、[`WhereCondition`]
+//! - 查询执行：[`TableQuery`]
+//! - 动态行：[`DynamicRow`]
+//! - 类型化实体（受 `mysql` feature gate）：`TableEntity`、[`SqlCondition`]、[`SqlOp`]、
+//!   通用/字符串 where 操作符 [`WhereOp`]、[`StringWhereOp`] 等
+//!
+//! 其中 `TableEntity` 依赖 sqlx 的 `FromRow`，仅在启用 `mysql` feature 时可用。
 //!
 //! # 示例
 //!

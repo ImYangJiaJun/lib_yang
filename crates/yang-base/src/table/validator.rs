@@ -53,20 +53,6 @@ fn phone_regex() -> &'static Regex {
     })
 }
 
-/// 使用缓存的正则表达式匹配字符串
-#[cfg(feature = "validator")]
-fn match_cached_regex(pattern: &str, text: &str) -> Result<bool, BaseError> {
-    let cache = REGEX_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-    let read_guard = cache.read().unwrap_or_else(|p| p.into_inner());
-    match read_guard.get(pattern) {
-        Some(re) => Ok(re.is_match(text)),
-        None => Err(BaseError::ValidationFailed(
-            "regex".to_string(),
-            format!("正则表达式未缓存: {}", pattern),
-        )),
-    }
-}
-
 /// 字段验证器
 #[derive(Clone)]
 pub enum Validator {
@@ -329,32 +315,38 @@ impl Validator {
             #[cfg(feature = "validator")]
             Validator::Regex(pattern) => {
                 if let Some(s) = value.as_str() {
-                    // 先确保正则表达式已编译并缓存
                     let cache = REGEX_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+                    // 快路径：单把读锁内命中即直接匹配返回，避免重复编译与额外加锁
                     {
                         let read_guard = cache.read().unwrap_or_else(|p| p.into_inner());
-                        if !read_guard.contains_key(pattern) {
-                            drop(read_guard);
-                            // 编译正则表达式，使用字段名作为错误上下文
-                            let re = Regex::new(pattern).map_err(|e| {
-                                BaseError::ValidationFailed(
+                        if let Some(re) = read_guard.get(pattern) {
+                            return if re.is_match(s) {
+                                Ok(())
+                            } else {
+                                Err(BaseError::ValidationFailed(
                                     field_name.to_string(),
-                                    format!("正则表达式无效: {}", e),
-                                )
-                            })?;
-                            let mut write_guard = cache.write().unwrap_or_else(|p| p.into_inner());
-                            write_guard.entry(pattern.to_string()).or_insert(re);
+                                    format!("值不匹配正则表达式: {}", pattern),
+                                ))
+                            };
                         }
                     }
-                    // 使用缓存的正则表达式进行匹配
-                    let matched = match_cached_regex(pattern, s)?;
-                    if !matched {
-                        return Err(BaseError::ValidationFailed(
+                    // 未命中：取写锁，编译并缓存后立即用 &mut Regex 匹配
+                    let re = Regex::new(pattern).map_err(|e| {
+                        BaseError::ValidationFailed(
+                            field_name.to_string(),
+                            format!("正则表达式无效: {}", e),
+                        )
+                    })?;
+                    let mut write_guard = cache.write().unwrap_or_else(|p| p.into_inner());
+                    let cached = write_guard.entry(pattern.to_string()).or_insert_with(|| re);
+                    if cached.is_match(s) {
+                        Ok(())
+                    } else {
+                        Err(BaseError::ValidationFailed(
                             field_name.to_string(),
                             format!("值不匹配正则表达式: {}", pattern),
-                        ));
+                        ))
                     }
-                    Ok(())
                 } else {
                     Err(BaseError::ValidationFailed(
                         field_name.to_string(),

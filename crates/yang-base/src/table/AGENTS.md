@@ -34,7 +34,7 @@ table/
 ## CODE MAP
 | Symbol | Location | Role |
 |--------|----------|------|
-| `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum/ForeignKey/Blob |
+| `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum/ForeignKey |
 | `FieldConfig` | `field_config.rs` | per-field name/type/display/permission/validator/default metadata |
 | `FieldPermissions` | `field_config.rs` | role-based read/write/filter/sort controls |
 | `TableConfig` | `table_config.rs` | table name, fields, indexes, default order, soft delete, timestamps |
