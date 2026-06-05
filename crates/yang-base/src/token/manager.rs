@@ -31,6 +31,30 @@ pub(crate) fn current_unix_timestamp() -> Result<u64, BaseError> {
         })
 }
 
+/// 构建 Token 验证规则（[`Validation`]）。
+///
+/// 在构造 [`TokenManager`] 时一次性生成并缓存，避免每次 [`TokenManager::verify_token`]
+/// 调用都重新分配算法白名单、签发者/受众集合与必需声明集合（token-10 优化）。
+///
+/// 规则与历史行为保持一致：
+/// - 算法白名单仅含构造时指定的单一算法，防止算法混淆攻击（如 `none` 算法绕过）。
+/// - 显式校验签发者与受众。
+/// - 要求 `exp`、`iss`、`aud` 三个标准声明必须存在。
+/// - `leeway = 0`，不允许时间容差。
+fn build_validation(algorithm: Algorithm, issuer: &str, audience: &str) -> Validation {
+    let mut validation = Validation::new(algorithm);
+    validation.algorithms = vec![algorithm];
+    validation.set_issuer(&[issuer]);
+    validation.set_audience(&[audience]);
+    let mut required_claims = HashSet::new();
+    required_claims.insert("exp".to_string());
+    required_claims.insert("iss".to_string());
+    required_claims.insert("aud".to_string());
+    validation.required_spec_claims = required_claims;
+    validation.leeway = 0;
+    validation
+}
+
 /// Token 管理器
 ///
 /// 提供 JWT Token 的生成、验证、解析和刷新功能。
@@ -87,6 +111,12 @@ pub struct TokenManager {
 
     /// Refresh Token 有效期（秒）
     refresh_token_expiry: u64,
+
+    /// 缓存的验证规则
+    ///
+    /// 在构造时由 [`build_validation`] 生成，[`TokenManager::verify_token`]
+    /// 直接复用，避免每次验证重复分配算法白名单与声明集合（token-10 优化）。
+    validation: Validation,
 }
 
 impl TokenManager {
@@ -132,6 +162,7 @@ impl TokenManager {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),
             algorithm,
+            validation: build_validation(algorithm, &issuer, &audience),
             issuer,
             audience,
             access_token_expiry,
@@ -194,6 +225,7 @@ impl TokenManager {
             encoding_key,
             decoding_key,
             algorithm,
+            validation: build_validation(algorithm, &issuer, &audience),
             issuer,
             audience,
             access_token_expiry,
@@ -321,6 +353,14 @@ impl TokenManager {
         Ok((access_token, refresh_token))
     }
 
+    /// 返回 Refresh Token 的有效期（秒）。
+    ///
+    /// 供同 crate 的撤销层（`revocation`）复用：按用户批量撤销时以此作为
+    /// `min_iat` 标记的 TTL，避免标记无限增长。
+    pub(crate) fn refresh_token_expiry(&self) -> u64 {
+        self.refresh_token_expiry
+    }
+
     /// 验证 Token
     ///
     /// 验证 Token 的签名、过期时间、签发者和受众。
@@ -342,20 +382,9 @@ impl TokenManager {
     /// println!("Token 类型: {}", claims.token_type);
     /// ```
     pub fn verify_token(&self, token: &str) -> Result<TokenClaims, BaseError> {
-        let mut validation = Validation::new(self.algorithm);
-        // 显式设置允许的算法白名单，防止算法混淆攻击（如 none 算法绕过）
-        validation.algorithms = vec![self.algorithm];
-        validation.set_issuer(&[&self.issuer]);
-        validation.set_audience(&[&self.audience]);
-        // 显式要求 exp、iss、aud 三个标准声明必须存在
-        let mut required_claims = HashSet::new();
-        required_claims.insert("exp".to_string());
-        required_claims.insert("iss".to_string());
-        required_claims.insert("aud".to_string());
-        validation.required_spec_claims = required_claims;
-        validation.leeway = 0; // 不允许时间容差
-
-        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &validation)
+        // 复用构造时缓存的 Validation（token-10），避免每次验证重复分配
+        // 算法白名单、签发者/受众集合与必需声明集合。
+        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &self.validation)
             .map_err(BaseError::TokenVerifyFailed)?;
 
         Ok(token_data.claims)
@@ -481,6 +510,57 @@ impl TokenManager {
         // 生成新的 Access Token
         self.generate_access_token(&claims.sub, custom_claims)
     }
+
+    /// 轮换 Refresh Token（刷新令牌轮换 / Refresh Token Rotation，token-1）。
+    ///
+    /// 每次刷新都签发全新的 Token 对，并立刻把旧 Refresh Token 拉黑，
+    /// 使其无法再次使用。这能限制刷新令牌泄露的影响面：一旦旧令牌被重放，
+    /// 因已进入黑名单而验证失败。
+    ///
+    /// 执行流程：
+    /// 1. [`TokenManager::verify_token_checked`] 验证旧 Refresh Token 且确认未被撤销；
+    /// 2. 校验其 `token_type` 必须为 `"refresh"`；
+    /// 3. [`TokenManager::revoke_claims`] 将旧 Refresh Token 写入黑名单；
+    /// 4. [`TokenManager::generate_token_pair`] 以原 `sub` 与新的自定义声明签发新 Token 对。
+    ///
+    /// # 参数
+    ///
+    /// - `old_refresh`: 旧的 Refresh Token 字符串
+    /// - `custom_claims`: 新 Access Token 的自定义声明（JSON 格式）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok((access_token, refresh_token))`: 新签发的 Token 对
+    /// - `Err(BaseError::TokenVerifyFailed)`: 旧 Token 签名/过期/声明校验失败
+    /// - `Err(BaseError::TokenRevoked)`: 旧 Token 已被撤销
+    /// - `Err(BaseError::TokenTypeInvalid)`: 传入的不是 Refresh Token
+    /// - `Err(BaseError::RedisOperationFailed)`: 黑名单读写失败
+    ///
+    /// # 依赖
+    ///
+    /// 本方法依赖基于 Redis 的 Token 黑名单（见 [`TokenManager::verify_token_checked`]
+    /// 与 [`TokenManager::revoke_claims`]），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
+    pub async fn rotate_refresh_token(
+        &self,
+        old_refresh: &str,
+        custom_claims: serde_json::Value,
+    ) -> Result<(String, String), BaseError> {
+        // 1. 验证旧 Refresh Token 且确认未被撤销
+        let old_claims = self.verify_token_checked(old_refresh).await?;
+
+        // 2. 校验 Token 类型必须为 refresh
+        if old_claims.token_type != "refresh" {
+            return Err(BaseError::TokenTypeInvalid(
+                "期望 refresh token".to_string(),
+            ));
+        }
+
+        // 3. 拉黑旧 Refresh Token，防止其被重复使用
+        self.revoke_claims(&old_claims).await?;
+
+        // 4. 以原 subject 与新的自定义声明签发新的 Token 对
+        self.generate_token_pair(&old_claims.sub, custom_claims)
+    }
 }
 
 // 手动实现 Debug trait，因为 EncodingKey 和 DecodingKey 不支持 Debug
@@ -493,6 +573,8 @@ impl std::fmt::Debug for TokenManager {
             .field("audience", &self.audience)
             .field("access_token_expiry", &self.access_token_expiry)
             .field("refresh_token_expiry", &self.refresh_token_expiry)
+            // validation 仅含算法/签发者/受众/必需声明等非敏感校验规则，可安全输出
+            .field("validation", &self.validation)
             // 使用 finish_non_exhaustive() 表明结构体还有其他字段（密钥字段）未输出
             .finish_non_exhaustive()
     }
