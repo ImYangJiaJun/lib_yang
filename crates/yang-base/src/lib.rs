@@ -76,5 +76,8 @@ pub mod token;
 // 重新导出插件系统的核心类型，方便用户直接使用
 pub use plugin::{Plugin, PluginManager, PluginManagerBuilder, PluginRegistry};
 
+// 重新导出统一错误类型与 Result 别名，下游可直接写 yang_base::Result<T>
+pub use error::{BaseError, Result};
+
 // 重新导出派生宏
 pub use yang_base_derive::{Action, TableEntity};

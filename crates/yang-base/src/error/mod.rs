@@ -19,6 +19,12 @@
 
 use thiserror::Error;
 
+/// 以 [`BaseError`] 为默认错误类型的统一 `Result` 别名。
+///
+/// 允许下游以 `yang_base::Result<T>` 书写返回类型，省去重复的 `, BaseError`。
+/// 保留类型参数 `E = BaseError`，少数需要其它错误类型的签名仍可显式覆盖。
+pub type Result<T, E = BaseError> = std::result::Result<T, E>;
+
 /// 系统统一错误类型
 ///
 /// 包含所有模块的错误变体，使用中文错误消息
@@ -62,6 +68,10 @@ pub enum BaseError {
     #[error("数据库连接失败: {0}")]
     DatabaseConnectionFailed(String),
 
+    /// 数据库连接失败，持有底层 DbError 以保留错误链
+    #[error("数据库连接失败: {0}")]
+    DatabaseConnectionDbError(#[source] yang_db::DbError),
+
     /// 数据库已初始化
     #[error("数据库已初始化")]
     DatabaseAlreadyInitialized,
@@ -94,6 +104,14 @@ pub enum BaseError {
     #[error("数据库事务失败: {0}")]
     DatabaseTransactionFailed(#[source] yang_db::DbError),
 
+    /// UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作
+    ///
+    /// 与 yang-db 的 `MissingWhereClause` 安全网对齐：未显式调用
+    /// [`crate::table::TableQuery::allow_full_table`] 时，无 WHERE 的
+    /// 更新/删除会被拒绝以防止误操作整表。
+    #[error("UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作: {0}")]
+    MissingWhereClause(String),
+
     // ==================== Redis 错误 ====================
     /// Redis 连接失败
     #[error("Redis 连接失败: {0}")]
@@ -110,6 +128,10 @@ pub enum BaseError {
     /// Redis 操作失败
     #[error("Redis 操作失败: {0}")]
     RedisOperationFailed(String),
+
+    /// Redis 操作失败，持有底层 DbError 以保留错误链
+    #[error("Redis 操作失败: {0}")]
+    RedisOperationDbError(#[source] yang_db::DbError),
 
     // ==================== HTTP 客户端错误 ====================
     /// HTTP 客户端创建失败，持有底层 reqwest::Error 以保留错误链
@@ -324,15 +346,15 @@ impl From<yang_db::DbError> for BaseError {
             // 事务类：事务错误
             D::TransactionError(_) => BaseError::DatabaseTransactionFailed(err),
 
-            // 连接类：连接错误（使用字符串，因为 DatabaseConnectionFailed 持有 String）
-            D::ConnectionError(_) => BaseError::DatabaseConnectionFailed(err.to_string()),
+            // 连接类：连接错误（保留底层 DbError 错误链）
+            D::ConnectionError(_) => BaseError::DatabaseConnectionDbError(err),
 
-            // Redis 类：所有 Redis 相关错误（使用字符串，因为 RedisOperationFailed 持有 String）
+            // Redis 类：所有 Redis 相关错误（保留底层 DbError 错误链）
             D::RedisConnectionError(_)
             | D::RedisCommandError(_)
             | D::RedisPoolError(_)
             | D::RedisTypeConversionError(_)
-            | D::RedisTimeoutError(_) => BaseError::RedisOperationFailed(err.to_string()),
+            | D::RedisTimeoutError(_) => BaseError::RedisOperationDbError(err),
         }
     }
 }
@@ -361,9 +383,10 @@ impl From<reqwest::Error> for BaseError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
             BaseError::HttpTimeout
-        } else if err.is_connect() {
-            BaseError::HttpClientCreateFailed(err)
         } else {
+            // is_connect() 属于「发送请求」阶段的连接失败（DNS/TCP/TLS），
+            // 客户端此时早已创建成功，故与其它发送错误统一归为 HttpRequestFailed。
+            // 真正的客户端创建失败由 http/client.rs 显式 map_err(HttpClientCreateFailed) 处理。
             BaseError::HttpRequestFailed(err)
         }
     }
@@ -398,6 +421,7 @@ impl BaseError {
     ///
     /// - 1xxxxx: 插件管理错误
     /// - 2xxxxx: 数据库错误
+    ///   - 21xxxx: Redis 错误（隶属数据库 2xxxxx 大类）
     /// - 3xxxxx: HTTP 客户端错误
     /// - 4xxxxx: Token 管理错误
     /// - 5xxxxx: 序列化错误
@@ -431,6 +455,7 @@ impl BaseError {
 
             // ==================== 数据库错误 (2xxxxx) ====================
             BaseError::DatabaseConnectionFailed(_) => 200001,
+            BaseError::DatabaseConnectionDbError(_) => 200001,
             BaseError::DatabaseAlreadyInitialized => 200002,
             BaseError::DatabaseQueryFailed(_) => 200003,
             BaseError::DatabaseExecuteFailed(_) => 200004,
@@ -439,12 +464,14 @@ impl BaseError {
             BaseError::MigrationFailed(_, _, _) => 200007,
             BaseError::DatabaseNotInitialized => 200008,
             BaseError::DatabaseTransactionFailed(_) => 200009,
+            BaseError::MissingWhereClause(_) => 200010,
 
             // ==================== Redis 错误 (21xxxx) ====================
             BaseError::RedisConnectionFailed(_) => 210001,
             BaseError::RedisAlreadyInitialized => 210002,
             BaseError::RedisNotInitialized => 210003,
             BaseError::RedisOperationFailed(_) => 210004,
+            BaseError::RedisOperationDbError(_) => 210004,
 
             // ==================== HTTP 客户端错误 (3xxxxx) ====================
             BaseError::HttpClientCreateFailed(_) => 300001,
