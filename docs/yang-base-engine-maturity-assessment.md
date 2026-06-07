@@ -99,12 +99,14 @@ yang-base 是**后端原语库**，不是开箱即用框架。它刻意不含 HT
 ### 写路径与统计完备（底层 yang-db 都有，未桥接）
 - 批量插入（effort M）：受保护写路径只能逐行、非原子
 - UPSERT ON DUPLICATE/ON CONFLICT（effort M）
-- 游标 / keyset 分页（effort M）：仅 LIMIT/OFFSET，深翻页线性退化、并发写下结果漂移
 - GROUP BY / HAVING / 聚合 SUM/AVG/MAX/MIN（effort L）：受保护层仅 count()
+
+### 写路径需新建（yang-db 与 yang-base 双层皆缺）
+- 游标 / keyset 分页（effort M→L）：两层都仅 LIMIT/OFFSET，深翻页线性退化、并发写下结果漂移。**非桥接**，需先在 query_builder 新建 seek 分页（`mysql/query_builder.rs:1255/1261`、`postgres/query_builder.rs:1149/1155`），再经受保护层接出。（分类修正见 10.2 / 11.4 DOC-1）
 
 ### 观测细项
 - 认证审计钩子（effort S）：Login/Refresh/Logout 安全路径全静默（auth.rs:192/355/430）
-- MySQL `pool_status`（effort S）：Redis 侧已有，MySQL 侧仅 health_check，连接耗尽无据可查
+- MySQL `pool_status`（effort S）：Redis 侧已有（`redis/client.rs:1742`）。**归属澄清**：yang-base 层有 `health_check`（`global.rs:349`，`SELECT 1`）但无 pool_status；yang-db 的 `mysql::Database` 则 health_check / pool_status **两者皆缺**（`mysql/database.rs:88-263`）。补 yang-db pool_status 时建议同补 health_check（薄包 `pool.size()/num_idle()`），连接耗尽方有据可查（见 11.4 DOC-2）
 - 慢查询日志（effort M）：`enable_logging` 仅 debug 打印 SQL 文本，无耗时/阈值
 - 插件/模块 unregister 与热重载（effort M）：注册后不可变，任何变更需重启进程
 
@@ -238,6 +240,17 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 
 > **附澄清**：`.gitignore` 的 `*/tests/` 仅匹配顶层 crate 的 `tests/`，`crates/yang-db/tests/` 两层深不受影响——17 个测试文件全部被跟踪（已 `git check-ignore` 实测）。CLAUDE.md 的告诫对 yang-db 不构成实际影响。
 
+### 10.4 深度复核新增缺口（2026-06-06 追加）
+
+> 本轮以工作流多维查漏 + 对抗式验证（每条须 isReal && isNew 双判方保留）补充，确认 4 项文档此前未单独枚举的缺口。均经 file:line 取证。
+
+| ID | 缺口 | 层 | 类型 | 严重度 | 取证 / 后果 |
+|----|------|----|------|--------|------|
+| NG-1 | HTTP 客户端出站请求无日志/计时（method/url/status/duration 全无） | base | gap | Medium | `http/request.rs:608-638` send_once 全程无埋点；外部 API 失败/慢响应不可排查。属 C4 同主题但未枚举的出站位置 |
+| NG-2 | PG/MySQL 事务隔离级别不可配置（裸 `pool.begin()`，无 SET TRANSACTION 入口） | db | gap | Medium | `postgres/database.rs:148`、`mysql/database.rs:149`；全 crate 无 isolation 配置。InnoDB 默认 RR、PG 默认 RC，跨后端隔离差异静默隐埋竞态 |
+| NG-3 | PG `FieldType::Decimal` 降级为 f64，写 NUMERIC 列丢任意精度 | db | bug | Medium | `postgres/query_builder.rs:744-749` 经 as_f64→SqlValue::Float；财务字段受损。MySQL 后端同模式 |
+| NG-4 | `SqlParam::from_json` 对 Object/Array 的错误路径无单测 | base | test-gap | Medium | `table_query.rs:2318-2321` 经 where_eq 可达 `DatabaseQueryFailed`，两处测试目录零覆盖。错误处理本身正确（不 panic），仅缺回归网 |
+
 ## 十一、施行进度追踪表
 
 > 统一追踪本文识别的所有补齐项与修复项。状态：⏳ 待办 / 🟨 进行中 / ✅ 已完成 / ⛔ 暂缓。初始状态均为 ⏳（评估快照，尚未动工）。「层」标明工作落点：base=yang-base 受保护层，db=yang-db 底层，doc=文档。完成时回填 commit 与日期。
@@ -301,12 +314,242 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 
 | ID | 项目 | 状态 | 备注 |
 |----|------|------|------|
-| DOC-1 | 「游标/keyset 分页」移出「底层都有」小节，标注双层都缺 | ⏳ | 本文第 99/102/143 行 |
-| DOC-2 | 注明 MySQL health_check 属 yang-base，db 的 Database 两者皆缺 | ⏳ | 本文第 107 行 |
-| DOC-3 | 修正 `docs/yang-db.md:276-277` 关于 quote/校验的归属 | ⏳ | yang-db.md 注入防护小节 |
-| DOC-4 | 修正 Redis `health_check` 文档（恒返回 Ok，不返回 Err） | ⏳ | `redis/client.rs:1726-1736` doc |
+| DOC-1 | 「游标/keyset 分页」移出「底层都有」小节，标注双层都缺 | ✅ | 本文第五节已拆分「写路径需新建」小节 + 路线图第 6 步措辞 |
+| DOC-2 | 注明 MySQL health_check 属 yang-base，db 的 Database 两者皆缺 | ✅ | 本文第五节「观测细项」pool_status 条已补归属澄清 |
+| DOC-3 | 修正 `docs/yang-db.md` 关于 quote/校验的归属 | ✅ | yang-db.md 注入防护小节已重写（值参数化 vs 标识符由上层保证） |
+| DOC-4 | 修正 Redis `health_check` 文档（恒返回 Ok，不返回 Err） | ✅ | `redis/client.rs:1722-1729` doc 注释已删除不可达 Err 行 |
+
+### 11.5 深度复核新增缺口（第 10.4 节）
+
+| ID | 项目 | 层 | 类型 | 严重度 | 状态 | 取证 |
+|----|------|----|------|--------|------|------|
+| NG-1 | HTTP 客户端出站请求日志/计时 | base | gap | Medium | ⏳ | `http/request.rs:608-638` send_once 无埋点 |
+| NG-2 | PG/MySQL 事务隔离级别可配置（SET TRANSACTION 入口） | db | gap | Medium | ⏳ | `postgres/database.rs:148`、`mysql/database.rs:149` |
+| NG-3 | PG `FieldType::Decimal` 精度丢失（降级 f64，应绑 NUMERIC） | db | bug | Medium | ⏳ | `postgres/query_builder.rs:744-749` |
+| NG-4 | `from_json` Object/Array 错误路径补单测 | base | test-gap | Medium | ⏳ | `table_query.rs:2318-2321` |
 
 > 本表为活文档，随补齐推进回填状态/commit/日期。优先级建议遵循第七节顺序（事务→OR→可观测→错误分类→弹性→写路径→多后端→JOIN），yang-db 的 3 个 High（DB-1/2/3）可独立于 yang-base 节奏先行修复。
+
+## 十二、优雅解决方案设计
+
+> 为本文识别的每一个问题至少附一个贴合现有架构的优雅方案。每条给出：核心思路（为何优雅）、API/代码草图要点、涉及文件、兼容性/SemVer、effort。约束统一遵循本仓约定：中文注释、checked API 优先（禁新增生产 panic）、保持 feature gate、鉴权热路径零分配、向后兼容优先。
+
+**I5｜批量插入桥接受保护层（自建多行 INSERT，复用 C1 事务保原子）** · effort M
+不转调 yang-db `insert_batch`（裸拼标识符 + 零权限校验，会绕过受保护层）。在 yang-base 新增 `build_insert_batch_sql`：逐行复用 `prepare_and_validate_insert`（权限/默认值/时间戳/必填），列名走 `quote_identifier`，拼成单条 `(?,?),(?,?)...` 多值 INSERT 一次绑定。原子性复用 C1：`insert_batch` 内部 `begin_transaction → insert_batch_in_tx → commit`，多批次同事务，天然规避 DB-4。文件 `table_query.rs`（新增 `build_insert_batch_sql` + `insert_batch`/`insert_batch_in_tx`）。`#[cfg(feature="mysql")]`，minor，依赖 C1。
+
+**I6｜UPSERT 桥接受保护层（自建 ON DUPLICATE KEY UPDATE）** · effort M
+同 I5 理由不转调 yang-db。新增 `build_upsert_sql`：复用 `prepare_and_validate_insert` 校验，列走 `quote_identifier`，生成 `INSERT ... ON DUPLICATE KEY UPDATE col=VALUES(col)`，提供 `upsert`/`upsert_in_tx`。返回 rows_affected（1=插入/2=更新）。MySQL 专用语法，未来 C3 多后端化时按后端分派（PG `ON CONFLICT`）。minor，依赖 C1。
+
+**DB-4｜insert_batch 多批次单事务包裹（对齐 update_batch）** · effort S
+`insert_batch_with_size` 当前每 chunk 独立 `execute(pool)`，第 N 批失败前 N-1 批已落库；而 `update_batch` 已用单 `pool.begin()` 包裹所有 chunk（自相矛盾）。把 `insert_chunk` 执行目标从 `&MySqlPool` 抽成 `sqlx::Executor` 泛型：单批次走 pool 直执行（免事务开销），多批次开一个 tx 包裹后 commit，比照 `update_batch`。PG 侧对称。文件 `mysql/query_builder.rs:2138-2236`、`postgres/query_builder.rs:1411`。签名不变，行为从「部分提交」变「全成功或全回滚」——严格改进。
+
+### 12.2 查询表达力（C2a / C2b / I7 / I8）
+
+**C2a｜WhereCondition 引入递归 And/Or 组节点 + 类型化层 `Filter<W>` 布尔树** · effort M
+关键认知：读路径 `build_select_sql` 直接用 sqlx 生成 SQL，**不经** yang-db QueryBuilder，所以 `where_or` 对受保护层无用——必须在 yang-base 自身渲染层做布尔树。(1) 给平铺 `WhereCondition` 追加递归 `And(Vec)/Or(Vec)`，把 `append_where_to_sql` 的扁平循环重构为递归 `render_condition`，组节点括号包裹，12 个叶子分支零改动，顶层 Vec 仍隐式 AND（向后兼容）；(2) 类型化层新增泛型 `Filter<W>` 布尔树包装 `T::WhereCond`，`SelectQuery` 加可选 `filter` 字段。组节点权限校验递归下钻；递归深度设上限（如 32）防深嵌爆栈，checked 返回 `ParamInvalid` 不 panic。**务必同时给 `WhereCondition` 打 `#[non_exhaustive]`（合并 I9）**否则加变体是 minor-breaking。文件 `query_params.rs:96-251`、`table_query.rs:1130`、`entity.rs:140`、`sql_bridge.rs`、`builtin/select.rs`。
+
+**C2b｜RelationConfig 接入：批量二次查询式预加载（避免 N+1，逐表过权限），而非裸 SQL JOIN** · effort XL
+`RelationConfig`/`RelationType` 定义齐全但 `table_query.rs` 零引用（死配置）。**不做裸 JOIN**：裸 JOIN 会让被关联表的列绕过 `ensure_fields_readable`/`validate_filter_field`，且 yang-db `join(table,on)` 的 ON 是裸拼注入面（DB-1），引进受保护层等于开后门。改走关联预加载：主查询后收集外键值，对每个关联表用其自身 `TableConfig` 走带权限校验的 `where_in` 二次查询再 stitch——天然 `1+N_relations` 条（非 N+1），每条参数化零注入；1:1/1:N 用子表 FK in 父键集，M:N 多一跳中间表。前置：需 `ModuleRouter` 补 `table_config_of(name) -> Option<Arc<TableConfig>>` 反查 registry。设 `max_preload_depth` 防深链。`#[cfg(feature="mysql")]`，纯增量。
+
+**I7｜读路径新建 keyset/seek 分页：行值元组比较 + 不透明游标，PK 兜底全序** · effort M（base）/ L（双层对称）
+双层都只有 LIMIT/OFFSET，keyset 是真·新建。用 `(k1,k2,..) > (?,?,..)` 行值比较把「翻下一页」变等值 seek，深翻页 O(offset) 退化消失、并发写不漂移。游标做成不透明 `base64(JSON)`（编码末行排序键 + 方向），解码失败走 `BaseError::ParamInvalid`（不 panic）。强约束：自动把 `PK_FIELD` 追加为末位 tiebreaker 保全序。与 offset 分页并存（新增 `seek` 方法，`page()` 不动，二者同设返回 `ParamInvalid`）。列名走 `quote_identifier`、值走 `SqlParam` 绑定。软删过滤子句需与 seek 的 WHERE 正确 AND 合并；排序列建议 NOT NULL。文件 `query_params.rs:333`、`table_query.rs:1390/826`。
+
+**I8｜TableQuery 新增白名单聚合 + GROUP BY/HAVING，输出 DynamicRow，配套 AggregateAction** · effort L
+受保护层仅 `count()`；读路径不经 yang-db 故需自建。聚合规格全走封闭枚举/白名单（`AggFn::{Count,Sum,Avg,Min,Max}`），**绝不接受裸表达式字符串**：作用列走 `quote_identifier`，别名走 `is_valid_identifier`，GROUP BY 列必须 filterable + 在 TableConfig，HAVING 作用在聚合别名上、值参数化绑定。输出用既有 `DynamicRow` 承载异构结果，避免为每种聚合造类型。零新增注入面、零新增 panic（全 checked）。聚合结果列不过 `ensure_fields_readable`（非实体字段），文档需说明输出是 DynamicRow 非 T。`#[cfg(feature="mysql")]`，纯增量。文件 `table_query.rs:1061/1390`、新增 `table/aggregate.rs`、`action/builtin/aggregate.rs`。
+
+### 12.3 类型化层多后端（C3 / DB-18）
+
+**C3｜封闭 `Backend` trait + `TableQuery<B=MySql>` 泛型化，TableEntity 脱钩 MySqlRow（主方案）** · effort XL
+引入 sealed `Backend` trait 作方言/驱动单一抽象点，把 sqlx 的 Pool/Row/Arguments 与方言行为（占位符、标识符引用、自增取回）收口到关联类型与少量方法；`TableQuery` 升级 `TableQueryGeneric<B: Backend>`，`type TableQuery = TableQueryGeneric<MySqlBackend>` 保旧名。`TableEntity` 去掉 `FromRow<MySqlRow>` 超 trait，行解码约束下沉到 `select::<T>()` 调用点（`T: FromRow<B::Row>`），实体回归纯数据契约。B 是零大小类型参数，单态化后零分配零虚调用，鉴权热路径不受影响。`postgres` 全程 `#[cfg]`，默认不开。**风险**：泛型渗透到 builtin 六件套——建议 builtin 暂固定 `MySqlBackend`，PG 走显式 `table_typed_with::<T, PgBackend>()`，避免一次性炸全链。SemVer minor-risky。
+
+**C3（拆分第一步）｜最小脱钩：仅 TableEntity 去 FromRow + 约束下沉到调用点** · effort M
+把 XL 拆成可独立发版的第一刀：只移除 `TableEntity` 的 `FromRow<MySqlRow>` 超 trait（约束放到真正需要的 `select::<T>()` 边界），不立刻泛型化 TableQuery。移除后同一实体 struct 可被 MySQL/PG 路径复用，为后续泛型化扫清类型障碍，且本步零运行时变更。现有 `#[derive(sqlx::FromRow, TableEntity)]` 全部继续编译。文件 `entity.rs:16-26`。patch~minor。
+
+**DB-18｜跨后端一致性断言测试：基于 to_sql 的方言归一化等价校验（纯离线，无活库）** · effort S
+两后端都有纯函数 `to_sql()`/`SqlGenerator::build_*`（不触网）。建一组「同一逻辑查询 → 两后端各自 SQL → 归一化后断言等价」测试：归一化器吃掉合法方言差（`?`↔`$N`、反引号↔双引号、`ON DUPLICATE`↔`ON CONFLICT`、CAST），剩余差异即漂移红线。复用 `sql_generator_prealloc_test.rs` 离线范式，`connect_lazy` 造惰性池不连库，可进默认 `cargo test`。纯新增测试，零 API/SemVer 风险。新增 `crates/yang-db/tests/cross_backend_consistency.rs`。
+
+**DB-18（治本备选）｜提炼共享方言 trait（SqlDialect）抽掉两 SqlGenerator 公共骨架** · effort L
+漂移根因是两份 SqlGenerator 各写 build_*。提炼 `pub(crate) trait SqlDialect`（仅承载占位符/标识符引用/UPSERT 子句/CAST 等真正不同的原子），公共骨架上移到泛型 `SqlGenerator<D>`，两后端只实现各自 Dialect，漂移在编译期消除。**红线**：CLAUDE.md 禁顺手拆 query_builder.rs——必须以上一条离线一致性测试做回归网后再动，仅抽方言原子不动文件物理切分，分后端小步迁移每步 `cargo test --lib` 绿。对外 API 无变化（pub(crate)），patch。风险高，可标 backlog。
+
+### 12.4 可观测性热路径（C4 / 慢查询 / 审计 / pool_status）
+
+**C4-tracing｜引入 tracing + dispatch→authorize→handler 三段 span 化（log 经 tracing-log 桥接）** · effort M
+把 tracing 作 yang-base 核心依赖，启用其 `log` 兼容特性 + `tracing-log`，使现有 `log::*` 宏自动流入 tracing 订阅者，无需逐处改写、对未接订阅者的旧调用方完全无感。仅在三个稳定接缝开 span：dispatch 根 span（module/action）、authorize child span（is_public/granted）、DynAction::dispatch handler span。span 用静态名 + 借用字段 + `.instrument`，成功路径无 `format!`/无 collect，满足零分配。tracing 设无条件核心依赖（横切能力），不引入新 cfg。minor。文件 `module_router.rs:327-405`、`typed.rs:82-92`。（备选 `C4-tracing-alt`：用 `#[tracing::instrument]` 宏属性，改动更少但 blanket impl 上无法按 Action 定制字段、须 `skip(context)` 防泄漏。）
+
+**C4-reqid｜request_id 透传：ActionContext 增字段 + RequestIdMiddleware 生成并注入 span** · effort M
+request_id 放 `ActionContext`（一次派发的运行期标识，而非传输输入），不污染 `Request`。内置 `RequestIdMiddleware` 作洋葱链最外层：缺失时生成、存在（上游 `X-Request-Id`）则透传，再 `span.record` 进根 span 串联日志/metrics/审计。类型用轻量 `RequestId(u128)`（时间高位|计数器低位），避免把 uuid 拉进非 token 构建。**破坏点**：`ActionContext` pub 字段新增会破坏字面量构造——在 `new`/`new_with_global_tools` 默认填充，并建议标 `#[non_exhaustive]`。生成是单次整数运算无堆分配，满足零分配。minor-breaking + non_exhaustive。
+
+**C4-metrics｜Action 计时/错误/吞吐 metrics：feature-gated `metrics` 门面 + DynAction::dispatch 边界埋点** · effort M
+引入 `metrics` crate（门面，运行期由调用方挂 exporter），新增 opt-in feature `metrics` 默认关闭（零依赖增量、完全向后兼容）。埋点统一放 `DynAction::dispatch`（所有 Action 唯一必经边界）：计数器 `yang_action_requests_total{module,action,status}`、直方图 `yang_action_duration_seconds`、错误计数 `yang_action_errors_total{...,code}`。label 全用 `&'static str`（module/action 来自 meta，code 用新增 `code_str()` 返回静态映射，**切勿 `to_string()` 当 label**——高基数+分配）。feature 关闭时 `#[cfg]` 整段消失。minor。文件 `typed.rs:82`、`error/mod.rs:444`。
+
+**pool_status｜MySQL pool_status + health_check 下沉 yang-db 并经 GlobalDatabase 暴露** · effort S
+消除「同 crate Redis 两者俱全、MySQL 皆缺」的不对称。yang-db `mysql::Database` 补 `pool_status()`（包 `MySqlPool::size()/num_idle()`）与 `health_check()`（下沉 `SELECT 1`），复用/提升 `PoolStatus` 到 crate 顶层（重导出保 `redis::PoolStatus` 旧路径）；`GlobalDatabase` 补 `pool_status()` 转发，与 `GlobalRedis::pool_status` 对称。sqlx 原生支持只差接出，零新依赖。mysql gate 内。纯新增，minor。文件 `mysql/database.rs:118`、`lib.rs`、`global.rs:349`。
+
+**慢查询｜受保护层 TableQuery 执行边界计时 + 可配阈值，超阈值 warn** · effort M
+给 TableQuery 增 `slow_threshold: Option<Duration>`（由 `ActionContext.table_query()` 从全局观测配置注入），抽一个内部 `timed(op, fut)` 辅助封装 6 处执行点，超阈值 `tracing::warn!{table, op, elapsed_ms, request_id}`。SQL 文本默认不记（防泄漏/高基数）。`None`（默认）时计时分支整体短路，热路径仅一次 `Instant::now()` 无分配。**不下沉 query_builder.rs**（遵守约定）。保持 `new` 签名不变，加 `with_slow_threshold()` 链式 setter。minor。文件 `table_query.rs:129/1081/1374/1641/1687/1907/2174`、`context.rs:358`。
+
+**审计钩子｜AuthAuditHook trait 注入 Login/Refresh/Logout** · effort S
+三条安全路径（`auth.rs` Login/Refresh/Logout）全静默。定义 object-safe `AuthAuditHook`（成功/失败两类事件），经 `LoginAction<V, A=TracingAuditHook>` 等构造参数注入（与既有 `CredentialVerifier` 注入同构），默认 `TracingAuditHook`（发 tracing event）。事件含 request_id/subject/结果/错误码，**绝不记凭据明文/token 原文**（只记指纹）。保留 `new(verifier)` 用默认 hook，加 `with_audit(verifier, hook)`，旧调用不破坏。token feature gate 内。minor。
+
+**NG-config｜统一 ObservabilityConfig 收口可观测开关** · effort S
+上述 tracing/metrics/慢查询/审计若各自配置会散落多处。补轻量 `ObservabilityConfig { slow_query_threshold, ... }`，随 `OnceLock` 单例（重复 init 返 Err 不 panic），由 `ActionContext` 读取下发。把 C4 一揽子运行期旋钮收敛到单一可测试入口，与 `DatabaseBundle::init` 统一入口理念一致。全新增，minor。新增 `crates/yang-base/src/observability.rs`。
+
+### 12.5 错误分类与契约（C5 / DB-7 / DB-8 / DB-14 / I9 / 码双射）
+
+**C5｜BaseError 引擎级分类 API（category/is_retryable/is_client_error/is_server_error）** · effort M
+在 `impl BaseError` 新增零分配纯 `match self` 分类方法。引入 `pub enum ErrorCategory{Client,Auth,NotFound,Conflict,Transient,Server}`（引擎自有语义，**不掺 HTTP status**——HTTP 映射属调用方传输层边界），`category()` 为单一事实源，三个 `is_*` 全委托它派生避免漂移。DbError 携带变体透传 `map_db_category(e)`（衔接 DB-7）。`ErrorCategory` 自带 `#[non_exhaustive]`。`is_client`/`is_server` 非互斥补集（Transient 属 server 但可重试），文档需注明按 category 派生。纯新增，无 SemVer 破坏。文件 `error/mod.rs:415-525`。
+
+**DB-7｜DbError 补 code()/category()/is_retryable() 并标 #[non_exhaustive]** · effort S
+yang-db `DbError`（18 变体）连稳定码都没有。补稳定 `code()`（8xxxxx 段独立命名空间）、`category() -> DbErrorCategory{Client,Conflict,NotFound,Transient,Server}`、`is_retryable()`。分类信息已在 `From<sqlx::Error>` 的 SQLSTATE 精确分桶里，`category()` 只是显式化：Connection/RedisConnection/RedisTimeout/RedisPool→Transient，Constraint→Conflict，TableNotFound→NotFound，SqlSyntax/MissingWhere/MissingGroupBy/UnsupportedOperator→Client。BaseError 携带变体透传 `e.category()`，两层语义一致。`#[non_exhaustive]` 对跨 crate match 是破坏（需 `_` 臂）——同 crate 内 yang-base 的穷举 match 不受影响。文件 `error.rs:1-59`。
+
+**DB-8｜From<RedisError> 由 Display 子串改 kind() 精确分类** · effort S
+现状 `format!` 成串后 `contains("Connection")`/`contains("type")` 模糊匹配——顺序相关、`"type"` 过宽误判、redis 升级改文案即静默失配。改用稳定的 `RedisError::kind()` 与 `is_timeout()`/`is_connection_dropped()`/`is_io_error()`：timeout 优先 → connection/io → TypeError → 兜底 Command。控制流从「脆弱人类可读串」迁到「协议层枚举」。行为兼容（同样五选一变体），仅分类更准，无 API 变化。需补单测构造各 kind 验证落桶（衔接 DB-21）。文件 `error.rs:114-130`。
+
+**DB-14｜新增 DbError::InvalidArgument，解耦被挪用的 SerializationError** · effort S
+`batch_size==0`/空数据切片/非 JSON 对象都复用 `SerializationError`，污染「序列化失败」语义。新增 `InvalidArgument(String)` 专表参数校验失败，归 DB-7 的 Client 类（不可重试、调用方过错），是 checked-API 哲学的体现。yang-base 的 `From<DbError>` 穷举 match 须新增 `InvalidArgument(_)` 臂（建议归 `DatabaseExecuteFailed` 同桶保上层码不变）。配合 DB-7 的 `#[non_exhaustive]` 后破坏性已前置吸收。文件 `error.rs`、`mysql/query_builder.rs:2116/2133`、`postgres/query_builder.rs:1426/1441`。
+
+**I9｜BaseError 标 #[non_exhaustive] + 收口三处可达 panic** · effort S（2A）/ M（2B）
+两件打包。(1) 给 `BaseError` 加 `#[non_exhaustive]` 杜绝下游 match 无 `_` 臂时「加变体即破坏」。(2) panic 收口，重点 `entity.rs:237` 的 `to_v` 在受保护查询热路径 `expect`，任意 Serialize 缺陷会 panic 整个 dispatch。**方案 2A（推荐先行，S）**：`to_v` 改 `unwrap_or_else` 落 Null 同时 `log::error!`，把「不可能发生」降级为「发生也不崩」，零签名变化。**方案 2B（彻底，M）**：`IntoSqlCondition::into_sql_condition` 返回 `Result` 沿 `select.rs:143` 一路 `?` 上抛——trait 破坏性但派生宏使用者透明。锁中毒统一 `into_inner()` 恢复（`circuit_breaker.rs:82/106/124`，顺带解 I10）。`#[non_exhaustive]` 对下游 match 是 minor 破坏，同 crate 不受影响。
+
+**码双射｜错误码↔变体双射去重：单一事实源 + 唯一性回归网** · effort S
+现状 `DatabaseConnectionFailed`/`...DbError` 同码 200001、Redis 同码 210004（String 兜底版 vs DbError 携带版，故意同源同码），及 Migration 双变体真冗余。本质不是「同码非法」而是「无机制保证一致性」。(1) 把「允许同码的成对变体」建白名单表，用穷举全变体的回归测试断言「码要么唯一、要么在白名单内」，让双射意图变可执行契约；(2) 真冗余的 Migration 双变体 `#[deprecated]` 其一收敛；(3) 文档化每段码语义。现有码值全不变（测试锁定），`#[deprecated]` 仅告警不破坏。文件 `error/mod.rs:444-524` + 测试区。
+
+### 12.6 端到端类型保真（I1 / 写库接缝 / put值untyped / 响应擦除）
+
+**I1｜派生 `<Name>Set` 定型更新枚举，PutInput.data 收口为 `Vec<EntitySet>`** · effort M
+`put.rs:27` 的 `data: Vec<(T::Field, serde_json::Value)>`——列名 typed（封闭枚举安全），值裸 `Value` 编译期不校验，是 CRUD 六件套唯一「列名 typed 值 untyped」破洞。完全复刻已验证的 `<Name>Where` 模式：派生 `<Name>Set` 枚举，每字段一变体内层为该字段 Rust 类型（`Option<T>` 字段保留 Option 以支持置 NULL），serde `#[serde(tag="field",content="value")]`，反序列化时 `value` 直接按字段类型解析——`age` 收到字符串即在 serde 层报错，**校验提前到反序列化边界**。`TableEntity` 加关联类型 `type SetField: IntoUpdatePair`。**破坏**：JSON 顶层从 `[["age",30]]` 变 `[{"field":"age","value":30}]`（面向用户协议变更）+ trait 加关联类型；建议保留旧路径 `#[deprecated]` 给过渡期。文件 `entity.rs`、`yang-base-derive/table_entity.rs:116-209`、`put.rs:23-74`。
+
+**写库接缝｜typed→yang-db 接缝用 IntoColumnMap 构建 HashMap，消除「序列化摊平」值类型擦除** · effort M
+`add.rs:60` 的 `serde_json::to_value(&input)` 把整个实体摊平成 `Value::Object` 再遍历成 `HashMap`，列名靠 `&'static str` 保住但值类型在 `to_value` 这步全擦除，`_ =>` 还留运行期不可达分支。承认 `HashMap<String,Value>` 是 yang-db 边界契约（多后端/动态列的现实），但把「实体→HashMap」从「serde 盲摊平」升级为「经类型化 `IntoColumnMap`」：派生宏按字段静态展开 `(列名, to_value(self.field))`，列名来自 `&'static str`、值来自具体字段类型，擦除点收敛到单一可审计调用，消除不可达分支。逐字段 `to_value` 失败须 `try` 收集返回 `Result`（禁 unwrap）。不动 `table_query.rs:1881` 签名、不碰 query_builder.rs。基本向后兼容。
+
+**put值untyped（I1 反序列化视角强化）｜SetField 值校验补 serde 边界 + 运行期类型断言双保险** · effort S
+与 I1 同根，聚焦「校验在哪层」。`<Name>Set` 把校验提前到 serde 是主防线，但两残留缝隙显式收口：(1) `FieldType::Json` 字段内层仍是 Value（业务语义本就任意 JSON，可接受）；(2) 数值精度/范围 serde 只拦一部分。让 `into_update_pair` 后仍流经既有 `validate_update_data_impl`（`table_query.rs:1950`，免费）做 FieldType 复检，形成「serde 静态收口 + 运行期兜底」双层。`extract_input` 错误细化为 `ValidationFailed(field, reason)`（内容变化非签名变化，兼容）。需确保 `deny_unknown_fields` 对 SetField 同样开启。
+
+**响应擦除｜ApiResponse 增 success_typed 类型保真 + details 结构化错误明细** · effort M
+两子问题分治。(A) `data: Option<Value>` 类型擦除：根因是 `DynAction::dispatch` 返回 `Result<ApiResponse, BaseError>`，整条洋葱链 + `Arc<dyn DynAction>` 注册表都按此对象安全签名建立——泛型化 `ApiResponse<T>` 会击穿运行期擦除派发管线，**判定不可行**。优雅解不是消除擦除，而是确保擦除前 `Output: Serialize + JsonSchema`（`typed.rs:23` 已有 bound），类型契约在 `output_schema()` 静态保真，补一个「data 必满足 output_schema」不变量测试背书。(B) `from_error` 明细丢弃：`fail(code, to_string())` 把 `ValidationFailed(field,reason)` 等结构化变体拍扁成串。给 `ApiResponse` 增 `details: Option<Value>`（`skip_serializing_if`，零成本兼容），`from_error` 经新增 `BaseError::detail_payload()` 抽取 `{field, reason}`。`typed.rs`/`middleware.rs`/`module_router.rs` 签名均不动。高度向后兼容（构造器封装，仅手写字面量者需补 `details: None`）。
+
+### 12.7 注入面与标识符安全（DB-1 / DB-6 / DB-12 / DB-20）
+
+**DB-1｜新增 yang-db 标识符校验/转义模块 + SQL 生成层统一加引号（JOIN ON 标可信），保留表达式逃生舱** · effort L
+把 yang-base 已验证的 `is_valid_identifier`/`quote_identifier` 下沉为 yang-db 自有能力，在唯一的 SQL 生成收口（`SqlGenerator::build_*`）施加，而非散落每个链式 setter——不动 query_builder 巨型结构，不改 `field()`/`order()`/`join()` 签名（仍返回 Self）。校验在 build 期（`build_select`/`build_update`/`build_delete` 已返回 Result）；无 Result 的 `build_order_by`/`build_group_by`/`build_joins` 改返回 Result（pub(crate) 无 SemVer 影响）。`is_valid_identifier` 纯 char 迭代零分配。**张力处理**：`field("COUNT(*)")`/`field("u.name AS n")` 等表达式用法——quote 走「限定标识符感知」（`a.b → \`a\`.\`b\``），对含括号/空格/AS 的表达式提供显式逃生舱 `field_expr()`/`order_raw()`（标 `# Safety`）；JOIN ON 本质自由 SQL 表达式，按评估结论标「可信输入」，仅对 JOIN 的 table 名 quote。**行为破坏点**：依赖 `field()` 传表达式者会在 build 期得 `InvalidIdentifier` err，需迁到逃生舱；新增 DbError 变体建议与 DB-7 的 `#[non_exhaustive]` 一并落地。PG 侧同构（双引号）。
+
+**DB-1（最小侵入备选）｜仅收口表名/JOIN 表名 quote + 校验助手设为 pub 供上层复用** · effort S
+若不愿承担表达式用法的行为破坏，退一步：只对「几乎不可能是表达式」的位置（FROM 表名、JOIN 目标表名、drop_table 表名）强制 quote+校验，列/排序/分组字段保持原样，但把 `is_valid_identifier`/`quote_identifier`/`quote_qualified` 提升为 yang-db 的 **pub** 工具函数，让直接消费 yang-db、绕过 yang-base 类型层者能显式校验外部输入；setter doc 明确「列名/ON 为可信输入，外部输入请先 quote」。零行为破坏、零 SemVer 风险，同时解决 DOC-3 文档不实。适合作为先行小步，再迭代到主方案。
+
+**DB-6｜table_exists 改 ? 绑定对齐 PG；drop_table 用 quote_identifier；init 文档化为可信 DDL** · effort S
+按「值 vs 标识符 vs 脚本」三类各用最合适手段：(1) `table_exists` 是 DML 查询，`information_schema.tables.table_name` 可作绑定参数——照搬 PG 写法用 `?` 绑定，消除字面量注入且跨后端一致；(2) `drop_table` 是 DDL，MySQL 不支持 DDL 占位符，走 `quote_identifier` 校验+转义（复用 DB-1 模块），非法名 Err；(3) `init` 按 `;` 切分执行，本质是开发者提供的迁移脚本运行器，维持现状但补 doc 明确「入参为可信 DDL，朴素切分不处理字符串内分号」。文件 `mysql/database.rs:176/182/153`。合法表名行为不变。
+
+**DB-12｜新增 like 通配符转义助手 + like_literal 子串匹配 API，文档化默认 LIKE 为原始 pattern** · effort M
+区分两种意图：现有 `where_and(field,'like',pat)` 传入的是「完整 LIKE pattern」（调用方自带 `%/_`，是特性），保持不变兼容。新增「把用户输入当字面子串匹配」场景：`escape_like_pattern()` 转义 `% _ \`，新增 `where_like_contains`/`starts_with`/`ends_with` 生成 `col LIKE ? ESCAPE '\'` 并绑转义后的 `%term%`。把「意外宽匹配」陷阱显式化，ESCAPE 子句让转义在 SQL 层确定生效、跨 collation 稳定。新增 `Condition::LikeEscaped` 变体建议同标 `#[non_exhaustive]`。PG 侧同构。文件 `mysql/condition.rs:38/198`、`postgres/condition.rs:172`。
+
+**DB-20｜MySQL 测试连接串改读 MYSQL_TEST_URL/MYSQL_TEST_PASSWORD 环境变量，对齐 PG** · effort S
+照搬 PG 的 `test_db_url()` 模式：把 6 个文件硬编码的 `const TEST_DB_URL` 换成读环境变量带本地默认值的辅助函数，密码优先从 `MYSQL_TEST_PASSWORD` 注入，整串可被 `MYSQL_TEST_URL` 覆盖。消除 git 跟踪的明文凭据，符合 CLAUDE.md 约定，默认值保留维持本地一键可跑。可抽到 `tests/common/` 共享模块。仅测试代码，零生产影响。与 DB-11 正交可同批。
+
+### 12.8 测试可信度（DB-11 / DB-19 / DB-21 / NG-4）
+
+**DB-11｜MySQL 集成测试改 #[ignore] + 环境变量统一连接助手，纯 SQL 断言移出 if let Ok** · effort M
+现状 `if let Ok(db) = result {...}` 包裹全部断言：无 MySQL 时整块被跳过测试仍判过——「假绿」。对齐同 crate 已有的 PG 范式（`#[ignore]` + `PG_TEST_URL`）：给所有触库测试加 `#[ignore]`，连接失败直接 `.expect()` 让 `--ignored` 模式真红；同时把不触库的纯 SQL 生成断言从 `if let Ok` 拆出作为离线测试保留。三套互斥风格收敛为两套有意义的（离线纯逻辑 / `--ignored` 触库）。顺带消化 DB-20。仅测试代码，无 API 影响。
+
+**DB-19｜Redis 集成测试加 #[ignore] + REDIS_TEST_URL 助手，离线套件不再变红** · effort S
+`test_redis_*.rs` 直接 connect 后硬 `assert!`/`expect`、且无 `#[ignore]`：无 Redis 时 `cargo test` 整批变红（与 MySQL 假绿反向，但同样偏离「离线可跑」）。对齐 PG/DB-11 范式：所有触 Redis 测试加 `#[ignore]`，提供 `redis_test_url()` 读 `REDIS_TEST_URL`。保留硬 expect（`--ignored` 下连不上即真红）。仅测试代码，无 SemVer 影响。
+
+**DB-21｜为 error.rs 的 From 映射与 MissingGroupByClause Display 补单测** · effort S
+`From<sqlx::Error>`（SQLSTATE→变体）、`From<redis::RedisError>`（Display 子串分类）几乎无单测，`MissingGroupByClause` Display 从未断言。补三组：(1) 遗漏变体 Display 断言；(2) 用 `redis::RedisError::from((kind, msg))` 构造真实错误断言落桶；(3) sqlx 侧测可直接构造的分支（RowNotFound/PoolClosed/ColumnNotFound 等），SQLSTATE 分支留待 DB-18 集成测试覆盖。是 DB-8（改 kind() 分类）的安全网，应先于 DB-8 落地。纯新增测试。文件 `error.rs:51/62-112/114-129/153-332`。
+
+**NG-4｜为 from_json 的 Object/Array 错误路径补单测（经 where_eq + build_select_sql_for_test）** · effort S
+`SqlParam::from_json` 是私有 fn 但有现成公共触发链：`where_eq(field, Value::Object) → build_select_sql_for_test()`（已存在的 `#[cfg(test)]` 助手）会调 `append_where_to_sql → from_json`，对 Object/Array 返回 `DatabaseQueryFailed`。在 `__tests__/table_query_test.rs` 加测试，复用 `create_test_table_config`，断言返回 Err 且匹配该变体，覆盖 `{"field":"id","value":{"x":1}}` 误发场景。纯测试补充，零生产改动、零风险。文件 `table_query.rs:1160/2199/2318-2321`。
+
+### 12.9 数据库正确性 bug（DB-2 / DB-3 / DB-9 / DB-10 / DB-13）
+
+**DB-2｜exec() 先解码为 redis::Value 并显式检测 EXEC Nil → 触发 WATCH 重试** · effort M
+根因：atomic pipe 在 WATCH 冲突时 EXEC 回 Nil，而 `from_redis_value(Nil)` 对 `Vec<T>`/`()` 都解码成 `Ok(空)`，命中 Ok 分支直接返回，乐观锁语义被破坏；现状靠 `err_msg.contains("nil")` 检测是脆弱的（冲突压根不产生 Err）。把「冲突检测」从「解析错误字符串」下沉到「协议层值检测」：先统一解码为 `redis::Value`，`watched_keys` 非空且整体为 `Value::Nil` 判定为 WATCH 冲突并重试，确认非冲突后再 `from_redis_value::<T>`。无监视键时仍允许 Nil 透传（不影响普通 pipeline）。修 bug，签名不变。文件 `redis/transaction.rs:318-344`。
+
+**DB-3｜PG build_update SET 循环对 SqlValue::Null 内联 NULL 字面量** · effort S
+根因：`build_update` SET 循环无条件 `push_placeholder`，NULL 被压成参数；PG 未类型化绑定 NULL 默认按 INT4，对 text/timestamp 列报类型不匹配。同文件 insert/insert_batch/upsert/update_batch 都已显式内联 NULL，唯独单行 update 漏改（内部不一致实锤）。对齐 `build_insert` 的 match 模式：`SqlValue::Null => push_str("NULL")`，其余走占位符。占位符编号自动收缩、WHERE 子句自洽。纯 bug 修复。文件 `postgres/query_builder.rs:482-491`。
+
+**DB-9｜TransactionQueryBuilder 补 returning 字段 + .returning() setter，去掉硬编码 id** · effort S
+根因：事务内 insert 硬编码 `RETURNING CAST(id AS BIGINT)`，忽略主键列名，非 id 主键表事务内 insert 必失败；而非事务路径已有 `.returning()`（对等性缺口）。对齐非事务 builder：同名 `returning` 字段（默认 `"id"`）+ 同名 setter + 同样 `CAST(col AS BIGINT)`，两路径 API 对称。纯新增 + 默认值保持，向后兼容 minor。文件 `postgres/transaction.rs:200/212/335`。
+
+**DB-10｜PG 事务原生助手浮点直接 bind(f64) 而非 to_string()** · effort S
+根因：`bind_json_param_tx`/`bind_json_param_as_tx` 照搬 MySQL 的「float→string 容错」，但 PG 类型严格，numeric/float8 列 `WHERE price = $1` 绑文本报 `operator does not exist: numeric = text`；主 builder 的 `bind_value_match` 宏对 `SqlValue::Float` 已是 `bind(*f)`（漂移）。两处各改一行 `query.bind(f)` 与主 builder 对齐，一并改误导注释。bug 修复，签名不变。文件 `postgres/transaction.rs:570-571/607-609`。
+
+**DB-13｜LIKE 遇非字符串值返回类型错误，杜绝 Debug 表示当 pattern** · effort S
+根因：MySQL `where_and`/`where_or` 与 PG 事务 `where_and` 在 `op=like` 且值非 String 时 `format!("{:?}", sql_value)`，把 `Int(5)` 当 pattern——语义错误且静默。LIKE 本就要求字符串 pattern，类型不符应显式报错：MySQL 侧返回 `Err(TypeConversionError)`，PG 事务侧用既有「延迟错误」`self.error` 机制返回，两端都不新增 panic（checked API 优先）。旧行为是 bug（产出永不匹配的 pattern），无合理调用方依赖。patch。文件 `mysql/query_builder.rs:937/1003`、`postgres/transaction.rs:278`。
+
+### 12.10 Redis/事务收尾（DB-15 / DB-16 / DB-17）
+
+**DB-15｜Transaction 文档化「drop 即 sqlx 尽力回滚」+ 可选 Drop 日志告警（不改语义）** · effort S
+`Transaction` 仅持 `Option<SqlxTransaction>`，未显式 commit/rollback 时依赖 sqlx 自身 Drop 做尽力回滚——语义正确但未文档化，调用方易误以为有强保证。Rust 的 Drop 不能 async，正确做法不是自写回滚，而是：(1) 类型级 doc 显式声明契约；(2) 加轻量 `Drop` impl，仅当 `tx` 仍 `Some` 且 `enable_logging` 时打一条 warn。把隐式行为变可观测+文档化，零行为破坏、零 panic、热路径不受影响（Drop 中只读 `tx.is_some()` 不消费）。文件 `mysql/transaction.rs:7-20` + PG 对称。
+
+**DB-16｜新增 get_bytes 逃生舱方法，二进制值不再退化为 None** · effort S
+`as_string()` 仅匹配 `String` 变体，对 `Bytes`（非 UTF-8）返回 None，导致 `get()` 把二进制值与「键不存在」(Nil) 都得到 `Ok(None)` 不可区分。底层 `From<redis::Value>` 已正确保留 Bytes，仅缺 sugar：加 `RedisValue::into_bytes(self) -> Option<Vec<u8>>`（Nil→None，String/Bytes→Some 字节，零 clone）+ client `get_bytes(key) -> Result<Option<Vec<u8>>>`，语义明确「None 仅代表键不存在」。`get()` 刻意不变。纯新增，minor。文件 `redis/value.rs:39-44`、`redis/client.rs:277-282`。
+
+**DB-17｜From<redis::Value> 将 Map/Set 摊平为 Array，修复 RESP3 下 HGETALL/SMEMBERS 静默返空** · effort S
+现状把 RESP3 的 `Map`/`Set` 降级为 `format!("{:?}")` 串，而 `hgetall`/`collect_string_array` 假设结果是 Array 再 `as_array()`——RESP3 下拿到 String，`as_array()` 返回 None，静默返回空 Vec。在 From 转换处把 Map 摊平为交替 `[k1,v1,k2,v2,...]` Array（正好匹配 RESP2 HGETALL 线格式与 `step_by(2)` 解析）、Set 转元素 Array，上层所有解析对 RESP2/RESP3 无感一致，无需改任何命令方法。默认 RESP2 不走该分支故无影响；RESP3 从「静默返空」变正确返回。向后兼容修 bug。文件 `redis/value.rs:178-189`。
+
+### 12.11 弹性与生命周期（I2 / I3 / I4）
+
+**I2｜DatabaseConfig 接出连接池自愈三参（min_connections / max_lifetime / test_before_acquire）** · effort S
+sqlx `PoolOptions` 原生支持这三个自愈参数，本仓只差透传。MySQL/PG 对称改造，默认值保持当前行为（0/None/false）故运行期语义对未改配置者完全不变。min_connections 维持热连接避免冷启动惊群；max_lifetime 让连接在 failover/wait_timeout 杀掉前主动轮换；test_before_acquire 借出前 PING 把「先失败再替换」变成透明自愈。**破坏点**：`DatabaseConfig` 字段全 pub 且文档/测试用字面量构造，新增字段是源码级破坏——建议补 `with_*` 链式方法并在 CHANGELOG 标注（字面量构造者需 `..Default::default()`），或加 `#[non_exhaustive]` 一次性收口。max_lifetime 用 Option + checked 透传无 panic。文件 `mysql/database.rs:26/93`、`postgres/database.rs:25/92`。
+
+**I3｜yang-db 补连接池优雅 drain/close 原语（Database::close / RedisClient::close）** · effort S
+停机根因在底层池无法主动 drain：sqlx `Pool::close()` 停止发新连接、等待在途归还后关闭（正是 K8s 滚动需要的语义），deadpool 同理。把 drain 能力建在持有池的那一层（yang-db），yang-base 只编排。补 `Database::close()`/`is_closed()`（PG 对称）与 `RedisClient::close()`/`is_closed()`。纯新增、幂等、无 panic（close 不返回 Result）。close 后再用会返回 PoolClosed 类错误而非 panic（期望行为，文档说明）。minor。文件 `mysql/database.rs:74`、`postgres/database.rs:73`、`redis/client.rs:22/1742`。
+
+**I3｜yang-base 编排式优雅停机 + 信号处理（EngineShutdown：plugin → redis → db 顺序 drain）** · effort M
+在 yang-db 原语之上提供单一停机入口，按「与启动相反」顺序收尾：先 `PluginManager::shutdown`（业务先停接活），再关 Redis，最后 drain MySQL（与 `DatabaseBundle::init` 先 MySQL 后 Redis 严格逆序）。配一个 tokio 信号 helper（ctrl_c + unix SIGTERM），让 K8s SIGTERM 触发 drain 而非 RST 在途连接。与 `DatabaseBundle` 的「统一初始化入口」形成对称的「统一停机入口」。**约束**：信号 helper 的 `signal()` 失败必须改 checked（log + 降级为仅 ctrl_c），不得 `.expect`（违反禁新增 panic）。OnceLock 不重置但 close 是原地 drain，文档说明「停机后不应再 dispatch」。minor。文件 `database/bundle.rs:37`、`global.rs`、新增 `lifecycle.rs`。
+
+**I4｜yang-base 分层配置体系 EngineConfig（默认 < TOML 文件 < 环境变量，12-factor）** · effort M
+聚合配置类型 `EngineConfig`，三层覆盖：内置默认 → 可选 TOML 文件 → 环境变量（优先级最高）。用 serde 反序列化文件（workspace 已有），env 覆盖走 checked 解析（失败返回 `BaseError::ConfigError`，复用既有变体零新增）；TOML 收在新的可选 `config` feature 后（toml = optional dep），默认不开则退化为纯 env。`from_env()` 直接产出可喂给 `DatabaseBundle::init` 的子配置，打通「一行启动」。不引 figment/config 重依赖。所有解析 checked→ConfigError（禁 panic）。env 前缀统一 `YANG_`。轻量替代：只落 `from_env`（纯 std，降为 S）。minor。新增 `crates/yang-base/src/config.rs`。
+
+### 12.12 锦上添花（N1–N12，第六节 Tier-Nice）
+
+**N1｜受保护层字段表达式/别名/计算列/DISTINCT** · effort M
+`select_fields` 只能裸列名。引入封闭的、与权限系统对齐的投影项枚举 `SelectItem<T>{Field/Aliased/Distinct/Agg}`，列引用沿用 `T::Field` 封闭枚举杜绝任意字符串注入，表达式只允许白名单聚合函数作用在已校验字段上，别名限 `[A-Za-z0-9_]`，DISTINCT 作查询级标志。`query_params` 增 `projection: Option<Vec<String>>`（已转义）+ `distinct`。旧 `select_fields` 保留，向后兼容 minor。（与 I8 聚合同源，可合并设计。）
+
+**N2｜子查询/EXISTS/IN(SELECT) 与多列 RETURNING** · effort L
+(a) `WhereCondition` 增 `InSubquery{field, sql, params}`/`Exists{sql, params}`，子查询是受过权限校验的 TableQuery 产出的 `(sql, params)` 片段，父查询拼接时占位符重编号，复用 `build_select_sql` 不动 query_builder。(b) MySQL 无 RETURNING，`insert_returning<T>()` 在同一事务里 INSERT 后按自增主键 SELECT 回整行（PG 走真 RETURNING），语义统一为「返回插入后实体」。`WhereCondition` 加变体须配 `#[non_exhaustive]`（合并 I9）。依赖事务进受保护层（C1）。
+
+**N3｜大结果集流式读取** · effort M
+`select()` 一次性 `fetch_all` 撑爆内存。不引入 sqlx `.stream()`（其借用 pool 的 lifetime 难穿过受保护层 API），而是 `for_each_chunk<T,F>(chunk, f)`：基于主键游标分块循环 fetch，每块回调处理，内存上界 = chunk_size（复用 I7 keyset）。`select()` 不变，向后兼容 minor。游标分块在并发写下仍可能漏/重，文档注明用于离线批处理而非强一致快照。
+
+**N4｜DB/Redis 瞬时错误重试/退避** · effort M
+前置是错误可分类（DB-7/C5 的 `is_retryable()`）。在 yang-base 暴露与具体 IO 解耦的 `retry(policy, op)` 组合子：对返回 `BaseError` 的 async 闭包做指数退避 + 抖动，**只对 `is_retryable()` 的变体重试**。分类下沉到错误本身（单一真相），重试是纯函数式组合子。不自动套用（避免对非幂等写重试），由调用方显式包裹，文档强调只对幂等操作或带去重键的写使用。sleep 用 tokio。新增 `crates/yang-base/src/resilience/retry.rs`。minor。
+
+**N5｜统一健康/就绪聚合端点** · effort S
+`HealthReport::probe()` 并行探测各已初始化子系统（MySQL `SELECT 1` / Redis PING），区分 liveness 与 readiness，各探测受 feature gate 控制（未启用则跳过），未初始化单例报 `Unconfigured` 而非 `Down` 避免误判。返回结构化报告便于序列化成 `/healthz`、`/readyz`，**不绑 HTTP 框架**（保持 crate 中立），由下游 web 层挂端点。纯增量 minor。新增 `crates/yang-base/src/health/mod.rs`。
+
+**N6｜事件/钩子总线** · effort L
+除中间件洋葱链外无 emit/subscribe。轻量同步事件总线：泛型 `Event` trait + 类型键索引订阅者表（`TypeId → Vec<handler>`）。锁中毒用 `into_inner()` 恢复（与 context/validator 一致，不像 circuit_breaker 用 expect），`emit` 不在持锁期间 await（克隆 handler 列表后释放锁再调）。先做同步 typed-hook 版满足审计/慢查询钩子。**热路径零分配**：默认空订阅者时 emit 仅一次读锁+空 Vec 检查，可进一步用 OnceLock 缓存「有无订阅者」标志规避读锁。同步 handler 不得阻塞（文档强调）。纯增量 minor。新增 `crates/yang-base/src/event/mod.rs`。
+
+**N7｜错误人体工学构造器与 .context() 链** · effort M
+只能裸 `BaseError::Variant("...".to_string())` 构造，调用点充斥 `.map_err(|e| BaseError::X(e.to_string()))`。两层糖：(a) 语义化构造器 `config`/`unknown`/`param`（接受 `impl Into<String>`）省 `.to_string()`；(b) `ResultExt::context` trait 给任意 Result 链上人类可读上下文。**约束**：不能破坏结构化变体（ValidationFailed 等）携带的字段与错误码——`context` 默认走 Unknown 会丢码，文档建议仅在最外层用；需保码场景提供 `.context_keep()` 仅日志不改变体。不引 anyhow（保持零额外依赖）。纯增量 minor。文件 `error/mod.rs:415`。
+
+**N8｜内置 Action Output DTO 一致性 + 成功文案** · effort S
+两个味道：(1) `AffectedResult` 定义在 `add.rs` 却被 `put.rs`/`del.rs` 反向 `use`（寄居错位）；(2) blanket `DynAction::dispatch` 硬编码 `ApiResponse::success(output, "成功")`（`typed.rs:86`），所有 Action 文案一刀切。把共享 DTO 收敛到 `action/builtin/dto.rs` 单一归属（保留 `pub use` + `#[deprecated]` 兼容），`TypedAction` 提供可覆盖 `success_message()` 默认 `"成功"`，dispatch 改用 `self.success_message()`，派生宏支持 `#[action(success_message="新增成功")]`。有默认实现不破坏手写者。minor。文件 `add.rs:13`、`put.rs:4`、`del.rs:4`、`typed.rs:34-87`。
+
+**N9｜错误码与变体双射/去重** · effort S
+与 12.5「码双射」同源，从 Tier-Nice 视角强化：撞码本身可接受（同类对外同码），真正的债是缺不变量守护 + 重复变体。(a) 补列举全变体的双射体检测试，登记「允许同码」白名单，新增变体引入未登记撞码即测试失败；(b) `MigrationFailed` `#[deprecated]` 收敛到 `DatabaseMigrationFailed`；(c) enum 标 `#[non_exhaustive]`（评估亦点名）。`#[non_exhaustive]` 是 SemVer 破坏需显式标注，deprecate 不删兼容，撞码不改对外码稳定。文件 `error/mod.rs:31/92-97/444-524` + 测试区。
+
+**N10｜extract_input 的 schema 校验闸 + 避免整体克隆** · effort S
+两个独立小债。(1) `input_schema` 已生成却未当运行期校验闸——`feature="plugin-schema"/"validator"` 时可在 handler 前用 jsonschema 校验 body 命中 schema，违例转 `ValidationFailed`（放 feature gate，默认不开避免热路径开销与误拒）。(2) `extract_input` 每次 `from_value(body.clone())` 深克隆整个 body——dispatch 独占 ctx，改 `take_input(&mut self)` 用 `std::mem::take` 取走 body 免深克隆。take 后 body 变 Null 不可二次提取（文档注明）。minor。文件 `context.rs:268`、`typed.rs:82`。
+
+**N11｜cancellation 半状态收口** · effort M
+两处取消安全洞。(a) 熔断器 `allow_at` 在 Open 冷却结束插入 HalfOpen 放行探测，若随后 `.await` 被取消，HalfOpen 名额已消耗却永无收尾，卡在 HalfOpen——用 RAII 探测守卫 `Probe`，`Drop` 时若既未成功也未失败则回滚 Open（借 Drop 在取消时也执行收口）。(b) `LogoutAction` 两次 revoke 之间被取消会留半登出——并发 `tokio::join!` 拉黑两 token 缩小窗口，revoke 本身幂等故重试安全（文档化）。顺带把 `circuit_breaker.rs:82/106/124` 的 `.expect` 统一改 `into_inner`（消除中毒即 panic，呼应 I9/I10）。pub API 不变，patch/minor。文件 `circuit_breaker.rs:81-145`、`auth.rs:355-371`。
+
+**N12｜单例 connect-then-set 并发资源浪费** · effort S
+`GlobalDatabase::init` 先 `connect_with_config` 建池再 `OnceLock::set`，并发 init 会各自建池、后者 set 失败但池已建（连接已占）；`GlobalTools::init` 同模式。**方案 A**：用 `tokio::sync::OnceCell` 的 `get_or_try_init` 把建池纳入临界区，只建一次，其余等待复用——但语义微调（重复 init 从报 `AlreadyInitialized` 变复用首池）。**方案 B（零行为变更，推荐）**：用 `Mutex<()>` 包住 connect+set 序列，set 已存在则跳过建池，保留报错语义。若依赖旧报错行为则 A 是行为破坏需 CHANGELOG 标注。tokio sync 已在 workspace。minor。文件 `database/global.rs:45/91-125`、`action/context.rs:26/141-166`。
+
+---
+
+> **方案集完整性**：截至本节，第 8-10 节 yang-base（C1-C6 等）、yang-db（DB-1..DB-21）、第六节 Tier-Nice（N1-N12）、文档勘误（DOC-1..4）与深度复核新增（NG-1..4）的每一个问题，均已在 12.1-12.12 给出至少一个贴合架构、标注兼容性与 effort 的优雅方案。落地时按第七节优先级顺序推进，每条完成回填 11.4/11.5 状态表。
+
+### 12.1 事务与原子写（C1 / DB-5 / I5 / I6 / DB-4）
+
+**DB-5｜Transaction 暴露受控 sqlx 执行器逃生舱（C1 的 db 侧前置）** · effort S
+开 `#[doc(hidden)] fn executor(&mut self) -> Option<&mut sqlx::MySqlConnection>`，把内部 sqlx 连接借给同 workspace 上层执行其自构建的参数化语句。yang-base 本就直接依赖 sqlx，泄漏连接与现有耦合一致，无需新抽象；值由调用方 `?` 绑定，标识符安全由 yang-base 的 quote 保证。PG 侧对称返回 `&mut PgConnection`。文件 `mysql/transaction.rs:192`、`postgres/transaction.rs`。纯新增，向后兼容。
+
+**C1｜TableQuery 增 `*_in_tx` 终端变体 + 执行器泛型化** · effort L
+TableQuery 已是「构建/执行分离」结构，把各终端方法重复的 bind+execute 收敛进一个对 `sqlx::Executor` 泛型的私有 `run_execute`（`&MySqlPool` 与 `&mut MySqlConnection` 都实现），现有 insert/update/delete/select 改调它（行为零变化），再加一组 `*_in_tx(&mut yang_db::Transaction, ...)`。事务不进 builder 字段（规避 `&mut` 生命周期与链式 move 冲突），只在终端调用点传入，builder 链完全不动；权限/校验/软删/MissingWhere 守卫全部复用。`ActionContext::begin_transaction()` 转发 `GlobalDatabase::transaction`。复用 `DbError::TransactionError` 不新增 BaseError 变体。文件 `table_query.rs:1615/1669/1881/2142`、`context.rs:358`。全部新增、`#[cfg(feature="mysql")]`，向后兼容 minor；依赖 DB-5。
 
 
 

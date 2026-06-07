@@ -84,7 +84,27 @@
       "Bash(grep -vi \"reqwest\\\\|//\\\\|doc\")",
       "Bash(grep -iv \"custom\\\\|//\\\\|doc\\\\|test\")",
       "Bash(sed -n '8,12p' crates/yang-db/README.md)",
-      "Bash(sed -n '26,30p' docs/yang-base-engine-maturity-assessment.md)"
+      "Bash(sed -n '26,30p' docs/yang-base-engine-maturity-assessment.md)",
+      "Bash(xargs grep -l \"Drop\\\\|close\\\\|drain\\\\|config\\\\|from_env\")",
+      "mcp__codegraph__codegraph_search",
+      "Bash(xargs grep -l \"\\\\.code\\(\\)\")",
+      "Bash(awk -F'=> ' '{print $2}')",
+      "Bash(awk '$1 > 1')",
+      "Bash(awk '/^pub enum BaseError/,/^}/' /d/code/lib_yang/crates/yang-base/src/error/mod.rs)",
+      "Bash(grep -v \"test\\\\|doc\\\\|//\")",
+      "Bash(grep -rn \"root\\\\|password\\\\|111111\\\\|mysql://\\\\|postgres://\" /d/code/lib_yang/crates/yang-base --include=\"*.rs\")",
+      "Bash(sed -n '1230,1260p' crates/yang-db/src/redis/client.rs)",
+      "Bash(sed -n '1535,1575p' crates/yang-db/src/redis/client.rs)",
+      "Bash(grep -v \"//.*unwrap\\\\|//.*as \\\\|//.*expect\")",
+      "mcp__codegraph__codegraph_trace",
+      "Bash(sed -n '1,60p' crates/yang-db/Cargo.toml)",
+      "Bash(sed -n '1,80p' crates/yang-base/Cargo.toml)",
+      "Read(//tmp/**)",
+      "Bash(xargs grep -ln \"pub enum Value\")",
+      "Bash(grep -n \"push_str\\(\\\\\"?\\\\\"\\)\\\\|\\\\\\\\\\\\$\\\\|placeholder\\\\|fn condition_to_sql\" crates/yang-db/src/mysql/condition.rs)",
+      "Bash(grep -n 'format!\\(\"\\\\${}\"\\\\|placeholder\\\\|fn condition_to_sql\\\\|param_index' crates/yang-db/src/postgres/condition.rs)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(xargs grep -l \"FromRow\")"
     ]
   }
 }

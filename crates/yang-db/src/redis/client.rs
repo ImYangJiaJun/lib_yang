@@ -1721,12 +1721,12 @@ impl RedisClient {
 
     /// 健康检查 - 验证 Redis 连接是否正常
     ///
-    /// 执行 PING 命令检查 Redis 服务可达性。连接异常时不抛错误，返回 Ok(false)。
+    /// 执行 PING 命令检查 Redis 服务可达性。**任何异常（PING 失败或无法获取连接）
+    /// 均不抛错，统一返回 `Ok(false)`**——`Err` 分支不可达。
     ///
     /// # 返回
-    /// - `Ok(true)`: Redis 连接正常
-    /// - `Ok(false)`: PING 响应异常
-    /// - `Err(DbError)`: 无法获取连接
+    /// - `Ok(true)`: PING 成功，Redis 连接正常
+    /// - `Ok(false)`: PING 响应异常 **或** 无法获取连接（底层错误被吞）
     pub async fn health_check(&self) -> Result<bool> {
         let cmd = redis::cmd("PING");
         match self.execute(&cmd).await {

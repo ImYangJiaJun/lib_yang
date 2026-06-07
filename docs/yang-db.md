@@ -273,9 +273,8 @@ pub enum SqlValue {
 
 #### SQL 注入防护
 
-- 字段名通过 `quote_identifier()` 反引号转义
-- `is_valid_identifier()` 严格校验标识符（仅 ASCII 字母/数字/下划线）
-- 所有用户值通过 `?` 占位符参数化绑定，不拼接进 SQL 字符串
+- **值**：所有用户值通过 `?` 占位符参数化绑定，不拼接进 SQL 字符串（注入安全）。
+- **标识符（表名/列名）**：yang-db **不**自动转义/校验，按调用方传入裸拼。`quote_identifier()`/`is_valid_identifier()` 位于上层 yang-base（`table/table_query.rs:140/167`），由受保护层负责。**直接使用 yang-db 者必须自行保证表名/列名来自可信常量或白名单**，勿将用户输入直接作为标识符（详见评估文档 10.3 DB-1 / 11.4 DOC-3）。
 
 #### 完整示例
 
