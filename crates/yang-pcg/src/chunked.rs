@@ -192,7 +192,10 @@ pub fn fill_chunk_details(
         );
 
         match terrain_result {
-            Ok(t) => {
+            Ok(mut t) => {
+                // 连通性兜底（与整层路径一致，须在点位采样之前）
+                terrain::repair_terrain_connectivity(&mut t);
+
                 // 生成点位
                 let mut item_rng = root_rng.derive(&format!("items:chunk:{}:{}", chunk_id, room.id));
                 let mut enemy_rng = root_rng.derive(&format!("enemies:chunk:{}:{}", chunk_id, room.id));
@@ -219,7 +222,7 @@ pub fn fill_chunk_details(
             Err(primary_err) => {
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
-                let t = terrain::DefaultCarveStrategy
+                let mut t = terrain::DefaultCarveStrategy
                     .generate(
                         room,
                         &chunk_anchors.iter().copied().cloned().collect::<Vec<_>>(),
@@ -227,6 +230,7 @@ pub fn fill_chunk_details(
                         &mut fallback_rng,
                     )
                     .map_err(|_| primary_err)?;
+                terrain::repair_terrain_connectivity(&mut t);
                 terrains.push(t);
             }
         }
@@ -362,7 +366,10 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
         );
 
         match terrain_result {
-            Ok(t) => {
+            Ok(mut t) => {
+                // 连通性兜底（与整层路径一致，须在点位采样之前）
+                terrain::repair_terrain_connectivity(&mut t);
+
                 // 生成点位
                 let mut item_rng = root_rng.derive(&format!("items:{}", room.id));
                 let mut enemy_rng = root_rng.derive(&format!("enemies:{}", room.id));
@@ -388,7 +395,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
             Err(primary_err) => {
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}", room.id));
-                let t = terrain::DefaultCarveStrategy
+                let mut t = terrain::DefaultCarveStrategy
                     .generate(
                         room,
                         &target_anchors,
@@ -396,6 +403,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
                         &mut fallback_rng,
                     )
                     .map_err(|_| primary_err)?;
+                terrain::repair_terrain_connectivity(&mut t);
                 terrains.push(t);
             }
         }
