@@ -203,8 +203,11 @@ pub fn fill_chunk_details(
                 let room_items = crate::spawn::items::generate_item_spawns_for_room(
                     room, &t, normalized, &mut item_rng,
                 );
-                let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room(
-                    room, &t, normalized, &mut enemy_rng,
+                // 敌人采样避开已放置交互物，保证跨类型间距（与整层路径一致）
+                let occupied = crate::spawn::occupied_local_points(room, &room_items);
+                let cross_spacing = crate::spawn::min_cross_type_spacing(&normalized.config);
+                let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room_excluding(
+                    room, &t, normalized, &occupied, cross_spacing, &mut enemy_rng,
                 );
 
                 // 应用约束过滤
@@ -377,8 +380,11 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
                 let room_items = crate::spawn::items::generate_item_spawns_for_room(
                     room, &t, &normalized, &mut item_rng,
                 );
-                let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room(
-                    room, &t, &normalized, &mut enemy_rng,
+                // 敌人采样避开已放置交互物，保证跨类型间距（与整层路径一致）
+                let occupied = crate::spawn::occupied_local_points(room, &room_items);
+                let cross_spacing = crate::spawn::min_cross_type_spacing(&normalized.config);
+                let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room_excluding(
+                    room, &t, &normalized, &occupied, cross_spacing, &mut enemy_rng,
                 );
 
                 let (filtered_items, filtered_enemies) =
