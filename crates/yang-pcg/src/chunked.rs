@@ -3,11 +3,12 @@
 
 use std::time::Instant;
 
+use crate::backend::select_backend;
 use crate::config::NormalizedConfig;
 use crate::constraint;
 use crate::digest::ConfigDigest;
 use crate::error::{PcgError, PcgResult};
-use crate::layout::{self, LayoutOutput};
+use crate::layout::LayoutOutput;
 use crate::model::chunk::Chunk;
 use crate::model::request::{ChunkId, GenerationRequest};
 use crate::model::result::{GenerationResult, ResultMetadata};
@@ -79,6 +80,8 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
 
     constraint::validate_constraints(&request.constraints)?;
 
+    let backend = select_backend(&normalized);
+
     // 拓扑阶段
     let mut topology_rng = root_rng.derive("topology");
     let mut graph = topology::generate_topology(&normalized, &mut topology_rng)?;
@@ -86,7 +89,7 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
 
     // 布局阶段
     let mut layout_rng = root_rng.derive("layout");
-    let layout_output = layout::solve_layout(&graph, &normalized, &mut layout_rng)?;
+    let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
 
     // 生成分块元数据
     let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);
@@ -264,6 +267,8 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
 
     constraint::validate_constraints(&request.constraints)?;
 
+    let backend = select_backend(&normalized);
+
     // 拓扑阶段（整层，可复用）
     let mut topology_rng = root_rng.derive("topology");
     let mut graph = topology::generate_topology(&normalized, &mut topology_rng)?;
@@ -271,7 +276,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
 
     // 布局阶段（整层，可复用）
     let mut layout_rng = root_rng.derive("layout");
-    let layout_output = layout::solve_layout(&graph, &normalized, &mut layout_rng)?;
+    let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
 
     // 生成分块元数据
     let all_chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);

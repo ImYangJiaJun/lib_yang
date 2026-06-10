@@ -52,6 +52,7 @@
 //! ```
 
 // 核心模块
+pub mod backend;
 pub mod cache;
 pub mod chunked;
 pub mod config;

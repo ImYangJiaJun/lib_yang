@@ -1,6 +1,7 @@
 // 核心生成器模块
 // 负责编排整个地图生成流程
 
+use crate::backend::select_backend;
 use crate::debug::{elapsed_ms, stage_stat, stage_stat_timed, DebugBundle, DebugChannels};
 use crate::digest::ConfigDigest;
 use crate::error::PcgResult;
@@ -10,7 +11,7 @@ use crate::model::room::CorridorPath;
 use crate::rng::StableRng;
 use crate::spawn::SpawnOutput;
 use crate::validation::{run_full_validation, validate_request, validate_result};
-use crate::{chunked, constraint, layout, spawn, terrain, topology, ue};
+use crate::{chunked, constraint, topology, ue};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::chunked::{ChunkDetailResult, TopologyResult};
@@ -52,6 +53,9 @@ impl MapGenerator {
 
         constraint::validate_constraints(&request.constraints)?;
 
+        // 选择管线 backend（本迭代恒为俯视角；编排代码与具体 backend 解耦）
+        let backend = select_backend(&normalized);
+
         // 拓扑阶段
         let topology_start = self.debug_enabled.then(Instant::now);
         let mut topology_rng = root_rng.derive("topology");
@@ -62,13 +66,13 @@ impl MapGenerator {
         // 布局阶段
         let layout_start = self.debug_enabled.then(Instant::now);
         let mut layout_rng = root_rng.derive("layout");
-        let layout_output = layout::solve_layout(&graph, &normalized, &mut layout_rng)?;
+        let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
         let layout_ms = layout_start.map(elapsed_ms);
 
         // 地形阶段
         let terrain_start = self.debug_enabled.then(Instant::now);
         let mut terrain_rng = root_rng.derive("terrain");
-        let terrains = terrain::generate_terrains(
+        let terrains = backend.generate_terrains(
             &layout_output.rooms,
             &layout_output.door_anchors,
             &normalized,
@@ -81,7 +85,7 @@ impl MapGenerator {
         let mut spawn_rng = root_rng.derive("spawn");
         // 调试模式下使用带跟踪的点位生成，记录候选数和拒绝原因
         let (item_spawns, enemy_spawns, spawn_debug_info) = if self.debug_enabled {
-            let spawn_result = spawn::generate_spawns_with_debug(
+            let spawn_result = backend.generate_spawns_with_debug(
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
@@ -97,7 +101,7 @@ impl MapGenerator {
             let SpawnOutput {
                 item_spawns,
                 enemy_spawns,
-            } = spawn::generate_spawns(
+            } = backend.generate_spawns(
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
