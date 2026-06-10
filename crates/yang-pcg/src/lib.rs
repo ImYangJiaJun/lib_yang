@@ -83,7 +83,10 @@ pub use chunked::{ChunkDetailResult, TopologyResult};
 pub use config::{GenerationConfig, GenerationMode, NormalizedConfig};
 pub use digest::ConfigDigest;
 pub use error::{PcgError, PcgResult};
-pub use export::{export_binary, export_json, export_json_compact, import_binary, import_json, CURRENT_SCHEMA_VERSION};
+pub use export::{
+    export_binary, export_json, export_json_compact, import_binary, import_json,
+    CURRENT_SCHEMA_VERSION,
+};
 pub use generator::MapGenerator;
 pub use grammar::{GrammarContext, GrammarRule, WeightedRuleSelector};
 pub use model::{
@@ -154,9 +157,11 @@ mod tests {
     fn test_generation_modes() {
         use crate::config::GenerationMode;
 
-        let modes = [GenerationMode::OfflineFullFloor,
+        let modes = [
+            GenerationMode::OfflineFullFloor,
             GenerationMode::RuntimeChunked,
-            GenerationMode::HybridPrecompute];
+            GenerationMode::HybridPrecompute,
+        ];
 
         assert_eq!(modes.len(), 3);
         assert_eq!(modes[0], GenerationMode::OfflineFullFloor);

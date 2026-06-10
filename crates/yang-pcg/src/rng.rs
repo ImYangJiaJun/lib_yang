@@ -1,9 +1,9 @@
 // 确定性随机数生成模块
 // 提供稳定的、可派生子流的随机接口
 
-use rand::{Rng, SeedableRng};
 use rand::RngExt;
 use rand::TryRng;
+use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
@@ -29,8 +29,9 @@ use std::hash::{Hash, Hasher};
 /// // 从根种子创建
 /// let mut rng = StableRng::from_seed(12345);
 ///
-/// // 生成随机数
-/// let value: u32 = rng.random();
+/// // 生成范围内的随机数 [0, 100)
+/// let value = rng.random_range(0, 100);
+/// assert!((0..100).contains(&value));
 ///
 /// // 派生子流
 /// let mut topology_rng = rng.derive("topology");
@@ -39,7 +40,7 @@ use std::hash::{Hash, Hasher};
 /// // 相同种子和派生路径产生相同结果
 /// let mut rng1 = StableRng::from_seed(12345);
 /// let mut rng2 = StableRng::from_seed(12345);
-/// assert_eq!(rng1.random::<u32>(), rng2.random::<u32>());
+/// assert_eq!(rng1.random_range(0, 100), rng2.random_range(0, 100));
 /// ```
 pub struct StableRng {
     /// 底层 PCG 随机数生成器
@@ -512,7 +513,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = rng.random_range(1, 10);
-assert!((1..10).contains(&value));
+            assert!((1..10).contains(&value));
         }
     }
 

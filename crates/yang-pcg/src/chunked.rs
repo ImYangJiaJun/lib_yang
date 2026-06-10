@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use crate::backend::select_backend;
+use crate::backend::{select_backend, ValidationScope};
 use crate::config::NormalizedConfig;
 use crate::constraint;
 use crate::digest::ConfigDigest;
@@ -18,7 +18,9 @@ use crate::model::terrain::Terrain;
 use crate::rng::StableRng;
 use crate::terrain::strategy::TerrainStrategy;
 use crate::ue;
-use crate::validation::validate_request;
+use crate::validation::{
+    validate_no_overlap, validate_request, validate_spawn_spacing, validate_terrain_connectivity,
+};
 use crate::{terrain, topology};
 
 /// 拓扑预计算结果
@@ -74,7 +76,9 @@ pub struct ChunkDetailResult {
 /// - `Err(PcgError)`: 配置或拓扑生成错误
 pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyResult> {
     let normalized = validate_request(&request)?;
-    let seed = request.seed.unwrap_or_else(super::generator::system_time_seed);
+    let seed = request
+        .seed
+        .unwrap_or_else(super::generator::system_time_seed);
     let root_rng = StableRng::from_seed(seed);
     let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
 
@@ -90,6 +94,9 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
     // 布局阶段
     let mut layout_rng = root_rng.derive("layout");
     let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
+
+    // 布局阶段硬校验：房间边界不重叠（拓扑/布局已就绪，地形/点位尚未生成）
+    validate_no_overlap(&layout_output.rooms)?;
 
     // 生成分块元数据
     let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);
@@ -127,10 +134,9 @@ pub fn fill_chunk_details(
         .chunks
         .iter()
         .find(|c| c.id == chunk_id)
-        .ok_or_else(|| PcgError::config_with_field(
-            format!("分块 '{}' 不存在", chunk_id),
-            "chunk_id",
-        ))?;
+        .ok_or_else(|| {
+            PcgError::config_with_field(format!("分块 '{}' 不存在", chunk_id), "chunk_id")
+        })?;
 
     // 筛选分块内的房间
     let chunk_rooms: Vec<&Room> = topology_result
@@ -197,26 +203,35 @@ pub fn fill_chunk_details(
                 terrain::repair_terrain_connectivity(&mut t);
 
                 // 生成点位
-                let mut item_rng = root_rng.derive(&format!("items:chunk:{}:{}", chunk_id, room.id));
-                let mut enemy_rng = root_rng.derive(&format!("enemies:chunk:{}:{}", chunk_id, room.id));
+                let mut item_rng =
+                    root_rng.derive(&format!("items:chunk:{}:{}", chunk_id, room.id));
+                let mut enemy_rng =
+                    root_rng.derive(&format!("enemies:chunk:{}:{}", chunk_id, room.id));
 
                 let room_items = crate::spawn::items::generate_item_spawns_for_room(
-                    room, &t, normalized, &mut item_rng,
+                    room,
+                    &t,
+                    normalized,
+                    &mut item_rng,
                 );
                 // 敌人采样避开已放置交互物，保证跨类型间距（与整层路径一致）
                 let occupied = crate::spawn::occupied_local_points(room, &room_items);
                 let cross_spacing = crate::spawn::min_cross_type_spacing(&normalized.config);
                 let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room_excluding(
-                    room, &t, normalized, &occupied, cross_spacing, &mut enemy_rng,
+                    room,
+                    &t,
+                    normalized,
+                    &occupied,
+                    cross_spacing,
+                    &mut enemy_rng,
                 );
 
                 // 应用约束过滤
-                let (filtered_items, filtered_enemies) =
-                    constraint::apply_spawn_constraints(
-                        room_items,
-                        room_enemies,
-                        &topology_result.constraints,
-                    );
+                let (filtered_items, filtered_enemies) = constraint::apply_spawn_constraints(
+                    room_items,
+                    room_enemies,
+                    &topology_result.constraints,
+                );
 
                 item_spawns.extend(filtered_items);
                 enemy_spawns.extend(filtered_enemies);
@@ -224,7 +239,8 @@ pub fn fill_chunk_details(
             }
             Err(primary_err) => {
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
-                let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
+                let mut fallback_rng =
+                    root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
                 let mut t = terrain::DefaultCarveStrategy
                     .generate(
                         room,
@@ -237,8 +253,18 @@ pub fn fill_chunk_details(
                 terrains.push(t);
             }
         }
-
     }
+
+    // 分块硬校验（局部不变量，对任意子集成立）：地形连通 + 点位间距。
+    // 不做整图结构/可达性校验（部分结果天然不满足）。
+    validate_terrain_connectivity(&terrains)?;
+    let all_spawns: Vec<SpawnPoint> = item_spawns
+        .iter()
+        .chain(enemy_spawns.iter())
+        .cloned()
+        .collect();
+    let min_spacing = i32::from(crate::spawn::min_cross_type_spacing(&normalized.config));
+    validate_spawn_spacing(&all_spawns, &topology_result.constraints, Some(min_spacing))?;
 
     Ok(ChunkDetailResult {
         chunk_id: chunk_id.to_string(),
@@ -262,7 +288,9 @@ pub fn fill_chunk_details(
 /// - `Err(PcgError)`: 配置或生成错误
 pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult> {
     let normalized = validate_request(&request)?;
-    let seed = request.seed.unwrap_or_else(super::generator::system_time_seed);
+    let seed = request
+        .seed
+        .unwrap_or_else(super::generator::system_time_seed);
     let root_rng = StableRng::from_seed(seed);
     let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
 
@@ -361,12 +389,8 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
 
         let terrain_config = &normalized.config.terrain;
         let strategy = terrain::select_strategy(room);
-        let terrain_result = strategy.generate(
-            room,
-            &target_anchors,
-            terrain_config,
-            &mut terrain_rng,
-        );
+        let terrain_result =
+            strategy.generate(room, &target_anchors, terrain_config, &mut terrain_rng);
 
         match terrain_result {
             Ok(mut t) => {
@@ -378,21 +402,28 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
                 let mut enemy_rng = root_rng.derive(&format!("enemies:{}", room.id));
 
                 let room_items = crate::spawn::items::generate_item_spawns_for_room(
-                    room, &t, &normalized, &mut item_rng,
+                    room,
+                    &t,
+                    &normalized,
+                    &mut item_rng,
                 );
                 // 敌人采样避开已放置交互物，保证跨类型间距（与整层路径一致）
                 let occupied = crate::spawn::occupied_local_points(room, &room_items);
                 let cross_spacing = crate::spawn::min_cross_type_spacing(&normalized.config);
                 let room_enemies = crate::spawn::enemies::generate_enemy_spawns_for_room_excluding(
-                    room, &t, &normalized, &occupied, cross_spacing, &mut enemy_rng,
+                    room,
+                    &t,
+                    &normalized,
+                    &occupied,
+                    cross_spacing,
+                    &mut enemy_rng,
                 );
 
-                let (filtered_items, filtered_enemies) =
-                    constraint::apply_spawn_constraints(
-                        room_items,
-                        room_enemies,
-                        &request.constraints,
-                    );
+                let (filtered_items, filtered_enemies) = constraint::apply_spawn_constraints(
+                    room_items,
+                    room_enemies,
+                    &request.constraints,
+                );
 
                 item_spawns.extend(filtered_items);
                 enemy_spawns.extend(filtered_enemies);
@@ -402,12 +433,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}", room.id));
                 let mut t = terrain::DefaultCarveStrategy
-                    .generate(
-                        room,
-                        &target_anchors,
-                        terrain_config,
-                        &mut fallback_rng,
-                    )
+                    .generate(room, &target_anchors, terrain_config, &mut fallback_rng)
                     .map_err(|_| primary_err)?;
                 terrain::repair_terrain_connectivity(&mut t);
                 terrains.push(t);
@@ -435,6 +461,14 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
         chunks: all_chunks,
         debug: None,
     };
+
+    // 分块部分结果的硬校验（跳过整图结构/可达性，保留局部不变量）
+    backend.validate(
+        &result,
+        &normalized,
+        &request.constraints,
+        ValidationScope::Chunk,
+    )?;
 
     Ok(result)
 }

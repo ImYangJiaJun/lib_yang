@@ -134,6 +134,58 @@ fn test_generate_chunk_specific_chunks() {
 }
 
 #[test]
+fn test_generate_chunk_partial_passes_chunk_validation() {
+    // 单分块部分结果（rooms 数严格少于 topology.nodes 数）应通过 Chunk 作用域硬校验，
+    // 不被「整图结构计数」检查（仅 FullFloor 有）误杀。
+    let generator = MapGenerator::new();
+    let config = make_runtime_chunked_config();
+
+    let all = generator
+        .generate_chunk(GenerationRequest {
+            seed: Some(42),
+            config: config.clone(),
+            constraints: vec![],
+            runtime_context: Some(RuntimeContext {
+                focus_position: None,
+                interest_radius: None,
+                requested_chunks: vec![],
+                caller_tag: None,
+            }),
+            trace_id: None,
+        })
+        .expect("全量分块生成应成功");
+
+    let total_nodes = all.topology.nodes.len();
+    // 找一个房间数严格少于总数的分块（默认配置通常会有多个分块）
+    if let Some(partial_chunk) = all
+        .chunks
+        .iter()
+        .find(|c| !c.room_ids.is_empty() && c.room_ids.len() < total_nodes)
+    {
+        let result = generator
+            .generate_chunk(GenerationRequest {
+                seed: Some(42),
+                config,
+                constraints: vec![],
+                runtime_context: Some(RuntimeContext {
+                    focus_position: None,
+                    interest_radius: None,
+                    requested_chunks: vec![partial_chunk.id.clone()],
+                    caller_tag: None,
+                }),
+                trace_id: None,
+            })
+            .expect("单分块部分结果应通过 Chunk 校验并成功");
+        assert!(
+            result.rooms.len() < result.topology.nodes.len(),
+            "应为部分结果：房间数({})应少于拓扑节点数({})",
+            result.rooms.len(),
+            result.topology.nodes.len()
+        );
+    }
+}
+
+#[test]
 fn test_generate_chunk_reuses_topology() {
     // 验证分块生成复用拓扑（相同 seed 下拓扑一致）
     let generator = MapGenerator::new();
@@ -200,10 +252,7 @@ fn test_generate_topology_only() {
     // 验证拓扑和布局已生成
     assert!(!topo_result.topology.nodes.is_empty(), "应有拓扑节点");
     assert!(!topo_result.layout.rooms.is_empty(), "应有布局房间");
-    assert!(
-        !topo_result.layout.door_anchors.is_empty(),
-        "应有门锚点"
-    );
+    assert!(!topo_result.layout.door_anchors.is_empty(), "应有门锚点");
     assert!(!topo_result.layout.corridors.is_empty(), "应有走廊");
     assert!(!topo_result.chunks.is_empty(), "应有分块元数据");
 }
@@ -419,8 +468,12 @@ fn test_runtime_chunked_determinism() {
         trace_id: None,
     };
 
-    let result1 = generator.generate_chunk(make_request()).expect("生成应成功");
-    let result2 = generator.generate_chunk(make_request()).expect("生成应成功");
+    let result1 = generator
+        .generate_chunk(make_request())
+        .expect("生成应成功");
+    let result2 = generator
+        .generate_chunk(make_request())
+        .expect("生成应成功");
 
     // 验证结果完全一致
     assert_eq!(result1.rooms.len(), result2.rooms.len());
@@ -492,8 +545,7 @@ fn test_chunked_vs_full_floor_consistency() {
         "拓扑边数应一致"
     );
     assert_eq!(
-        full_result.topology.critical_path,
-        topo_result.topology.critical_path,
+        full_result.topology.critical_path, topo_result.topology.critical_path,
         "关键路径应一致"
     );
 
@@ -570,8 +622,7 @@ fn test_chunked_covers_all_rooms() {
         .expect("拓扑预计算应成功");
 
     // 收集所有分块覆盖的房间 ID
-    let mut covered_room_ids: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut covered_room_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for chunk in &topo_result.chunks {
         covered_room_ids.extend(chunk.room_ids.iter().cloned());
     }
