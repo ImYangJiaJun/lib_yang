@@ -1,6 +1,7 @@
 // 核心生成器模块
 // 负责编排整个地图生成流程
 
+use crate::backend::{select_backend, ValidationScope};
 use crate::debug::{elapsed_ms, stage_stat, stage_stat_timed, DebugBundle, DebugChannels};
 use crate::digest::ConfigDigest;
 use crate::error::PcgResult;
@@ -9,8 +10,8 @@ use crate::model::result::{GenerationResult, ResultMetadata};
 use crate::model::room::CorridorPath;
 use crate::rng::StableRng;
 use crate::spawn::SpawnOutput;
-use crate::validation::{run_full_validation, validate_request, validate_result};
-use crate::{chunked, constraint, layout, spawn, terrain, topology, ue};
+use crate::validation::{run_full_validation, validate_request};
+use crate::{chunked, constraint, topology, ue};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::chunked::{ChunkDetailResult, TopologyResult};
@@ -52,6 +53,9 @@ impl MapGenerator {
 
         constraint::validate_constraints(&request.constraints)?;
 
+        // 选择管线 backend（本迭代恒为俯视角；编排代码与具体 backend 解耦）
+        let backend = select_backend(&normalized);
+
         // 拓扑阶段
         let topology_start = self.debug_enabled.then(Instant::now);
         let mut topology_rng = root_rng.derive("topology");
@@ -62,13 +66,13 @@ impl MapGenerator {
         // 布局阶段
         let layout_start = self.debug_enabled.then(Instant::now);
         let mut layout_rng = root_rng.derive("layout");
-        let layout_output = layout::solve_layout(&graph, &normalized, &mut layout_rng)?;
+        let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
         let layout_ms = layout_start.map(elapsed_ms);
 
         // 地形阶段
         let terrain_start = self.debug_enabled.then(Instant::now);
         let mut terrain_rng = root_rng.derive("terrain");
-        let terrains = terrain::generate_terrains(
+        let terrains = backend.generate_terrains(
             &layout_output.rooms,
             &layout_output.door_anchors,
             &normalized,
@@ -81,7 +85,7 @@ impl MapGenerator {
         let mut spawn_rng = root_rng.derive("spawn");
         // 调试模式下使用带跟踪的点位生成，记录候选数和拒绝原因
         let (item_spawns, enemy_spawns, spawn_debug_info) = if self.debug_enabled {
-            let spawn_result = spawn::generate_spawns_with_debug(
+            let spawn_result = backend.generate_spawns_with_debug(
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
@@ -97,14 +101,17 @@ impl MapGenerator {
             let SpawnOutput {
                 item_spawns,
                 enemy_spawns,
-            } = spawn::generate_spawns(
+            } = backend.generate_spawns(
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
                 &mut spawn_rng,
             )?;
-            let (items, enemies) =
-                constraint::apply_spawn_constraints(item_spawns, enemy_spawns, &request.constraints);
+            let (items, enemies) = constraint::apply_spawn_constraints(
+                item_spawns,
+                enemy_spawns,
+                &request.constraints,
+            );
             (items, enemies, None)
         };
         let spawn_ms = spawn_start.map(elapsed_ms);
@@ -143,16 +150,8 @@ impl MapGenerator {
             DebugBundle {
                 trace_id: request.trace_id.clone(),
                 stage_stats: vec![
-                    stage_stat_timed(
-                        "topology",
-                        graph.nodes.len(),
-                        topology_ms.unwrap_or(0),
-                    ),
-                    stage_stat_timed(
-                        "layout",
-                        layout_output.rooms.len(),
-                        layout_ms.unwrap_or(0),
-                    ),
+                    stage_stat_timed("topology", graph.nodes.len(), topology_ms.unwrap_or(0)),
+                    stage_stat_timed("layout", layout_output.rooms.len(), layout_ms.unwrap_or(0)),
                     stage_stat_timed("terrain", terrains.len(), terrain_ms.unwrap_or(0)),
                     stage_stat_timed("spawn_items", item_spawns.len(), spawn_ms.unwrap_or(0)),
                     stage_stat("spawn_enemies", enemy_spawns.len()),
@@ -183,7 +182,14 @@ impl MapGenerator {
             debug,
         };
 
-        validate_result(&result)?;
+        // 全量硬校验进生产路径：结构一致性 + 可达 + 无重叠 + 地形连通 + 点位间距。
+        // 失败返回 Err（不静默放行）。
+        backend.validate(
+            &result,
+            &normalized,
+            &request.constraints,
+            ValidationScope::FullFloor,
+        )?;
 
         // 在调试模式下，生成并填充验证报告
         let mut result = result;
@@ -230,10 +236,7 @@ impl MapGenerator {
     ///
     /// # 返回
     /// - `Ok(TopologyResult)`: 拓扑和布局预计算结果
-    pub fn generate_topology_only(
-        &self,
-        request: GenerationRequest,
-    ) -> PcgResult<TopologyResult> {
+    pub fn generate_topology_only(&self, request: GenerationRequest) -> PcgResult<TopologyResult> {
         chunked::generate_topology_only(request)
     }
 
@@ -268,6 +271,35 @@ pub(crate) fn system_time_seed() -> u64 {
 mod tests {
     use super::*;
     use crate::config::GenerationConfig;
+
+    #[test]
+    fn test_generate_satisfies_all_invariants_across_seeds() {
+        // 验证需求 4.7/5.4/7.4/8.3 - 算法修复后，默认配置生成确定性满足全部硬不变量。
+        // generate() 已无条件接入硬校验，成功本身即证明不变量满足；这里再用
+        // run_full_validation 显式断言报告全绿，作为更直接的回归护栏。
+        let generator = MapGenerator::new();
+        for seed in [42u64, 12345, 7, 99, 256, 1024] {
+            let result = generator
+                .generate(GenerationRequest {
+                    seed: Some(seed),
+                    config: GenerationConfig::default(),
+                    constraints: vec![],
+                    runtime_context: None,
+                    trace_id: None,
+                })
+                .unwrap_or_else(|e| panic!("seed {seed} 生成应成功并通过硬校验: {e}"));
+            let report = crate::validation::run_full_validation(&result, &[], None);
+            assert!(
+                report.all_passed,
+                "seed {seed} 应满足全部不变量，失败项: {:?}",
+                report
+                    .items()
+                    .iter()
+                    .filter(|i| !i.passed)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[test]
     fn test_generate_returns_non_empty_result() {
@@ -422,8 +454,7 @@ mod tests {
 
         // 验证关键路径节点与拓扑一致
         assert_eq!(
-            channels.critical_path_nodes,
-            result.topology.critical_path,
+            channels.critical_path_nodes, result.topology.critical_path,
             "调试通道的关键路径应与拓扑结果一致"
         );
 
@@ -493,10 +524,7 @@ mod tests {
 
         // 验证每个拒绝原因都有非空的描述
         for reason in &spawn_debug.rejection_reasons {
-            assert!(
-                !reason.reason.is_empty(),
-                "拒绝原因描述不应为空"
-            );
+            assert!(!reason.reason.is_empty(), "拒绝原因描述不应为空");
         }
 
         // 验证接受数与实际生成的点位数一致
@@ -559,8 +587,7 @@ mod tests {
         );
 
         // 3. 验证 trace_id 传播到导出通道元数据
-        let channels = crate::ue::adapter::export_named_channels(&result)
-            .expect("导出应成功");
+        let channels = crate::ue::adapter::export_named_channels(&result).expect("导出应成功");
         for channel in &channels {
             let channel_trace = channel.metadata.get("trace_id");
             assert_eq!(
@@ -589,8 +616,7 @@ mod tests {
 
         assert!(result.metadata.trace_id.is_none());
 
-        let channels = crate::ue::adapter::export_named_channels(&result)
-            .expect("导出应成功");
+        let channels = crate::ue::adapter::export_named_channels(&result).expect("导出应成功");
         for channel in &channels {
             assert!(
                 !channel.metadata.contains_key("trace_id"),

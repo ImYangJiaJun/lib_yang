@@ -197,9 +197,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
     /// 房间边界不重叠属性：任意合法配置下房间 AABB 不重叠
-    /// 已知算法限制：布局算法在高密度房间配置下可能产生重叠，需要单独修复迭代
+    /// 由 `solve_room_bounds` 的确定性防重叠（分支竖直外推）保证（验证需求 4.7）。
     #[test]
-    #[ignore] // 已知算法限制：房间布局重叠问题，待后续修复迭代解决
     fn prop_no_room_overlap(
         seed in arb_seed(),
         config in arb_generation_config(),
@@ -234,9 +233,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
     /// 地形连通性属性：任意房间从入口到出口存在通路
-    /// 已知算法限制：地形生成在特定障碍物密度下可能导致入口到出口不连通，需要单独修复迭代
+    /// 由 `repair_terrain_connectivity` 的强制连通兜底 pass 保证（验证需求 5.4）。
     #[test]
-    #[ignore] // 已知算法限制：地形连通性问题，待后续修复迭代解决
     fn prop_terrain_connectivity(
         seed in arb_seed(),
         config in arb_generation_config(),
@@ -271,9 +269,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
     /// 点位最小间距属性：任意配置下点位满足最小间距
-    /// 已知算法限制：跨类型点位（道具与敌人）间距验证未在生成时统一约束，需要单独修复迭代
+    /// 由 spawn 阶段「敌人采样避开已放置交互物」的跨类型间距保证（验证需求 7.4/8.3）。
     #[test]
-    #[ignore] // 已知算法限制：跨类型点位间距问题，待后续修复迭代解决
     fn prop_spawn_spacing(
         seed in arb_seed(),
         config in arb_generation_config(),

@@ -10,7 +10,7 @@ use crate::rng::StableRng;
 use crate::topology::graph::sample_range_u16;
 
 use super::budget::enemy_budget;
-use super::sampling::{select_spaced_points, select_spaced_points_tracked};
+use super::sampling::{select_spaced_points_excluding, select_spaced_points_tracked_excluding};
 
 /// 敌人点位生成的跟踪结果。
 #[derive(Debug, Clone)]
@@ -28,6 +28,22 @@ pub fn generate_enemy_spawns_for_room(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,
+    rng: &mut StableRng,
+) -> Vec<SpawnPoint> {
+    generate_enemy_spawns_for_room_excluding(room, terrain, config, &[], 0, rng)
+}
+
+/// 生成单个房间的敌人点位，并与「已占用点」（如先放置的交互物，局部坐标）保持跨类型间距。
+///
+/// `occupied` 为局部坐标的已占用点集合，`occupied_spacing` 为跨类型间距阈值。
+/// 与 `generate_enemy_spawns_for_room` 行为一致（传空 occupied 时字节等价），
+/// RNG 消耗不受 occupied 影响（仅取决于候选洗牌）。
+pub fn generate_enemy_spawns_for_room_excluding(
+    room: &Room,
+    terrain: &Terrain,
+    config: &NormalizedConfig,
+    occupied: &[GridPoint],
+    occupied_spacing: u16,
     rng: &mut StableRng,
 ) -> Vec<SpawnPoint> {
     match room.room_type {
@@ -50,10 +66,12 @@ pub fn generate_enemy_spawns_for_room(
         terrain,
         config.config.enemy_spawns.min_distance_from_entrance,
     );
-    let points = select_spaced_points(
+    let points = select_spaced_points_excluding(
         &candidates,
         desired_count,
         config.config.enemy_spawns.min_spacing,
+        occupied,
+        occupied_spacing,
         rng,
     );
     let budget = enemy_budget(room, config);
@@ -69,6 +87,20 @@ pub fn generate_enemy_spawns_for_room_tracked(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,
+    rng: &mut StableRng,
+) -> EnemySpawnTracked {
+    generate_enemy_spawns_for_room_tracked_excluding(room, terrain, config, &[], 0, rng)
+}
+
+/// `generate_enemy_spawns_for_room_tracked` 的跨类型间距版本。
+///
+/// 与「已占用点」（局部坐标）保持 `occupied_spacing` 间距，其余行为一致。
+pub fn generate_enemy_spawns_for_room_tracked_excluding(
+    room: &Room,
+    terrain: &Terrain,
+    config: &NormalizedConfig,
+    occupied: &[GridPoint],
+    occupied_spacing: u16,
     rng: &mut StableRng,
 ) -> EnemySpawnTracked {
     match room.room_type {
@@ -102,10 +134,12 @@ pub fn generate_enemy_spawns_for_room_tracked(
         config.config.enemy_spawns.min_distance_from_entrance,
     );
     let candidate_count = candidates.len();
-    let result = select_spaced_points_tracked(
+    let result = select_spaced_points_tracked_excluding(
         &candidates,
         desired_count,
         config.config.enemy_spawns.min_spacing,
+        occupied,
+        occupied_spacing,
         rng,
     );
     let budget = enemy_budget(room, config);

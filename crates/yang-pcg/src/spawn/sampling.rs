@@ -23,6 +23,33 @@ pub fn select_spaced_points(
     select_spaced_points_tracked(candidates, desired_count, min_spacing, rng).selected
 }
 
+/// 从候选点中选出满足最小间距、且与「已占用点」保持跨类型间距的若干点。
+///
+/// `occupied` 为另一类型（如先放置的交互物）已占用的局部坐标，`occupied_spacing`
+/// 为跨类型间距阈值；候选点需同时满足「距已选点 ≥ min_spacing」与
+/// 「距所有 occupied ≥ occupied_spacing」（均为欧氏距离）。
+///
+/// 注意：RNG 仅消耗于候选洗牌，**与 occupied 无关**——传空 occupied 时行为与
+/// `select_spaced_points_tracked` 完全一致，故不影响既有确定性。
+pub fn select_spaced_points_excluding(
+    candidates: &[GridPoint],
+    desired_count: usize,
+    min_spacing: u16,
+    occupied: &[GridPoint],
+    occupied_spacing: u16,
+    rng: &mut StableRng,
+) -> Vec<GridPoint> {
+    select_spaced_points_tracked_excluding(
+        candidates,
+        desired_count,
+        min_spacing,
+        occupied,
+        occupied_spacing,
+        rng,
+    )
+    .selected
+}
+
 /// 从候选点中选出满足最小间距的若干点，同时记录被拒绝的点位和原因。
 ///
 /// 与 `select_spaced_points` 功能相同，但额外返回拒绝信息，
@@ -35,6 +62,22 @@ pub fn select_spaced_points_tracked(
     candidates: &[GridPoint],
     desired_count: usize,
     min_spacing: u16,
+    rng: &mut StableRng,
+) -> SamplingResult {
+    // 委托给带占用集合的实现，传空 occupied 即与原行为字节一致（RNG 仅消耗于洗牌）。
+    select_spaced_points_tracked_excluding(candidates, desired_count, min_spacing, &[], 0, rng)
+}
+
+/// `select_spaced_points_tracked` 的跨类型间距版本。
+///
+/// 在原有「距已选点 ≥ min_spacing」之外，追加「距 `occupied` 中所有点 ≥ occupied_spacing」
+/// 的接受条件。RNG 仅消耗于候选洗牌，与 occupied 无关。
+pub fn select_spaced_points_tracked_excluding(
+    candidates: &[GridPoint],
+    desired_count: usize,
+    min_spacing: u16,
+    occupied: &[GridPoint],
+    occupied_spacing: u16,
     rng: &mut StableRng,
 ) -> SamplingResult {
     if candidates.is_empty() || desired_count == 0 {
@@ -50,22 +93,26 @@ pub fn select_spaced_points_tracked(
     let mut selected = Vec::with_capacity(desired_count.min(shuffled.len()));
     let mut rejections = Vec::new();
     let min_distance_sq = i32::from(min_spacing).pow(2);
+    let occupied_distance_sq = i32::from(occupied_spacing).pow(2);
 
     for point in shuffled {
         if selected.len() == desired_count {
             break;
         }
-        if selected
+        let ok_selected = selected
             .iter()
-            .all(|existing| distance_sq(*existing, point) >= min_distance_sq)
-        {
+            .all(|existing| distance_sq(*existing, point) >= min_distance_sq);
+        let ok_occupied = occupied
+            .iter()
+            .all(|occ| distance_sq(*occ, point) >= occupied_distance_sq);
+        if ok_selected && ok_occupied {
             selected.push(point);
         } else {
             rejections.push(RejectionReason {
                 position: point,
                 reason: format!(
-                    "间距不足: 与已选点位距离小于最小间距 {}",
-                    min_spacing
+                    "间距不足: 与已选点位或已占用点位距离小于间距阈值（min={}, cross={}）",
+                    min_spacing, occupied_spacing
                 ),
             });
         }
