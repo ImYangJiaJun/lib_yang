@@ -216,17 +216,18 @@ pub fn fill_chunk_details(
                 enemy_spawns.extend(filtered_enemies);
                 terrains.push(t);
             }
-            Err(_) => {
-                // 策略失败时回退到默认策略
+            Err(primary_err) => {
+                // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
-                if let Ok(t) = terrain::DefaultCarveStrategy.generate(
-                    room,
-                    &chunk_anchors.iter().copied().cloned().collect::<Vec<_>>(),
-                    terrain_config,
-                    &mut fallback_rng,
-                ) {
-                    terrains.push(t);
-                }
+                let t = terrain::DefaultCarveStrategy
+                    .generate(
+                        room,
+                        &chunk_anchors.iter().copied().cloned().collect::<Vec<_>>(),
+                        terrain_config,
+                        &mut fallback_rng,
+                    )
+                    .map_err(|_| primary_err)?;
+                terrains.push(t);
             }
         }
 
@@ -384,17 +385,18 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
                 enemy_spawns.extend(filtered_enemies);
                 terrains.push(t);
             }
-            Err(_) => {
-                // 策略失败时回退到默认策略
+            Err(primary_err) => {
+                // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}", room.id));
-                if let Ok(t) = terrain::DefaultCarveStrategy.generate(
-                    room,
-                    &target_anchors,
-                    terrain_config,
-                    &mut fallback_rng,
-                ) {
-                    terrains.push(t);
-                }
+                let t = terrain::DefaultCarveStrategy
+                    .generate(
+                        room,
+                        &target_anchors,
+                        terrain_config,
+                        &mut fallback_rng,
+                    )
+                    .map_err(|_| primary_err)?;
+                terrains.push(t);
             }
         }
     }
