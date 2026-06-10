@@ -81,10 +81,10 @@ GenerationRequest
   -> debug 模式下：run_full_validation
 ```
 
-`RuntimeChunked` 走 `chunked::generate_chunk`；`HybridPrecompute` 用 `generate_topology_only` + `fill_chunk_details`。RNG 派生标签（`topology` / `layout` / `terrain` / `spawn` 以及每个房间的 item/enemy 流名）是确定性契约的一部分，**改名等于破坏 seed 复现性和黄金测试**。UE 相关概念只能放在 `src/ue/` 下，core 模块（generator/topology/layout/terrain/spawn）不允许混入 UE 类型。`set_debug(true)` 不得改变 gameplay 输出，debug 数据走 side channel。
+`RuntimeChunked` 走 `chunked::generate_chunk`；`HybridPrecompute` 用 `generate_topology_only` + `fill_chunk_details`。RNG 派生标签（`topology` / `layout` / `terrain` / `spawn` 以及每个房间的 item/enemy 流名）是确定性契约的一部分，**改名等于破坏 seed 复现性和黄金测试**。注意确定性是**逐生成模式**成立的：三种模式 RNG 派生路径不同（`OfflineFullFloor` 用 `terrain`，分块/混合路径用 `terrain:chunk:{chunk}:{room}`），**同一 seed 跨模式会产出不同地图**——这是按需出块的必要设计。`seed: None` 会**从 config 派生确定性种子**（`ConfigDigest::seed_from_config`），相同 config 仍复现同图；想要不同结果就显式给 seed 或改 config。UE 相关概念只能放在 `src/ue/` 下，core 模块（generator/topology/layout/terrain/spawn）不允许混入 UE 类型。`set_debug(true)` 不得改变 gameplay 输出，debug 数据走 side channel。
 
-### 已知 Gap（不要"修"成被动失败）
-`yang-pcg/src/tests_task27/property_tests.rs` 中有三个 `#[ignore]` 的 property test，分别记录布局重叠、地形连通性、spawn 间距的真实未满足不变量。**不要为了让测试通过去删/弱化它们**，那些 ignore 是文档。
+### 历史 Gap 已修复（2026-06 起）
+`yang-pcg/src/tests_task27/property_tests.rs` 曾有三个 `#[ignore]` 的 property test（布局重叠、地形连通性、spawn 间距）。**这三项已被构造性算法修复并解除 ignore**（提交 `0ff2979`/`3650a4d`/`f2aef14`），现 6 个 property test 全部启用、`cargo test --lib -p yang-pcg` = 305 passed / 0 ignored / clippy 干净。这些不变量现由生产路径的全量硬校验（`generator.rs` 的 `backend.validate(... FullFloor)`，失败返回 `Err`）+ 已启用的 proptest 共同守护，**仍然不要删/弱化它们**，但它们守护的是真不变量、不再是"已知 gap"。`docs/BACKLOG.md` 给出各项当前真相。
 
 ## 全局约定
 

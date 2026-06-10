@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::geometry::WorldPoint;
 
 use super::points::{PcgPoint, PropertyValue};
@@ -10,7 +12,7 @@ use super::points::{PcgPoint, PropertyValue};
 pub type Polyline3 = Vec<WorldPoint>;
 
 /// 通道类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
     Rooms,
     Doors,
@@ -23,7 +25,7 @@ pub enum ChannelKind {
 }
 
 /// 具名通道。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedChannel {
     pub name: String,
     pub kind: ChannelKind,

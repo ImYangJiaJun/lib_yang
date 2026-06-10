@@ -2,10 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::geometry::{Bounds3, Transform3};
 
 /// UE 侧属性值。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
     Bool(bool),
     Int(i64),
@@ -14,7 +16,7 @@ pub enum PropertyValue {
 }
 
 /// UE5 PCG 点数据。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcgPoint {
     pub transform: Transform3,
     pub bounds: Bounds3,

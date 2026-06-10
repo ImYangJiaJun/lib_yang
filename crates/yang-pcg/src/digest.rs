@@ -49,6 +49,32 @@ impl ConfigDigest {
         }
     }
 
+    /// 从配置派生确定性种子（u64）。
+    ///
+    /// 当生成请求未显式提供 `seed` 时，用本方法从配置派生一个**确定性**的兜底种子，
+    /// 保证「相同 config + 不提供 seed」始终产出相同地图——符合确定性库的契约。
+    /// 与 [`from_config`](Self::from_config) 使用相同的稳定哈希逻辑。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_pcg::config::GenerationConfig;
+    /// use yang_pcg::digest::ConfigDigest;
+    ///
+    /// let config = GenerationConfig::default();
+    /// // 同一 config 多次派生得到相同种子
+    /// assert_eq!(
+    ///     ConfigDigest::seed_from_config(&config),
+    ///     ConfigDigest::seed_from_config(&config)
+    /// );
+    /// ```
+    pub fn seed_from_config(config: &GenerationConfig) -> u64 {
+        let json = serde_json::to_string(config).unwrap_or_else(|_| String::new());
+        let mut hasher = DefaultHasher::new();
+        json.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// 从字符串创建摘要
     ///
     /// 用于从缓存或导出数据中恢复摘要。

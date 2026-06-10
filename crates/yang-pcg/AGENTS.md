@@ -24,7 +24,9 @@ yang-pcg/
 │   ├── export/             # JSON + binary import/export
 │   ├── cache/              # in-memory result cache
 │   ├── debug/              # DebugBundle, stage stats, spawn debug
-│   └── grammar/            # weighted grammar selector, token hooks
+│   ├── grammar/            # weighted grammar selector, token hooks
+│   └── bin/
+│       └── pcg_cli.rs      # CLI for runtime generation (UE5 route B): --seed/--config/--out/--format
 ├── tests/                  # generation_bench.rs, ignored benchmark-style tests
 ├── proptest-regressions/   # task27 property regression corpus
 └── docs/                   # config/error guides + task summaries
@@ -86,21 +88,27 @@ GenerationRequest
 - Config/docs live in both `docs/` and `.kiro/specs/ue5-roguelike-map-generator/`; `.kiro` is the product/design source of truth.
 
 ## TESTING
-- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests.
-- `src/tests_task27/property_tests.rs` contains proptest invariants; three are `#[ignore]` for known algorithm gaps.
+- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (305 passing, 0 ignored as of 2026-06).
+- `src/tests_task27/property_tests.rs` contains 6 proptest invariants; **all are now enabled (no `#[ignore]`)**. The three historically-ignored properties (room overlap / terrain connectivity / spawn spacing) were fixed by constructive algorithm passes and re-enabled — they now guard real invariants, not document gaps.
 - `tests/generation_bench.rs` contains ignored benchmark-style tests, not criterion benches.
 - `proptest-regressions/tests_task27/property_tests.txt` is intentional and should remain.
 
 ## ANTI-PATTERNS
-- Do not weaken ignored properties for overlap/connectivity/spacing; they encode real unsatisfied invariants.
+- The overlap/connectivity/spacing invariants are now enforced by hard validation on the production path (`generator.rs` `backend.validate(... FullFloor)` returns `Err` on violation) and guarded by enabled proptests. Do not weaken them.
 - Do not change RNG derivation labels casually; this breaks seed reproducibility and golden/debug expectations.
 - Do not mix UE-specific concepts into generator/topology/layout/terrain/spawn core modules.
 - Do not treat `cache/` as persistent cache; it is currently in-memory only, no TTL/LRU/disk.
 - Do not assume Grammar is complete; selector and grammar fields exist, but external Shape Grammar integration is not implemented here.
 
-## KNOWN GAPS
-- Layout can produce overlapping room bounds in dense configurations.
-- Terrain connectivity can fail for some obstacle densities/strategy outputs.
-- Item/enemy spacing is generated separately; cross-type spacing is only caught by validation.
+## DETERMINISM IS PER-MODE
+The "same seed+config → same map" contract holds **within a single generation mode**. The three modes derive RNG with different stream labels (`terrain` in `OfflineFullFloor` vs `terrain:chunk:{chunk}:{room}` in chunked/hybrid paths), so **the same seed produces different maps across modes**. This is by design (chunks must derive independently to stream on demand). Callers must fix one mode for reproducibility. When `seed: None`, the seed is **derived deterministically from the config** (`ConfigDigest::seed_from_config`), so the same config still reproduces the same map; pass an explicit seed (or change the config) when you want a different result.
+
+## KNOWN GAPS / STATUS (updated 2026-06)
+- ~~Layout can produce overlapping room bounds~~ — FIXED: `solve_room_bounds` deterministic anti-overlap (branch vertical extrusion); guarded by `prop_no_room_overlap` + hard validation.
+- ~~Terrain connectivity can fail~~ — FIXED: `repair_terrain_connectivity` forced fallback pass; guarded by `prop_terrain_connectivity` + hard validation.
+- ~~Cross-type spawn spacing only caught by validation~~ — FIXED: enemy sampling avoids placed items; guarded by `prop_spawn_spacing` + hard validation.
+- UE adapter channel types (`NamedChannel`/`PcgPoint`/`PropertyValue`) do **not** derive `Serialize`; they cannot be written to disk directly. The file export path for UE5 is `export_json`/`export_binary` over the whole `GenerationResult`.
+- Public structs (`GenerationRequest`/`GenerationConfig` and nested config) are all-pub-field with no `#[non_exhaustive]`; adding a field is a breaking change for all construction sites. Consider a builder before 1.0.
 - `INSTALL.md.md` is a double-extension documentation artifact.
+- No `LICENSE` file in the crate despite `license = "MIT OR Apache-2.0"`; add before publishing.
 - `docs/task_4_summary.md` and `TASK_3_SUMMARY.md` are historical summaries, not source-of-truth specs.

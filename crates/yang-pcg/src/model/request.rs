@@ -9,7 +9,13 @@ use serde::{Deserialize, Serialize};
 /// 单次地图生成请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationRequest {
-    /// 随机种子(可选,未提供时自动生成)
+    /// 随机种子。
+    ///
+    /// - `Some(s)`：使用显式种子 `s`。相同 `s` + 相同 `config` 必产出相同地图。
+    /// - `None`：从 `config` 派生**确定性**兜底种子（见 `ConfigDigest::seed_from_config`），
+    ///   因此相同 `config` 即使不提供种子也会复现同一地图。想要不同结果时，请显式提供种子或修改配置。
+    ///
+    /// 注意：确定性保证在**同一生成模式内**成立；不同 `generation_mode` 即使同种子也会产出不同地图。
     pub seed: Option<u64>,
     /// 生成配置
     pub config: GenerationConfig,

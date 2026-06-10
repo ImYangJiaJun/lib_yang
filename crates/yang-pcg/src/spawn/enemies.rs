@@ -259,10 +259,15 @@ fn enemy_pool_tag(room_type: RoomType) -> &'static str {
 }
 
 fn world_grid_point(room: &Room, local_point: GridPoint) -> GridPoint {
-    let bounds = room.bounds.expect("点位生成前房间必须已有边界");
+    // 调用方已保证 bounds 存在；用 unwrap_or 兜底为局部坐标，
+    // 避免在内部不变量被违反时 panic（与 items.rs::world_grid_point 一致）。
+    let origin = room
+        .bounds
+        .map(|b| b.min)
+        .unwrap_or(GridPoint { x: 0, y: 0 });
     GridPoint {
-        x: bounds.min.x + local_point.x,
-        y: bounds.min.y + local_point.y,
+        x: origin.x + local_point.x,
+        y: origin.y + local_point.y,
     }
 }
 

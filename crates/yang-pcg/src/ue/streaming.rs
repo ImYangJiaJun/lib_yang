@@ -30,8 +30,10 @@ pub fn build_chunks(rooms: &[Room], config: &NormalizedConfig) -> Vec<Chunk> {
     let chunk_size = i32::from(config.config.chunking.chunk_size);
     let mut chunks = std::collections::BTreeMap::<ChunkId, Vec<&Room>>::new();
 
-    for room in rooms.iter().filter(|room| room.bounds.is_some()) {
-        let bounds = room.bounds.expect("已过滤 None");
+    for room in rooms {
+        let Some(bounds) = room.bounds else {
+            continue;
+        };
         let center = bounds.center();
         let chunk_x = center.x.div_euclid(chunk_size);
         let chunk_y = center.y.div_euclid(chunk_size);

@@ -32,6 +32,10 @@ pub fn generate_item_spawns_for_room(
     if matches!(room.room_type, RoomType::Boss) {
         return Vec::new();
     }
+    // 房间无边界时无法定位点位，返回空（点位生成阶段不会发生，与 occupied_local_points 约定一致）
+    if room.bounds.is_none() {
+        return Vec::new();
+    }
 
     let count_range =
         adjusted_item_count_range(room.room_type, config.config.item_spawns.count_per_room);
@@ -58,6 +62,14 @@ pub fn generate_item_spawns_for_room_tracked(
     rng: &mut StableRng,
 ) -> ItemSpawnTracked {
     if matches!(room.room_type, RoomType::Boss) {
+        return ItemSpawnTracked {
+            spawns: Vec::new(),
+            candidate_count: 0,
+            rejections: Vec::new(),
+        };
+    }
+    // 房间无边界时无法定位点位，返回空（与 occupied_local_points 约定一致）
+    if room.bounds.is_none() {
         return ItemSpawnTracked {
             spawns: Vec::new(),
             candidate_count: 0,
@@ -159,10 +171,15 @@ fn item_spawn_tag(room_type: RoomType) -> &'static str {
 }
 
 fn world_grid_point(room: &Room, local_point: GridPoint) -> GridPoint {
-    let bounds = room.bounds.expect("点位生成前房间必须已有边界");
+    // 调用方（build_spawn_points 的入口函数）已保证 bounds 存在；
+    // 这里用 unwrap_or 兜底为局部坐标，避免在内部不变量被违反时 panic。
+    let origin = room
+        .bounds
+        .map(|b| b.min)
+        .unwrap_or(GridPoint { x: 0, y: 0 });
     GridPoint {
-        x: bounds.min.x + local_point.x,
-        y: bounds.min.y + local_point.y,
+        x: origin.x + local_point.x,
+        y: origin.y + local_point.y,
     }
 }
 

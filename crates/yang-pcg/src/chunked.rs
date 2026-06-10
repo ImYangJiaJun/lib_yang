@@ -78,7 +78,7 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
     let normalized = validate_request(&request)?;
     let seed = request
         .seed
-        .unwrap_or_else(super::generator::system_time_seed);
+        .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
     let root_rng = StableRng::from_seed(seed);
     let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
 
@@ -290,7 +290,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
     let normalized = validate_request(&request)?;
     let seed = request
         .seed
-        .unwrap_or_else(super::generator::system_time_seed);
+        .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
     let root_rng = StableRng::from_seed(seed);
     let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
 

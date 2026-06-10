@@ -7,7 +7,7 @@ pub mod params;
 pub mod points;
 pub mod streaming;
 
-pub use adapter::export_named_channels;
+pub use adapter::{export_named_channels, export_named_channels_json};
 pub use channels::{ChannelKind, NamedChannel};
 pub use params::map_config_to_graph_params;
 pub use points::{PcgPoint, PropertyValue};

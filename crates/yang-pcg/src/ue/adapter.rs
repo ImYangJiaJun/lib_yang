@@ -41,6 +41,28 @@ pub fn export_named_channels(result: &GenerationResult) -> PcgResult<Vec<NamedCh
     Ok(channels)
 }
 
+/// 将生成结果导出为 UE5 具名通道，并序列化为 JSON 字符串。
+///
+/// 这是 [`export_named_channels`] 的便捷封装：先生成 `Vec<NamedChannel>`，
+/// 再用 `serde_json` 序列化，使具名通道可直接落盘供 UE5 侧读取。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// let json = yang_pcg::ue::export_named_channels_json(&result)?;
+/// std::fs::write("channels.json", json)?;
+/// ```
+pub fn export_named_channels_json(result: &GenerationResult) -> PcgResult<String> {
+    let channels = export_named_channels(result)?;
+    serde_json::to_string(&channels).map_err(|e| {
+        crate::error::PcgError::export_with_format(
+            format!("具名通道序列化失败: {}", e),
+            "ue_channels_json",
+            Some(e.to_string()),
+        )
+    })
+}
+
 fn export_room_channel(result: &GenerationResult) -> NamedChannel {
     let points = result
         .rooms
@@ -327,5 +349,35 @@ mod tests {
         assert!(channels
             .iter()
             .any(|channel| channel.name == "spawn_enemies"));
+    }
+
+    #[test]
+    fn test_named_channels_json_roundtrip() {
+        let result = MapGenerator::new()
+            .generate(GenerationRequest {
+                seed: Some(202),
+                config: GenerationConfig::default(),
+                constraints: vec![],
+                runtime_context: None,
+                trace_id: Some("rt".to_string()),
+            })
+            .expect("应能生成测试地图");
+
+        // 序列化为 JSON 字符串
+        let json = export_named_channels_json(&result).expect("应能序列化具名通道为 JSON");
+        assert!(!json.is_empty());
+
+        // 反序列化回 Vec<NamedChannel> 并比对关键字段，验证 Serialize/Deserialize 闭环
+        let restored: Vec<NamedChannel> =
+            serde_json::from_str(&json).expect("应能从 JSON 反序列化具名通道");
+        let original = export_named_channels(&result).expect("应能导出具名通道");
+
+        assert_eq!(restored.len(), original.len());
+        for (a, b) in restored.iter().zip(original.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.points.len(), b.points.len());
+            assert_eq!(a.polylines.len(), b.polylines.len());
+        }
     }
 }

@@ -12,7 +12,7 @@ use crate::rng::StableRng;
 use crate::spawn::SpawnOutput;
 use crate::validation::{run_full_validation, validate_request};
 use crate::{chunked, constraint, topology, ue};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use crate::chunked::{ChunkDetailResult, TopologyResult};
 
@@ -47,7 +47,10 @@ impl MapGenerator {
         }
 
         let normalized = validate_request(&request)?;
-        let seed = request.seed.unwrap_or_else(system_time_seed);
+        // seed 缺省时从配置派生确定性种子（而非系统时间），保证「相同 config 必产同图」。
+        let seed = request
+            .seed
+            .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
         let root_rng = StableRng::from_seed(seed);
         let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
 
@@ -260,13 +263,6 @@ impl MapGenerator {
     }
 }
 
-pub(crate) fn system_time_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() ^ u64::from(duration.subsec_nanos()))
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +295,24 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn test_generate_with_none_seed_is_deterministic() {
+        // seed:None 现在从 config 派生确定性兜底种子，相同 config 必产同图（字节级一致）。
+        let generator = MapGenerator::new();
+        let make_request = || GenerationRequest {
+            seed: None,
+            config: GenerationConfig::default(),
+            constraints: vec![],
+            runtime_context: None,
+            trace_id: None,
+        };
+        let a = generator.generate(make_request()).expect("生成应成功");
+        let b = generator.generate(make_request()).expect("生成应成功");
+        let json_a = crate::export::export_json(&a).expect("导出应成功");
+        let json_b = crate::export::export_json(&b).expect("导出应成功");
+        assert_eq!(json_a, json_b, "seed:None 应从配置派生确定性结果");
     }
 
     #[test]

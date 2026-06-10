@@ -6,6 +6,15 @@
 > 方法：15 维度并行审核 + 逐条对抗性验证（部分维度因服务端限流改为自校验），辅以审核者亲自核实的第一手代码证据
 > 基线：`cargo clippy --all-targets --all-features` 零警告；`cargo test --lib` 293 通过 / 0 失败 / 3 个已知 `#[ignore]`；示例可编译
 
+> **后记（2026-06-10 晚，本报告之后的修复）**：本报告为审核当时的快照，下列条目随后已修复并验证，阅读正文时请对照：
+> - **3 处生产路径 expect panic 已消除**（原见「亮点」与 §7.1）：`spawn/items.rs`、`spawn/enemies.rs` 的 `world_grid_point` 改为 `unwrap_or` 局部坐标兜底 + 入口 `bounds` 守卫；`ue/streaming.rs` 改 `let-else continue`。生产路径已无 expect/unwrap panic。
+> - **`seed: None` 不再走系统时间**：改为从 config 派生确定性种子（新增 `ConfigDigest::seed_from_config`），相同 config 复现同图；`system_time_seed` 已删除。
+> - **UE 具名通道已可序列化**：`NamedChannel`/`PcgPoint`/`PropertyValue`/`ChannelKind` 加 `Serialize+Deserialize`，新增 `ue::export_named_channels_json`。（tile 通道 O(总面积) 内存问题仍在，大图仍建议走 `export_json` 主通路。）
+> - **新增 `pcg_cli`**（`src/bin/pcg_cli.rs`）：UE5 运行时集成路线 B 的命令行工具，详见 `../UE5_INTEGRATION.md` §5。
+> - 当前基线：`cargo test --lib` **307 通过 / 0 失败 / 0 ignored**；clippy 全目标全特性零警告；LICENSE-MIT/APACHE 已补齐。
+>
+> 报告正文（含三种 ignored test、3 处 panic 的描述）保留为审核当时的原始记录，不再回改。
+
 ---
 
 ## 一、执行摘要
