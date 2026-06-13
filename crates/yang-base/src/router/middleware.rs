@@ -101,3 +101,46 @@ impl<'a> Next<'a> {
         }
     }
 }
+
+/// request_id 透传中间件（可观测性 C4）。
+///
+/// 作洋葱链**最外层**：若请求头含 `X-Request-Id` 则解析透传（解析失败回退为
+/// `ActionContext` 已生成的标识），否则沿用默认生成值；随后写入根 span 的
+/// `request_id` 字段以串联日志/metrics/审计。
+///
+/// 注：`ActionContext::new` 默认已生成一个 request_id，本中间件只负责「上游透传」
+/// 这一增量语义，不破坏无中间件时的可观测性。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::router::{ModuleRouter, RequestIdMiddleware};
+///
+/// let router = ModuleRouter::new("user", "用户管理")
+///     .middleware(RequestIdMiddleware);
+/// ```
+pub struct RequestIdMiddleware;
+
+#[async_trait]
+impl Middleware for RequestIdMiddleware {
+    async fn handle(
+        &self,
+        mut ctx: ActionContext,
+        next: Next<'_>,
+    ) -> Result<ApiResponse, BaseError> {
+        // 上游 X-Request-Id 优先：存在且可解析则透传，否则保留默认生成值
+        if let Some(raw) = ctx
+            .request
+            .headers
+            .get("X-Request-Id")
+            .or_else(|| ctx.request.headers.get("x-request-id"))
+        {
+            if let Some(rid) = crate::action::RequestId::parse_hex(raw) {
+                ctx = ctx.with_request_id(rid);
+            }
+        }
+        // 写入当前 span（dispatch 根 span 已声明 request_id 字段）
+        tracing::Span::current().record("request_id", tracing::field::display(ctx.request_id));
+        next.run(ctx).await
+    }
+}

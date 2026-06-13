@@ -4,6 +4,9 @@
 mod validator_test;
 
 #[cfg(test)]
+mod validator_concurrency_test;
+
+#[cfg(test)]
 mod field_config_test;
 
 #[cfg(test)]

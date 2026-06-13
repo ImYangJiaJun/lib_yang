@@ -79,7 +79,7 @@ impl CircuitBreaker {
 
     /// 记录一次成功（2xx/3xx/4xx）。HalfOpen 下累计成功，达阈值恢复 Closed。
     pub fn on_success(&self, host: &str) {
-        let mut map = self.states.lock().expect("熔断器状态锁中毒");
+        let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
         match map.get_mut(host) {
             // Closed 有失败累计 → 成功即清零（移除 entry 回到健康）。
             Some(Phase::Closed { .. }) => {
@@ -103,7 +103,7 @@ impl CircuitBreaker {
 
     /// `allow` 的可注入时钟版本，供测试模拟冷却。
     pub(crate) fn allow_at(&self, host: &str, now: Instant) -> bool {
-        let mut map = self.states.lock().expect("熔断器状态锁中毒");
+        let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
         match map.get(host) {
             None | Some(Phase::Closed { .. }) | Some(Phase::HalfOpen { .. }) => true,
             Some(Phase::Open { opened_at }) => {
@@ -121,7 +121,7 @@ impl CircuitBreaker {
 
     /// `on_failure` 的可注入时钟版本。
     pub(crate) fn on_failure_at(&self, host: &str, now: Instant) {
-        let mut map = self.states.lock().expect("熔断器状态锁中毒");
+        let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
         match map.get_mut(host) {
             None => {
                 let phase = if self.config.failure_threshold <= 1 {

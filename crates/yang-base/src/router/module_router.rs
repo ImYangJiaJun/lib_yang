@@ -37,6 +37,7 @@ use crate::router::middleware::{Middleware, Next};
 use crate::table::TableConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// ModuleRouter - 模块路由器
 ///
@@ -348,7 +349,16 @@ impl ModuleRouter {
             router: self,
             action,
         };
-        next.run(context).await
+
+        // 根 span：串联整条派发链路。静态 span 名 + 借用字段，成功路径零分配；
+        // request_id 先以 Empty 占位，由 RequestIdMiddleware 在链内 record 透传值。
+        let span = tracing::info_span!(
+            "dispatch",
+            module = %self.module_name,
+            action = %action_name,
+            request_id = %context.request_id,
+        );
+        next.run(context).instrument(span).await
     }
 
     /// 中间件链的终点：执行内置鉴权后派发 Action。
@@ -363,18 +373,27 @@ impl ModuleRouter {
     ) -> Result<ApiResponse, BaseError> {
         let meta = action.meta();
 
+        // 鉴权子 span：记录是否公开 Action 与最终放行结果
+        let span = tracing::info_span!(
+            "authorize",
+            is_public = meta.is_public,
+            granted = tracing::field::Empty,
+        );
+        let _enter = span.enter();
+
         // 公开 Action 跳过登录/权限检查
         if !meta.is_public {
             // 检查用户是否已认证
-            let user = context
-                .user
-                .as_ref()
-                .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+            let user = context.user.as_ref().ok_or_else(|| {
+                span.record("granted", false);
+                BaseError::Unauthorized("需要登录".to_string())
+            })?;
 
             // 检查默认权限
             if !self.default_permissions.is_empty()
                 && !self.check_permissions(user, &self.default_permissions)
             {
+                span.record("granted", false);
                 return Err(BaseError::PermissionDenied(format!(
                     "缺少模块权限: {:?}",
                     self.default_permissions
@@ -391,6 +410,7 @@ impl ModuleRouter {
                     .iter()
                     .all(|p| user.has_permission(p.name()))
             {
+                span.record("granted", false);
                 let permission_names: Vec<&str> =
                     meta.permissions.iter().map(|p| p.name()).collect();
                 return Err(BaseError::PermissionDenied(format!(
@@ -399,6 +419,10 @@ impl ModuleRouter {
                 )));
             }
         }
+
+        span.record("granted", true);
+        // 释放鉴权 span，进入 handler 自身的 span（在 DynAction::dispatch 内开启）
+        drop(_enter);
 
         // 执行 Action 派发
         action.dispatch(context).await
