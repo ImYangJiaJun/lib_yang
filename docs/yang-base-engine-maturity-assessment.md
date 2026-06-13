@@ -2,6 +2,8 @@
 
 > 本文整合三轮评估的结论：搭建就绪度（7 维）、引擎成熟度（4 维）、补充核查（类型安全 + 并发，2 维）。
 > 所有结论均基于对当前代码的 file:line 取证；评估时分支 `master`。
+>
+> **2026-06-13 二次审计已并入**：60 agent 并行全量扫描 + 对抗式复核，确认 10 项 ✅ 全部真落地（2 处子项有设计偏差非退化）、校正大批 file:line 漂移（见 11.7）、修正 M-1 数字（73→实测 ≈418）、新发现 **24 条文档此前未覆盖的问题（NEW-1~24，见第十三节）**。代码已较快照演进（`query_builder.rs` 5345 行、事务文件多处变动），引用具体行号时以 11.7 校正表与第十三节为准。
 
 ## 一、总判定
 
@@ -11,12 +13,12 @@
 
 **距完备核心引擎，差四类运行期承重能力：**
 
-1. 受保护层无法跑在事务里（连自身多步写都不原子）
-2. 查询表达力封顶在 AND-only 单表（无 OR / JOIN / 聚合）
+1. ~~受保护层无法跑在事务里（连自身多步写都不原子）~~ ✅ **已修复**（C1，2026-06-09）
+2. 查询表达力封顶在 AND-only 单表（~~无 OR~~ ✅ 已有 OR/嵌套布尔，仍无 JOIN / 聚合）
 3. 类型化层钉死 MySQL（yang-db 已有 PG 后端，落后的恰是受保护层）
-4. 请求执行热路径对运行时完全不可观测
+4. ~~请求执行热路径对运行时完全不可观测~~ ✅ **已修复**（C4，2026-06-09）
 
-一句话：引擎的「安全」和「启动期」已经成熟，缺的是「事务原子性、查询表达力、多后端、运行期可观测」这四根运行期承重柱。
+一句话：引擎的「安全」和「启动期」已经成熟，四根运行期承重柱中**事务原子性（C1）和可观测性（C4）已落地**，剩余查询表达力（JOIN/聚合）和多后端（PG）两根待补。**整体完成度约 65%**（核心承重项 6/6 中 4 项落地；Important 12 项中 3 项落地；yang-db 21 项中 3 项修复；Nice 12 项全未动）。
 
 ## 二、定位认知
 
@@ -105,9 +107,9 @@ yang-base 是**后端原语库**，不是开箱即用框架。它刻意不含 HT
 - 游标 / keyset 分页（effort M→L）：两层都仅 LIMIT/OFFSET，深翻页线性退化、并发写下结果漂移。**非桥接**，需先在 query_builder 新建 seek 分页（`mysql/query_builder.rs:1255/1261`、`postgres/query_builder.rs:1149/1155`），再经受保护层接出。（分类修正见 10.2 / 11.4 DOC-1）
 
 ### 观测细项
-- 认证审计钩子（effort S）：Login/Refresh/Logout 安全路径全静默（auth.rs:192/355/430）
-- MySQL `pool_status`（effort S）：Redis 侧已有（`redis/client.rs:1742`）。**归属澄清**：yang-base 层有 `health_check`（`global.rs:349`，`SELECT 1`）但无 pool_status；yang-db 的 `mysql::Database` 则 health_check / pool_status **两者皆缺**（`mysql/database.rs:88-263`）。补 yang-db pool_status 时建议同补 health_check（薄包 `pool.size()/num_idle()`），连接耗尽方有据可查（见 11.4 DOC-2）
-- 慢查询日志（effort M）：`enable_logging` 仅 debug 打印 SQL 文本，无耗时/阈值
+- 认证审计钩子（effort S）：Login/Refresh/Logout 安全路径全静默（auth.rs:192/355/430）。**✅ 已由 C4 落地**：`AuthAuditHook`+`TracingAuditHook` 注入三动作，token 仅记指纹（2026-06-09）
+- MySQL `pool_status`（effort S）：Redis 侧已有（`redis/client.rs:1742`）。**归属澄清**：yang-base 层有 `health_check`（`global.rs:349`，`SELECT 1`）但无 pool_status；yang-db 的 `mysql::Database` 则 health_check / pool_status **两者皆缺**（`mysql/database.rs:88-263`）。补 yang-db pool_status 时建议同补 health_check（薄包 `pool.size()/num_idle()`），连接耗尽方有据可查（见 11.4 DOC-2）。**✅ 已由 C4 落地**：`Database::pool_status`/`health_check` 下沉 yang-db，`GlobalDatabase::pool_status` 转发（2026-06-09）
+- 慢查询日志（effort M）：`enable_logging` 仅 debug 打印 SQL 文本，无耗时/阈值。**✅ 已由 C4 落地**：`TableQuery` 执行边界 `timed` 计时 + `ObservabilityConfig` 可配阈值，超阈值 `tracing::warn`（2026-06-09）
 - 插件/模块 unregister 与热重载（effort M）：注册后不可变，任何变更需重启进程
 
 ### 错误硬化
@@ -155,12 +157,12 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 
 | 维度 | 成熟度 | 一句话 |
 |------|--------|--------|
-| 数据 / 查询完备性 | partial | 稳健单表 CRUD，但无事务/OR/JOIN/聚合/多后端 |
+| 数据 / 查询完备性 | partial | 稳健单表 CRUD + 事务传播 + OR/嵌套布尔，但无 JOIN/聚合/多后端 |
 | 类型安全完整性 | partial（偏成熟）| 边缘兑现，put 值 untyped + 写库接缝 + 响应擦除三处漏气 |
-| 可观测性 / 可运维 | skeletal | 冷路径有日志，请求热路径完全不可观测 |
-| 并发正确性 | partial | 设计是真功夫，缺统一中毒策略 + 回归测试 + 停机 |
-| 生命周期 / 弹性 | partial | 启动期扎实，运行期/停机期弹性几乎空白 |
-| 错误体系 / API | partial | 覆盖广有错误码，缺传输分类 + non_exhaustive + 类型保真 |
+| 可观测性 / 可运维 | **partial**（原 skeletal） | 请求热路径已 span 化 + request_id + 慢查询计时 + 审计钩子 + pool_status；仍缺 HTTP 出站日志、metrics exporter 接入 |
+| 并发正确性 | **partial+**（改善） | 设计是真功夫，中毒策略已统一（I10），12 项 stress 回归测试已补（C6）；仍缺停机 drain、背压 |
+| 生命周期 / 弹性 | partial | 启动期扎实，运行期/停机期弹性几乎空白（I2/I3/I4 全 ⏳） |
+| 错误体系 / API | **partial+**（改善） | `ErrorCategory` + `is_retryable()` + `#[non_exhaustive]` 已落地（C5），yang-db `DbError` 同步补齐（DB-7）；仍缺类型保真响应 + 码双射去重 |
 
 > 评估方法：内联探查锁定缺口候选 → 三轮 subagent 工作流并行核查（就绪度 7 维 + 成熟度 4 维 + 补跑 2 维）→ 每条结论 file:line 取证。本文为评估快照，代码演进后需复核对应 file:line。
 
@@ -254,18 +256,20 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 ## 十一、施行进度追踪表
 
 > 统一追踪本文识别的所有补齐项与修复项。状态：⏳ 待办 / 🟨 进行中 / ✅ 已完成 / ⛔ 暂缓。初始状态均为 ⏳（评估快照，尚未动工）。「层」标明工作落点：base=yang-base 受保护层，db=yang-db 底层，doc=文档。完成时回填 commit 与日期。
+>
+> **最近全量复核**：2026-06-13（workflow `wf_a4760338-2eb`，21 agent 并行扫描）。确认所有 ✅ 项代码落地属实，未发现新的已完成项变更。
 
 ### 11.1 yang-base 核心承重项（第四节 Tier-Core）
 
 | ID | 项目 | 层 | effort | 优先级 | 状态 | 备注 / commit |
 |----|------|----|--------|--------|------|------|
-| C1 | 事务传播进受保护层（TableQuery 接受 `&mut Transaction`） | base+db | L | P0 | ⏳ | 最大承重，批量/UPSERT 前置；根因含 db 侧无事务执行变体（见 DB-5） |
-| C2a | OR / 嵌套布尔桥接（`where_conditions` 引入 Or/Group） | base | M | P0 | ⏳ | db 侧 `where_or` 已就绪，低成本桥接 |
+| C1 | 事务传播进受保护层（TableQuery 接受 `&mut Transaction`） | base+db | L | P0 | ✅ | 最大承重，批量/UPSERT 前置；根因含 db 侧无事务执行变体（见 DB-5）。`*_in_tx`（insert/insert_returning_id/update/delete/select）+ `ActionContext::begin_transaction`，run_execute/run_fetch_all 泛型收敛；9 项事务集成测试通过（2026-06-09） |
+| C2a | OR / 嵌套布尔桥接（`where_conditions` 引入 Or/Group） | base | M | P0 | ✅ | `WhereCondition` 加 `And`/`Or` 递归变体 + `#[non_exhaustive]`（合并 I9）；`append_where_to_sql` 重构为递归 `render_condition`（组括号包裹，空 Or→`1=0`/空 And→`1=1`，深度上限 32 返 `ParamInvalid` 不爆栈）；`TableQuery::where_or`/`where_and`/`where_tree` 递归权限下钻；类型化层新增 `Filter<W>`（untagged 布尔树）+ `SqlCondition::into_where_condition`，`SelectQuery.where` 线格式由数组改为布尔树（**破坏性**，已确认）；附带修复 typed_action 集成测试假绿（漏设 table_config）。8 项单测 + 真实 MySQL OR 组 e2e 通过（2026-06-09） |
 | C2b | JOIN / 关联预加载（接入闲置 `RelationConfig`） | base | XL | P3 | ⏳ | 压轴，复用 C2a 布尔基座 |
 | C3 | 类型化层脱离 MySQL（`TableEntity`/`TableQuery` 泛型化打通 PG） | base | XL | P2 | ⏳ | db 侧 PG 后端已就绪 |
-| C4 | 请求热路径可观测性（tracing/span/request_id/metrics/慢查询/审计钩子） | base | ~L | P1 | ⏳ | 一揽子，带走多个 important |
-| C5 | 错误引擎级分类 API（`category()`/`is_retryable()`/`is_client/server_error()`） | base | M | P1 | ⏳ | 弹性重试基座；db 侧 DbError 同缺（见 DB-7） |
-| C6 | 并发正确性回归测试（multi_thread + stress + loom） | base | L | P1 | ⏳ | 横切，动 C1/C4 前先有网 |
+| C4 | 请求热路径可观测性（tracing/span/request_id/metrics/慢查询/审计钩子） | base | ~L | P1 | ✅ | 一揽子 7 子项全落地（2026-06-09）：tracing 设核心依赖 + dispatch/authorize/handle 三段 span；`RequestId`(u128)+`ActionContext.request_id`(#[non_exhaustive])+`RequestIdMiddleware` 透传 `X-Request-Id`；feature-gated `metrics`（DynAction 边界，`BaseError::code_str` 静态 label）；MySQL `pool_status`/`health_check` 下沉 yang-db 经 GlobalDatabase 暴露；`TableQuery` 慢查询计时（`timed` 包裹 11 处执行点，None 短路）；`AuthAuditHook`+`TracingAuditHook` 注入 Login/Refresh/Logout（token 仅记指纹）；`ObservabilityConfig` 单例收口。371 lib 测试 + 11 e2e 通过；三 feature 组合 clippy 干净 |
+| C5 | 错误引擎级分类 API（`category()`/`is_retryable()`/`is_client/server_error()`） | base | M | P1 | ✅ | 弹性重试基座。`ErrorCategory{Client,Auth,NotFound,Conflict,Transient,Server}`（#[non_exhaustive]）；`BaseError` 加 `category()` 为单一事实源，`is_retryable()`/`is_client_error()`/`is_server_error()` 全委托派生。`is_server_error` 含 Transient+Conflict（按 §12.5 设计）。`BaseError` 已标 `#[non_exhaustive]`。导出 `ErrorCategory`。4 项新测试（category 覆盖/is_retryable/is_client_error/is_server_error）。yang-base 375 lib 测试通过（2026-06-09） |
+| C6 | 并发正确性回归测试（multi_thread + stress + loom） | base | L | P1 | ✅ | 横切，动 C1/C4 前先有网。已补 12 项 stress 测试：circuit_breaker（Arc&lt;Mutex&gt; 计数不丢/共享）、REGEX_CACHE（同/异 pattern 并发编译）、GlobalTools（register/get 争用）、plugin register TOCTOU（锁定当前契约，I11 后收紧）。未引入 loom（multi_thread+stress 已覆盖回归网，loom 需 cfg 改写锁类型，留待按需）（2026-06-09） |
 
 ### 11.2 yang-base 生产常需项（第五节 Tier-Important，节选）
 
@@ -279,10 +283,11 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 | I6 | UPSERT 桥接受保护层 | base | M | ⏳ | db 侧已有 |
 | I7 | 游标 / keyset 分页 | base+db | M→L | ⏳ | **db 底层也缺**（修正后），需先在 query_builder 新建 |
 | I8 | GROUP BY / HAVING / 聚合桥接受保护层 | base | L | ⏳ | db 侧已有 |
-| I9 | `#[non_exhaustive]` + 非测试代码 panic 收口（entity.rs:237 等） | base | S | ⏳ | entity.rs:237 在受保护查询热路径 |
-| I10 | 锁中毒策略统一（circuit_breaker 与 context/validator 相反） | base | S | ⏳ | 熔断器恰是最关键路径 |
+| I9 | `#[non_exhaustive]` + 非测试代码 panic 收口（entity.rs:237 等） | base | S | ✅ | `BaseError` 已标 `#[non_exhaustive]`；`entity.rs:237` 的 `to_v` expect 改 `unwrap_or_else`+`log::error!`（降级为 Null 不崩）；`circuit_breaker.rs` 三处锁 expect 改 `unwrap_or_else(|p| p.into_inner())`（I10 一并）。validator.rs 静态正则 expect 保留（编译时常量，标准实践）。（2026-06-09） |
+| I10 | 锁中毒策略统一（circuit_breaker 与 context/validator 相反） | base | S | ✅ | 三处 `expect` 统一改 `unwrap_or_else(|p| p.into_inner())`（随 I9 一并），与 context/validator 一致（2026-06-09） |
 | I11 | plugin register check-then-insert TOCTOU | base | M | ⏳ | 并发同名注册静默覆盖 |
 | I12 | dispatch 背压/并发上限（Semaphore） | base | M | ⏳ | 无主动背压 |
+| M-1 | 测试代码 `unwrap()`/`expect()` 过多 | **db**（仅 yang-db 启用该 lint） | M | ⏳ | **数字修正（2026-06-13 实测）**：原文「73 个」严重过时。`cargo clippy -p yang-db --all-targets --all-features` 实测 `unwrap_used` 144 + `expect_used` 274 ≈ **418 条**。yang-base 未在 `[lints]` 启用 `unwrap_used`/`expect_used`（workspace 根仅 `large_enum_variant`），故 yang-base 测试 unwrap 对 clippy 门禁**零贡献**，scope 应为 `db` 而非 `base+db`。生产代码已无裸 unwrap（I9/I10 收口），M-1 纯属测试清理，**非正确性/panic 风险**，优先级可下调 |
 
 ### 11.3 yang-db 自身问题（第十节新发现）
 
@@ -292,10 +297,10 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 | DB-2 | Redis WATCH 冲突在 `execute()` 被静默吞成空结果（显式检测 EXEC Nil） | bug | High | ⏳ | `redis/transaction.rs:368-371/318-340` |
 | DB-3 | PG 单行 `update()` 不内联 NULL，非整型列设 NULL 运行时报错 | bug | High | ⏳ | `postgres/query_builder.rs:486-487` |
 | DB-4 | `insert_batch` 多批次非原子（比照 `update_batch` 单事务包裹） | bug | Medium | ⏳ | `mysql/query_builder.rs:2141-2152`（对比 2464-2490） |
-| DB-5 | 无接受 `&mut Transaction` 的执行变体（C1 的 db 侧前置） | gap | Medium | ⏳ | `mysql/transaction.rs:310/378/446` |
+| DB-5 | 无接受 `&mut Transaction` 的执行变体（C1 的 db 侧前置） | gap | Medium | ✅ | `mysql/transaction.rs:310/378/446`；已加 `#[doc(hidden)] executor()` 逃生舱（MySQL+PG 对称），借出 `&mut MySqlConnection`/`&mut PgConnection`（2026-06-09） |
 | DB-6 | `table_exists`/`drop_table`/`init` 裸拼表名（table_exists 改 `?` 绑定，对齐 PG） | safety | Medium | ⏳ | `mysql/database.rs:184-190/177`（对比 PG `:182-193`） |
-| DB-7 | `DbError` 无 code()/category()/is_retryable()，未标 `#[non_exhaustive]` | gap | Medium | ⏳ | `error.rs:2-59` |
-| DB-8 | `From<RedisError>` 靠 Display 子串分类（改用 `kind()`） | bug | Medium→Low | ⏳ | `error.rs:117-128` |
+| DB-7 | `DbError` 无 code()/category()/is_retryable()，未标 `#[non_exhaustive]` | gap | Medium | ✅ | `DbError` 标 `#[non_exhaustive]` + `DbErrorCategory{Client,Conflict,NotFound,Transient,Server}`（#[non_exhaustive]）；`code()` 返回 `u32`（8xxxxx 段，18 变体全部独立）；`category()` 为单一事实源；`is_retryable()` 委托派生。yang-base `From<DbError>` 补 `_` 臂。`DbErrorCategory` 导出至 crate 顶层。3 项新测试（category 覆盖/is_retryable/code 唯一性）。yang-db clippy 干净（2026-06-09） |
+| DB-8 | `From<RedisError>` 靠 Display 子串分类（改用 `kind()`） | bug | Medium→Low | ✅ | `error.rs:117-128` 改用 `is_timeout()`/`is_connection_dropped()`/`is_io_error()`/`is_connection_refusal()`/`kind()`，从脆弱的 Display 子串迁到协议层枚举（2026-06-09） |
 | DB-9 | PG 事务 insert 硬编码 `RETURNING CAST(id AS BIGINT)`（补 returning setter） | bug | Medium | ⏳ | `postgres/transaction.rs:335` |
 | DB-10 | PG 事务原生助手把浮点绑为字符串（改 `bind(f)`） | bug | Medium | ⏳ | `postgres/transaction.rs:570-571/607-609` |
 | DB-11 | MySQL 集成测试 `if let Ok(db)` 假绿（改 `#[ignore]`/testcontainers） | test-gap | Medium | ⏳ | `integration_database.rs:54/70/85` 等 |
@@ -329,6 +334,60 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 | NG-4 | `from_json` Object/Array 错误路径补单测 | base | test-gap | Medium | ⏳ | `table_query.rs:2318-2321` |
 
 > 本表为活文档，随补齐推进回填状态/commit/日期。优先级建议遵循第七节顺序（事务→OR→可观测→错误分类→弹性→写路径→多后端→JOIN），yang-db 的 3 个 High（DB-1/2/3）可独立于 yang-base 节奏先行修复。
+
+### 11.6 全量复核总结（2026-06-13，二次审计已更新）
+
+> 首次复核（21 agent）确认已完成项落地。**二次审计（2026-06-13，workflow `wf_98b60c08` + `wf_bd92c883`，共 60 agent 并行 + 对抗式复核）** 进一步逐条核实 ✅/⏳ 论断真实性、校正 file:line 漂移、并发现 **24 条文档此前未覆盖的新问题**（见第十三节）。
+
+**已完成项验证结论**：10 项 ✅ 全部经代码取证确认落地，**无虚标、无退化**。两处子项与设计稿有偏差（非退化，详见下）：
+- **C4-metrics**：埋点确在 `DynAction::dispatch` 边界且 `code_str` 静态 label 正确，但实际只发 `action`+`status`(+`code`) 标签，**缺 `module`**（§12.4 设计稿要求 `{module,action,status}`，但 `ActionMeta` 无 module 字段，dispatch 边界拿不到模块名）。见新问题 **NEW-2**。
+- **C4-pool_status**：`pool_status` 确经 `GlobalDatabase::pool_status` 转发；但 `GlobalDatabase::health_check`（global.rs:349）仍自执行 `SELECT 1`，**未转发**到 yang-db 的 `Database::health_check`。文档正文（行 109）措辞精确未声称转发，无误。
+- **C4-reqid 透传失效**：根 span 的 `request_id` 字段以**具体值**声明而非 `Empty`，使 `RequestIdMiddleware` 的 `record` 透传成为 no-op（见新问题 **NEW-1**）。
+
+**M-1 数字修正**：原文「73 个 unwrap_used」严重过时，yang-db 实测 ≈418 条（144 unwrap + 274 expect），且 yang-base 根本未启用该 lint。详见 11.2 表 M-1 行。
+
+**当前完成度分解**（含二次审计新增）：
+
+| 层级 | 总项数 | ✅ 已完成 | ⏳ 待办 | 完成率 |
+|------|--------|----------|---------|--------|
+| yang-base Core（C1-C6） | 6 | 4 | 2（C2b/C3，均为 XL） | 67% |
+| yang-base Important（I1-I12+M-1） | 13 | 3 | 10 | 23% |
+| yang-db 自身（DB-1~DB-21） | 21 | 3 | 18 | 14% |
+| 深度复核新增（NG-1~NG-4） | 4 | 0 | 4 | 0% |
+| **二次审计新增（NEW-1~NEW-24）** | **24** | **0** | **24** | **0%** |
+| Nice（N1-N12） | 12 | 0 | 12 | 0% |
+| 文档修正（DOC-1~4） | 4 | 4 | 0 | 100% |
+
+**优先级重排建议**（基于 2026-06-13 二次审计的实际杠杆）：
+
+1. **安全/数据正确性优先**（新发现）—— NEW-4（空布尔组绕过全表写守卫）、NEW-3（filterable/sortable 死配置可绕过）、NEW-6（按用户撤销同秒 off-by-one）、NEW-10/12/13（批量列集/类型提示/u64 截断静默写错）
+2. **yang-db P0 三件套**（DB-1/2/3）—— 生产阻断级，可独立于 yang-base 先行修复
+3. **可观测性补全**（新发现）—— NEW-1（reqid 透传失效，一行修复）、NEW-2（metrics 缺 module）、NEW-7（X-Request-Id 仅接受 ≤32 hex）、NEW-14（PG Database 缺 pool_status/health_check）
+4. **弹性三件套**（I2 连接池自愈 + I3 优雅停机 + I4 from_env 配置）—— K8s 场景刚需
+5. **yang-db Medium bug 批量清**（DB-4/6/9/10 + 新发现 NEW-15/16）—— 均为单文件单行级修改
+6. **M-1 测试 unwrap 清理** + 安全机制测试补背书（NEW-21/22）—— CI 门禁前提
+7. **写路径桥接**（I5/I6 批量插入+UPSERT）—— 复用 C1 事务，杠杆高
+
+### 11.7 file:line 漂移校正表（2026-06-13 二次审计）
+
+> 代码自评估快照后持续演进（`query_builder.rs` 现 5345 行、`mysql/transaction.rs` 615 行、`postgres/transaction.rs` 636 行），文档多处 file:line 已过时。下列为二次审计取证的当前正确行号，**结论均不变，仅行号校正**。复核本文任何条目时以此表为准。
+
+| 文档条目 | 文档旧引用 | 当前正确 file:line（2026-06-13） |
+|---|---|---|
+| C1 设计草图（§12.1） | `table_query.rs:1615/1669/1881/2142`、`context.rs:358`、`mysql/transaction.rs:192` | `select_in_tx:1611`/`insert_in_tx:1915`/`insert_returning_id_in_tx:1989`/`update_in_tx:2239`/`delete_in_tx:2536`；`context.rs:430`（begin_transaction）；`mysql/transaction.rs:210`（executor） |
+| C2a（§12.2 锚点） | `query_params.rs:96-251`、`table_query.rs:1130`、`entity.rs:140` | `query_params.rs:96-276`（含 And:260/Or:272）；`table_query.rs:1339`(render_condition)/1443(render_group)/1007-1054(where_or/and/tree)/934(MAX_WHERE_DEPTH=32)；`entity.rs:322`(Filter)/189(into_where_condition)/343 |
+| C4 慢查询（§12.4） | `timed` 包裹「11 处」 | 实为 **12 处** `Self::timed(`：table_query.rs:1235/1586/1628/1805/1894/1929/1973/2003/2218/2253/2515/2553；`timed` 定义 2656 |
+| C4-metrics 标签（§12.4 行 411） | `yang_action_requests_total{module,action,status}` | 实现仅 `{action,status}`（typed.rs:105/109-128），**缺 module**（见 NEW-2） |
+| I9 panic 收口（行 284/§12.5） | `entity.rs:237` | `entity.rs:281-288`（to_v 已改 unwrap_or_else+log::error） |
+| DB-5（表/§12.1） | `mysql/transaction.rs:310/378/446`、`192` | executor 定义 `mysql/transaction.rs:210` / `postgres/transaction.rs:206` |
+| DB-6（表/§12.7） | `mysql/database.rs:184-190/177` | `table_exists:215-225`（仍裸拼 `'{}'`）/`drop_table:208-211`（裸拼 `` `{}` ``）/`init:186-199`；PG `drop_table:175-178` **同样仍裸拼**，可一并补入 |
+| DB-7（行 431） | `error.rs:1-59` | 实现跨 `error.rs:1-145`（枚举 1-63、DbErrorCategory 65-82、code/category/is_retryable 84-145） |
+| DB-9（表/§12.9） | `postgres/transaction.rs:335`（及 200/212） | 硬编码 RETURNING 在 `postgres/transaction.rs:350`，insert 定义 :325；事务版无 `.returning()` setter（是**缺失**而非「忽略」） |
+| DB-10（表/§12.9） | `postgres/transaction.rs:570-571/607-609` | `bind_json_param_tx:584-586`、`bind_json_param_as_tx:622-624`（对照主 builder :533 已 `bind(*f)`） |
+| DB-13（表/§12.9） | `mysql/query_builder.rs:939-942`、`transaction.rs:279-282/278` | MySQL `query_builder.rs:936-942`(format@941) 与 1000-1004(format@1004)；PG `postgres/transaction.rs:292-297`(format@296) |
+| NG-2（表） | `mysql/database.rs:149` | 真正 `pool.begin()` 在 `mysql/database.rs:181`（:149 现为 health_check 的 SELECT 1）；PG `postgres/database.rs:148` 仍准 |
+| NG-4（表） | `table_query.rs:2318-2321` | from_json 错误路径在 `table_query.rs:2794-2797`（from_json 整体 2774-2800）；where_eq 入口 1357（旧引 2318-2321 实为 UPDATE 写权限校验，无关） |
+| DOC-3（yang-db.md:277 内嵌） | `table/table_query.rs:140/167` | `is_valid_identifier:151`、`quote_identifier:178`（assessment.md:202/277 亦沿用旧 140/167，待同步） |
 
 ## 十二、优雅解决方案设计
 
@@ -550,6 +609,123 @@ sqlx `PoolOptions` 原生支持这三个自愈参数，本仓只差透传。MySQ
 
 **C1｜TableQuery 增 `*_in_tx` 终端变体 + 执行器泛型化** · effort L
 TableQuery 已是「构建/执行分离」结构，把各终端方法重复的 bind+execute 收敛进一个对 `sqlx::Executor` 泛型的私有 `run_execute`（`&MySqlPool` 与 `&mut MySqlConnection` 都实现），现有 insert/update/delete/select 改调它（行为零变化），再加一组 `*_in_tx(&mut yang_db::Transaction, ...)`。事务不进 builder 字段（规避 `&mut` 生命周期与链式 move 冲突），只在终端调用点传入，builder 链完全不动；权限/校验/软删/MissingWhere 守卫全部复用。`ActionContext::begin_transaction()` 转发 `GlobalDatabase::transaction`。复用 `DbError::TransactionError` 不新增 BaseError 变体。文件 `table_query.rs:1615/1669/1881/2142`、`context.rs:358`。全部新增、`#[cfg(feature="mysql")]`，向后兼容 minor；依赖 DB-5。
+
+---
+
+## 十三、二次审计新发现问题（2026-06-13）
+
+> 本节为 2026-06-13 二次审计（workflow `wf_98b60c08-4f0` 8 透镜 + `wf_bd92c883-2f9` 3 透镜，共 60 agent）经**对抗式复核（isReal && isNew 双判，18+10=28 候选 → 24 确认，4 项被否决/降级）** 保留的、文档第一~十二节**确实未覆盖**的新问题。每条均经 file:line 取证 + 独立复核臂确认非现有条目换皮。编号 NEW-1..NEW-24，按层与严重度组织。
+
+### 13.1 施行进度追踪表（新问题）
+
+| ID | 问题 | 层 | 类型 | 严重度 | 状态 | 取证 |
+|----|------|----|------|--------|------|------|
+| NEW-1 | dispatch 根 span `request_id` 以具体值声明非 `Empty`，RequestIdMiddleware 透传 `record` 成 no-op，上游 X-Request-Id 不生效 | base | bug | Medium | ⏳ | `module_router.rs:355-360`（vs 注释 353-354）、`middleware.rs:138-143` |
+| NEW-2 | Action metrics 缺 `module` 标签，跨模块同名内置 Action（user::add / order::add）指标碰撞 | base | gap | Medium | ⏳ | `typed.rs:105/109-128`、`meta.rs:9-24`（ActionMeta 无 module） |
+| NEW-3 | `FieldConfig.filterable/.sortable` 是死配置——查询路径从不读，`.filterable(false)` 字段仍可被筛选/排序 | base | gap | Medium | ⏳ | `field_config.rs:91/96`；消费侧仅 `permissions.can_filter/can_sort`（`table_query.rs:919-926/824-830`） |
+| NEW-4 | 空/恒真布尔组（`where_and(vec![])`）使 `where_conditions` 非空，静默绕过 MissingWhereClause 全表写守卫，生成 `WHERE (1=1)` | base | safety | Medium | ⏳ | `table_query.rs:1029-1034`、守卫 `2411`/`2613`、render_group `1452-1454` |
+| NEW-5 | `page/page_size` 无上界，`offset=(page-1)*page_size` 乘法可溢出（debug panic / release 回绕），与注释「直接构造也安全」矛盾 | base | bug | Low | ⏳ | `table_query.rs:856-866/1703-1708`、`query_params.rs:387/393` |
+| NEW-6 | 按用户批量撤销同秒 off-by-one（`iat < min_iat` 严格小于），改密/强制下线当秒签发的 Token 可绕过撤销 | base | safety | Medium | ⏳ | `revocation.rs:116/172-175`、`manager.rs:273/312`（iat 秒级） |
+| NEW-7 | 上游 `X-Request-Id` 仅接受 ≤32 位十六进制，标准 UUID/traceparent 被静默丢弃，跨服务串联失效 | base | gap | Medium | ⏳ | `request_id.rs:51-57`、`middleware.rs:132-141` |
+| NEW-8 | 非事务迁移模式 execute-then-record 非原子，崩溃/记录失败致迁移已应用未登记会重跑 | base | bug | Medium | ⏳ | `initializer.rs:366-371`（vs 事务模式 409-421） |
+| NEW-9 | 批量 INSERT/UPDATE 列集仅取首条记录，异构记录的列被静默丢弃/置 NULL（`WHEN id=NULL` 永不匹配） | db | bug | Medium | ⏳ | `mysql/query_builder.rs:398/430`、build_update_batch `561-565/592/629` |
+| NEW-10 | `json_value_to_sql_value` 的 FieldType 类型提示在值形态不匹配时被静默忽略，跌落默认转换 | db | bug | Medium | ⏳ | `mysql/query_builder.rs:724-728/750-754/738-748/711-722`，跌穿 763 |
+| NEW-11 | `SqlValue` 的 `From<u64>` 用 `v as i64` 截断，u64 > i64::MAX（BIGINT UNSIGNED/雪花 ID）静默环绕为负 | db | bug | Medium | ⏳ | `mysql/condition.rs:62-66`、bind 宏 `query_builder.rs:26` |
+| NEW-12 | PG `Database` 缺 `pool_status()`/`health_check()`，与 MySQL/Redis 后端不对称（C4 落地漂移） | db | gap | Medium | ⏳ | `postgres/database.rs:78-281`（无）vs `mysql/database.rs:132/149`、`redis/client.rs:1730/1742` |
+| NEW-13 | PG 事务原生 SQL 助手把 JSON 数组/对象绑为文本串，对 JSONB 列报类型错；与非事务路径绑原生 JSONB 不一致 | db | bug | Medium | ⏳ | `postgres/transaction.rs:596/634`（vs 非事务 `database.rs:315` `bind(other.clone())`） |
+| NEW-14 | Token 撤销/黑名单 6 个安全 API 零行为测试（仅 2 条 key 格式断言），登出/强制下线安全保证无背书 | base | test-gap | Low | ⏳ | `revocation.rs:181-194`（测试）/53/65/88/115/138/165（API） |
+| NEW-15 | 认证 Action（Login/Refresh/Logout）+ 审计钩子 + `token_fingerprint` 全链路零测试，C4「已完成」测试维度无背书 | base | test-gap | Medium | ⏳ | `auth.rs:188/203/251/413/504`；唯一 token e2e 仅跑 CRUD（`typed_action_integration.rs:123-185`） |
+| NEW-16 | 公开枚举 `FieldType` 未标 `#[non_exhaustive]`，新增字段类型即 SemVer 破坏；I9/C5 硬化未覆盖它 | base | gap | Low | ⏳ | `field_type.rs:59-60`、导出 `table/mod.rs:66`（对照 BaseError/ErrorCategory/WhereCondition 均已标） |
+| NEW-17 | 集合类命令（smembers/lrange/hgetall/sinter…）对二进制/非 UTF-8 元素静默丢弃整条，结果数组比真实短、与 LLEN/SCARD/HLEN 不一致 | db | bug | Low | ⏳ | `client.rs:1931-1936`(collect_string_array)/664-682(hgetall)、`value.rs:39-44` |
+| NEW-18 | 批量命令（del/exists/mget/sadd…）传入空切片下发无参命令，触发 `wrong number of arguments` 错误而非 no-op | db | bug | Low | ⏳ | `client.rs:1584-1591/1597-1604/334/1062` 等，均无空输入短路 |
+| NEW-19 | Redis WATCH 事务无法做读-改-写：命令 build 期固定，重试只重放同一批固定值，乐观锁退化为 CAS-set | db | bug | Medium | ⏳ | `transaction.rs:88-91/101-261/292-344`（与 DB-2 不同根：DB-2 是冲突检测被吞，此为 API 结构性缺陷） |
+| NEW-20 | Redis WATCH 冲突重试无指数退避/抖动，争用下以 RTT 为节奏最多重发 100 次放大 Redis 压力 | db | perf | Low | ⏳ | `transaction.rs:304-343`（continue 无 sleep/backoff；非 CPU 忙等，每轮有网络 RTT） |
+| NEW-21 | 多元素 `lpush/rpush/sadd/zadd` 展开为 N 条独立命令，破坏 pipeline/tx「每命令一个结果」契约，按索引取结果错位 | db | bug | Medium | ⏳ | `pipeline.rs:171-225`、`transaction.rs:195-249`（vs 文档承诺 `pipeline.rs:259/301`） |
+| NEW-22 | 经 SET 写入的数字读回恒为 `RedisValue::String`，`as_i64()`/`as_f64()` 永远返回 None（BulkString 从不解析数值） | db | gap | Low | ⏳ | `value.rs:165-172`（BulkString→String）、as_i64 51-56/as_f64 63-68 仅 match Int/Float |
+| NEW-23 | `RedisConfig` 不校验退化参数（max_connections/connect_timeout/wait_timeout=0），无 checked 错误，0 值产生不可用客户端且错误信息不透明 | db | safety | Low | ⏳ | `config.rs:53-65`、`client.rs:78-91/94-97`（违 checked API 优先） |
+| NEW-24 | `test_logging_config` 为空断言假绿测试，true/false 两分支断言相同，未验证 `enable_logging` 行为 | db | test-gap | Low | ⏳ | `tests/test_redis_config.rs:186-199`、`client.rs:105-107`（与 DB-19 不同轴：断言缺失 vs 硬 expect） |
+
+**新问题严重度分布**：High 0 / Medium 13 / Low 11。**层分布**：base 10、db 14。**类型**：bug 11、gap 6、safety 3、test-gap 3、perf 1。
+
+> 严重度校准说明：本轮无 High——确认的安全/正确性缺口均需调用方主动触发（空布尔组、异构批量数据、u64 顶半区、同秒撤销窗口）或仅在退化配置/二进制值下显现，不构成无条件生产阻断或外部可控注入；故顶格 Medium。被对抗复核**否决/降级**的 4 项：Redis 集合二进制丢弃（Medium→Low，与 DB-16/17 校准）、WATCH 重试「紧自旋」定性（误判，实为有 RTT 的无退避，Medium→Low）、Token 撤销测试缺口（High→Low，机制本身正确仅缺回归网）、RedisConfig 校验（Medium→Low，返回 Err 非 panic）。
+
+### 13.2 yang-base 层详情（NEW-1~8 / 14~16）
+
+**NEW-1｜request_id 透传失效（一行修复，杠杆最高）** · safety-adjacent bug
+`module_router.rs:355-360` 的 dispatch 根 span 把 `request_id` 字段以**具体 display 值**声明（`request_id = %context.request_id`），而 tracing 语义下只有以 `tracing::field::Empty` 声明的字段才能被后续 `record` 更新。`middleware.rs:138-143` 的 `RequestIdMiddleware` 解析上游 `X-Request-Id` → `with_request_id` 替换 ctx → `Span::current().record("request_id", ...)`，但对已赋值字段是 no-op。**后果**：上游传入 X-Request-Id 时，根 span 仍显示本地生成的旧 id，而下游 handler/table_query 读到新值——同一请求出现两个 request_id，跨服务串联在 span 层断裂。同文件注释（353-354）明写「先以 Empty 占位」，与代码自相矛盾。**修复**：把 359 行改为 `request_id = tracing::field::Empty`。
+
+**NEW-2｜Action metrics 缺 module 标签** · gap
+`typed.rs:105/109-128` 三个 metrics 宏仅带 `action`(+status/code)，无 `module`；埋点在 blanket `impl<T:TypedAction> DynAction::dispatch` 边界，只能取 `self.meta()`，而 `ActionMeta`(meta.rs:9-24) 无 module 字段。**后果**：user::add 与 order::add 在 `yang_action_requests_total{action="add"}` 下合并计数，丧失按资源/表区分 QPS/错误率/P99 的能力，偏离 §12.4 C4 设计承诺的 `{module,action,status}`。**修复**：`ActionMeta` 增 module 字段，由 `table_typed`/register 注入，dispatch 边界补 label。
+
+**NEW-3｜filterable/sortable 死配置（被误以为已关闭的查询面）** · gap/safety-adjacent
+`field_config.rs:91/96` 的两个 bool + docstring（以 password 字段举例）承诺「filterable=false 不能用于 WHERE / sortable=false 不能用于 ORDER BY」，但 `validate_filter_field`(table_query.rs:919-926) 只查 `permissions.can_filter`、`order_by`(824-830) 只查 `can_sort`，**从不读这两个 bool**（grep 全树仅 setter 自身赋值）。又因 `filterable_roles`/`sortable_roles` 空 = 放行所有角色，`.filterable(false)` 字段在默认配置下仍可被任意筛选。**后果**：开发者标记敏感字段期望禁筛，实际无效，攻击者可对这些列做 WHERE/ORDER BY 探测（二分 LIKE 探密码哈希、按内部列排序泄序）。**修复**：`validate_filter_field`/`order_by` 在权限校验前先断言 `field_config.filterable`/`.sortable`，或移除这两个开关并文档化「筛选/排序仅由角色权限控制」。
+
+**NEW-4｜空布尔组绕过全表写守卫** · safety
+`where_and(vec![])` 把 `WhereCondition::And{conditions:vec![]}` 推入 `where_conditions`（validate_condition_tree 对空组遍历 0 次直接 Ok），使其 `len=1≠空`。UPDATE 守卫 `table_query.rs:2411`（`where_conditions.is_empty() && !allow_full_table`）判为非空 → 不触发；render_group(1452-1454) 对空 And 渲染 `1=1`，最终 `UPDATE ... WHERE (1=1)` 全表写。DELETE 同理（2613）。**后果**：程序拼接条件时「过滤列表为空」未特判即可让 MissingWhereClause/allow_full_table 守卫形同虚设，全表静默改写/软删且不报错。**修复**：`validate_condition_tree` 对空 And/Or 组返回 `ParamInvalid`，或写守卫改为「`where_conditions` 中所有条件渲染后均为恒真常量时也视作全表」。
+
+**NEW-5｜分页 offset 乘法溢出** · bug（Low）
+`table_query.rs:1707` `let offset = page.saturating_sub(1) * page_size;`——saturating_sub 仅防 page==0 下溢，乘法对接近 usize::MAX 的入参无保护：debug panic（违禁生产 panic 约定）、release 静默回绕出错误 OFFSET。`page()`(856-866) 只校验 `==0` 无上界；`QueryParams.page/page_size` 为 pub 可绕过入口直接构造（内置 SelectAction 的 `page_size<=100` 限制只覆盖内置路径）。注释（1705-1706）自称「直接构造也安全」与实际矛盾。**修复**：`offset` 改 `checked_mul` 失败返 `ParamInvalid`，`page()` 加合理上界。
+
+**NEW-6｜按用户撤销同秒 off-by-one** · safety
+`revocation.rs:116` 写水位线 `min_iat = now`（秒级），`172-175` 用严格 `claims.iat < min_iat` 判定；签发侧 `manager.rs:273/312` `iat = now`（同秒级）。同一秒内签发的 Token `iat == min_iat`，`<` 为 false → 不撤销。**后果**：改密/强制下线发生在第 T 秒，攻击者（持泄漏凭据）在第 T 秒登录拿 iat=T 的 Token 可越过批量撤销，1 秒窗口内撤销失效。**修复**：判定改 `<=`，或水位线写 `now+1`（取过撤一侧）。
+
+**NEW-7｜X-Request-Id 仅接受 ≤32 位十六进制** · gap
+`request_id.rs:51-57` `parse_hex`：`len > 32` 或含非 hex 字符即 None；`middleware.rs:132-141` 解析失败无声保留本地新 id。**后果**：36 位带连字符 UUID、W3C traceparent、字母数字 trace id 全被拒绝静默丢弃，跨服务链路无法串联。根因是 `RequestId` 为 u128，结构上无法承载任意字符串 id。文档 C4-reqid（标 ✅）只称「透传」未记此限制。**修复**：要么文档化「仅支持 ≤32 hex」，要么把 RequestId 改为可承载任意上游字符串（如 `Cow<'static,str>`）+ 本地生成回退。
+
+**NEW-8｜非事务迁移 execute-then-record 非原子** · bug
+`initializer.rs:366-371` 非事务模式 `execute(sql)` 与 `record_migration` 是两步独立调用无事务包裹（对照事务模式 409-421 在同一 tx 内）。**后果**：SQL 成功但 record 失败/两步间崩溃 → 未写 `_migrations` → 下次启动重跑，对非幂等迁移（无 IF NOT EXISTS 的 ALTER / 种子 INSERT）报错或重复插入。文档把「幂等迁移（事务/非事务两模式）」列入成熟项，未记此缺口。**修复**：非事务模式也应「先 record（标记 in-progress）再 execute 再标 done」或文档化「非事务迁移必须自身幂等」。
+
+**NEW-14｜Token 撤销 API 零行为测试** · test-gap（Low）
+`revocation.rs:181-194` 测试模块仅 2 条 key 格式断言，6 个 pub async 安全 API（revoke_token/revoke_claims/is_revoked/revoke_by_subject/subject_min_iat/verify_token_checked）无行为测试。机制本身正确（故 Low），但 `iat<min_iat` 边界（见 NEW-6）、`ttl==0` 短路、脏数据返 None「避免误杀」等关键分支若回归无测试可捕获。**修复**：补 `#[ignore]` Redis 集成测试覆盖六 API 的成功/失败/边界路径。
+
+**NEW-15｜认证 Action + 审计钩子全链路零测试** · test-gap
+`auth.rs` 的 Login/Refresh/Logout 三 Action、AuthAuditHook/TracingAuditHook、`token_fingerprint`（声称「绝不泄漏原文」）在 `__tests__/` 与 `tests/` 命中为 0；唯一 token e2e 仅跑六件 CRUD。**后果**：C4「认证审计钩子 ✅ 已落地」在测试维度无背书——审计是否真在成功/失败两路触发、事件是否只带指纹不带明文、FNV-1a 指纹是否稳定，回归静默通过。**修复**：补 auth Action 的 mock-verifier 单测 + 审计事件捕获断言（验证不含 token 原文）。
+
+**NEW-16｜FieldType 缺 #[non_exhaustive]** · gap（Low）
+`field_type.rs:59-60` 公开枚举 `FieldType`（经 table/mod.rs:66 导出）无 `#[non_exhaustive]`，而 I9/C5 已为 BaseError/ErrorCategory/WhereCondition 加上。**后果**：未来新增字段类型（Decimal/Uuid/Json 细分）对所有在 FieldType 上穷举 match 的下游 crate 构成破坏性变更，须 major，与文档「加变体不破坏」目标自相矛盾。**修复**：标 `#[non_exhaustive]`（与同主题硬化一并）。
+
+### 13.3 yang-db 层详情（NEW-9~13 / 17~24）
+
+**NEW-9｜批量写列集仅取首条记录** · bug
+`mysql/query_builder.rs:398` `fields` 取自 `data_list[0].keys()`，循环里 `430` 缺失列 `unwrap_or(&Value::Null)`、首条没有的额外列被完全忽略；build_update_batch 同构（561-565/592/629），缺失 id 生成 `WHEN id=NULL`（永不匹配，该行静默不更新）。全程无记录间列一致性校验。**后果**：传入字段集不一致的批量数据时部分列静默丢弃/写 NULL，与逐行 insert 行为不一致，隐蔽数据正确性 bug。**修复**：取所有记录列名并集，或校验列集一致否则返 `InvalidArgument`（配合 DB-14）。
+
+**NEW-10｜FieldType 类型提示静默 fallthrough** · bug
+`mysql/query_builder.rs:724-728`（Timestamp 仅 as_i64 才 return）/750-754（Text 仅 as_str）/738-748（Blob）/711-722（DateTime 非字符串跌穿，而坏字符串却报 Err——分支内自相矛盾），值形态不匹配时跌穿到 763 默认 match。**后果**：`.timestamp(f)`/`.text(f)`/`.blob(f)` 显式标注的字段类型期望在 shape 稍偏即静默退化为通用绑定，无告警。与 NG-3（Decimal 降 f64）是不同侧面。**修复**：类型提示分支在 shape 不匹配时返 `TypeConversionError` 而非跌穿。
+
+**NEW-11｜From<u64> 截断环绕** · bug
+`mysql/condition.rs:62-66` `From<u64>` 用 `v as i64`（wrapping 语义），u64 > i64::MAX（BIGINT UNSIGNED 高半区、无符号雪花 ID）静默环绕成负数后 `bind(*i)`。**后果**：以 u64 传大值时写入/查询条件被静默改成负数，错误匹配/写错数据无报错。**修复**：`From<u64>` 对 > i64::MAX 走 `SqlValue::String`（MySQL 接受十进制串）或新增 `SqlValue::UInt(u64)` 变体。
+
+**NEW-12｜PG Database 缺 pool_status/health_check** · gap
+`postgres/database.rs:78-281` 整个 impl 无 `pool_status`/`health_check`，而 MySQL（132/149）与 Redis（client.rs:1730/1742）都有。**后果**：C4 把这两个方法下沉 yang-db 时漏掉 PG 后端，直接消费 PgDatabase 者无法探活、连接耗尽时无池快照，三后端能力不对称。**修复**：PG `Database` 补 `pool_status`（包 `PgPool::size()/num_idle()`）与 `health_check`（`SELECT 1`），与 MySQL 对称。
+
+**NEW-13｜PG 事务 JSON 参数绑文本串** · bug
+`postgres/transaction.rs:596/634` 的 `other` arm `query.bind(other.to_string())` 把 JSON 数组/对象绑为 text，而非事务路径 `database.rs:315` `bind(other.clone())` 绑原生 JSONB。**后果**：对 JSONB 列，事务内 `execute_with_params` 发 text 报 `column is of type jsonb but expression is of type text`，非事务同语句成功——PG 内部 tx↔非tx 行为分叉。DB-10 只修同函数的浮点 arm，不触及此 arm。**修复**：`other` arm 改 `bind(other.clone())` 与非事务对齐。
+
+**NEW-17｜集合命令二进制元素静默丢条** · bug（Low）
+`client.rs:1931-1936` `collect_string_array` 用 `filter_map(|v| v.as_string())`，被 smembers/sinter/sunion/sdiff/lrange/zrange/hkeys/hvals/scan 共用；`as_string()`(value.rs:39-44) 对非 UTF-8 Bytes 返 None 被整条剔除。`hgetall`(664-682) 更严重：field 与 value 双双 as_string 成功才 push。**后果**：存二进制成员时返回 Vec 比真实短、与 LLEN/SCARD/HLEN 计数不一致且无错误（与 DB-16 单值 None 失败模式不同）。**修复**：collect 改保留 Bytes 的变体，或提供 `*_bytes` 系列（配合 DB-16 的 get_bytes）。
+
+**NEW-18｜批量命令空切片下发无参命令** · bug（Low）
+`client.rs:1584-1591`（del）/1597-1604（exists）/334（mget）/1062（sadd）等均 `for x in slice { cmd.arg(x) }` 后直执行，无空输入短路。**后果**：空切片本应 no-op，但 Redis 对无参 DEL/SADD 返回 `ERR wrong number of arguments` → `RedisCommandError`，调用方在「待处理列表恰为空」边界拿到错误而非 Ok(0)。**修复**：各批量方法开头加 `if keys.is_empty() { return Ok(默认值) }`。
+
+**NEW-19｜WATCH 事务无法读-改-写** · bug
+`transaction.rs:88-91` watch() 仅记键名，命令在 build 期（101-261）把固定值写入 pipe，exec()(292-344) 重试分支裸 `continue` 重放同一 pipe，WATCH 与 EXEC 间无读取被监视键/重算的钩子。**后果**：典型乐观锁「WATCH balance; GET; compute; SET」结构上无法表达，退化为固定值 CAS-set；文档却宣称「基于 WATCH/MULTI/EXEC 实现乐观锁」并给 `tx.watch(&["balance"])` 示例，误导调用方。与 DB-2 不同根（DB-2 是冲突检测被吞）。**修复**：提供接受闭包的 `watch_then(keys, |conn| async {...})` API 在冲突时重跑闭包，或文档明确「仅支持固定值 CAS」。
+
+**NEW-20｜WATCH 重试无退避** · perf（Low）
+`transaction.rs:304-343` 冲突分支 `retries+=1` 后直接 continue，无 sleep/backoff/jitter（最多 100 次）。**注**：非 CPU 忙等——每轮有 WATCH+EXEC 两次网络 RTT 且 .await 让出，原报告「紧自旋」定性已被复核否决。真问题是争用下以 RTT 节奏重发放大 Redis 压力。**修复**：重试间加指数退避 + 抖动（依赖 tokio::time）。
+
+**NEW-21｜多元素 push/sadd 破坏 pipeline 结果契约** · bug
+`pipeline.rs:171-225`、`transaction.rs:195-249` 的 lpush/rpush/sadd/zadd 对 values 切片逐元素 `add_command`（而非 redis-rs 变参单命令），N 元素展开为 N 条命令各返一个结果。但 query()/execute() 文档（pipeline.rs:259/301）承诺「每命令一个结果」，len()(345) 按底层命令计数。**后果**：`pipeline.set(a).sadd("s",&["x","y","z"]).get(b)` 期望 3 个结果实得 5 个，按索引取结果整体错位，len() 与方法调用次数不符。**修复**：用变参一次性 `self.pipe.lpush(key, values)` 生成单命令。
+
+**NEW-22｜SET 写入的数字读回恒为 String** · gap（Low）
+`value.rs:165-172` From<redis::Value> 对 BulkString 一律先转 String，从不解析数值；仅 `redis::Value::Int/Double` 才映射 Int/Float。而 GET/HGET 数字在 RESP 中是 BulkString。as_i64(51-56)/as_f64(63-68) 只 match Int/Float。**后果**：`get("counter")` 即便存 42 也得 `String("42")`，as_i64() 返 None，调用方必须自己 parse，与便捷访问器预期相悖。**修复**：as_i64/as_f64 对 String 变体回退 `s.parse().ok()`。
+
+**NEW-23｜RedisConfig 不校验退化参数** · safety（Low）
+`config.rs:53-65` `RedisConfig::new` 对 max_connections/connect_timeout/wait_timeout 直接赋值无校验，`client.rs:78-91` 原样喂入 PoolConfig。max_connections=0 → deadpool 信号量 0 permit，pool.get()(94-97) 永远失败，以不透明 `RedisConnectionError("获取连接失败")` 报错而非明确配置错误。**后果**：0 值产生看似构造成功却不可用的客户端，违 checked API 优先，排障困难。**修复**：`new`/`connect_with_config` 对 0 值返 `InvalidConfig`/checked 错误。
+
+**NEW-24｜test_logging_config 假绿** · test-gap（Low）
+`tests/test_redis_config.rs:186-199` enable_logging=true 与 =false 两分支断言完全相同（均只 `assert!(result.is_ok())`），从不检查日志产生；而 enable_logging 仅 gate `client.rs:105-107` 一行 log::info!。**后果**：对 enable_logging 提供虚假覆盖信心，日志逻辑回归仍绿（与 DB-19 硬 expect/无 #[ignore] 不同轴，是断言缺失）。**修复**：用 log 捕获断言验证 true 分支产生日志、false 分支静默。
+
+> 本节为活文档，随修复推进回填 13.1 表状态/commit/日期。新问题修复优先级见 11.6「优先级重排建议」第 1、3 项。
 
 
 

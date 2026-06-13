@@ -104,7 +104,17 @@
       "Bash(grep -n \"push_str\\(\\\\\"?\\\\\"\\)\\\\|\\\\\\\\\\\\$\\\\|placeholder\\\\|fn condition_to_sql\" crates/yang-db/src/mysql/condition.rs)",
       "Bash(grep -n 'format!\\(\"\\\\${}\"\\\\|placeholder\\\\|fn condition_to_sql\\\\|param_index' crates/yang-db/src/postgres/condition.rs)",
       "Bash(echo \"exit:$?\")",
-      "Bash(xargs grep -l \"FromRow\")"
+      "Bash(xargs grep -l \"FromRow\")",
+      "mcp__codegraph__codegraph_node",
+      "Bash(docker info *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(grep -vc \"///\")",
+      "Bash(grep -vi \"FieldConfig\\\\|//\\\\|field\\(Field\")",
+      "Bash(grep -v \"fn apply_sql_condition\\\\|fn count_with_conditions\\\\|//\")",
+      "Bash(grep -v \"where_eq\\\\|where_in\\\\|where_or\\\\|where_and\\\\|where_tree\\\\|where_like\\\\|where_ne\\\\|where_lt\\\\|where_gt\\\\|where_not\\\\|where_null\\\\|where_between\\\\|//\\\\|where_conditions\")",
+      "Bash(grep -v \"//\\\\|test\")",
+      "Bash(xargs grep -ln \"pub struct Request\")",
+      "Bash(grep -v \"//\\\\|impl\\\\|pub struct\\\\|Debug\")"
     ]
   }
 }

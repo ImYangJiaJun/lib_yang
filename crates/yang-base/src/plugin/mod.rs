@@ -1282,4 +1282,105 @@ mod tests {
             "配置不符合 Schema 应返回 PluginConfigInvalid 错误"
         );
     }
+
+    // ==================== C6 并发回归：register TOCTOU ====================
+
+    /// 并发注册同名插件（TOCTOU 回归网，对应 I11）。
+    ///
+    /// `register` 的「read 检查 contains_key → on_register → write insert」是分离的
+    /// 三段锁，存在 check-then-insert 竞态窗口：多个并发注册同名插件时，可能都越过
+    /// 检查、最终多次 insert（后写覆盖）。本测试**锁定当前契约**：
+    /// - 进程不 panic、不死锁，map 不被破坏
+    /// - 并发结束后插件确实可查到且名称正确
+    /// - 至少有一个 register 调用返回 Ok（拿到锁的胜出者）
+    ///
+    /// I11 修复（改单把 write 锁 check-and-insert）后，应能进一步断言「恰好一个
+    /// Ok、其余 PluginAlreadyRegistered」——届时收紧本测试。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_name_register_keeps_map_consistent() {
+        struct DupPlugin;
+        #[async_trait]
+        impl Plugin for DupPlugin {
+            fn name(&self) -> &str {
+                "dup_plugin"
+            }
+        }
+
+        let manager = Arc::new(PluginManager::new());
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let m = Arc::clone(&manager);
+            handles.push(tokio::spawn(async move { m.register(DupPlugin).await }));
+        }
+
+        let mut ok_count = 0usize;
+        for h in handles {
+            // 任务本身不应 panic
+            let res = h.await.expect("注册任务不应 panic");
+            if res.is_ok() {
+                ok_count += 1;
+            }
+        }
+
+        // 当前契约：至少一个成功（窗口竞态下可能 >1）
+        assert!(ok_count >= 1, "并发同名注册应至少有一个成功");
+
+        // map 未被破坏：插件可查到且名称正确
+        let got = manager.get("dup_plugin").await;
+        assert!(got.is_some(), "并发注册后应能查到 dup_plugin");
+        assert_eq!(got.unwrap().name(), "dup_plugin");
+    }
+
+    /// 并发注册不同名插件：全部成功，全部可查到，无丢失。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_distinct_register_no_loss() {
+        // 用宏生成固定数量的不同名插件，避免运行时动态 name 生命周期问题
+        macro_rules! make_plugin {
+            ($ty:ident, $name:literal) => {
+                struct $ty;
+                #[async_trait]
+                impl Plugin for $ty {
+                    fn name(&self) -> &str {
+                        $name
+                    }
+                }
+            };
+        }
+        make_plugin!(P0, "cn_p0");
+        make_plugin!(P1, "cn_p1");
+        make_plugin!(P2, "cn_p2");
+        make_plugin!(P3, "cn_p3");
+        make_plugin!(P4, "cn_p4");
+        make_plugin!(P5, "cn_p5");
+        make_plugin!(P6, "cn_p6");
+        make_plugin!(P7, "cn_p7");
+
+        let manager = Arc::new(PluginManager::new());
+        let m = Arc::clone(&manager);
+
+        // 并发注册 8 个不同名插件
+        let (r0, r1, r2, r3, r4, r5, r6, r7) = tokio::join!(
+            { let m = Arc::clone(&m); async move { m.register(P0).await } },
+            { let m = Arc::clone(&m); async move { m.register(P1).await } },
+            { let m = Arc::clone(&m); async move { m.register(P2).await } },
+            { let m = Arc::clone(&m); async move { m.register(P3).await } },
+            { let m = Arc::clone(&m); async move { m.register(P4).await } },
+            { let m = Arc::clone(&m); async move { m.register(P5).await } },
+            { let m = Arc::clone(&m); async move { m.register(P6).await } },
+            { let m = Arc::clone(&m); async move { m.register(P7).await } },
+        );
+        for r in [r0, r1, r2, r3, r4, r5, r6, r7] {
+            r.expect("不同名插件注册应全部成功");
+        }
+
+        for i in 0..8 {
+            let name = format!("cn_p{}", i);
+            assert!(
+                manager.get(&name).await.is_some(),
+                "{} 应已注册且可查到",
+                name
+            );
+        }
+    }
 }

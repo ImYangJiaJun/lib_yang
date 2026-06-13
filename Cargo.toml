@@ -29,6 +29,14 @@ thiserror = "2.0.18"
 # 日志
 log = "0.4.29"
 
+# 结构化追踪（可观测性 C4）：tracing 作核心横切能力，
+# tracing-log 把现有 log::* 宏桥接进 tracing 订阅者
+tracing = "0.1.41"
+tracing-log = "0.2.0"
+
+# 指标门面（可选，feature "metrics" 启用；运行期由调用方挂 exporter）
+metrics = "0.24.2"
+
 # 时间与唯一标识
 chrono = "0.4.44"
 uuid = { version = "1.23.1", features = ["v4"] }

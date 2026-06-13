@@ -39,6 +39,9 @@ validator = ["dep:regex"]
 # 插件 JSON Schema 配置验证
 plugin-schema = ["dep:jsonschema"]
 
+# 运行期指标埋点（门面，默认关闭；运行期由调用方挂 exporter）
+metrics = ["dep:metrics"]
+
 [dependencies]
 # 内部依赖
 yang-db = { path = "../yang-db", version = "0.1.3" }
@@ -57,6 +60,10 @@ thiserror = { workspace = true }
 
 # 日志
 log = { workspace = true }
+
+# 结构化追踪（可观测性 C4 核心横切能力）
+tracing = { workspace = true }
+tracing-log = { workspace = true }
 
 # 工具库
 chrono = { workspace = true }
@@ -82,6 +89,9 @@ regex = { workspace = true, optional = true }
 
 # JSON Schema 验证（可选，通过 "plugin-schema" feature 启用）
 jsonschema = { workspace = true, optional = true }
+
+# 指标门面（可选，通过 "metrics" feature 启用）
+metrics = { workspace = true, optional = true }
 
 # JSON Schema 派生
 schemars = { workspace = true }
