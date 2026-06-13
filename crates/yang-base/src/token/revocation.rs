@@ -35,6 +35,16 @@ fn subject_min_iat_key(sub: &str) -> String {
     format!("{SUBJECT_MIN_IAT_PREFIX}{sub}:min_iat")
 }
 
+/// 判定一个 Token 的签发时间 `iat` 是否被用户水位线 `min_iat` 撤销。
+///
+/// 采用 `iat <= min_iat`（含等号）而非严格小于：撤销与签发都是**秒级**时间戳，
+/// 若用 `<`，则在改密/强制下线那一秒内签发的 Token（`iat == min_iat`）会逃过
+/// 撤销，留下 1 秒旁路窗口（NEW-6）。安全取「过撤一侧」——同秒签发的 Token 一并
+/// 撤销（用户至多需在该秒后重新登录一次），杜绝旁路。
+fn iat_revoked_by_watermark(iat: u64, min_iat: u64) -> bool {
+    iat <= min_iat
+}
+
 impl TokenManager {
     /// 撤销一个 Token（写入 Redis 黑名单）。
     ///
@@ -168,9 +178,9 @@ impl TokenManager {
         if self.is_revoked(&claims.jti).await? {
             return Err(BaseError::TokenRevoked);
         }
-        // 第二层：按用户水位线（改密、强制下线）。Token 在水位线之前签发即视为已撤销。
+        // 第二层：按用户水位线（改密、强制下线）。Token 在水位线当秒或之前签发即视为已撤销。
         if let Some(min_iat) = self.subject_min_iat(&claims.sub).await? {
-            if claims.iat < min_iat {
+            if iat_revoked_by_watermark(claims.iat, min_iat) {
                 return Err(BaseError::TokenRevoked);
             }
         }
@@ -190,5 +200,16 @@ mod tests {
     #[test]
     fn test_subject_min_iat_key_format() {
         assert_eq!(subject_min_iat_key("user_42"), "token:user:user_42:min_iat");
+    }
+
+    /// NEW-6：同秒签发（iat == min_iat）必须被撤销，杜绝 1 秒旁路窗口。
+    #[test]
+    fn test_iat_revoked_by_watermark_same_second() {
+        // 早于水位线：撤销
+        assert!(iat_revoked_by_watermark(100, 200));
+        // 同秒签发：必须撤销（含等号，这是修复点）
+        assert!(iat_revoked_by_watermark(200, 200));
+        // 晚于水位线：放行
+        assert!(!iat_revoked_by_watermark(201, 200));
     }
 }
