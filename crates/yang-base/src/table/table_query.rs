@@ -127,6 +127,17 @@ pub struct TableQuery {
     #[cfg(feature = "mysql")]
     #[allow(dead_code)]
     pool: Option<Arc<sqlx::MySqlPool>>,
+
+    /// 慢查询阈值（可观测性 C4）
+    ///
+    /// `Some(d)` 时，单次执行耗时超过 `d` 会 `tracing::warn!`；`None`（默认）
+    /// 整个计时分支短路，热路径仅一次 `Instant::now()`，无分配。
+    /// 由 [`ActionContext::table_query`](crate::action::ActionContext) 从
+    /// [`ObservabilityConfig`](crate::observability::ObservabilityConfig) 注入。
+    slow_threshold: Option<std::time::Duration>,
+
+    /// 本次派发的运行期标识（用于慢查询日志串联），由 ActionContext 注入。
+    request_id: Option<crate::action::RequestId>,
 }
 
 /// 检查字符串是否为合法的 SQL 标识符
@@ -220,6 +231,8 @@ impl TableQuery {
             include_trashed: false,
             allow_full_table: false,
             pool,
+            slow_threshold: None,
+            request_id: None,
         }
     }
 
@@ -238,7 +251,24 @@ impl TableQuery {
             query_params: QueryParams::new(),
             include_trashed: false,
             allow_full_table: false,
+            slow_threshold: None,
+            request_id: None,
         }
+    }
+
+    /// 设置慢查询阈值（链式）。超过该耗时的单次执行会 `tracing::warn!`。
+    ///
+    /// 通常由 `ActionContext::table_query()` 从全局 `ObservabilityConfig` 注入；
+    /// 也可手动覆盖。`None`/不调用时不启用慢查询日志。
+    pub fn with_slow_threshold(mut self, threshold: Option<std::time::Duration>) -> Self {
+        self.slow_threshold = threshold;
+        self
+    }
+
+    /// 设置本次查询关联的 request_id（链式），用于慢查询日志串联。
+    pub fn with_request_id(mut self, request_id: crate::action::RequestId) -> Self {
+        self.request_id = Some(request_id);
+        self
     }
 
     /// 选择查询字段
@@ -898,6 +928,131 @@ impl TableQuery {
         Ok(())
     }
 
+    /// 嵌套布尔条件的最大递归深度，防止深层嵌套（或恶意构造）爆栈。
+    ///
+    /// 校验期（`validate_condition_tree`）与渲染期（`render_condition`）共用同一上限。
+    const MAX_WHERE_DEPTH: usize = 32;
+
+    /// 递归校验一棵 WHERE 条件树的字段与筛选权限。
+    ///
+    /// 叶子条件校验其字段存在且当前角色可筛选；逻辑组（`And`/`Or`）递归下钻校验
+    /// 每个子条件。深度超过 [`Self::MAX_WHERE_DEPTH`] 返回 `ParamInvalid` 而非
+    /// panic，与渲染期保持一致的防爆栈上限。
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::FieldNotFound`：某叶子字段不存在
+    /// - `BaseError::FieldPermissionDenied`：某叶子字段无筛选权限
+    /// - `BaseError::ParamInvalid`：嵌套层数超限
+    fn validate_condition_tree(
+        &self,
+        condition: &WhereCondition,
+        depth: usize,
+    ) -> Result<(), BaseError> {
+        if depth > Self::MAX_WHERE_DEPTH {
+            return Err(BaseError::ParamInvalid(
+                "where".to_string(),
+                format!("嵌套布尔条件层数超过上限 {}", Self::MAX_WHERE_DEPTH),
+            ));
+        }
+
+        match condition {
+            WhereCondition::And { conditions } | WhereCondition::Or { conditions } => {
+                for child in conditions {
+                    self.validate_condition_tree(child, depth + 1)?;
+                }
+                Ok(())
+            }
+            // 叶子：必有字段，校验存在性与筛选权限
+            leaf => {
+                let field = leaf
+                    .field()
+                    .expect("非组节点必有字段名");
+                self.validate_filter_field(field)
+            }
+        }
+    }
+
+    /// 添加一个 OR 逻辑组 (WHERE ... AND (c1 OR c2 OR ...))
+    ///
+    /// 组内每个子条件递归校验字段存在性与筛选权限；通过后整组以 `Or` 节点追加到
+    /// 顶层条件列表，与既有条件以隐式 AND 连接。空组等价于恒假（`1=0`）。
+    ///
+    /// 子条件可由 [`WhereCondition`] 直接构造，亦可嵌套 `And`/`Or` 组（深度上限
+    /// [`Self::MAX_WHERE_DEPTH`]）。
+    ///
+    /// # 参数
+    ///
+    /// - `conditions`：OR 组的子条件列表
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：校验通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：字段不存在 / 无筛选权限 / 嵌套超限
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::table::WhereCondition;
+    /// use serde_json::json;
+    ///
+    /// // WHERE status = 'active' AND (age >= 18 OR vip = true)
+    /// let query = query
+    ///     .where_eq("status", json!("active"))?
+    ///     .where_or(vec![
+    ///         WhereCondition::Gte { field: "age".into(), value: json!(18) },
+    ///         WhereCondition::Eq { field: "vip".into(), value: json!(true) },
+    ///     ])?;
+    /// ```
+    pub fn where_or(mut self, conditions: Vec<WhereCondition>) -> Result<Self, BaseError> {
+        let group = WhereCondition::Or { conditions };
+        // 递归校验整棵子树（含嵌套组）
+        self.validate_condition_tree(&group, 0)?;
+        self.query_params.where_conditions.push(group);
+        Ok(self)
+    }
+
+    /// 添加一个 AND 逻辑组 (WHERE ... AND (c1 AND c2 AND ...))
+    ///
+    /// 语义同 [`TableQuery::where_or`]，但组内子条件以 AND 连接。主要用于在 OR 组
+    /// 内部嵌套 AND 子组；顶层多个条件本就隐式 AND，单独使用通常无必要。空组等价
+    /// 于恒真（`1=1`）。
+    ///
+    /// # 参数
+    ///
+    /// - `conditions`：AND 组的子条件列表
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：校验通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：字段不存在 / 无筛选权限 / 嵌套超限
+    pub fn where_and(mut self, conditions: Vec<WhereCondition>) -> Result<Self, BaseError> {
+        let group = WhereCondition::And { conditions };
+        self.validate_condition_tree(&group, 0)?;
+        self.query_params.where_conditions.push(group);
+        Ok(self)
+    }
+
+    /// 追加一棵任意 WHERE 条件（叶子或 `And`/`Or` 组），递归校验后并入顶层条件。
+    ///
+    /// 这是类型化布尔树（[`Filter`](crate::table::Filter)）桥接到受保护层的统一入口：
+    /// 整棵树先经 [`Self::validate_condition_tree`] 递归校验字段存在性、筛选权限与
+    /// 嵌套深度，通过后作为单个条件追加（与既有条件隐式 AND 连接）。
+    ///
+    /// # 参数
+    ///
+    /// - `condition`：任意 `WhereCondition`（叶子或逻辑组）
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：校验通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：字段不存在 / 无筛选权限 / 嵌套超限
+    pub fn where_tree(mut self, condition: WhereCondition) -> Result<Self, BaseError> {
+        self.validate_condition_tree(&condition, 0)?;
+        self.query_params.where_conditions.push(condition);
+        Ok(self)
+    }
+
     /// 获取查询参数的引用
     ///
     /// 用于测试或调试，获取当前构建的查询参数
@@ -1076,11 +1231,16 @@ impl TableQuery {
             query = Self::bind_count_param(query, &param);
         }
 
-        // 5. 执行查询
-        let count = query
-            .fetch_one(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
+        // 5. 执行查询（计时观测）
+        let count = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "count",
+            query.fetch_one(pool.as_ref()),
+        )
+        .await
+        .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
 
         Ok(count as usize)
     }
@@ -1115,18 +1275,21 @@ impl TableQuery {
 
     /// 统一拼接 WHERE 子句到 SQL 字符串
     ///
-    /// 集中处理 12 种 WHERE 条件（Eq/Ne/In/NotIn/Like/Gt/Gte/Lt/Lte/Between/IsNull/IsNotNull）的 SQL 拼接，
-    /// 并通过 `quote_identifier` 对字段名进行反引号转义，防止 SQL 注入。
+    /// 集中处理 12 种叶子条件（Eq/Ne/In/NotIn/Like/Gt/Gte/Lt/Lte/Between/IsNull/IsNotNull）
+    /// 与两种逻辑组（And/Or）的 SQL 拼接：顶层 `where_conditions` 列表仍以隐式 AND 连接
+    /// （向后兼容），逻辑组递归渲染并用括号包裹。所有字段名通过 `quote_identifier`
+    /// 反引号转义，防止 SQL 注入。
     ///
     /// # 参数
     ///
     /// - `sql`：目标 SQL 字符串（追加模式）
     /// - `params`：参数列表（追加模式）
+    /// - `apply_soft_delete`：是否追加软删过滤（仅读路径）
     ///
     /// # 返回值
     ///
     /// - `Ok(())`：拼接成功
-    /// - `Err(BaseError)`：字段名非法或参数转换失败
+    /// - `Err(BaseError)`：字段名非法、参数转换失败或嵌套层数超限
     fn append_where_to_sql(
         &self,
         sql: &mut String,
@@ -1146,90 +1309,13 @@ impl TableQuery {
         sql.push_str(" WHERE ");
         let mut first = true;
 
+        // 顶层条件以隐式 AND 连接；每个条件递归渲染（组节点自带括号）
         for condition in &self.query_params.where_conditions {
             if !first {
                 sql.push_str(" AND ");
             }
             first = false;
-
-            match condition {
-                WhereCondition::Eq { field, value } => {
-                    // 通过 quote_identifier 转义字段名，防止 SQL 注入
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} = ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::In { field, values } => {
-                    let quoted = self.quote_identifier(field)?;
-                    if values.is_empty() {
-                        // 空 IN 集合：等价于恒假，避免拼出非法的 `IN ()`
-                        sql.push_str("1=0");
-                    } else {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} IN ({})", quoted, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                }
-                WhereCondition::Like { field, pattern } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} LIKE ?", quoted));
-                    params.push(SqlParam::String(pattern.clone()));
-                }
-                WhereCondition::Gt { field, value } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} > ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::Gte { field, value } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} >= ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::Lt { field, value } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} < ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::Lte { field, value } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} <= ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::IsNull { field } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} IS NULL", quoted));
-                }
-                WhereCondition::IsNotNull { field } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} IS NOT NULL", quoted));
-                }
-                WhereCondition::Ne { field, value } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} <> ?", quoted));
-                    params.push(SqlParam::from_json(value)?);
-                }
-                WhereCondition::Between { field, lo, hi } => {
-                    let quoted = self.quote_identifier(field)?;
-                    sql.push_str(&format!("{} BETWEEN ? AND ?", quoted));
-                    params.push(SqlParam::from_json(lo)?);
-                    params.push(SqlParam::from_json(hi)?);
-                }
-                WhereCondition::NotIn { field, values } => {
-                    let quoted = self.quote_identifier(field)?;
-                    if values.is_empty() {
-                        // 空 NOT IN 集合：等价于恒真，不排除任何行
-                        sql.push_str("1=1");
-                    } else {
-                        let placeholders = vec!["?"; values.len()].join(", ");
-                        sql.push_str(&format!("{} NOT IN ({})", quoted, placeholders));
-                        for value in values {
-                            params.push(SqlParam::from_json(value)?);
-                        }
-                    }
-                }
-            }
+            self.render_condition(condition, sql, params, 0)?;
         }
 
         // 读路径软删过滤：追加 `软删字段 IS NULL`（与已有条件用 AND 连接）
@@ -1243,6 +1329,141 @@ impl TableQuery {
             }
         }
 
+        Ok(())
+    }
+
+    /// 递归渲染单个 WHERE 条件到 SQL（叶子直接拼接，And/Or 组括号包裹后递归）。
+    ///
+    /// `depth` 从 0 起递增，超过 [`Self::MAX_WHERE_DEPTH`] 返回 `ParamInvalid`
+    /// 而非 panic，保证受保护层不因深嵌套输入崩溃。
+    fn render_condition(
+        &self,
+        condition: &WhereCondition,
+        sql: &mut String,
+        params: &mut Vec<SqlParam>,
+        depth: usize,
+    ) -> Result<(), BaseError> {
+        if depth > Self::MAX_WHERE_DEPTH {
+            return Err(BaseError::ParamInvalid(
+                "where".to_string(),
+                format!("嵌套布尔条件层数超过上限 {}", Self::MAX_WHERE_DEPTH),
+            ));
+        }
+
+        match condition {
+            WhereCondition::Eq { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} = ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::In { field, values } => {
+                let quoted = self.quote_identifier(field)?;
+                if values.is_empty() {
+                    // 空 IN 集合：等价于恒假，避免拼出非法的 `IN ()`
+                    sql.push_str("1=0");
+                } else {
+                    let placeholders = vec!["?"; values.len()].join(", ");
+                    sql.push_str(&format!("{} IN ({})", quoted, placeholders));
+                    for value in values {
+                        params.push(SqlParam::from_json(value)?);
+                    }
+                }
+            }
+            WhereCondition::Like { field, pattern } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} LIKE ?", quoted));
+                params.push(SqlParam::String(pattern.clone()));
+            }
+            WhereCondition::Gt { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} > ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::Gte { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} >= ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::Lt { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} < ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::Lte { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} <= ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::IsNull { field } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} IS NULL", quoted));
+            }
+            WhereCondition::IsNotNull { field } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} IS NOT NULL", quoted));
+            }
+            WhereCondition::Ne { field, value } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} <> ?", quoted));
+                params.push(SqlParam::from_json(value)?);
+            }
+            WhereCondition::Between { field, lo, hi } => {
+                let quoted = self.quote_identifier(field)?;
+                sql.push_str(&format!("{} BETWEEN ? AND ?", quoted));
+                params.push(SqlParam::from_json(lo)?);
+                params.push(SqlParam::from_json(hi)?);
+            }
+            WhereCondition::NotIn { field, values } => {
+                let quoted = self.quote_identifier(field)?;
+                if values.is_empty() {
+                    // 空 NOT IN 集合：等价于恒真，不排除任何行
+                    sql.push_str("1=1");
+                } else {
+                    let placeholders = vec!["?"; values.len()].join(", ");
+                    sql.push_str(&format!("{} NOT IN ({})", quoted, placeholders));
+                    for value in values {
+                        params.push(SqlParam::from_json(value)?);
+                    }
+                }
+            }
+            // 逻辑组：括号包裹，子条件以 AND/OR 连接，递归渲染（深度 +1）
+            WhereCondition::And { conditions } => {
+                self.render_group(conditions, " AND ", "1=1", sql, params, depth)?;
+            }
+            WhereCondition::Or { conditions } => {
+                self.render_group(conditions, " OR ", "1=0", sql, params, depth)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 渲染逻辑组：`(c1 <sep> c2 <sep> ...)`；空组用 `empty_literal` 兜底
+    /// （And→`1=1` 恒真，Or→`1=0` 恒假），避免拼出非法空括号。
+    fn render_group(
+        &self,
+        conditions: &[WhereCondition],
+        separator: &str,
+        empty_literal: &str,
+        sql: &mut String,
+        params: &mut Vec<SqlParam>,
+        depth: usize,
+    ) -> Result<(), BaseError> {
+        if conditions.is_empty() {
+            sql.push_str(empty_literal);
+            return Ok(());
+        }
+
+        sql.push('(');
+        let mut first = true;
+        for cond in conditions {
+            if !first {
+                sql.push_str(separator);
+            }
+            first = false;
+            self.render_condition(cond, sql, params, depth + 1)?;
+        }
+        sql.push(')');
         Ok(())
     }
 
@@ -1361,21 +1582,57 @@ impl TableQuery {
         // 2. 构建 SQL 语句
         let (sql, params) = self.build_select_sql(None)?;
 
-        // 3. 创建查询
-        let mut query = sqlx::query_as::<_, T>(&sql);
+        // 3. 在连接池上执行查询（计时观测，慢查询超阈值 warn）
+        Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "select",
+            Self::run_fetch_all(pool.as_ref(), &sql, &params),
+        )
+        .await
+    }
 
-        // 4. 绑定参数
-        for param in params {
-            query = Self::bind_param(query, &param);
-        }
+    /// 在事务中执行 SELECT 查询并返回多条记录
+    ///
+    /// 与 [`TableQuery::select`] 完全一致的建句与权限/软删逻辑，但在调用方提供的
+    /// `yang_db::Transaction` 内执行，使「读-改-写」场景的读取与后续写入处于同一
+    /// 事务、看到一致快照。
+    ///
+    /// # 参数
+    ///
+    /// - `tx`：由 [`ActionContext::begin_transaction`](crate::action::ActionContext::begin_transaction)
+    ///   或 [`GlobalDatabase::transaction`](crate::database::GlobalDatabase::transaction) 取得的活动事务
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚，连接不可用
+    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
+    pub async fn select_in_tx<T>(
+        self,
+        tx: &mut yang_db::Transaction,
+    ) -> Result<Vec<T>, BaseError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        // 构建 SQL（与普通路径一致，含字段权限/软删过滤）
+        let (sql, params) = self.build_select_sql(None)?;
 
-        // 5. 执行查询
-        let results = query
-            .fetch_all(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
+        // 借出事务底层连接执行；事务已结束则返回错误而非 panic
+        let executor = tx.executor().ok_or_else(|| {
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "事务已提交或回滚".to_string(),
+            ))
+        })?;
 
-        Ok(results)
+        Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "select_in_tx",
+            Self::run_fetch_all(executor, &sql, &params),
+        )
+        .await
     }
 
     /// 构建 SELECT SQL 语句
@@ -1544,11 +1801,16 @@ impl TableQuery {
             query = Self::bind_param(query, &param);
         }
 
-        // 5. 执行查询，返回可选结果
-        let result = query
-            .fetch_optional(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
+        // 5. 执行查询，返回可选结果（计时观测）
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "fetch_optional",
+            query.fetch_optional(pool.as_ref()),
+        )
+        .await
+        .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
 
         Ok(result)
     }
@@ -1628,20 +1890,50 @@ impl TableQuery {
         // 3. 构建 INSERT SQL 语句
         let (sql, params) = self.build_insert_sql(&data)?;
 
-        // 4. 创建查询
-        let mut query = sqlx::query(&sql);
+        // 4. 在连接池上执行插入（计时观测）
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "insert",
+            Self::run_execute(pool.as_ref(), &sql, &params),
+        )
+        .await?;
 
-        // 5. 绑定参数
-        for param in params {
-            query = Self::bind_execute_param(query, &param);
-        }
+        Ok(result.rows_affected())
+    }
 
-        // 6. 执行插入
-        let result = query
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
+    /// 在事务中执行 INSERT 操作
+    ///
+    /// 与 [`TableQuery::insert`] 完全一致的写权限校验/默认值填充/时间戳/必填校验
+    /// 流程，但在调用方提供的事务内执行，可与其它写操作原子提交。
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚
+    /// - 其余同 [`TableQuery::insert`]
+    pub async fn insert_in_tx(
+        self,
+        tx: &mut yang_db::Transaction,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<u64, BaseError> {
+        let data = self.prepare_and_validate_insert(data)?;
+        let (sql, params) = self.build_insert_sql(&data)?;
 
+        let executor = tx.executor().ok_or_else(|| {
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "事务已提交或回滚".to_string(),
+            ))
+        })?;
+
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "insert_in_tx",
+            Self::run_execute(executor, &sql, &params),
+        )
+        .await?;
         Ok(result.rows_affected())
     }
 
@@ -1678,16 +1970,44 @@ impl TableQuery {
         let data = self.prepare_and_validate_insert(data)?;
         let (sql, params) = self.build_insert_sql(&data)?;
 
-        let mut query = sqlx::query(&sql);
-        for param in params {
-            query = Self::bind_execute_param(query, &param);
-        }
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "insert_returning_id",
+            Self::run_execute(pool.as_ref(), &sql, &params),
+        )
+        .await?;
 
-        let result = query
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
+        Ok((result.rows_affected(), result.last_insert_id()))
+    }
 
+    /// 在事务中执行 INSERT 并返回自增主键
+    ///
+    /// 与 [`TableQuery::insert_returning_id`] 一致，但在事务内执行。批量写入或
+    /// 「插入父行→用其主键插入子行」等需要拿到新 ID 再继续的原子场景使用。
+    pub async fn insert_returning_id_in_tx(
+        self,
+        tx: &mut yang_db::Transaction,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<(u64, u64), BaseError> {
+        let data = self.prepare_and_validate_insert(data)?;
+        let (sql, params) = self.build_insert_sql(&data)?;
+
+        let executor = tx.executor().ok_or_else(|| {
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "事务已提交或回滚".to_string(),
+            ))
+        })?;
+
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "insert_returning_id_in_tx",
+            Self::run_execute(executor, &sql, &params),
+        )
+        .await?;
         Ok((result.rows_affected(), result.last_insert_id()))
     }
 
@@ -1894,20 +2214,50 @@ impl TableQuery {
         // 3. 构建 UPDATE SQL 语句
         let (sql, params) = self.build_update_sql(&data)?;
 
-        // 4. 创建查询
-        let mut query = sqlx::query(&sql);
+        // 4. 在连接池上执行更新（计时观测）
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "update",
+            Self::run_execute(pool.as_ref(), &sql, &params),
+        )
+        .await?;
 
-        // 5. 绑定参数
-        for param in params {
-            query = Self::bind_execute_param(query, &param);
-        }
+        Ok(result.rows_affected())
+    }
 
-        // 6. 执行更新
-        let result = query
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
+    /// 在事务中执行 UPDATE 操作
+    ///
+    /// 与 [`TableQuery::update`] 一致的字段校验/权限/WHERE 守卫/自动 `updated_at`
+    /// 逻辑，但在事务内执行。
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚
+    /// - 其余同 [`TableQuery::update`]
+    pub async fn update_in_tx(
+        self,
+        tx: &mut yang_db::Transaction,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<u64, BaseError> {
+        self.validate_update_data(&data)?;
+        let (sql, params) = self.build_update_sql(&data)?;
 
+        let executor = tx.executor().ok_or_else(|| {
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "事务已提交或回滚".to_string(),
+            ))
+        })?;
+
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "update_in_tx",
+            Self::run_execute(executor, &sql, &params),
+        )
+        .await?;
         Ok(result.rows_affected())
     }
 
@@ -2161,20 +2511,53 @@ impl TableQuery {
         // 3. 物理删除：构建 DELETE SQL 语句
         let (sql, params) = self.build_delete_sql()?;
 
-        // 4. 创建查询
-        let mut query = sqlx::query(&sql);
+        // 4. 在连接池上执行删除（计时观测）
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "delete",
+            Self::run_execute(pool.as_ref(), &sql, &params),
+        )
+        .await?;
 
-        // 5. 绑定参数
-        for param in params {
-            query = Self::bind_execute_param(query, &param);
+        Ok(result.rows_affected())
+    }
+
+    /// 在事务中执行 DELETE 操作
+    ///
+    /// 与 [`TableQuery::delete`] 一致：配置了软删除字段时走 UPDATE 标记（同样在
+    /// 事务内），否则物理删除；WHERE 守卫与软删语义完全复用。
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚
+    /// - 其余同 [`TableQuery::delete`]
+    pub async fn delete_in_tx(self, tx: &mut yang_db::Transaction) -> Result<u64, BaseError> {
+        // 软删除：转为事务内 UPDATE，保持与连接池路径一致的语义
+        if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
+            let now = chrono::Utc::now().timestamp();
+            let mut data = std::collections::HashMap::new();
+            data.insert(soft_delete_field.clone(), Value::Number(now.into()));
+            return self.update_in_tx(tx, data).await;
         }
 
-        // 6. 执行删除
-        let result = query
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))?;
+        let (sql, params) = self.build_delete_sql()?;
 
+        let executor = tx.executor().ok_or_else(|| {
+            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                "事务已提交或回滚".to_string(),
+            ))
+        })?;
+
+        let result = Self::timed(
+            self.slow_threshold,
+            self.request_id,
+            &self.table_config.table_name,
+            "delete_in_tx",
+            Self::run_execute(executor, &sql, &params),
+        )
+        .await?;
         Ok(result.rows_affected())
     }
 
@@ -2259,6 +2642,99 @@ impl TableQuery {
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
         }
+    }
+
+    /// 执行边界计时（慢查询观测，C4）。
+    ///
+    /// 包裹一次数据库执行 `fut`：`threshold` 为 `None`（默认）时仅一次
+    /// `Instant::now()`，无额外分配、无日志；为 `Some(d)` 且实际耗时超过 `d` 时
+    /// 发一条 `tracing::warn!`（含表名、操作、耗时毫秒、request_id）。
+    ///
+    /// 设计为关联函数（不借用 `&self`），以便在消费 `self` 的终端方法里，与
+    /// 借用 `self.pool`/`sql`/`params` 的执行 future 共存而不冲突借用检查。
+    /// SQL 文本**默认不记**（防泄漏 + 防高基数）。`op` 为静态操作名。
+    async fn timed<F, R>(
+        threshold: Option<std::time::Duration>,
+        request_id: Option<crate::action::RequestId>,
+        table: &str,
+        op: &'static str,
+        fut: F,
+    ) -> R
+    where
+        F: std::future::Future<Output = R>,
+    {
+        // 阈值未配置：直接 await，热路径仅一次分支判断，无 Instant
+        let threshold = match threshold {
+            Some(t) => t,
+            None => return fut.await,
+        };
+        let start = std::time::Instant::now();
+        let result = fut.await;
+        let elapsed = start.elapsed();
+        if elapsed >= threshold {
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+            match request_id {
+                Some(rid) => tracing::warn!(
+                    table = %table,
+                    op,
+                    elapsed_ms,
+                    request_id = %rid,
+                    "慢查询",
+                ),
+                None => tracing::warn!(table = %table, op, elapsed_ms, "慢查询"),
+            }
+        }
+        result
+    }
+
+    /// 在给定执行器上绑定参数并执行写语句（INSERT/UPDATE/DELETE 共用）
+    ///
+    /// 执行器既可以是 `&MySqlPool`（普通路径），也可以是
+    /// `&mut sqlx::MySqlConnection`（事务路径，经 [`yang_db::Transaction::executor`]
+    /// 取得）。如此一来，受保护层的写操作可以直接执行，也可纳入同一事务原子提交，
+    /// 而所有权限/校验/软删/WHERE 守卫逻辑在调用方保持不变。
+    ///
+    /// 返回 `MySqlQueryResult`，由调用方按需提取 `rows_affected()` /
+    /// `last_insert_id()`。
+    async fn run_execute<'e, E>(
+        executor: E,
+        sql: &str,
+        params: &[SqlParam],
+    ) -> Result<sqlx::mysql::MySqlQueryResult, BaseError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::MySql>,
+    {
+        let mut query = sqlx::query(sql);
+        for param in params {
+            query = Self::bind_execute_param(query, param);
+        }
+        query
+            .execute(executor)
+            .await
+            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))
+    }
+
+    /// 在给定执行器上绑定参数并执行 SELECT 查询，返回多行
+    ///
+    /// 与 [`TableQuery::run_execute`] 同理对执行器泛型，使 `select` 既能走连接池
+    /// 也能在事务内执行（read-modify-write 场景）。
+    async fn run_fetch_all<'e, E, T>(
+        executor: E,
+        sql: &str,
+        params: &[SqlParam],
+    ) -> Result<Vec<T>, BaseError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::MySql>,
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        let mut query = sqlx::query_as::<_, T>(sql);
+        for param in params {
+            query = Self::bind_param(query, param);
+        }
+        query
+            .fetch_all(executor)
+            .await
+            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))
     }
 }
 

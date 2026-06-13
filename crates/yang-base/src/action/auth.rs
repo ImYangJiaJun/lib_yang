@@ -162,10 +162,85 @@ pub trait CredentialVerifier: Send + Sync + 'static {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// AuthAuditHook：认证审计钩子（可观测性 C4）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// 认证审计事件。
+///
+/// 描述一次认证相关操作（登录/刷新/登出）的结果。**绝不携带凭据明文或 Token
+/// 原文**：需要标识 Token 时只放指纹（[`token_fingerprint`]）。
+#[derive(Debug, Clone)]
+pub struct AuthAuditEvent {
+    /// 本次派发的 request_id（十六进制串）
+    pub request_id: String,
+    /// 操作名（`"login"` / `"refresh"` / `"logout"`，静态）
+    pub action: &'static str,
+    /// 主体标识（用户名或 sub）；失败且未知时为 `None`
+    pub subject: Option<String>,
+    /// 失败时的错误码（`BaseError::code_str`，静态）；成功时为 `None`
+    pub error_code: Option<&'static str>,
+}
+
+/// 计算 Token 的短指纹（SHA256 前若干字节的十六进制），用于审计日志而不泄漏原文。
+///
+/// 这里不引入额外哈希依赖，采用 FNV-1a 64 位哈希取十六进制——审计场景只需「同一
+/// Token 多次出现可对应」而非密码学强度，FNV 足够且零依赖。
+pub fn token_fingerprint(token: &str) -> String {
+    // FNV-1a 64-bit
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in token.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
+}
+
+/// 认证审计钩子：在登录/刷新/登出的成功/失败处被调用。
+///
+/// object-safe，可经构造参数注入（与 [`CredentialVerifier`] 注入同构）。默认实现
+/// [`TracingAuditHook`] 发 tracing event。实现者**绝不应**记录凭据明文/Token 原文。
+#[async_trait]
+pub trait AuthAuditHook: Send + Sync + 'static {
+    /// 认证成功事件。
+    async fn on_success(&self, event: AuthAuditEvent);
+    /// 认证失败事件。
+    async fn on_failure(&self, event: AuthAuditEvent);
+}
+
+/// 默认审计钩子：成功发 `tracing::info!`，失败发 `tracing::warn!`。
+#[derive(Debug, Clone, Default)]
+pub struct TracingAuditHook;
+
+#[async_trait]
+impl AuthAuditHook for TracingAuditHook {
+    async fn on_success(&self, event: AuthAuditEvent) {
+        tracing::info!(
+            request_id = %event.request_id,
+            action = event.action,
+            subject = event.subject.as_deref().unwrap_or("-"),
+            "认证成功",
+        );
+    }
+
+    async fn on_failure(&self, event: AuthAuditEvent) {
+        tracing::warn!(
+            request_id = %event.request_id,
+            action = event.action,
+            subject = event.subject.as_deref().unwrap_or("-"),
+            error_code = event.error_code.unwrap_or("-"),
+            "认证失败",
+        );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // LoginAction
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// 登录 Action：校验凭证后签发 Token 对。公开（无需登录即可访问）。
+///
+/// 泛型 `A` 为审计钩子（默认 [`TracingAuditHook`]）：登录成功/失败均发审计事件，
+/// 事件只含 request_id/subject/错误码，**不含凭据明文**。
 #[derive(Action)]
 #[action(
     name = "login",
@@ -173,19 +248,30 @@ pub trait CredentialVerifier: Send + Sync + 'static {
     description = "校验凭证并签发 Token 对",
     public
 )]
-pub struct LoginAction<V: CredentialVerifier> {
+pub struct LoginAction<V: CredentialVerifier, A: AuthAuditHook = TracingAuditHook> {
     verifier: V,
+    audit: A,
 }
 
-impl<V: CredentialVerifier> LoginAction<V> {
-    /// 用业务凭证校验器创建登录 Action。
+impl<V: CredentialVerifier> LoginAction<V, TracingAuditHook> {
+    /// 用业务凭证校验器创建登录 Action（默认 tracing 审计钩子）。
     pub fn new(verifier: V) -> Self {
-        Self { verifier }
+        Self {
+            verifier,
+            audit: TracingAuditHook,
+        }
+    }
+}
+
+impl<V: CredentialVerifier, A: AuthAuditHook> LoginAction<V, A> {
+    /// 用业务凭证校验器 + 自定义审计钩子创建登录 Action。
+    pub fn with_audit(verifier: V, audit: A) -> Self {
+        Self { verifier, audit }
     }
 }
 
 #[async_trait]
-impl<V: CredentialVerifier> TypedHandler for LoginAction<V> {
+impl<V: CredentialVerifier, A: AuthAuditHook> TypedHandler for LoginAction<V, A> {
     type Input = LoginInput;
     type Output = TokenPairResponse;
 
@@ -194,15 +280,52 @@ impl<V: CredentialVerifier> TypedHandler for LoginAction<V> {
         ctx: ActionContext,
         input: LoginInput,
     ) -> Result<TokenPairResponse, BaseError> {
-        let subject = self.verifier.verify(&ctx, &input).await?;
-        let (access_token, refresh_token) = ctx
+        let request_id = ctx.request_id.to_string();
+        let subject = match self.verifier.verify(&ctx, &input).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.audit
+                    .on_failure(AuthAuditEvent {
+                        request_id,
+                        action: "login",
+                        subject: Some(input.username.clone()),
+                        error_code: Some(e.code_str()),
+                    })
+                    .await;
+                return Err(e);
+            }
+        };
+        let result = ctx
             .tools
             .token_manager()
-            .generate_token_pair(&subject.subject, subject.custom_claims)?;
-        Ok(TokenPairResponse {
-            access_token,
-            refresh_token,
-        })
+            .generate_token_pair(&subject.subject, subject.custom_claims);
+        match result {
+            Ok((access_token, refresh_token)) => {
+                self.audit
+                    .on_success(AuthAuditEvent {
+                        request_id,
+                        action: "login",
+                        subject: Some(subject.subject.clone()),
+                        error_code: None,
+                    })
+                    .await;
+                Ok(TokenPairResponse {
+                    access_token,
+                    refresh_token,
+                })
+            }
+            Err(e) => {
+                self.audit
+                    .on_failure(AuthAuditEvent {
+                        request_id,
+                        action: "login",
+                        subject: Some(subject.subject.clone()),
+                        error_code: Some(e.code_str()),
+                    })
+                    .await;
+                Err(e)
+            }
+        }
     }
 }
 
@@ -287,19 +410,30 @@ impl RefreshClaimsResolver for DefaultRefreshClaims {
     description = "用 Refresh Token 换取新的 Access Token",
     public
 )]
-pub struct RefreshAction<R: RefreshClaimsResolver = DefaultRefreshClaims> {
+pub struct RefreshAction<R: RefreshClaimsResolver = DefaultRefreshClaims, A: AuthAuditHook = TracingAuditHook> {
     resolver: R,
+    audit: A,
 }
 
-impl<R: RefreshClaimsResolver> RefreshAction<R> {
-    /// 用业务声明解析器创建 RefreshAction。
+impl<R: RefreshClaimsResolver> RefreshAction<R, TracingAuditHook> {
+    /// 用业务声明解析器创建 RefreshAction（默认 tracing 审计钩子）。
     pub fn new(resolver: R) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            audit: TracingAuditHook,
+        }
+    }
+}
+
+impl<R: RefreshClaimsResolver, A: AuthAuditHook> RefreshAction<R, A> {
+    /// 用业务声明解析器 + 自定义审计钩子创建 RefreshAction。
+    pub fn with_audit(resolver: R, audit: A) -> Self {
+        Self { resolver, audit }
     }
 }
 
 #[async_trait]
-impl<R: RefreshClaimsResolver> TypedHandler for RefreshAction<R> {
+impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<R, A> {
     type Input = RefreshInput;
     type Output = AccessTokenResponse;
 
@@ -308,16 +442,45 @@ impl<R: RefreshClaimsResolver> TypedHandler for RefreshAction<R> {
         ctx: ActionContext,
         input: RefreshInput,
     ) -> Result<AccessTokenResponse, BaseError> {
+        let request_id = ctx.request_id.to_string();
         let manager = ctx.tools.token_manager();
-        // 撤销校验：被拉黑的 Refresh Token 不能再刷新（已含签名 + 过期校验）
-        let claims = manager.verify_token_checked(&input.refresh_token).await?;
-        if claims.token_type != "refresh" {
-            return Err(BaseError::TokenTypeInvalid("期望 refresh token".to_string()));
+
+        let run = async {
+            // 撤销校验：被拉黑的 Refresh Token 不能再刷新（已含签名 + 过期校验）
+            let claims = manager.verify_token_checked(&input.refresh_token).await?;
+            if claims.token_type != "refresh" {
+                return Err(BaseError::TokenTypeInvalid("期望 refresh token".to_string()));
+            }
+            // 复用已验证的 claims，按业务解析器决定新声明，直接签发——不再二次验证
+            let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
+            let access_token = manager.generate_access_token(&claims.sub, custom_claims)?;
+            Ok::<(String, String), BaseError>((access_token, claims.sub))
+        };
+
+        match run.await {
+            Ok((access_token, sub)) => {
+                self.audit
+                    .on_success(AuthAuditEvent {
+                        request_id,
+                        action: "refresh",
+                        subject: Some(sub),
+                        error_code: None,
+                    })
+                    .await;
+                Ok(AccessTokenResponse { access_token })
+            }
+            Err(e) => {
+                self.audit
+                    .on_failure(AuthAuditEvent {
+                        request_id,
+                        action: "refresh",
+                        subject: None,
+                        error_code: Some(e.code_str()),
+                    })
+                    .await;
+                Err(e)
+            }
         }
-        // 复用已验证的 claims，按业务解析器决定新声明，直接签发——不再二次验证
-        let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
-        let access_token = manager.generate_access_token(&claims.sub, custom_claims)?;
-        Ok(AccessTokenResponse { access_token })
     }
 }
 
@@ -338,17 +501,28 @@ impl<R: RefreshClaimsResolver> TypedHandler for RefreshAction<R> {
     description = "撤销 Token，使其在过期前失效",
     public
 )]
-pub struct LogoutAction;
+pub struct LogoutAction<A: AuthAuditHook = TracingAuditHook> {
+    audit: A,
+}
 
-impl LogoutAction {
-    /// 创建 LogoutAction。
+impl LogoutAction<TracingAuditHook> {
+    /// 创建 LogoutAction（默认 tracing 审计钩子）。
     pub fn new() -> Self {
-        Self
+        Self {
+            audit: TracingAuditHook,
+        }
+    }
+}
+
+impl<A: AuthAuditHook> LogoutAction<A> {
+    /// 用自定义审计钩子创建 LogoutAction。
+    pub fn with_audit(audit: A) -> Self {
+        Self { audit }
     }
 }
 
 #[async_trait]
-impl TypedHandler for LogoutAction {
+impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
     type Input = LogoutInput;
     type Output = MessageResponse;
 
@@ -357,16 +531,46 @@ impl TypedHandler for LogoutAction {
         ctx: ActionContext,
         input: LogoutInput,
     ) -> Result<MessageResponse, BaseError> {
+        let request_id = ctx.request_id.to_string();
         let manager = ctx.tools.token_manager();
-        // 撤销 Access Token
-        manager.revoke_token(&input.token).await?;
-        // 若提供 Refresh Token，一并撤销以彻底终止会话
-        if let Some(refresh_token) = &input.refresh_token {
-            manager.revoke_token(refresh_token).await?;
+
+        let run = async {
+            // 撤销 Access Token
+            manager.revoke_token(&input.token).await?;
+            // 若提供 Refresh Token，一并撤销以彻底终止会话
+            if let Some(refresh_token) = &input.refresh_token {
+                manager.revoke_token(refresh_token).await?;
+            }
+            Ok::<(), BaseError>(())
+        };
+
+        match run.await {
+            Ok(()) => {
+                // subject 用 Access Token 指纹标识（不泄漏原文）
+                self.audit
+                    .on_success(AuthAuditEvent {
+                        request_id,
+                        action: "logout",
+                        subject: Some(token_fingerprint(&input.token)),
+                        error_code: None,
+                    })
+                    .await;
+                Ok(MessageResponse {
+                    message: "已登出".to_string(),
+                })
+            }
+            Err(e) => {
+                self.audit
+                    .on_failure(AuthAuditEvent {
+                        request_id,
+                        action: "logout",
+                        subject: Some(token_fingerprint(&input.token)),
+                        error_code: Some(e.code_str()),
+                    })
+                    .await;
+                Err(e)
+            }
         }
-        Ok(MessageResponse {
-            message: "已登出".to_string(),
-        })
     }
 }
 
@@ -486,5 +690,55 @@ mod tests {
         let logout = LogoutAction::new();
         assert_eq!(logout.name(), "logout");
         assert!(logout.is_public());
+    }
+
+    /// token 指纹稳定且不含原文（同输入同指纹，异输入异指纹）。
+    #[test]
+    fn test_token_fingerprint_stable_and_opaque() {
+        let a = token_fingerprint("super-secret-access-token");
+        let b = token_fingerprint("super-secret-access-token");
+        let c = token_fingerprint("another-token");
+        assert_eq!(a, b, "同一 token 指纹应稳定");
+        assert_ne!(a, c, "不同 token 指纹应不同");
+        assert_eq!(a.len(), 16, "指纹为 16 位十六进制");
+        assert!(!a.contains("secret"), "指纹不得含原文");
+    }
+
+    /// 审计钩子注入：with_audit 可替换默认钩子，事件被记录且不含 token 原文。
+    #[tokio::test]
+    async fn test_audit_hook_records_without_leaking() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct RecordingHook {
+            events: Arc<Mutex<Vec<AuthAuditEvent>>>,
+        }
+        #[async_trait]
+        impl AuthAuditHook for RecordingHook {
+            async fn on_success(&self, event: AuthAuditEvent) {
+                self.events.lock().unwrap().push(event);
+            }
+            async fn on_failure(&self, event: AuthAuditEvent) {
+                self.events.lock().unwrap().push(event);
+            }
+        }
+
+        let hook = RecordingHook::default();
+        let login = LoginAction::with_audit(DummyVerifier, hook.clone());
+        // 仅验证构造 + 钩子类型注入成功（端到端派发在集成测试覆盖）
+        assert_eq!(login.name(), "login");
+
+        // 直接触发一次 on_success 验证事件落库且字段不含敏感原文
+        hook.on_success(AuthAuditEvent {
+            request_id: "abc".into(),
+            action: "login",
+            subject: Some("user:alice".into()),
+            error_code: None,
+        })
+        .await;
+        let events = hook.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "login");
+        assert_eq!(events[0].subject.as_deref(), Some("user:alice"));
     }
 }

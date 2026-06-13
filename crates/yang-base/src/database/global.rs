@@ -350,6 +350,19 @@ impl GlobalDatabase {
         let rows = Self::query::<(i64,)>("SELECT 1").await?;
         Ok(!rows.is_empty())
     }
+
+    /// 获取数据库连接池状态快照
+    ///
+    /// 转发 yang-db `Database::pool_status`，与 [`GlobalRedis::pool_status`](crate::database::GlobalRedis)
+    /// 对称。用于监控连接池水位、排查连接耗尽。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(PoolStatus)`: 连接池状态（max_size/size/available/waiting）
+    /// - `Err(BaseError::DatabaseNotInitialized)`: 数据库未初始化
+    pub fn pool_status() -> Result<yang_db::PoolStatus, BaseError> {
+        Ok(Self::get()?.pool_status())
+    }
 }
 
 #[cfg(test)]

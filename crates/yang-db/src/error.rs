@@ -1,5 +1,9 @@
 /// 数据库错误类型
+///
+/// 标注 `#[non_exhaustive]`：未来新增变体不构成跨 crate 破坏性变更（下游 match 需
+/// 带 `_` 臂）。同 crate 内的穷举 match 不受影响。
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DbError {
     #[error("连接错误: {0}")]
     ConnectionError(String),
@@ -58,6 +62,88 @@ pub enum DbError {
     Unknown(String),
 }
 
+/// 数据库错误的引擎级分类（与具体 HTTP/传输层无关）。
+///
+/// 用于下游统一适配（弹性重试、错误上报分桶）。`Transient` 表示瞬时故障、可重试；
+/// 其余为确定性错误，重试无益。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DbErrorCategory {
+    /// 调用方过错（SQL 语法、缺 WHERE/GROUP BY、不支持的操作符、参数非法、(反)序列化）
+    Client,
+    /// 约束冲突（唯一键/外键/非空/检查）
+    Conflict,
+    /// 资源不存在（表不存在）
+    NotFound,
+    /// 瞬时故障（连接/超时/连接池），可重试
+    Transient,
+    /// 服务端/未知错误
+    Server,
+}
+
+impl DbError {
+    /// 稳定错误码（8xxxxx 段，独立于 yang-base 的 BaseError 码命名空间）。
+    ///
+    /// 与 [`DbError::category`] 同源维护；新增变体需同步补码。
+    pub fn code(&self) -> u32 {
+        match self {
+            DbError::ConnectionError(_) => 800001,
+            DbError::QueryError(_) => 800002,
+            DbError::SqlSyntaxError(_) => 800003,
+            DbError::ConstraintError(_) => 800004,
+            DbError::TypeConversionError(_) => 800005,
+            DbError::SerializationError(_) => 800006,
+            DbError::DeserializationError(_) => 800007,
+            DbError::TransactionError(_) => 800008,
+            DbError::TableNotFound(_) => 800009,
+            DbError::MissingWhereClause => 800010,
+            DbError::RedisConnectionError(_) => 810001,
+            DbError::RedisCommandError(_) => 810002,
+            DbError::RedisPoolError(_) => 810003,
+            DbError::RedisTypeConversionError(_) => 810004,
+            DbError::RedisTimeoutError(_) => 810005,
+            DbError::MissingGroupByClause => 800011,
+            DbError::UnsupportedOperator(_) => 800012,
+            DbError::Unknown(_) => 899999,
+        }
+    }
+
+    /// 引擎级分类。是 [`DbError::is_retryable`] 的单一事实源。
+    pub fn category(&self) -> DbErrorCategory {
+        use DbErrorCategory as C;
+        match self {
+            // 瞬时：连接/超时/连接池 —— 可重试
+            DbError::ConnectionError(_)
+            | DbError::RedisConnectionError(_)
+            | DbError::RedisPoolError(_)
+            | DbError::RedisTimeoutError(_) => C::Transient,
+            // 约束冲突
+            DbError::ConstraintError(_) => C::Conflict,
+            // 不存在
+            DbError::TableNotFound(_) => C::NotFound,
+            // 调用方过错：语法/缺子句/不支持操作符/(反)序列化/类型转换
+            DbError::SqlSyntaxError(_)
+            | DbError::MissingWhereClause
+            | DbError::MissingGroupByClause
+            | DbError::UnsupportedOperator(_)
+            | DbError::SerializationError(_)
+            | DbError::DeserializationError(_)
+            | DbError::TypeConversionError(_)
+            | DbError::RedisTypeConversionError(_) => C::Client,
+            // 服务端/未知：查询错误、Redis 命令错误、未知
+            DbError::QueryError(_)
+            | DbError::TransactionError(_)
+            | DbError::RedisCommandError(_)
+            | DbError::Unknown(_) => C::Server,
+        }
+    }
+
+    /// 是否为可重试的瞬时错误（等价 `category() == Transient`）。
+    pub fn is_retryable(&self) -> bool {
+        self.category() == DbErrorCategory::Transient
+    }
+}
+
 /// 从 sqlx::Error 转换为 DbError
 impl From<sqlx::Error> for DbError {
     fn from(err: sqlx::Error) -> Self {
@@ -114,15 +200,21 @@ impl From<sqlx::Error> for DbError {
 /// 从 redis::RedisError 转换为 DbError
 impl From<redis::RedisError> for DbError {
     fn from(err: redis::RedisError) -> Self {
-        // redis 1.2.0 中的 ErrorKind 是不同的，我们直接根据错误信息判断
-        let err_str = format!("{}", err);
-
-        if err_str.contains("IO error") || err_str.contains("Connection") {
-            DbError::RedisConnectionError(format!("IO 错误: {}", err))
-        } else if err_str.contains("type") || err_str.contains("Type") {
-            DbError::RedisTypeConversionError(format!("类型错误: {}", err))
-        } else if err_str.contains("timeout") || err_str.contains("Timeout") {
+        // 用协议层稳定 API 分类，而非脆弱的 Display 子串匹配：
+        // - 超时优先（is_timeout 涵盖连接超时与响应超时）
+        // - 连接断开 / IO / 连接拒绝 → 连接错误
+        // - 类型不匹配（UnexpectedReturnType）→ 类型转换错误
+        // - 其余 → 命令错误（兜底）
+        use redis::ErrorKind;
+        if err.is_timeout() {
             DbError::RedisTimeoutError(format!("超时错误: {}", err))
+        } else if err.is_connection_dropped()
+            || err.is_io_error()
+            || err.is_connection_refusal()
+        {
+            DbError::RedisConnectionError(format!("连接错误: {}", err))
+        } else if matches!(err.kind(), ErrorKind::UnexpectedReturnType) {
+            DbError::RedisTypeConversionError(format!("类型错误: {}", err))
         } else {
             DbError::RedisCommandError(format!("Redis 错误: {}", err))
         }
@@ -328,5 +420,77 @@ mod tests {
         let msg = format!("{}", err);
         let has_chinese = msg.chars().any(|c| matches!(c, '\u{4e00}'..='\u{9fff}'));
         assert!(has_chinese, "错误消息应该包含中文: {}", msg);
+    }
+
+    /// DB-7：category() 覆盖全部 18 个变体
+    #[test]
+    fn test_db_error_category_coverage() {
+        use super::DbErrorCategory as C;
+        // Transient：连接/超时/连接池
+        assert_eq!(DbError::ConnectionError("c".into()).category(), C::Transient);
+        assert_eq!(DbError::RedisConnectionError("c".into()).category(), C::Transient);
+        assert_eq!(DbError::RedisPoolError("p".into()).category(), C::Transient);
+        assert_eq!(DbError::RedisTimeoutError("t".into()).category(), C::Transient);
+        // Conflict：约束冲突
+        assert_eq!(DbError::ConstraintError("c".into()).category(), C::Conflict);
+        // NotFound：表不存在
+        assert_eq!(DbError::TableNotFound("t".into()).category(), C::NotFound);
+        // Client：语法/缺子句/不支持操作符/类型转换/(反)序列化/Redis类型转换
+        assert_eq!(DbError::SqlSyntaxError("s".into()).category(), C::Client);
+        assert_eq!(DbError::MissingWhereClause.category(), C::Client);
+        assert_eq!(DbError::MissingGroupByClause.category(), C::Client);
+        assert_eq!(DbError::UnsupportedOperator("o".into()).category(), C::Client);
+        assert_eq!(DbError::TypeConversionError("t".into()).category(), C::Client);
+        assert_eq!(DbError::SerializationError("s".into()).category(), C::Client);
+        assert_eq!(DbError::DeserializationError("d".into()).category(), C::Client);
+        assert_eq!(DbError::RedisTypeConversionError("t".into()).category(), C::Client);
+        // Server：查询错误/事务错误/Redis命令错误/未知
+        assert_eq!(DbError::QueryError("q".into()).category(), C::Server);
+        assert_eq!(DbError::TransactionError("t".into()).category(), C::Server);
+        assert_eq!(DbError::RedisCommandError("c".into()).category(), C::Server);
+        assert_eq!(DbError::Unknown("u".into()).category(), C::Server);
+    }
+
+    /// DB-7：is_retryable = (category == Transient)
+    #[test]
+    fn test_db_error_is_retryable() {
+        assert!(DbError::ConnectionError("c".into()).is_retryable());
+        assert!(DbError::RedisTimeoutError("t".into()).is_retryable());
+        assert!(!DbError::QueryError("q".into()).is_retryable());
+        assert!(!DbError::MissingWhereClause.is_retryable());
+        assert!(!DbError::ConstraintError("c".into()).is_retryable());
+    }
+
+    /// DB-7：code() 唯一性（除 Unknown 外均为独立码段）
+    #[test]
+    fn test_db_error_code_unique() {
+        let codes: Vec<u32> = vec![
+            DbError::ConnectionError("".into()).code(),
+            DbError::QueryError("".into()).code(),
+            DbError::SqlSyntaxError("".into()).code(),
+            DbError::ConstraintError("".into()).code(),
+            DbError::TypeConversionError("".into()).code(),
+            DbError::SerializationError("".into()).code(),
+            DbError::DeserializationError("".into()).code(),
+            DbError::TransactionError("".into()).code(),
+            DbError::TableNotFound("".into()).code(),
+            DbError::MissingWhereClause.code(),
+            DbError::RedisConnectionError("".into()).code(),
+            DbError::RedisCommandError("".into()).code(),
+            DbError::RedisPoolError("".into()).code(),
+            DbError::RedisTypeConversionError("".into()).code(),
+            DbError::RedisTimeoutError("".into()).code(),
+            DbError::MissingGroupByClause.code(),
+            DbError::UnsupportedOperator("".into()).code(),
+            DbError::Unknown("".into()).code(),
+        ];
+        let mut sorted = codes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(codes.len(), sorted.len(), "18 个变体的 code 应全部唯一");
+        // 所有码在 8xxxxx 段
+        for &c in &codes {
+            assert!(c >= 800000 && c < 900000, "code {} 不在 8xxxxx 段", c);
+        }
     }
 }

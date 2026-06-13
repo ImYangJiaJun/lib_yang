@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
+use super::RequestId;
 
 /// 全局 GlobalTools 单例
 /// 使用 OnceLock 保证线程安全的一次性初始化
@@ -93,6 +94,7 @@ impl GlobalTools {
 
     /// 创建新的全局工具集合（未启用 token feature）
     #[cfg(not(feature = "token"))]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
@@ -198,7 +200,12 @@ impl GlobalTools {
 /// Action 执行上下文
 ///
 /// 包含 Action 执行所需的所有信息，包括请求数据、用户信息、全局工具和表配置。
+///
+/// 标注 `#[non_exhaustive]`：未来新增运行期字段（如 trace_id）不构成破坏性变更，
+/// 调用方请用 [`ActionContext::new`] / [`ActionContext::new_with_global_tools`]
+/// 构造，而非结构体字面量。
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ActionContext {
     /// 请求数据
     pub request: Request,
@@ -208,6 +215,11 @@ pub struct ActionContext {
     pub tools: Arc<GlobalTools>,
     /// 表配置（如果 action 关联表）
     pub table_config: Option<Arc<TableConfig>>,
+    /// 本次派发的运行期标识，用于串联日志/span/metrics/审计。
+    ///
+    /// 由 `new`/`new_with_global_tools` 默认生成；`RequestIdMiddleware` 在洋葱链
+    /// 最外层会按上游 `X-Request-Id` 透传或重新生成并 `span.record`。
+    pub request_id: RequestId,
 }
 
 impl ActionContext {
@@ -218,6 +230,7 @@ impl ActionContext {
             user: None,
             tools,
             table_config: None,
+            request_id: RequestId::generate(),
         }
     }
 
@@ -245,12 +258,22 @@ impl ActionContext {
             user: None,
             tools,
             table_config: None,
+            request_id: RequestId::generate(),
         })
     }
 
     /// 设置用户（链式调用）
     pub fn with_user(mut self, user: User) -> Self {
         self.user = Some(user);
+        self
+    }
+
+    /// 设置本次派发的 request_id（链式调用）
+    ///
+    /// 通常由 `RequestIdMiddleware` 在洋葱链最外层调用以透传上游标识；
+    /// 业务侧一般无需手动设置。
+    pub fn with_request_id(mut self, request_id: RequestId) -> Self {
+        self.request_id = request_id;
         self
     }
 
@@ -372,7 +395,40 @@ impl ActionContext {
         #[cfg(not(feature = "mysql"))]
         let pool = None;
 
-        Ok(TableQuery::new(config.clone(), user_roles, pool))
+        // 注入可观测性：慢查询阈值（全局配置）+ 本次派发 request_id，
+        // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
+        let slow_threshold = crate::observability::ObservabilityConfig::get().slow_query_threshold;
+        Ok(TableQuery::new(config.clone(), user_roles, pool)
+            .with_slow_threshold(slow_threshold)
+            .with_request_id(self.request_id))
+    }
+
+    /// 开启一个数据库事务（受保护层多步写的原子作用域）
+    ///
+    /// 返回 [`yang_db::Transaction`]，可传入 `TableQuery` 的 `*_in_tx` 系列方法
+    /// （`insert_in_tx`/`update_in_tx`/`delete_in_tx`/`select_in_tx` 等），使受
+    /// 权限/校验/软删保护的多步写在同一事务内原子提交或整体回滚。调用方负责
+    /// 显式 `commit()`；若 `Transaction` 在未提交时被 drop，sqlx 会尽力回滚。
+    ///
+    /// 仅在启用 `mysql` feature 时可用。
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(Transaction)`：活动事务
+    /// - `Err(BaseError::DatabaseNotInitialized)`：全局数据库未初始化
+    /// - `Err(BaseError::DatabaseTransactionFailed)`：开启事务失败
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let mut tx = ctx.begin_transaction().await?;
+    /// let id = ctx.table_query()?.insert_returning_id_in_tx(&mut tx, parent).await?.1;
+    /// ctx.table_query()?.insert_in_tx(&mut tx, child_with(id)).await?;
+    /// tx.commit().await?;
+    /// ```
+    #[cfg(feature = "mysql")]
+    pub async fn begin_transaction(&self) -> Result<yang_db::Transaction, BaseError> {
+        crate::database::GlobalDatabase::transaction().await
     }
 
     /// 获取用户角色列表（克隆）

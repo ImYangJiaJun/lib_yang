@@ -1,47 +1,18 @@
-//! 把 SqlCondition 桥接到 TableQuery
+//! 把类型化 where 条件桥接到 TableQuery
 #![cfg(feature = "mysql")]
 
 use crate::action::ActionContext;
 use crate::error::BaseError;
-use crate::table::{SqlCondition, SqlOp};
-use crate::table::TableQuery;
+use crate::table::WhereCondition;
 
-/// 把单个 SqlCondition 应用到 TableQuery 上。
-pub(crate) fn apply_sql_condition(
-    q: TableQuery,
-    cond: &SqlCondition,
-) -> Result<TableQuery, BaseError> {
-    Ok(match cond.op {
-        SqlOp::Eq => q.where_eq(cond.column, cond.params[0].clone())?,
-        SqlOp::Ne => q.where_ne(cond.column, cond.params[0].clone())?,
-        SqlOp::Lt => q.where_lt(cond.column, cond.params[0].clone())?,
-        SqlOp::Lte => q.where_lte(cond.column, cond.params[0].clone())?,
-        SqlOp::Gt => q.where_gt(cond.column, cond.params[0].clone())?,
-        SqlOp::Gte => q.where_gte(cond.column, cond.params[0].clone())?,
-        SqlOp::In => q.where_in(cond.column, cond.params.clone())?,
-        SqlOp::NotIn => q.where_not_in(cond.column, cond.params.clone())?,
-        SqlOp::Between => q.where_between(
-            cond.column,
-            cond.params[0].clone(),
-            cond.params[1].clone(),
-        )?,
-        SqlOp::Like => q.where_like(
-            cond.column,
-            cond.params[0].as_str().unwrap_or("").to_string(),
-        )?,
-        SqlOp::IsNull => q.where_null(cond.column)?,
-        SqlOp::IsNotNull => q.where_not_null(cond.column)?,
-    })
-}
-
-/// 给定相同的 where 条件，跑一次 SELECT COUNT(*) 计算总数（不分页）
-pub(crate) async fn count_with_conditions(
+/// 给定一棵 WHERE 条件树（叶子或 And/Or 组），跑一次 SELECT COUNT(*) 计算总数。
+///
+/// 整棵树经 `TableQuery::where_tree` 递归校验（字段存在性/筛选权限/嵌套深度）后并入
+/// 查询再 COUNT。C2a 布尔树的统一计数入口。
+pub(crate) async fn count_with_tree(
     ctx: &ActionContext,
-    conditions: &[SqlCondition],
+    condition: WhereCondition,
 ) -> Result<u64, BaseError> {
-    let mut q = ctx.table_query()?;
-    for cond in conditions {
-        q = apply_sql_condition(q, cond)?;
-    }
+    let q = ctx.table_query()?.where_tree(condition)?;
     q.count().await
 }

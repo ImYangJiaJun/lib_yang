@@ -1,10 +1,10 @@
 //! SelectAction - 分页查询带 where 条件 + 排序
 #![cfg(feature = "mysql")]
 
-use crate::action::sql_bridge::{apply_sql_condition, count_with_conditions};
+use crate::action::sql_bridge::count_with_tree;
 use crate::action::{ActionContext, TypedHandler, User};
 use crate::error::BaseError;
-use crate::table::{AsColumnName, IntoSqlCondition, SqlCondition, SortOrder, TableEntity};
+use crate::table::{AsColumnName, Filter, SortOrder, TableEntity, WhereCondition};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
@@ -49,8 +49,8 @@ pub struct SelectQuery<T: TableEntity> {
     pub page: u32,
     /// 每页条数，缺省 10，必须 1..=100
     pub page_size: u32,
-    /// where 条件列表（AND 连接），JSON key 为 `"where"`
-    pub where_clause: Vec<T::WhereCond>,
+    /// where 布尔过滤树（叶子 + And/Or 嵌套），JSON key 为 `"where"`，缺省无条件
+    pub where_clause: Option<Filter<T::WhereCond>>,
     /// 排序规则列表
     pub order_by: Vec<OrderByItem<T>>,
     /// 是否额外执行 COUNT 查询
@@ -66,14 +66,14 @@ impl<'de, T: TableEntity> Deserialize<'de> for SelectQuery<T> {
             page: u32,
             #[serde(default = "default_page_size")]
             page_size: u32,
-            #[serde(rename = "where", default = "Vec::new")]
-            where_clause: Vec<W>,
+            #[serde(rename = "where", default = "Option::default")]
+            where_clause: Option<W>,
             #[serde(default = "Vec::new")]
             order_by: Vec<OI>,
             #[serde(default)]
             count_total: bool,
         }
-        let raw = Raw::<T::WhereCond, OrderByItem<T>>::deserialize(d)?;
+        let raw = Raw::<Filter<T::WhereCond>, OrderByItem<T>>::deserialize(d)?;
         Ok(SelectQuery {
             page: raw.page,
             page_size: raw.page_size,
@@ -137,14 +137,15 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
             ));
         }
 
-        let conditions: Vec<SqlCondition> = input
-            .where_clause
-            .into_iter()
-            .map(|c| c.into_sql_condition())
-            .collect();
+        // 把类型化布尔树降解为受保护层的 WhereCondition（None 表示无条件）
+        let where_tree: Option<WhereCondition> =
+            input.where_clause.map(Filter::into_where_condition);
 
         let total = if input.count_total {
-            Some(count_with_conditions(&ctx, &conditions).await?)
+            match &where_tree {
+                Some(tree) => Some(count_with_tree(&ctx, tree.clone()).await?),
+                None => Some(ctx.table_query()?.count().await?),
+            }
         } else {
             None
         };
@@ -155,8 +156,9 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
         let user = ctx.user.as_ref().unwrap_or(&anon);
         let mut q = ctx.table_query()?;
         q.ensure_fields_readable(user)?;
-        for cond in &conditions {
-            q = apply_sql_condition(q, cond)?;
+        // 整棵 where 树一次性递归校验 + 并入（含字段存在性/筛选权限/嵌套深度）
+        if let Some(tree) = where_tree {
+            q = q.where_tree(tree)?;
         }
         for OrderByItem { field, direction } in input.order_by {
             q = q.order_by(field.column_name(), direction)?;

@@ -10,7 +10,7 @@ fn test_where_condition_eq() {
         value: json!("active"),
     };
 
-    assert_eq!(condition.field(), "status");
+    assert_eq!(condition.field(), Some("status"));
 }
 
 #[test]
@@ -20,7 +20,7 @@ fn test_where_condition_in() {
         values: vec![json!("admin"), json!("user")],
     };
 
-    assert_eq!(condition.field(), "role");
+    assert_eq!(condition.field(), Some("role"));
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn test_where_condition_like() {
         pattern: "%alice%".to_string(),
     };
 
-    assert_eq!(condition.field(), "name");
+    assert_eq!(condition.field(), Some("name"));
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_where_condition_gt() {
         value: json!(18),
     };
 
-    assert_eq!(condition.field(), "age");
+    assert_eq!(condition.field(), Some("age"));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn test_where_condition_gte() {
         value: json!(18),
     };
 
-    assert_eq!(condition.field(), "age");
+    assert_eq!(condition.field(), Some("age"));
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn test_where_condition_lt() {
         value: json!(65),
     };
 
-    assert_eq!(condition.field(), "age");
+    assert_eq!(condition.field(), Some("age"));
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn test_where_condition_lte() {
         value: json!(65),
     };
 
-    assert_eq!(condition.field(), "age");
+    assert_eq!(condition.field(), Some("age"));
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn test_where_condition_is_null() {
         field: "deleted_at".to_string(),
     };
 
-    assert_eq!(condition.field(), "deleted_at");
+    assert_eq!(condition.field(), Some("deleted_at"));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn test_where_condition_is_not_null() {
         field: "deleted_at".to_string(),
     };
 
-    assert_eq!(condition.field(), "deleted_at");
+    assert_eq!(condition.field(), Some("deleted_at"));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn test_query_params_with_condition() {
     });
 
     assert_eq!(params.where_conditions.len(), 1);
-    assert_eq!(params.where_conditions[0].field(), "status");
+    assert_eq!(params.where_conditions[0].field(), Some("status"));
 }
 
 #[test]

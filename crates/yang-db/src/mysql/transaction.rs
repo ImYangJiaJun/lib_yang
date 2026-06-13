@@ -192,6 +192,25 @@ impl Transaction {
     pub fn table(&mut self, table_name: &str) -> TransactionQueryBuilder<'_> {
         TransactionQueryBuilder::new(self, table_name)
     }
+
+    /// 借出底层 sqlx 连接（受控逃生舱，供同 workspace 上层在事务内执行自构建的参数化语句）
+    ///
+    /// 上层（如 yang-base 受保护层）已持有自己构建好的、参数全部 `?` 绑定的
+    /// SQL 与参数，需要在**同一事务**里执行以保证原子性。`Transaction` 自身
+    /// 仅提供 `insert/update/delete` 三个高层方法，无法承载受保护层的权限/软删/
+    /// 校验语义，故开放此逃生舱让上层直接拿到 `&mut MySqlConnection` 执行。
+    ///
+    /// 标记 `#[doc(hidden)]`：非稳定公开 API，仅供 workspace 内部桥接使用，
+    /// 调用方必须保证 SQL 标识符安全（值侧由 `?` 绑定，标识符由调用方转义）。
+    ///
+    /// # 返回
+    /// - `Some(&mut MySqlConnection)`：事务仍处于活动状态
+    /// - `None`：事务已 `commit`/`rollback`，连接不再可用
+    #[doc(hidden)]
+    pub fn executor(&mut self) -> Option<&mut sqlx::MySqlConnection> {
+        // `SqlxTransaction` 通过 DerefMut 解引用为底层 MySqlConnection
+        self.tx.as_deref_mut()
+    }
 }
 
 /// 事务查询构建器

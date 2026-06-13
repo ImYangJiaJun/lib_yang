@@ -57,7 +57,7 @@ mod __tests__;
 
 pub use dynamic_row::DynamicRow;
 pub use entity::{
-    AsColumnName, IntoSqlCondition, SqlCondition, SqlOp,
+    AsColumnName, Filter, IntoSqlCondition, SqlCondition, SqlOp,
     WhereOp, StringWhereOp,
 };
 #[cfg(feature = "mysql")]

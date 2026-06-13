@@ -11,7 +11,7 @@ pub mod postgres;
 pub mod redis;
 
 // 重新导出错误类型
-pub use error::DbError;
+pub use error::{DbError, DbErrorCategory};
 
 // 重新导出 MySQL 核心类型
 pub use mysql::{

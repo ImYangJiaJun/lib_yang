@@ -28,7 +28,12 @@ pub type Result<T, E = BaseError> = std::result::Result<T, E>;
 /// 系统统一错误类型
 ///
 /// 包含所有模块的错误变体，使用中文错误消息
+///
+/// 标注 `#[non_exhaustive]`：未来新增变体不构成跨 crate 破坏性变更（下游 match 需
+/// 带 `_` 臂）。同 crate 内的穷举 match（`code()`/`code_str()`/`category()`）不受
+/// 影响，新增变体时 `test_code_str_matches_code` 测试会捕获漏编。
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum BaseError {
     // ==================== 插件管理错误 ====================
     /// 插件已注册
@@ -355,6 +360,9 @@ impl From<yang_db::DbError> for BaseError {
             | D::RedisPoolError(_)
             | D::RedisTypeConversionError(_)
             | D::RedisTimeoutError(_) => BaseError::RedisOperationDbError(err),
+
+            // 未来新增变体（DbError 标注 #[non_exhaustive]）统一按查询失败处理
+            _ => BaseError::DatabaseQueryFailed(err),
         }
     }
 }
@@ -410,6 +418,33 @@ impl From<jsonwebtoken::errors::Error> for BaseError {
             _ => BaseError::TokenParseFailed(err),
         }
     }
+}
+
+/// 引擎级错误分类（与具体 HTTP/传输层无关）。
+///
+/// 用于下游统一适配（弹性重试、错误上报分桶、HTTP status 映射的中间层）。
+/// HTTP status 映射属调用方传输层边界，不在引擎层硬编码。
+///
+/// `is_client_error()` = `Client` + `Auth`；`is_server_error()` = `Server` +
+/// `Transient` + `Conflict`。详见 [`BaseError::category`] 文档。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorCategory {
+    /// 调用方过错（参数错误、字段验证、序列化、插件依赖/配置/循环）
+    Client,
+    /// 认证/授权失败（登录过期、Token 撤销、密码错误、权限不足）
+    Auth,
+    /// 资源不存在（记录/用户/Action/表未找到）
+    NotFound,
+    /// 资源冲突（插件注册冲突）
+    Conflict,
+    /// 瞬时故障（连接失败/超时/连接池/HTTP 超时/熔断打开），可重试
+    ///
+    /// 在 `is_server_error` 中视为服务端错误（可重试的服务端故障，
+    /// 如连接超时 = HTTP 503 语义），但 `is_client_error` 中**不**视为客户端错误。
+    Transient,
+    /// 服务端/基础设施错误（内部失败、配置错误、未知错误）
+    Server,
 }
 
 impl BaseError {
@@ -521,6 +556,186 @@ impl BaseError {
             BaseError::IoError(_) => 900002,
             BaseError::Unknown(_) => 999999,
         }
+    }
+
+    /// 返回错误码的 `&'static str` 形式，供 metrics label 使用（零分配、低基数）。
+    ///
+    /// 与 [`BaseError::code`] 一一对应：`code_str()` 是 `code()` 的字符串字面量版本，
+    /// 专用于 `metrics` 的 label（label 必须是 `&'static str`，**严禁** `code().to_string()`
+    /// 造成每次派发堆分配 + 高基数）。新增变体时两者需同步维护，并由
+    /// `test_code_str_matches_code` 守护一致性。
+    pub fn code_str(&self) -> &'static str {
+        match self {
+            // 插件管理错误 (1xxxxx)
+            BaseError::PluginAlreadyRegistered(_) => "100001",
+            BaseError::PluginNotFound(_) => "100002",
+            BaseError::PluginRegisterFailed(_, _) => "100003",
+            BaseError::PluginInitFailed(_, _) => "100004",
+            BaseError::PluginDependencyMissing(_, _) => "100005",
+            BaseError::PluginCircularDependency(_) => "100006",
+            BaseError::PluginConfigInvalid(_, _) => "100007",
+            BaseError::PluginShutdownFailed(_, _) => "100008",
+            // 数据库错误 (2xxxxx)
+            BaseError::DatabaseConnectionFailed(_) => "200001",
+            BaseError::DatabaseConnectionDbError(_) => "200001",
+            BaseError::DatabaseAlreadyInitialized => "200002",
+            BaseError::DatabaseQueryFailed(_) => "200003",
+            BaseError::DatabaseExecuteFailed(_) => "200004",
+            BaseError::DatabaseInitFailed(_) => "200005",
+            BaseError::DatabaseMigrationFailed(_, _) => "200006",
+            BaseError::MigrationFailed(_, _, _) => "200007",
+            BaseError::DatabaseNotInitialized => "200008",
+            BaseError::DatabaseTransactionFailed(_) => "200009",
+            BaseError::MissingWhereClause(_) => "200010",
+            // Redis 错误 (21xxxx)
+            BaseError::RedisConnectionFailed(_) => "210001",
+            BaseError::RedisAlreadyInitialized => "210002",
+            BaseError::RedisNotInitialized => "210003",
+            BaseError::RedisOperationFailed(_) => "210004",
+            BaseError::RedisOperationDbError(_) => "210004",
+            // HTTP 客户端错误 (3xxxxx)
+            BaseError::HttpClientCreateFailed(_) => "300001",
+            BaseError::HttpRequestFailed(_) => "300002",
+            BaseError::HttpResponseParseFailed(_) => "300003",
+            BaseError::HttpTimeout => "300004",
+            BaseError::HttpClientAlreadyInitialized => "300005",
+            BaseError::HttpClientNotInitialized => "300006",
+            BaseError::HttpCircuitBreakerOpen(_) => "300007",
+            // Token 管理错误 (4xxxxx)
+            BaseError::TokenKeyInvalid(_) => "400001",
+            BaseError::TokenGenerateFailed(_) => "400002",
+            BaseError::TokenVerifyFailed(_) => "400003",
+            BaseError::TokenParseFailed(_) => "400004",
+            BaseError::TokenExpired => "400005",
+            BaseError::TokenTypeInvalid(_) => "400006",
+            BaseError::TokenRevoked => "400007",
+            // 序列化错误 (5xxxxx)
+            BaseError::JsonSerializeFailed(_) => "500001",
+            BaseError::JsonDeserializeFailed(_) => "500002",
+            // 字段验证错误 (6xxxxx)
+            BaseError::InvalidFieldType(_, _) => "600001",
+            BaseError::InvalidEnumValue(_, _) => "600002",
+            BaseError::StringTooLong(_, _, _) => "600003",
+            BaseError::InvalidJsonFormat(_, _) => "600004",
+            BaseError::ValidationFailed(_, _) => "600005",
+            BaseError::FieldRequired(_) => "600006",
+            BaseError::FieldNotFound(_, _) => "600007",
+            BaseError::FieldPermissionDenied(_, _, _) => "600008",
+            // Action 系统错误 (7xxxxx)
+            BaseError::ActionNotFound(_) => "700001",
+            BaseError::PermissionDenied(_) => "700002",
+            BaseError::Unauthorized(_) => "700003",
+            BaseError::ParamMissing(_) => "700004",
+            BaseError::ParamInvalid(_, _) => "700005",
+            BaseError::RecordNotFound(_) => "700006",
+            BaseError::UserNotFound(_) => "700007",
+            BaseError::InvalidPassword => "700008",
+            BaseError::TableConfigNotSet => "700009",
+            // 通用错误 (9xxxxx)
+            BaseError::ConfigError(_) => "900001",
+            BaseError::IoError(_) => "900002",
+            BaseError::Unknown(_) => "999999",
+        }
+    }
+
+    /// 引擎级错误分类（弹性重试与任意下游适配的共同基座）。
+    ///
+    /// 返回 [`ErrorCategory`]，是 `is_retryable` / `is_client_error` /
+    /// `is_server_error` 的单一事实源。分类语义为**引擎自有**，与具体 HTTP status
+    /// 映射无关——HTTP 映射属调用方传输层边界。
+    ///
+    /// `Transient` 在 `is_server_error` 中视为服务端错误（但可重试），
+    /// 在 `is_client_error` 中**不**视为客户端错误。`Auth` 在 `is_client_error`
+    /// 中视为客户端错误（认证/授权失败归调用方过错）。
+    pub fn category(&self) -> ErrorCategory {
+        use ErrorCategory as C;
+        match self {
+            // 插件管理错误：除注册冲突外均为服务端/配置问题
+            BaseError::PluginAlreadyRegistered(_) => C::Conflict,
+            BaseError::PluginCircularDependency(_) => C::Client,
+            BaseError::PluginDependencyMissing(_, _) => C::Client,
+            BaseError::PluginConfigInvalid(_, _) => C::Client,
+            BaseError::PluginNotFound(_)
+            | BaseError::PluginRegisterFailed(_, _)
+            | BaseError::PluginInitFailed(_, _)
+            | BaseError::PluginShutdownFailed(_, _) => C::Server,
+            // 数据库错误：连接失败/超时/连接池为瞬时（可重试），
+            // 已包装的 DbError 同理（底层连接/超时语义已由 From<DbError> 正确分桶）
+            BaseError::DatabaseConnectionFailed(_)
+            | BaseError::DatabaseConnectionDbError(_)
+            | BaseError::DatabaseTransactionFailed(_) => C::Transient,
+            BaseError::MissingWhereClause(_)
+            | BaseError::DatabaseMigrationFailed(_, _)
+            | BaseError::MigrationFailed(_, _, _) => C::Client,
+            BaseError::DatabaseAlreadyInitialized
+            | BaseError::DatabaseNotInitialized
+            | BaseError::DatabaseInitFailed(_) => C::Server,
+            BaseError::DatabaseQueryFailed(_)
+            | BaseError::DatabaseExecuteFailed(_) => C::Server,
+            // Redis 错误：连接失败/超时/连接池为瞬时
+            BaseError::RedisConnectionFailed(_)
+            | BaseError::RedisOperationDbError(_) => C::Transient,
+            BaseError::RedisAlreadyInitialized | BaseError::RedisNotInitialized => C::Server,
+            BaseError::RedisOperationFailed(_) => C::Server,
+            // HTTP 客户端错误
+            BaseError::HttpClientCreateFailed(_)
+            | BaseError::HttpClientNotInitialized
+            | BaseError::HttpClientAlreadyInitialized => C::Client,
+            BaseError::HttpRequestFailed(_) | BaseError::HttpTimeout => C::Transient,
+            BaseError::HttpResponseParseFailed(_)
+            | BaseError::HttpCircuitBreakerOpen(_) => C::Transient,
+            // Token 错误
+            BaseError::TokenKeyInvalid(_)
+            | BaseError::TokenGenerateFailed(_)
+            | BaseError::TokenTypeInvalid(_)
+            | BaseError::TokenParseFailed(_) => C::Client,
+            BaseError::TokenExpired | BaseError::TokenRevoked | BaseError::TokenVerifyFailed(_) => C::Auth,
+            // 序列化错误
+            BaseError::JsonSerializeFailed(_) | BaseError::JsonDeserializeFailed(_) => C::Client,
+            // 字段验证错误
+            BaseError::InvalidFieldType(_, _)
+            | BaseError::InvalidEnumValue(_, _)
+            | BaseError::StringTooLong(_, _, _)
+            | BaseError::InvalidJsonFormat(_, _)
+            | BaseError::ValidationFailed(_, _)
+            | BaseError::FieldRequired(_)
+            | BaseError::FieldPermissionDenied(_, _, _) => C::Client,
+            BaseError::FieldNotFound(_, _) => C::NotFound,
+            // Action 系统错误
+            BaseError::Unauthorized(_) | BaseError::PermissionDenied(_) => C::Auth,
+            BaseError::ParamMissing(_) | BaseError::ParamInvalid(_, _) => C::Client,
+            BaseError::RecordNotFound(_) | BaseError::UserNotFound(_) => C::NotFound,
+            BaseError::InvalidPassword => C::Auth,
+            BaseError::ActionNotFound(_) | BaseError::TableConfigNotSet => C::NotFound,
+            // 通用错误
+            BaseError::ConfigError(_) | BaseError::IoError(_) | BaseError::Unknown(_) => C::Server,
+        }
+    }
+
+    /// 是否为可重试的瞬时错误（等价 `category() == Transient`）。
+    pub fn is_retryable(&self) -> bool {
+        self.category() == ErrorCategory::Transient
+    }
+
+    /// 是否为客户端过错（`Client` 或 `Auth` 类）。
+    ///
+    /// 用于下游统一适配——客户端过错不可重试，调用方应修正请求而非重试。
+    /// 注意 `Transient` **不**在此列：虽然瞬时错误也可归「服务端」，但它不是
+    /// 调用方过错，且可重试——`is_server_error` 已覆盖该语义。
+    pub fn is_client_error(&self) -> bool {
+        matches!(self.category(), ErrorCategory::Client | ErrorCategory::Auth)
+    }
+
+    /// 是否为服务端/基础设施错误（`Server`、`Transient` 或 `Conflict`）。
+    ///
+    /// 用于下游统一适配。`Transient` 在此视为服务端（可重试的服务端错误，
+    /// 如连接超时 = HTTP 503 语义）；`Conflict` 也计入（资源冲突 = HTTP 409，
+    /// 但常由并发写引起而非纯调用方过错）。
+    pub fn is_server_error(&self) -> bool {
+        matches!(
+            self.category(),
+            ErrorCategory::Server | ErrorCategory::Transient | ErrorCategory::Conflict
+        )
     }
 }
 
@@ -794,5 +1009,127 @@ mod tests {
         // 验证转换后仍可通过 source() 访问底层错误
         assert!(base_err.source().is_some());
         assert!(matches!(base_err, BaseError::DatabaseQueryFailed(_)));
+    }
+
+    /// code_str() 必须与 code() 一致（metrics label 与数值码同源，防漂移）
+    #[test]
+    fn test_code_str_matches_code() {
+        // 覆盖各域代表变体；新增变体时若两处不同步，此处会失败
+        let samples: Vec<BaseError> = vec![
+            BaseError::PluginNotFound("p".into()),
+            BaseError::DatabaseConnectionFailed("c".into()),
+            BaseError::DatabaseNotInitialized,
+            BaseError::RedisNotInitialized,
+            BaseError::HttpTimeout,
+            BaseError::TokenExpired,
+            BaseError::TokenRevoked,
+            BaseError::JsonSerializeFailed("s".into()),
+            BaseError::FieldNotFound("t".into(), "f".into()),
+            BaseError::ParamInvalid("k".into(), "r".into()),
+            BaseError::TableConfigNotSet,
+            BaseError::ConfigError("c".into()),
+            BaseError::Unknown("u".into()),
+        ];
+        for err in samples {
+            let code = err.code();
+            let code_str = err.code_str();
+            assert_eq!(
+                code_str.parse::<i32>().unwrap(),
+                code,
+                "code_str {:?} 与 code {} 不一致（变体 {:?}）",
+                code_str,
+                code,
+                err
+            );
+        }
+    }
+
+    /// ErrorCategory 全变体覆盖：每个分类至少有一个代表性变体
+    #[test]
+    fn test_error_category_coverage() {
+        // Client
+        assert_eq!(
+            BaseError::ParamInvalid("k".into(), "r".into()).category(),
+            ErrorCategory::Client
+        );
+        assert_eq!(
+            BaseError::ValidationFailed("f".into(), "r".into()).category(),
+            ErrorCategory::Client
+        );
+        // Auth
+        assert_eq!(
+            BaseError::Unauthorized("u".into()).category(),
+            ErrorCategory::Auth
+        );
+        assert_eq!(
+            BaseError::TokenExpired.category(),
+            ErrorCategory::Auth
+        );
+        assert_eq!(
+            BaseError::InvalidPassword.category(),
+            ErrorCategory::Auth
+        );
+        // NotFound
+        assert_eq!(
+            BaseError::RecordNotFound("r".into()).category(),
+            ErrorCategory::NotFound
+        );
+        assert_eq!(
+            BaseError::FieldNotFound("t".into(), "f".into()).category(),
+            ErrorCategory::NotFound
+        );
+        // Conflict
+        assert_eq!(
+            BaseError::PluginAlreadyRegistered("p".into()).category(),
+            ErrorCategory::Conflict
+        );
+        // Transient
+        assert_eq!(
+            BaseError::DatabaseConnectionFailed("c".into()).category(),
+            ErrorCategory::Transient
+        );
+        assert_eq!(
+            BaseError::HttpTimeout.category(),
+            ErrorCategory::Transient
+        );
+        // Server
+        assert_eq!(
+            BaseError::Unknown("u".into()).category(),
+            ErrorCategory::Server
+        );
+        assert_eq!(
+            BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("q".into())).category(),
+            ErrorCategory::Server
+        );
+    }
+
+    /// is_retryable = (category == Transient)
+    #[test]
+    fn test_is_retryable() {
+        assert!(BaseError::DatabaseConnectionFailed("c".into()).is_retryable());
+        assert!(BaseError::HttpTimeout.is_retryable());
+        assert!(!BaseError::ParamInvalid("k".into(), "r".into()).is_retryable());
+        assert!(!BaseError::Unauthorized("u".into()).is_retryable());
+        assert!(!BaseError::Unknown("u".into()).is_retryable());
+    }
+
+    /// is_client_error = (Client | Auth)
+    #[test]
+    fn test_is_client_error() {
+        assert!(BaseError::ParamInvalid("k".into(), "r".into()).is_client_error());
+        assert!(BaseError::Unauthorized("u".into()).is_client_error());
+        assert!(BaseError::TokenExpired.is_client_error());
+        assert!(!BaseError::DatabaseConnectionFailed("c".into()).is_client_error());
+        assert!(!BaseError::Unknown("u".into()).is_client_error());
+    }
+
+    /// is_server_error = (Server | Transient | Conflict)
+    #[test]
+    fn test_is_server_error() {
+        assert!(BaseError::Unknown("u".into()).is_server_error());
+        assert!(BaseError::DatabaseConnectionFailed("c".into()).is_server_error());
+        assert!(BaseError::PluginAlreadyRegistered("p".into()).is_server_error());
+        assert!(!BaseError::ParamInvalid("k".into(), "r".into()).is_server_error());
+        assert!(!BaseError::Unauthorized("u".into()).is_server_error());
     }
 }

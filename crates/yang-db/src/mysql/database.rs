@@ -1,6 +1,7 @@
 use crate::error::DbError;
 use crate::mysql::query_builder::QueryBuilder;
 use crate::mysql::transaction::Transaction;
+use crate::redis::PoolStatus;
 use sqlx::mysql::MySqlPool;
 
 /// 数据库配置
@@ -117,6 +118,37 @@ impl Database {
     /// `db.pool().clone()` 获得一个共享同一连接池的句柄。
     pub fn pool(&self) -> &MySqlPool {
         &self.pool
+    }
+
+    /// 返回连接池状态快照（与 Redis 侧 `pool_status` 对称）。
+    ///
+    /// 字段映射（sqlx `MySqlPool` 无「等待者数」直接 API，故 `waiting` 恒为 0）：
+    /// - `max_size`：配置的最大连接数（`config.max_connections`）
+    /// - `size`：当前池内连接总数（`pool.size()`）
+    /// - `available`：当前空闲可借出连接数（`pool.num_idle()`）
+    /// - `waiting`：sqlx 未暴露，恒为 0
+    ///
+    /// 连接耗尽排查：`available == 0 && size == max_size` 即池被打满。
+    pub fn pool_status(&self) -> PoolStatus {
+        PoolStatus {
+            max_size: self.config.max_connections as usize,
+            size: self.pool.size() as usize,
+            available: self.pool.num_idle(),
+            waiting: 0,
+        }
+    }
+
+    /// 健康检查：执行 `SELECT 1` 验证连接可用。
+    ///
+    /// 与 yang-base 层 `GlobalDatabase::health_check` 语义一致，但下沉到持有连接池
+    /// 的这一层，使 yang-db 直接消费者也能探活。
+    ///
+    /// # 返回
+    /// - `Ok(())`：连接正常
+    /// - `Err(DbError)`：查询失败（连接不可用）
+    pub async fn health_check(&self) -> Result<(), DbError> {
+        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        Ok(())
     }
 
     /// 执行原生 SELECT 查询

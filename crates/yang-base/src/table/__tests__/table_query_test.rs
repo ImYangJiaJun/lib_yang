@@ -1025,3 +1025,192 @@ fn test_select_falls_back_to_default_order() {
         sql
     );
 }
+
+// ==================== C2a: OR / 嵌套布尔组 ====================
+
+use crate::table::WhereCondition;
+
+/// OR 组渲染为括号包裹、以 OR 连接，占位符计数正确。
+#[test]
+fn test_where_or_renders_parenthesized_or() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    let query = query
+        .where_eq("name", json!("alice"))
+        .unwrap()
+        .where_or(vec![
+            WhereCondition::Eq { field: "email".into(), value: json!("a@x.com") },
+            WhereCondition::Gt { field: "id".into(), value: json!(100) },
+        ])
+        .unwrap();
+
+    let (sql, params) = query.build_select_sql_for_test().expect("build sql");
+    // 顶层 name=? 与 OR 组以 AND 连接，组内括号包裹
+    assert!(
+        sql.contains("`name` = ? AND (`email` = ? OR `id` > ?)"),
+        "OR 组应括号包裹并以 AND 接在顶层条件后: {}",
+        sql
+    );
+    assert_eq!(params.len(), 3, "应有 3 个占位符参数");
+}
+
+/// 嵌套：OR 组内含 AND 子组，括号正确嵌套。
+#[test]
+fn test_nested_or_and_groups() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    // (name = 'a' OR (email = 'b' AND id >= 5))
+    let query = query
+        .where_or(vec![
+            WhereCondition::Eq { field: "name".into(), value: json!("a") },
+            WhereCondition::And {
+                conditions: vec![
+                    WhereCondition::Eq { field: "email".into(), value: json!("b") },
+                    WhereCondition::Gte { field: "id".into(), value: json!(5) },
+                ],
+            },
+        ])
+        .unwrap();
+
+    let (sql, params) = query.build_select_sql_for_test().expect("build sql");
+    assert!(
+        sql.contains("(`name` = ? OR (`email` = ? AND `id` >= ?))"),
+        "嵌套组括号应正确: {}",
+        sql
+    );
+    assert_eq!(params.len(), 3);
+}
+
+/// 空 OR 组渲染为恒假 1=0；空 AND 组渲染为恒真 1=1。
+#[test]
+fn test_empty_groups_render_constants() {
+    let config = create_test_table_config();
+
+    let q_or = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None)
+        .where_or(vec![])
+        .unwrap();
+    let (sql_or, p_or) = q_or.build_select_sql_for_test().expect("build sql");
+    assert!(sql_or.contains("1=0"), "空 OR 组应恒假: {}", sql_or);
+    assert_eq!(p_or.len(), 0);
+
+    let q_and = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None)
+        .where_and(vec![])
+        .unwrap();
+    let (sql_and, p_and) = q_and.build_select_sql_for_test().expect("build sql");
+    assert!(sql_and.contains("1=1"), "空 AND 组应恒真: {}", sql_and);
+    assert_eq!(p_and.len(), 0);
+}
+
+/// 组内叶子字段无筛选权限 → 整组构建失败（递归权限下钻）。
+#[test]
+fn test_where_or_permission_denied_in_group() {
+    let config = create_test_table_config();
+    // user 角色对 salary 无筛选权限
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    let result = query.where_or(vec![
+        WhereCondition::Eq { field: "name".into(), value: json!("ok") },
+        WhereCondition::Gt { field: "salary".into(), value: json!(1000) },
+    ]);
+
+    assert!(
+        matches!(result, Err(BaseError::FieldPermissionDenied(_, _, _))),
+        "组内 salary 无筛选权限应整组失败"
+    );
+}
+
+/// 组内叶子字段不存在 → 整组构建失败。
+#[test]
+fn test_where_or_field_not_found_in_group() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    let result = query.where_or(vec![WhereCondition::Eq {
+        field: "nonexistent".into(),
+        value: json!(1),
+    }]);
+
+    assert!(
+        matches!(result, Err(BaseError::FieldNotFound(_, _))),
+        "组内不存在字段应失败"
+    );
+}
+
+/// admin 角色可在组内筛选受限字段（salary）。
+#[test]
+fn test_where_or_admin_can_filter_restricted() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["admin".to_string()]), None);
+
+    let query = query
+        .where_or(vec![
+            WhereCondition::Gt { field: "salary".into(), value: json!(1000) },
+            WhereCondition::Eq { field: "name".into(), value: json!("boss") },
+        ])
+        .expect("admin 应可筛选 salary");
+
+    let (sql, params) = query.build_select_sql_for_test().expect("build sql");
+    assert!(sql.contains("(`salary` > ? OR `name` = ?)"), "{}", sql);
+    assert_eq!(params.len(), 2);
+}
+
+/// 超过最大嵌套深度返回 ParamInvalid，而非 panic/爆栈。
+#[test]
+fn test_where_tree_depth_limit() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    // 构造深度 > 32 的嵌套 And 链
+    let mut node = WhereCondition::Eq { field: "id".into(), value: json!(1) };
+    for _ in 0..40 {
+        node = WhereCondition::And { conditions: vec![node] };
+    }
+
+    let result = query.where_tree(node);
+    assert!(
+        matches!(result, Err(BaseError::ParamInvalid(_, _))),
+        "超深嵌套应返回 ParamInvalid"
+    );
+}
+
+/// Filter<W> 布尔树 JSON 反序列化 + 降解为 WhereCondition。
+#[test]
+fn test_filter_json_roundtrip_to_where_condition() {
+    use crate::table::{Filter, IntoSqlCondition, SqlCondition, SqlOp};
+
+    // 一个最小的类型化叶子：固定列 + Eq
+    #[derive(serde::Deserialize)]
+    struct LeafW {
+        value: i64,
+    }
+    impl IntoSqlCondition for LeafW {
+        fn into_sql_condition(self) -> SqlCondition {
+            SqlCondition {
+                column: "id",
+                op: SqlOp::Eq,
+                params: vec![json!(self.value)],
+            }
+        }
+    }
+
+    // {"or": [{"value": 1}, {"and": [{"value": 2}]}]}
+    let j = json!({
+        "or": [
+            {"value": 1},
+            {"and": [{"value": 2}]}
+        ]
+    });
+    let filter: Filter<LeafW> = serde_json::from_value(j).expect("deserialize Filter");
+    let wc = filter.into_where_condition();
+
+    match wc {
+        WhereCondition::Or { conditions } => {
+            assert_eq!(conditions.len(), 2);
+            assert!(matches!(conditions[0], WhereCondition::Eq { .. }));
+            assert!(matches!(conditions[1], WhereCondition::And { .. }));
+        }
+        other => panic!("应降解为 Or 组，实际: {:?}", other),
+    }
+}

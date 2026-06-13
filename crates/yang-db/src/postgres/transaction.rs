@@ -192,6 +192,21 @@ impl Transaction {
     pub fn table(&mut self, table_name: &str) -> TransactionQueryBuilder<'_> {
         TransactionQueryBuilder::new(self, table_name)
     }
+
+    /// 借出底层 sqlx 连接（受控逃生舱，供同 workspace 上层在事务内执行自构建的参数化语句）
+    ///
+    /// 语义与 MySQL 侧一致：上层已持有参数化好的 SQL 与参数，需要在**同一事务**
+    /// 里执行以保证原子性。标记 `#[doc(hidden)]`，非稳定公开 API，仅供 workspace
+    /// 内部桥接使用；值侧由 `$N` 绑定，标识符安全由调用方保证。
+    ///
+    /// # 返回
+    /// - `Some(&mut PgConnection)`：事务仍处于活动状态
+    /// - `None`：事务已 `commit`/`rollback`，连接不再可用
+    #[doc(hidden)]
+    pub fn executor(&mut self) -> Option<&mut sqlx::PgConnection> {
+        // `SqlxTransaction` 通过 DerefMut 解引用为底层 PgConnection
+        self.tx.as_deref_mut()
+    }
 }
 
 /// 事务查询构建器

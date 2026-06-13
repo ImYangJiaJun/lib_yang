@@ -55,6 +55,7 @@ pub mod builtin;
 mod context;
 pub mod meta;
 mod request;
+mod request_id;
 mod response;
 pub mod sql_bridge;
 pub mod typed;
@@ -62,12 +63,13 @@ pub mod typed;
 pub use action_trait::Permission;
 #[cfg(feature = "token")]
 pub use auth::{
-    CredentialVerifier, DefaultRefreshClaims, LoginAction, LogoutAction, RefreshAction,
-    RefreshClaimsResolver, TokenAuthMiddleware,
+    AuthAuditEvent, AuthAuditHook, CredentialVerifier, DefaultRefreshClaims, LoginAction,
+    LogoutAction, RefreshAction, RefreshClaimsResolver, TokenAuthMiddleware, TracingAuditHook,
 };
 pub use context::{ActionContext, GlobalTools, User};
 pub use meta::ActionMeta;
 pub use request::Request;
+pub use request_id::RequestId;
 pub use response::ApiResponse;
 pub use typed::{DynAction, TypedAction, TypedHandler};
 

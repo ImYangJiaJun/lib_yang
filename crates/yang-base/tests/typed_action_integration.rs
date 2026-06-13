@@ -109,6 +109,9 @@ async fn full_crud_cycle() {
     };
     let tools = test_tools();
     let router = ModuleRouter::new("user", "用户")
+        .with_table_config(Arc::new(
+            <U as yang_base::table::TableEntity>::table_config().clone(),
+        ))
         .table_typed::<U>()
         .expect("table_typed 注册应成功");
 
@@ -136,11 +139,11 @@ async fn full_crud_cycle() {
     let r = router.dispatch("put", ctx).await.expect("put 应成功");
     assert_eq!(r.data.as_ref().unwrap()["affected"], 1);
 
-    // 4. select（where like + count_total）
+    // 4. select（where like 叶子 + count_total）
     let ctx = logged_in_ctx(
         serde_json::json!({
             "page": 1, "page_size": 10,
-            "where": [{"field": "username", "cond": {"op": "like", "value": "%alice%"}}],
+            "where": {"field": "username", "cond": {"op": "like", "value": "%alice%"}},
             "count_total": true
         }),
         tools.clone(),
@@ -149,6 +152,27 @@ async fn full_crud_cycle() {
     let data = r.data.unwrap();
     assert_eq!(data["items"].as_array().unwrap().len(), 1);
     assert_eq!(data["items"][0]["age"], 31);
+    assert_eq!(data["total"], 1);
+
+    // 4b. select（C2a OR 布尔组：username like %alice% OR age > 1000）
+    let ctx = logged_in_ctx(
+        serde_json::json!({
+            "page": 1, "page_size": 10,
+            "where": {"or": [
+                {"field": "username", "cond": {"op": "like", "value": "%alice%"}},
+                {"field": "age", "cond": {"op": "gt", "value": 1000}}
+            ]},
+            "count_total": true
+        }),
+        tools.clone(),
+    );
+    let r = router.dispatch("select", ctx).await.expect("select OR 应成功");
+    let data = r.data.unwrap();
+    assert_eq!(
+        data["items"].as_array().unwrap().len(),
+        1,
+        "OR 组应匹配到 alice（age>1000 分支不命中）"
+    );
     assert_eq!(data["total"], 1);
 
     // 5. del

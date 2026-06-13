@@ -81,9 +81,56 @@ pub trait DynAction: Send + Sync + 'static {
 #[async_trait]
 impl<T: TypedAction> DynAction for T {
     async fn dispatch(&self, ctx: ActionContext) -> Result<ApiResponse, BaseError> {
-        let input: T::Input = ctx.extract_input()?;
-        let output = self.handle(ctx, input).await?;
-        ApiResponse::success(output, "成功")
+        use tracing::Instrument;
+
+        let action_name = self.meta().name;
+        // handler span：静态 span 名 + 借用的 action 名，成功路径零分配
+        let span = tracing::info_span!("handle", action = action_name);
+
+        // feature="metrics" 时在唯一必经边界埋点；关闭时整段 #[cfg] 消失零开销
+        #[cfg(feature = "metrics")]
+        let start = std::time::Instant::now();
+
+        let result: Result<ApiResponse, BaseError> = async {
+            let input: T::Input = ctx.extract_input()?;
+            let output = self.handle(ctx, input).await?;
+            ApiResponse::success(output, "成功")
+        }
+        .instrument(span)
+        .await;
+
+        #[cfg(feature = "metrics")]
+        {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::histogram!("yang_action_duration_seconds", "action" => action_name)
+                .record(elapsed);
+            match &result {
+                Ok(_) => {
+                    metrics::counter!(
+                        "yang_action_requests_total",
+                        "action" => action_name,
+                        "status" => "ok",
+                    )
+                    .increment(1);
+                }
+                Err(e) => {
+                    metrics::counter!(
+                        "yang_action_requests_total",
+                        "action" => action_name,
+                        "status" => "error",
+                    )
+                    .increment(1);
+                    metrics::counter!(
+                        "yang_action_errors_total",
+                        "action" => action_name,
+                        "code" => e.code_str(),
+                    )
+                    .increment(1);
+                }
+            }
+        }
+
+        result
     }
 
     fn meta(&self) -> &'static ActionMeta {

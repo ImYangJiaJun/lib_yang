@@ -95,6 +95,7 @@ use serde_json::Value;
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WhereCondition {
     /// 等于条件 (field = value)
     ///
@@ -248,14 +249,40 @@ pub enum WhereCondition {
         /// 值列表
         values: Vec<Value>,
     },
+
+    /// 逻辑与组（嵌套子条件全部成立），SQL 渲染为 `(c1 AND c2 AND ...)`
+    ///
+    /// 空组等价于恒真（`1=1`），与顶层「无条件」语义一致。
+    ///
+    /// # 字段
+    ///
+    /// - `conditions`：子条件列表，递归可含 `And`/`Or` 组
+    And {
+        /// 子条件列表
+        conditions: Vec<WhereCondition>,
+    },
+
+    /// 逻辑或组（嵌套子条件任一成立），SQL 渲染为 `(c1 OR c2 OR ...)`
+    ///
+    /// 空组等价于恒假（`1=0`），避免拼出非法的空括号。
+    ///
+    /// # 字段
+    ///
+    /// - `conditions`：子条件列表，递归可含 `And`/`Or` 组
+    Or {
+        /// 子条件列表
+        conditions: Vec<WhereCondition>,
+    },
 }
 
 impl WhereCondition {
     /// 获取条件涉及的字段名
     ///
+    /// 叶子条件返回 `Some(字段名)`；逻辑组（`And`/`Or`）无单一字段，返回 `None`。
+    ///
     /// # 返回值
     ///
-    /// 返回字段名的引用
+    /// 叶子返回 `Some(&str)`，组节点返回 `None`
     ///
     /// # 示例
     ///
@@ -268,9 +295,9 @@ impl WhereCondition {
     ///     value: json!("active"),
     /// };
     ///
-    /// assert_eq!(condition.field(), "status");
+    /// assert_eq!(condition.field(), Some("status"));
     /// ```
-    pub fn field(&self) -> &str {
+    pub fn field(&self) -> Option<&str> {
         match self {
             WhereCondition::Eq { field, .. }
             | WhereCondition::In { field, .. }
@@ -283,7 +310,9 @@ impl WhereCondition {
             | WhereCondition::IsNotNull { field }
             | WhereCondition::Ne { field, .. }
             | WhereCondition::Between { field, .. }
-            | WhereCondition::NotIn { field, .. } => field,
+            | WhereCondition::NotIn { field, .. } => Some(field),
+            // 逻辑组无单一字段
+            WhereCondition::And { .. } | WhereCondition::Or { .. } => None,
         }
     }
 }
