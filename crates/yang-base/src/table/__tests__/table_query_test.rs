@@ -1083,24 +1083,73 @@ fn test_nested_or_and_groups() {
     assert_eq!(params.len(), 3);
 }
 
-/// 空 OR 组渲染为恒假 1=0；空 AND 组渲染为恒真 1=1。
+/// 空布尔组被校验层拒绝（防止空 AND 组渲染 `1=1` 绕过全表写守卫）。
 #[test]
-fn test_empty_groups_render_constants() {
+fn test_empty_groups_rejected() {
     let config = create_test_table_config();
 
-    let q_or = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None)
-        .where_or(vec![])
-        .unwrap();
-    let (sql_or, p_or) = q_or.build_select_sql_for_test().expect("build sql");
-    assert!(sql_or.contains("1=0"), "空 OR 组应恒假: {}", sql_or);
-    assert_eq!(p_or.len(), 0);
+    let r_or = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None)
+        .where_or(vec![]);
+    assert!(
+        matches!(r_or, Err(BaseError::ParamInvalid(_, _))),
+        "空 OR 组应被拒绝"
+    );
 
-    let q_and = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None)
-        .where_and(vec![])
-        .unwrap();
-    let (sql_and, p_and) = q_and.build_select_sql_for_test().expect("build sql");
-    assert!(sql_and.contains("1=1"), "空 AND 组应恒真: {}", sql_and);
-    assert_eq!(p_and.len(), 0);
+    let r_and = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None)
+        .where_and(vec![]);
+    assert!(
+        matches!(r_and, Err(BaseError::ParamInvalid(_, _))),
+        "空 AND 组应被拒绝"
+    );
+
+    // 嵌套空组同样被递归校验捕获
+    let r_nested = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None)
+        .where_and(vec![WhereCondition::Or { conditions: vec![] }]);
+    assert!(
+        matches!(r_nested, Err(BaseError::ParamInvalid(_, _))),
+        "嵌套空组应被拒绝"
+    );
+}
+
+/// 字段级 `.filterable(false)` 是硬约束：即便角色权限放行也拒绝筛选。
+#[test]
+fn test_non_filterable_field_rejected() {
+    // password 字段：filterable(false)，但角色权限为空（默认放行所有角色）
+    let config = Arc::new(
+        TableConfig::new("accounts")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(
+                FieldConfig::new("password", FieldType::String { max_length: 255 })
+                    .filterable(false),
+            ),
+    );
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+    let result = query.where_eq("password", json!("secret"));
+    assert!(
+        matches!(result, Err(BaseError::FieldPermissionDenied(_, _, _))),
+        "filterable(false) 字段应拒绝筛选: {:?}",
+        result.err()
+    );
+}
+
+/// 字段级 `.sortable(false)` 是硬约束：即便角色权限放行也拒绝排序。
+#[test]
+fn test_non_sortable_field_rejected() {
+    let config = Arc::new(
+        TableConfig::new("accounts")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(
+                FieldConfig::new("description", FieldType::String { max_length: 255 })
+                    .sortable(false),
+            ),
+    );
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+    let result = query.order_by("description", SortOrder::Asc);
+    assert!(
+        matches!(result, Err(BaseError::FieldPermissionDenied(_, _, _))),
+        "sortable(false) 字段应拒绝排序: {:?}",
+        result.err()
+    );
 }
 
 /// 组内叶子字段无筛选权限 → 整组构建失败（递归权限下钻）。

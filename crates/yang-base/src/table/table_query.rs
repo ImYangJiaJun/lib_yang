@@ -820,7 +820,17 @@ impl TableQuery {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
         })?;
 
-        // 2. 检查用户是否有排序权限
+        // 2. 字段级排序开关：标记为不可排序的字段直接拒绝（先于角色权限，
+        //    确保 `.sortable(false)` 是硬约束而非可被空角色列表绕过的软提示）
+        if !field_config.sortable {
+            return Err(BaseError::FieldPermissionDenied(
+                self.table_config.table_name.clone(),
+                field.to_string(),
+                "字段不允许排序".to_string(),
+            ));
+        }
+
+        // 3. 检查用户是否有排序权限
         if !field_config.permissions.can_sort(&self.user_roles) {
             return Err(BaseError::FieldPermissionDenied(
                 self.table_config.table_name.clone(),
@@ -916,7 +926,17 @@ impl TableQuery {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
         })?;
 
-        // 2. 检查用户是否有筛选权限
+        // 2. 字段级筛选开关：标记为不可筛选的字段直接拒绝（先于角色权限，
+        //    确保 `.filterable(false)` 是硬约束而非可被空角色列表绕过的软提示）
+        if !field_config.filterable {
+            return Err(BaseError::FieldPermissionDenied(
+                self.table_config.table_name.clone(),
+                field.to_string(),
+                "字段不允许筛选".to_string(),
+            ));
+        }
+
+        // 3. 检查用户是否有筛选权限
         if !field_config.permissions.can_filter(&self.user_roles) {
             return Err(BaseError::FieldPermissionDenied(
                 self.table_config.table_name.clone(),
@@ -958,6 +978,15 @@ impl TableQuery {
 
         match condition {
             WhereCondition::And { conditions } | WhereCondition::Or { conditions } => {
+                // 空布尔组拒绝：空 And 渲染为 `1=1`、空 Or 渲染为 `1=0`，前者会使
+                // `where_conditions` 非空从而绕过 UPDATE/DELETE 的全表写守卫，生成
+                // `WHERE (1=1)` 全表改写。在校验期直接拒绝空组，杜绝该绕过路径。
+                if conditions.is_empty() {
+                    return Err(BaseError::ParamInvalid(
+                        "where".to_string(),
+                        "AND/OR 布尔组不能为空".to_string(),
+                    ));
+                }
                 for child in conditions {
                     self.validate_condition_tree(child, depth + 1)?;
                 }
