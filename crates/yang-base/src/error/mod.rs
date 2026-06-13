@@ -329,6 +329,7 @@ pub enum BaseError {
 /// - 事务类 → DatabaseTransactionFailed
 /// - 连接类 → DatabaseConnectionFailed
 /// - Redis 类 → RedisOperationFailed
+#[allow(unreachable_patterns)]
 impl From<yang_db::DbError> for BaseError {
     fn from(err: yang_db::DbError) -> Self {
         use yang_db::DbError as D;
