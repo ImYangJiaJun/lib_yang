@@ -397,6 +397,20 @@ impl SqlGenerator {
         // 提取字段名（从第一条记录）
         let fields: Vec<String> = first_obj.keys().cloned().collect();
 
+        // 列集一致性校验（NEW-9）：批量 VALUES 共用首条记录的列集，若后续记录列集不同
+        // 会静默丢列 / 填 NULL。这里要求所有记录列集与首条完全一致，否则返回 InvalidArgument，
+        // 避免异构数据被悄悄写错。
+        for (idx, data) in data_list.iter().enumerate().skip(1) {
+            let obj = data.as_object().ok_or_else(|| {
+                crate::error::DbError::SerializationError("插入数据必须是 JSON 对象".to_string())
+            })?;
+            if obj.len() != fields.len() || !fields.iter().all(|f| obj.contains_key(f)) {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量插入第 {idx} 条记录的列集与首条不一致"
+                )));
+            }
+        }
+
         // 构建 INSERT 语句头部
         self.append("INSERT INTO ");
         self.append(table);
@@ -570,6 +584,28 @@ impl SqlGenerator {
             ));
         }
 
+        // 列集一致性校验（NEW-9）：CASE WHEN 批量更新对所有记录套用首条的字段集，
+        // 异构记录会静默丢列 / 生成 WHEN id=NULL（永不匹配）。要求每条记录都含 id_field
+        // 且其非主键列集与首条完全一致，否则返回 InvalidArgument。
+        for (idx, record) in records.iter().enumerate() {
+            let obj = record.as_object().ok_or_else(|| {
+                crate::error::DbError::SerializationError("更新数据必须是 JSON 对象".to_string())
+            })?;
+            if !obj.contains_key(id_field) {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量更新第 {idx} 条记录缺少主键字段 {id_field}"
+                )));
+            }
+            let non_id_len = obj.keys().filter(|k| k.as_str() != id_field).count();
+            if non_id_len != update_fields.len()
+                || !update_fields.iter().all(|f| obj.contains_key(f))
+            {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量更新第 {idx} 条记录的列集与首条不一致"
+                )));
+            }
+        }
+
         // 写入 UPDATE ... SET 头部
         self.sql.push_str("UPDATE ");
         self.sql.push_str(table);
@@ -719,12 +755,25 @@ impl SqlGenerator {
                                 ))
                             })?;
                         return Ok(SqlValue::DateTime(dt));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        // 值形态不匹配类型提示：显式报错而非静默跌穿到默认转换（NEW-10）
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "DateTime 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Timestamp => {
                     // TIMESTAMP 类型：期望整数
                     if let Some(i) = value.as_i64() {
                         return Ok(SqlValue::Timestamp(i));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Timestamp 字段期望整数，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Decimal => {
@@ -745,12 +794,24 @@ impl SqlGenerator {
                         }
                         // 否则直接转换为字节
                         return Ok(SqlValue::Bytes(s.as_bytes().to_vec()));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Blob 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Text => {
                     // TEXT 类型：转换为字符串
                     if let Some(s) = value.as_str() {
                         return Ok(SqlValue::String(s.to_string()));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Text 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Standard => {
@@ -2638,13 +2699,15 @@ mod tests {
     use super::*;
     use sqlx::mysql::MySqlPoolOptions;
 
-    // 创建测试用的数据库连接池（真实连接，用于 async 集成测试）
+    // 创建测试用的连接池（懒连接：仅校验 URL，不建立真实连接）。
+    // 本模块的 async 测试只调用 to_sql()/检查 builder 状态，不执行查询，故无需真实
+    // 数据库。改用 connect_lazy 后离线 `cargo test --lib` 不再因 30s acquire 超时
+    // 逐个挂死（DB-11 的离线可跑部分）。
     async fn create_test_pool() -> MySqlPool {
         MySqlPoolOptions::new()
             .max_connections(1)
-            .connect("mysql://root:111111@localhost:3306/test")
-            .await
-            .expect("无法连接到测试数据库")
+            .connect_lazy("mysql://root:111111@localhost:3306/test")
+            .expect("无法解析测试数据库 URL")
     }
 
     /// 获取或创建共享懒连接池（仅验证 URL，不立即建立连接）。
@@ -3696,14 +3759,15 @@ mod property_tests {
         "[a-z][a-z0-9_]{0,30}"
     }
 
-    // 创建测试用的数据库连接池（同步版本用于 proptest）
+    // 创建测试用的连接池（同步版本用于 proptest；懒连接，不建立真实连接）。
+    // proptest 仅校验生成的 SQL，不执行查询。connect_lazy 仍需在 Tokio 上下文内创建
+    // （内部会 spawn 后台 reaper），故用 block_on 提供上下文，但不发起真实连接（DB-11）。
     fn create_test_pool_sync() -> MySqlPool {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             MySqlPoolOptions::new()
                 .max_connections(1)
-                .connect("mysql://root:111111@localhost:3306/test")
-                .await
-                .expect("无法连接到测试数据库")
+                .connect_lazy("mysql://root:111111@localhost:3306/test")
+                .expect("无法解析测试数据库 URL")
         })
     }
 

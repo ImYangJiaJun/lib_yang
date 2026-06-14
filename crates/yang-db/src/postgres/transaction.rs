@@ -592,8 +592,9 @@ fn bind_json_param_tx<'q>(
         serde_json::Value::Bool(b) => query.bind(*b),
         // NULL 类型绑定为 None
         serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
-        other => query.bind(other.to_string()),
+        // 数组和对象绑定为原生 JSON（serde_json::Value），与非事务路径 database.rs 一致；
+        // 此前 other.to_string() 会把值绑成 text，对 JSONB 列报类型错（NEW-13）。
+        other => query.bind(other.clone()),
     }
 }
 
@@ -630,7 +631,8 @@ where
         serde_json::Value::Bool(b) => query.bind(*b),
         // NULL 类型绑定为 None
         serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
-        other => query.bind(other.to_string()),
+        // 数组和对象绑定为原生 JSON（serde_json::Value），与非事务路径 database.rs 一致；
+        // 此前 other.to_string() 会把值绑成 text，对 JSONB 列报类型错（NEW-13）。
+        other => query.bind(other.clone()),
     }
 }

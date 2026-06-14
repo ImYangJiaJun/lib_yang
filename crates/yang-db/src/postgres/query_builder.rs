@@ -413,6 +413,18 @@ impl SqlGenerator {
 
         let fields: Vec<String> = first_obj.keys().cloned().collect();
 
+        // 列集一致性校验（NEW-9）：见 MySQL 同名方法，异构记录会静默丢列 / 填 NULL。
+        for (idx, data) in data_list.iter().enumerate().skip(1) {
+            let obj = data.as_object().ok_or_else(|| {
+                crate::error::DbError::SerializationError("插入数据必须是 JSON 对象".to_string())
+            })?;
+            if obj.len() != fields.len() || !fields.iter().all(|f| obj.contains_key(f)) {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量插入第 {idx} 条记录的列集与首条不一致"
+                )));
+            }
+        }
+
         self.append("INSERT INTO ");
         self.append(table);
         self.append(" (");
@@ -551,6 +563,26 @@ impl SqlGenerator {
             return Err(crate::error::DbError::SerializationError(
                 "没有可更新的字段".to_string(),
             ));
+        }
+
+        // 列集一致性校验（NEW-9）：见 MySQL 同名方法。
+        for (idx, record) in records.iter().enumerate() {
+            let obj = record.as_object().ok_or_else(|| {
+                crate::error::DbError::SerializationError("更新数据必须是 JSON 对象".to_string())
+            })?;
+            if !obj.contains_key(id_field) {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量更新第 {idx} 条记录缺少主键字段 {id_field}"
+                )));
+            }
+            let non_id_len = obj.keys().filter(|k| k.as_str() != id_field).count();
+            if non_id_len != update_fields.len()
+                || !update_fields.iter().all(|f| obj.contains_key(f))
+            {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量更新第 {idx} 条记录的列集与首条不一致"
+                )));
+            }
         }
 
         self.sql.push_str("UPDATE ");
@@ -734,11 +766,24 @@ impl SqlGenerator {
                                 ))
                             })?;
                         return Ok(SqlValue::DateTime(dt));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        // 值形态不匹配类型提示：显式报错而非静默跌穿到默认转换（NEW-10）
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "DateTime 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Timestamp => {
                     if let Some(i) = value.as_i64() {
                         return Ok(SqlValue::Timestamp(i));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Timestamp 字段期望整数，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Decimal => {
@@ -755,11 +800,23 @@ impl SqlGenerator {
                             return Ok(SqlValue::Bytes(bytes));
                         }
                         return Ok(SqlValue::Bytes(s.as_bytes().to_vec()));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Blob 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Text => {
                     if let Some(s) = value.as_str() {
                         return Ok(SqlValue::String(s.to_string()));
+                    } else if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    } else {
+                        return Err(crate::error::DbError::TypeConversionError(format!(
+                            "Text 字段期望字符串，实得 {value}"
+                        )));
                     }
                 }
                 FieldType::Standard => {}

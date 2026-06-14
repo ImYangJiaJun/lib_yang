@@ -342,11 +342,12 @@ impl From<yang_db::DbError> for BaseError {
             | D::UnsupportedOperator(_)
             | D::Unknown(_) => BaseError::DatabaseQueryFailed(err),
 
-            // 执行类：约束错误、SQL 语法错误、缺少 WHERE 条件、缺少 GROUP BY、序列化错误
+            // 执行类：约束错误、SQL 语法错误、缺少 WHERE 条件、缺少 GROUP BY、序列化错误、参数非法
             D::ConstraintError(_)
             | D::SqlSyntaxError(_)
             | D::MissingWhereClause
             | D::MissingGroupByClause
+            | D::InvalidArgument(_)
             | D::SerializationError(_) => BaseError::DatabaseExecuteFailed(err),
 
             // 事务类：事务错误

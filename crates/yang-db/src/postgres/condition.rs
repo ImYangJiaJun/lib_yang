@@ -64,7 +64,14 @@ impl From<i64> for SqlValue {
 
 impl From<u64> for SqlValue {
     fn from(v: u64) -> Self {
-        SqlValue::Int(v as i64)
+        // u64 顶半区（> i64::MAX）强转 i64 会静默环绕成负数（NEW-11）。PG 无无符号类型，
+        // 此类值本就放不进 BIGINT，走十进制字符串：对 NUMERIC 列正确，对 int8 列会显式
+        // 报错（值确实溢出），均优于静默改写成负数。
+        if v > i64::MAX as u64 {
+            SqlValue::String(v.to_string())
+        } else {
+            SqlValue::Int(v as i64)
+        }
     }
 }
 

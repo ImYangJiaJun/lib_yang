@@ -314,3 +314,109 @@ proptest! {
         );
     }
 }
+
+// ============================================================
+// NEW-9：批量插入列集一致性校验
+// ============================================================
+
+/// 异构列集（后续记录字段与首条不同）应返回 InvalidArgument，而非静默丢列/填 NULL。
+#[test]
+fn test_batch_insert_heterogeneous_columns_rejected() {
+    use crate::error::DbError;
+
+    // 首条 {id,name,age}，第二条把 age 换成 email（列集不同）
+    let data = vec![
+        serde_json::json!({"id": 1, "name": "Alice", "age": 30}),
+        serde_json::json!({"id": 2, "name": "Bob", "email": "b@x.com"}),
+    ];
+    let mut sql_gen = SqlGenerator::new();
+    let result = sql_gen.build_insert_batch("users", &data, &HashMap::new());
+    assert!(
+        matches!(result, Err(DbError::InvalidArgument(_))),
+        "异构列集应返回 InvalidArgument，实得 {:?}",
+        result
+    );
+}
+
+/// 列子集（后续记录字段少于首条）同样应被拒绝。
+#[test]
+fn test_batch_insert_subset_columns_rejected() {
+    use crate::error::DbError;
+
+    let data = vec![
+        serde_json::json!({"id": 1, "name": "Alice", "age": 30}),
+        serde_json::json!({"id": 2, "name": "Bob"}),
+    ];
+    let mut sql_gen = SqlGenerator::new();
+    let result = sql_gen.build_insert_batch("users", &data, &HashMap::new());
+    assert!(
+        matches!(result, Err(DbError::InvalidArgument(_))),
+        "列子集应返回 InvalidArgument，实得 {:?}",
+        result
+    );
+}
+
+/// 同构列集（所有记录字段一致）仍正常生成 SQL。
+#[test]
+fn test_batch_insert_homogeneous_columns_ok() {
+    let data = vec![
+        serde_json::json!({"id": 1, "name": "Alice"}),
+        serde_json::json!({"id": 2, "name": "Bob"}),
+    ];
+    let mut sql_gen = SqlGenerator::new();
+    assert!(sql_gen
+        .build_insert_batch("users", &data, &HashMap::new())
+        .is_ok());
+}
+
+// ============================================================
+// NEW-10：FieldType 类型提示形态不匹配显式报错（不再静默 fallthrough）
+// ============================================================
+
+/// Text 字段收到非字符串（数组）值应返回 TypeConversionError，而非默认转 JSON。
+#[test]
+fn test_field_type_text_shape_mismatch_errors() {
+    use crate::error::DbError;
+    use crate::mysql::FieldType;
+
+    let mut field_types = HashMap::new();
+    field_types.insert("note".to_string(), FieldType::Text);
+
+    let data = vec![serde_json::json!({"note": [1, 2, 3]})];
+    let mut sql_gen = SqlGenerator::new();
+    let result = sql_gen.build_insert_batch("t", &data, &field_types);
+    assert!(
+        matches!(result, Err(DbError::TypeConversionError(_))),
+        "Text 字段收到数组应报 TypeConversionError，实得 {:?}",
+        result
+    );
+}
+
+/// Timestamp 字段收到字符串应报错；但 NULL 仍放行（可空列）。
+#[test]
+fn test_field_type_timestamp_shape_mismatch_and_null() {
+    use crate::error::DbError;
+    use crate::mysql::FieldType;
+
+    let mut field_types = HashMap::new();
+    field_types.insert("ts".to_string(), FieldType::Timestamp);
+
+    // 字符串 → 报错
+    let bad = vec![serde_json::json!({"ts": "2024-01-01"})];
+    let mut g1 = SqlGenerator::new();
+    assert!(
+        matches!(
+            g1.build_insert_batch("t", &bad, &field_types),
+            Err(DbError::TypeConversionError(_))
+        ),
+        "Timestamp 字段收到字符串应报 TypeConversionError"
+    );
+
+    // NULL → 放行（生成 NULL 参数，不报错）
+    let nullv = vec![serde_json::json!({"ts": serde_json::Value::Null})];
+    let mut g2 = SqlGenerator::new();
+    assert!(
+        g2.build_insert_batch("t", &nullv, &field_types).is_ok(),
+        "Timestamp 字段的 NULL 值应放行"
+    );
+}

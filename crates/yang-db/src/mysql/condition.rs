@@ -61,7 +61,15 @@ impl From<i64> for SqlValue {
 
 impl From<u64> for SqlValue {
     fn from(v: u64) -> Self {
-        SqlValue::Int(v as i64)
+        // u64 顶半区（> i64::MAX，如 BIGINT UNSIGNED / 无符号雪花 ID）若强转 i64 会
+        // 静默环绕成负数（NEW-11）。超出 i64 范围时走十进制字符串，MySQL 对数值列会
+        // 隐式转换，避免数据被悄悄改写。SqlValue 未标 non_exhaustive，不新增 UInt 变体
+        // 以免破坏全 crate 的 match。
+        if v > i64::MAX as u64 {
+            SqlValue::String(v.to_string())
+        } else {
+            SqlValue::Int(v as i64)
+        }
     }
 }
 

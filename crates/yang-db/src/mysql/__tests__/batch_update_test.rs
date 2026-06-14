@@ -387,3 +387,44 @@ fn test_build_update_batch_allocation_level_verification() {
         sql
     );
 }
+
+// ============================================================
+// NEW-9：批量更新列集一致性校验
+// ============================================================
+
+/// 异构非主键列集应返回 InvalidArgument（避免 WHEN id=NULL 静默不更新）。
+#[test]
+fn test_build_update_batch_heterogeneous_columns_rejected() {
+    use crate::error::DbError;
+
+    // 首条更新 {id,name}，第二条更新 {id,age}（非主键列集不同）
+    let records = vec![
+        serde_json::json!({"id": 1, "name": "Alice"}),
+        serde_json::json!({"id": 2, "age": 30}),
+    ];
+    let mut sql_gen = SqlGenerator::new();
+    let result = sql_gen.build_update_batch("users", &records, "id", &HashMap::new());
+    assert!(
+        matches!(result, Err(DbError::InvalidArgument(_))),
+        "异构列集应返回 InvalidArgument，实得 {:?}",
+        result
+    );
+}
+
+/// 缺少主键字段的记录应返回 InvalidArgument。
+#[test]
+fn test_build_update_batch_missing_id_rejected() {
+    use crate::error::DbError;
+
+    let records = vec![
+        serde_json::json!({"id": 1, "name": "Alice"}),
+        serde_json::json!({"name": "Bob"}),
+    ];
+    let mut sql_gen = SqlGenerator::new();
+    let result = sql_gen.build_update_batch("users", &records, "id", &HashMap::new());
+    assert!(
+        matches!(result, Err(DbError::InvalidArgument(_))),
+        "缺主键应返回 InvalidArgument，实得 {:?}",
+        result
+    );
+}

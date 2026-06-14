@@ -58,6 +58,13 @@ pub enum DbError {
     #[error("不支持的操作符: {0}")]
     UnsupportedOperator(String),
 
+    /// 参数非法（调用方过错）：批量数据列集不一致、空数据、batch_size 为 0 等。
+    ///
+    /// 与 [`DbError::SerializationError`] 区分——后者专表「(反)序列化失败」，
+    /// 此变体专表「入参本身不合法」，便于调用方按变体精确分流（DB-14）。
+    #[error("参数非法: {0}")]
+    InvalidArgument(String),
+
     #[error("未知错误: {0}")]
     Unknown(String),
 }
@@ -104,6 +111,7 @@ impl DbError {
             DbError::RedisTimeoutError(_) => 810005,
             DbError::MissingGroupByClause => 800011,
             DbError::UnsupportedOperator(_) => 800012,
+            DbError::InvalidArgument(_) => 800013,
             DbError::Unknown(_) => 899999,
         }
     }
@@ -126,6 +134,7 @@ impl DbError {
             | DbError::MissingWhereClause
             | DbError::MissingGroupByClause
             | DbError::UnsupportedOperator(_)
+            | DbError::InvalidArgument(_)
             | DbError::SerializationError(_)
             | DbError::DeserializationError(_)
             | DbError::TypeConversionError(_)
