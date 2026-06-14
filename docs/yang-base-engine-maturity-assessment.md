@@ -756,5 +756,93 @@ TableQuery 已是「构建/执行分离」结构，把各终端方法重复的 b
 
 > 本节为活文档，随修复推进回填 13.1 表状态/commit/日期。新问题修复优先级见 11.6「优先级重排建议」第 1、3 项。
 
+---
+
+## 十四、续作执行手册（2026-06-14 起，供后续会话接手）
+
+> 本节记录大批量修复任务的**执行模型、当前进度快照、剩余项的精确落点与做法、以及恢复任务的操作步骤**。新会话接手时**先读本节 + 13.1.1 进度表 + 11.7 行号校正表**，再动代码。
+
+### 14.1 任务背景与授权范围
+
+- **目标**：修复 yang-base / yang-db 全部 ⏳ 待办项，**除 C2b（JOIN 关联预加载）与 C3（类型化层多后端）两个 XL 架构重构**——它们是重写级改动，按用户决定留待单独立项，不在本轮。
+- **授权**：用户已授权一次性推进，**每个子任务单独 commit 到 master（不推送）**。
+- **分支**：`master`。提交信息用中文，结尾带 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`。
+
+### 14.2 执行模型（务必遵守）
+
+1. **实现 + 提交串行**：多项改动常触同一热文件（`query_builder.rs`、`table_query.rs`、`error/mod.rs`、`redis/*.rs`），并行写会冲突。逐项改 → 验证 → 提交。
+2. **核查用只读 workflow 并行**：代码已较评估快照漂移（见 11.7），动手前先用 workflow 对该批每项做 file:line 取证 + 产出修复规格（schema 输出）。范例见已跑过的 `verify-batch1-safety` / `verify-batch5-dbmedium` 脚本（在 `.../workflows/scripts/` 下，可改 `ITEMS` 复用）。**Explore agentType 适合取证**。
+3. **每项必做**：① 读当前代码确认 file:line；② 改代码；③ 补回归测试（colocated `__tests__/` 或就近 `#[cfg(test)]`）；④ `cargo test --lib -p <crate>` + `cargo clippy -p <crate> --lib --all-features -- -D warnings`；⑤ 提交。
+4. **跨 crate 影响**：改 yang-db 错误/类型后，必 `cargo check -p yang-base --all-features`（yang-base 依赖 yang-db）。
+
+### 14.3 验证命令与已知坑
+
+```bash
+# 单 crate lib 测试（离线可跑，勿用全量 cargo test —— 见下）
+cargo test --lib -p yang-base
+cargo test --lib -p yang-db          # 现 5.3s 通过（DB-11 lazy-pool 修复后不再挂死）
+# 生产码 clippy 门禁（必须用 --lib，否则 M-1 ~418 测试 unwrap 误报）
+cargo clippy -p yang-base --all-targets --all-features      # yang-base 全量可过
+cargo clippy -p yang-db   --lib --all-features -- -D warnings  # yang-db 仅 --lib 可过
+# 跨 crate 编译 + no-default-features 守护
+cargo check -p yang-base --all-features
+cargo check -p yang-base --no-default-features
+```
+
+**坑位清单**（踩过的，务必注意）：
+- **`cargo test --lib -p yang-db` 全量 `-D warnings` 会因 M-1（测试里 ~418 unwrap/expect）报错**——这是未启动的清理项，非回归。验生产码只用 `--lib -D warnings`。
+- **Windows 偶发 build-lock 假卡死**：`cargo.exe` 驻留 ~25MB 无 rustc 子进程时是等锁，`taskkill //F //IM cargo.exe` 后重试，非真实编译问题。
+- **`#[non_exhaustive]` 跨 crate 不能用结构体字面量**（连 `..Default::default()` 也不行，E0639）。`DatabaseConfig`/`FieldType` 已标；改其构造点用 `default()` + 字段赋值/setter。集成测试（`tests/`）算独立 crate，同样受限。
+- **Edit 多行 `format!` 字符串易漏 `{}` 占位符**导致 old_string 不匹配——复制前核对花括号。
+- **写入路径 quote 时**：若 `fields` 同时用于 SQL 发射和 `obj.get(field)` 查值，必须保留原始 JSON 键查值、单独生成 quoted 列表发射（quoted key ≠ JSON key）。
+- **redis 1.2.0**：`from_redis_value(v: Value)` 取值非引用；`zadd_multiple(key, &[(score, member)])` 用于变参 ZADD。
+
+### 14.4 恢复任务的步骤
+
+1. `git -C D:/code/lib_yang log --oneline -15` 看已落地 commit；`git status` 确认干净。
+2. 读本节 14.5「剩余项落点」+ 13.1/11.2/11.3/11.5 状态表（⏳ 即待办）。
+3. 选下一批（顺序见 14.5），起 workflow 复核该批每项当前 file:line。
+4. 逐项实现→测试→clippy→commit；每批做完回填 13.1.1 进度表 + 对应状态表行 + 提交 doc。
+5. 长任务用 TaskCreate/TaskUpdate 跟踪批次状态；进度写入 memory `yang-base-maturity-roadmap-progress.md`。
+
+### 14.5 剩余项落点与做法（按推进顺序）
+
+> 行号以 11.7 校正表 + 14.6 复核口径为准；动手前用 workflow 复核当前 file:line。设计方案均在第十二节，下面给落点摘要。
+
+**Batch 6 续｜错误硬化（剩余 2 项）**
+- **码双射去重**（§12.5「码双射」/N9）：`error/mod.rs` 的 `code()` 现有故意同码对（`DatabaseConnectionFailed`/`...DbError`=200001、`RedisOperationFailed`/`...DbError`=210004）。做法：① 在 `#[cfg(test)]` 加「双射体检」测试——构造每个变体代表、收集 `code()`，断言「码唯一 或 在允许同码白名单内」（白名单含上述两对）；② `MigrationFailed`（200007，3 元组）是相对 `DatabaseMigrationFailed`（200006）的冗余变体，标 `#[deprecated = "用 DatabaseMigrationFailed"]`——但它在 `initializer.rs:367/410` 仍被使用，需先把那两处改为 `DatabaseMigrationFailed`（注意元数不同：Migration 是 3 元组 module/version/err，DatabaseMigrationFailed 是 2 元组，需取舍——建议保留 MigrationFailed 不 deprecate，仅补双射测试锁定现状，避免破坏语义）。**保守做法**：只加双射回归测试 + 文档化码段语义，不动变体。
+- **N7 错误工效构造器**（§12.7 N7）：`error/mod.rs` 加语义化构造器 `BaseError::config(impl Into<String>)`/`unknown(..)`/`param(field, reason)` 省 `.to_string()`；加 `ResultExt::context()` trait（仅最外层用，默认走 Unknown 会丢码，需文档警示，并提供 `.context_keep()` 仅记日志不改变体）。不引 anyhow。纯增量。
+
+**Batch 7｜写路径 + 查询表达力**（依赖 C1 事务，已落地）
+- **I5 批量插入桥接**（§12.1 I5）：`table/table_query.rs` 新增 `build_insert_batch_sql` —— 逐行复用 `prepare_and_validate_insert`（权限/默认值/时间戳/必填），列名走 yang-base 自己的 `quote_identifier`，拼单条多值 INSERT；`insert_batch`/`insert_batch_in_tx` 内部 `begin_transaction → ... → commit`。**不转调** yang-db `insert_batch`（那会绕过受保护层权限校验）。`#[cfg(feature="mysql")]`。
+- **I6 UPSERT 桥接**（§12.1 I6）：同 I5，`build_upsert_sql` 生成 `INSERT ... ON DUPLICATE KEY UPDATE col=VALUES(col)`，`upsert`/`upsert_in_tx`。MySQL 专用语法。
+- **I7 keyset 分页**（§12.2 I7）：双层都只有 LIMIT/OFFSET，**真·新建**。`query_params.rs` + `table_query.rs` 加 `seek` 方法：`(k1,k2,..) > (?,?,..)` 行值比较 + 不透明 `base64(JSON)` 游标 + PK 兜底全序；解码失败 `ParamInvalid`。与 `page()` 并存（同设返 `ParamInvalid`）。软删 WHERE 需正确 AND 合并。
+- **I8 聚合桥接**（§12.2 I8）：`table_query.rs` + 新增 `table/aggregate.rs`，白名单 `AggFn::{Count,Sum,Avg,Min,Max}` + GROUP BY/HAVING，**绝不接受裸表达式**（列走 quote、别名走 is_valid_identifier、GROUP BY 列须 filterable）；输出 `DynamicRow`；配 `action/builtin/aggregate.rs`。
+- **N1 字段表达式/DISTINCT**（§12.12 N1）：与 I8 同源可合并，`SelectItem<T>` 投影枚举 + `distinct` 标志。
+
+**Batch 8｜端到端类型保真 + 并发运营**
+- **I1 PutInput 定型枚举**（§12.6 I1）：派生 `<Name>Set` 枚举（仿 `<Name>Where`），`PutInput.data: Vec<EntitySet>`，serde `#[serde(tag,content)]` 把值校验提前到反序列化边界。**破坏**：JSON 顶层 `[["age",30]]`→`[{"field":"age","value":30}]`（面向用户协议变更，需确认）。改 `entity.rs`、`yang-base-derive/table_entity.rs`、`put.rs`。
+- **写库接缝**（§12.6）：`add.rs`/`put.rs` 的 `serde_json::to_value` 盲摊平改派生宏 `IntoColumnMap` 静态展开，逐字段 `to_value` 收集 `Result`（禁 unwrap），消除 `_=>` 不可达分支。
+- **响应擦除**（§12.6）：`ApiResponse` 加 `details: Option<Value>`（`skip_serializing_if`），`from_error` 经 `BaseError::detail_payload()` 抽 `{field,reason}`；泛型化 ApiResponse 判定不可行（击穿对象安全派发），仅加 details + output_schema 不变量测试。
+- **I11 plugin TOCTOU**（§五）：`plugin/mod.rs:248-265` 读锁查重→await→写锁 insert 的竞态，改为持写锁内 check-then-insert（或 entry API）。注意 C6 已有锁定当前契约的 TOCTOU 测试，修复后需收紧该测试。
+- **I12 dispatch 背压**（§五）：`module_router` dispatch 加可选 `Semaphore` 并发上限。
+
+**Batch 9｜Redis / 剩余 Low**
+- DB-12（LIKE `%`/`_` 转义助手 + `where_like_contains` 等 + `Condition::LikeEscaped`，§12.7）、DB-13（LIKE 遇非字符串返 `TypeConversionError`，MySQL `query_builder.rs` + PG tx，§12.9）、DB-15（Transaction Drop 文档化 + 可选 warn 日志，§12.10）、DB-16（`get_bytes`/`RedisValue::into_bytes` 逃生舱，§12.10）、DB-17（`From<redis::Value>` 把 RESP3 Map/Set 摊平为交替 Array，§12.10）。
+- NEW-5（分页 offset `checked_mul` + `page()` 上界，`table_query.rs`）、NEW-8（非事务迁移 execute-then-record 原子化或文档化「须自身幂等」，`initializer.rs:366-371`）、NEW-17（集合命令保留二进制元素/补 `*_bytes`，`client.rs`）、NEW-18 续（`client.rs` 的 del/exists/mget 空切片短路；pipeline/tx 侧已随 NEW-21 完成）、NEW-20（WATCH 重试加指数退避+抖动，`transaction.rs:304-343`）、NEW-22（`as_i64`/`as_f64` 对 String 变体回退 `parse`，`value.rs`）、NEW-23（`RedisConfig::new`/`connect_with_config` 对 0 值返 checked 错误，`config.rs`/`client.rs`）。
+
+**Batch 10｜测试背书 + Nice**
+- 测试：DB-19（Redis 测试 `#[ignore]` + `REDIS_TEST_URL`）、DB-21（error.rs From 映射 + MissingGroupByClause 单测）、DB-20（MySQL 测试改 `MYSQL_TEST_URL`/`MYSQL_TEST_PASSWORD`）、DB-11 续（集成测试 `#[ignore]` 化，lib 侧已修）、NEW-14（Token 撤销 6 API `#[ignore]` Redis 集成测试）、NEW-15（认证 Action + 审计钩子 mock 测试，验证不含 token 原文）、NEW-24（`test_logging_config` 用 log 捕获断言）、NG-4（`from_json` Object/Array 错误路径单测，经 `where_eq`+`build_select_sql_for_test`）、DB-18（跨后端一致性断言测试，离线 `to_sql` 归一化等价，`connect_lazy` 造惰性池）。
+- Nice：N2（子查询/EXISTS/多列 RETURNING）、N3（流式 `for_each_chunk`）、N4（`retry` 组合子，依赖 is_retryable）、N5（`HealthReport::probe` 聚合端点）、N6（事件总线）、N8（DTO 一致性 + `success_message()` 可覆盖）、N9（同码双射，与 Batch6 合并）、N10（schema 校验闸 + `take_input` 免克隆）、N11（cancellation 半状态：熔断器 RAII Probe + LogoutAction join）、N12（单例 connect-then-set 资源浪费）。
+
+### 14.6 复核口径提醒
+
+- 引用旧 file:line 前查 **11.7 漂移校正表**；本轮又新增改动（identifier 模块、isolation 模块、lifecycle/config 新文件、各 query_builder 写入路径 quote），行号会再漂移——**动手前永远先读当前代码**。
+- 受保护层（yang-base `table_query.rs`）有自己的 `is_valid_identifier:151`/`quote_identifier:178` 与 `render_condition`，**与 yang-db 的 identifier 模块是两套**，勿混。
+- DB-1 已落地的是**写入路径**（INSERT/UPDATE/UPSERT/DELETE 表名+列名）quote；**WHERE 子句字段名（yang-db `Condition` 路径）仍裸拼**，是已知剩余面（直接消费 yang-db 的 `where_and(field,..)` 入口）——若后续要收口需用 `quote_qualified`（WHERE 字段可能是 `表.列`），会churn 大量 WHERE 测试，建议单独立项评估。
+
+
+
+
 
 
