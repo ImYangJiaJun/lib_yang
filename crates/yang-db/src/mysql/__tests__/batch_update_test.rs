@@ -21,14 +21,14 @@ fn test_build_update_batch_single_record_single_field() {
 
     // 验证 SQL 以 UPDATE ... SET 开头
     assert!(
-        sql.starts_with("UPDATE users SET "),
-        "SQL 应以 'UPDATE users SET ' 开头，实际: {}",
+        sql.starts_with("UPDATE `users` SET "),
+        "SQL 应以 'UPDATE `users` SET ' 开头，实际: {}",
         sql
     );
 
     // 验证包含 CASE WHEN 结构
     assert!(
-        sql.contains("name = CASE WHEN id=? THEN ?"),
+        sql.contains("`name` = CASE WHEN `id`=? THEN ?"),
         "SQL 应包含 CASE WHEN 结构，实际: {}",
         sql
     );
@@ -38,8 +38,8 @@ fn test_build_update_batch_single_record_single_field() {
 
     // 验证包含 WHERE id IN 子句
     assert!(
-        sql.contains("WHERE id IN (?)"),
-        "SQL 应包含 WHERE id IN (?) 子句，实际: {}",
+        sql.contains("WHERE `id` IN (?)"),
+        "SQL 应包含 WHERE `id` IN (?) 子句，实际: {}",
         sql
     );
 }
@@ -62,7 +62,7 @@ fn test_build_update_batch_multiple_records_single_field() {
     let sql = generator.get_sql();
 
     // 验证 CASE WHEN 中有 3 个 WHEN 分支（对应 3 条记录）
-    let when_count = sql.matches("WHEN id=?").count();
+    let when_count = sql.matches("WHEN `id`=?").count();
     assert_eq!(
         when_count, 3,
         "3 条记录应生成 3 个 WHEN 分支，实际: {}",
@@ -71,7 +71,7 @@ fn test_build_update_batch_multiple_records_single_field() {
 
     // 验证 WHERE IN 子句包含 3 个占位符
     assert!(
-        sql.contains("WHERE id IN (?,?,?)"),
+        sql.contains("WHERE `id` IN (?,?,?)"),
         "WHERE IN 应包含 3 个占位符，实际: {}",
         sql
     );
@@ -131,8 +131,8 @@ fn test_build_update_batch_multiple_records_multiple_fields() {
 
     // 验证 SQL 基本结构
     assert!(
-        sql.starts_with("UPDATE users SET "),
-        "SQL 应以 'UPDATE users SET ' 开头，实际: {}",
+        sql.starts_with("UPDATE `users` SET "),
+        "SQL 应以 'UPDATE `users` SET ' 开头，实际: {}",
         sql
     );
 
@@ -145,7 +145,7 @@ fn test_build_update_batch_multiple_records_multiple_fields() {
     );
 
     // 验证每个 CASE 块中有 2 个 WHEN 分支（2 条记录）
-    let when_count = sql.matches("WHEN id=?").count();
+    let when_count = sql.matches("WHEN `id`=?").count();
     assert_eq!(
         when_count, 4,
         "2 个字段 × 2 条记录 = 4 个 WHEN 分支，实际: {}",
@@ -154,7 +154,7 @@ fn test_build_update_batch_multiple_records_multiple_fields() {
 
     // 验证 WHERE IN 子句包含 2 个占位符
     assert!(
-        sql.contains("WHERE id IN (?,?)"),
+        sql.contains("WHERE `id` IN (?,?)"),
         "WHERE IN 应包含 2 个占位符，实际: {}",
         sql
     );
@@ -246,19 +246,19 @@ fn test_build_update_batch_custom_id_field() {
 
     // 验证使用了自定义主键字段名
     assert!(
-        sql.contains("WHEN user_id=?"),
+        sql.contains("WHEN `user_id`=?"),
         "应使用自定义主键字段名 user_id，实际: {}",
         sql
     );
     assert!(
-        sql.contains("WHERE user_id IN"),
+        sql.contains("WHERE `user_id` IN"),
         "WHERE IN 应使用自定义主键字段名，实际: {}",
         sql
     );
 
     // 验证 status 字段有 CASE WHEN 结构
     assert!(
-        sql.contains("status = CASE"),
+        sql.contains("`status` = CASE"),
         "status 字段应有 CASE WHEN 结构，实际: {}",
         sql
     );
@@ -283,17 +283,17 @@ fn test_build_update_batch_sql_matches_expected_format() {
     // 验证完整的 SQL 结构符合预期格式：
     // UPDATE users SET name = CASE WHEN id=? THEN ? WHEN id=? THEN ? END WHERE id IN (?,?)
     assert!(
-        sql.starts_with("UPDATE users SET "),
+        sql.starts_with("UPDATE `users` SET "),
         "SQL 头部格式不正确，实际: {}",
         sql
     );
     assert!(
-        sql.contains("name = CASE WHEN id=? THEN ?"),
+        sql.contains("`name` = CASE WHEN `id`=? THEN ?"),
         "CASE WHEN 格式不正确，实际: {}",
         sql
     );
     assert!(
-        sql.ends_with("WHERE id IN (?,?)"),
+        sql.ends_with("WHERE `id` IN (?,?)"),
         "SQL 尾部格式不正确，实际: {}",
         sql
     );
@@ -318,11 +318,11 @@ fn test_build_update_batch_large_batch() {
     let params = generator.get_params();
 
     // 验证 SQL 基本结构
-    assert!(sql.starts_with("UPDATE users SET "), "SQL 头部格式不正确");
-    assert!(sql.contains("WHERE id IN ("), "SQL 应包含 WHERE IN 子句");
+    assert!(sql.starts_with("UPDATE `users` SET "), "SQL 头部格式不正确");
+    assert!(sql.contains("WHERE `id` IN ("), "SQL 应包含 WHERE IN 子句");
 
     // 验证 CASE WHEN 分支数量：2 个字段 × 100 条记录 = 200 个 WHEN 分支
-    let when_count = sql.matches("WHEN id=?").count();
+    let when_count = sql.matches("WHEN `id`=?").count();
     assert_eq!(
         when_count, 200,
         "2 字段 × 100 记录 = 200 个 WHEN 分支，实际: {}",
@@ -369,7 +369,7 @@ fn test_build_update_batch_allocation_level_verification() {
     assert_eq!(case_count, 3, "M=3 个字段应生成 3 个 CASE WHEN 块");
 
     // 验证每个 CASE 块中有 4 个 WHEN 分支（N=4 条记录）
-    let when_count = sql.matches("WHEN id=?").count();
+    let when_count = sql.matches("WHEN `id`=?").count();
     assert_eq!(when_count, 12, "M=3 × N=4 = 12 个 WHEN 分支");
 
     // 验证参数数量：M×N×2 + N = 3×4×2 + 4 = 28 个参数
@@ -382,7 +382,7 @@ fn test_build_update_batch_allocation_level_verification() {
 
     // 验证 WHERE IN 子句包含 N=4 个占位符
     assert!(
-        sql.contains("WHERE id IN (?,?,?,?)"),
+        sql.contains("WHERE `id` IN (?,?,?,?)"),
         "WHERE IN 应包含 4 个占位符，实际: {}",
         sql
     );

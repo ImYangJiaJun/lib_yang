@@ -3,6 +3,7 @@
 pub mod condition;
 pub mod database;
 pub mod field;
+pub mod identifier;
 pub mod init;
 pub mod query_builder;
 pub mod transaction;
@@ -15,5 +16,6 @@ mod __tests__;
 pub use condition::{condition_to_sql_owned, Condition, SqlValue};
 pub use database::{Database, DatabaseConfig};
 pub use field::FieldType;
+pub use identifier::{is_valid_identifier, quote_identifier, quote_qualified};
 pub use query_builder::QueryBuilder;
 pub use transaction::Transaction;

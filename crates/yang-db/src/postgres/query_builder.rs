@@ -356,12 +356,12 @@ impl SqlGenerator {
             ));
         }
 
-        // 提取字段名和占位符
+        // 提取字段名和占位符（列名经 quote_identifier 校验+转义；DB-1）
         let mut fields = Vec::new();
         let mut placeholders = Vec::new();
 
         for (key, value) in obj.iter() {
-            fields.push(key.clone());
+            fields.push(super::identifier::quote_identifier(key)?);
 
             // 根据字段类型转换值
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
@@ -372,9 +372,9 @@ impl SqlGenerator {
             }
         }
 
-        // 构建 INSERT 语句
+        // 构建 INSERT 语句（表名 quote）
         self.append("INSERT INTO ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" (");
         self.append(&fields.join(", "));
         self.append(") VALUES (");
@@ -425,10 +425,14 @@ impl SqlGenerator {
             }
         }
 
+        // 表名与列头 quote（DB-1）；fields 保留原始键用于 obj.get 查值。
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
+            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields = quoted_fields?;
         self.append("INSERT INTO ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" (");
-        self.append(&fields.join(", "));
+        self.append(&quoted_fields.join(", "));
         self.append(") VALUES ");
         for (record_idx, data) in data_list.iter().enumerate() {
             if record_idx > 0 {
@@ -487,18 +491,19 @@ impl SqlGenerator {
         }
 
         self.append("UPDATE ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" SET ");
 
         // 逐字段生成 `字段 = $N`；值为 NULL 时内联字面量 NULL（不占占位符编号），
         // 与 build_insert/build_update_batch/build_upsert 一致。PG 对未类型化绑定的
         // NULL 默认按 INT4，对 text/timestamp 等列 SET col=$1 绑 NULL 会报类型不匹配（DB-3）。
+        // 列名经 quote_identifier 校验+转义（DB-1）。
         for (i, (key, value)) in obj.iter().enumerate() {
             if i > 0 {
                 self.sql.push_str(", ");
             }
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
-            self.sql.push_str(key);
+            self.sql.push_str(&super::identifier::quote_identifier(key)?);
             self.sql.push_str(" = ");
             match sql_value {
                 SqlValue::Null => self.sql.push_str("NULL"),
@@ -528,7 +533,7 @@ impl SqlGenerator {
         }
 
         self.append("DELETE FROM ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.build_where(conditions)?;
 
         Ok(())
@@ -592,8 +597,10 @@ impl SqlGenerator {
             }
         }
 
+        // 表名 quote（DB-1）；id_field/列名在各发射点 quote，原始值保留用于 record.get。
+        let quoted_id = super::identifier::quote_identifier(id_field)?;
         self.sql.push_str("UPDATE ");
-        self.sql.push_str(table);
+        self.sql.push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" SET ");
 
         // 为每个字段生成 CASE WHEN 子句
@@ -601,7 +608,7 @@ impl SqlGenerator {
             if field_idx > 0 {
                 self.sql.push_str(", ");
             }
-            self.sql.push_str(field);
+            self.sql.push_str(&super::identifier::quote_identifier(field)?);
             self.sql.push_str(" = CASE ");
 
             for record in records {
@@ -616,7 +623,7 @@ impl SqlGenerator {
 
                 // WHEN id=$N THEN $M（值位置 NULL 内联，不占编号）
                 self.sql.push_str("WHEN ");
-                self.sql.push_str(id_field);
+                self.sql.push_str(&quoted_id);
                 self.sql.push('=');
                 match id_sql_val {
                     SqlValue::Null => self.sql.push_str("NULL"),
@@ -641,7 +648,7 @@ impl SqlGenerator {
 
         // 生成 WHERE id IN ($K, ...) 子句
         self.sql.push_str(" WHERE ");
-        self.sql.push_str(id_field);
+        self.sql.push_str(&quoted_id);
         self.sql.push_str(" IN (");
 
         for (idx, record) in records.iter().enumerate() {
@@ -689,11 +696,15 @@ impl SqlGenerator {
         }
 
         let fields: Vec<String> = obj.keys().cloned().collect();
+        // 列名/表名 quote（DB-1）；fields 保留原始键用于 obj.get 查值与冲突列比较。
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
+            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields = quoted_fields?;
 
         self.sql.push_str("INSERT INTO ");
-        self.sql.push_str(table);
+        self.sql.push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" (");
-        self.sql.push_str(&fields.join(", "));
+        self.sql.push_str(&quoted_fields.join(", "));
         self.sql.push_str(") VALUES (");
 
         for (i, field) in fields.iter().enumerate() {
@@ -718,13 +729,19 @@ impl SqlGenerator {
             return Ok(());
         }
 
+        // 冲突目标列 quote
+        let quoted_conflict: Result<Vec<String>, crate::error::DbError> = conflict_columns
+            .iter()
+            .map(|c| super::identifier::quote_identifier(c))
+            .collect();
+        let quoted_conflict = quoted_conflict?;
         self.sql.push_str(" ON CONFLICT (");
-        self.sql.push_str(&conflict_columns.join(", "));
+        self.sql.push_str(&quoted_conflict.join(", "));
         self.sql.push_str(") DO UPDATE SET ");
 
         // 冲突目标列不参与更新，其余列用 EXCLUDED.col 取待插入的新值
         let mut first = true;
-        for f in &fields {
+        for (idx, f) in fields.iter().enumerate() {
             if conflict_columns.iter().any(|c| c == f) {
                 continue;
             }
@@ -732,15 +749,16 @@ impl SqlGenerator {
                 self.sql.push_str(", ");
             }
             first = false;
-            self.sql.push_str(f);
+            let qf = &quoted_fields[idx];
+            self.sql.push_str(qf);
             self.sql.push_str(" = EXCLUDED.");
-            self.sql.push_str(f);
+            self.sql.push_str(qf);
         }
 
         // 所有列都是冲突目标列时 SET 列表为空，会导致语法错误；
         // 退化为对首个冲突列做恒等更新（col = EXCLUDED.col），保证语句合法。
         if first {
-            let first_conflict = &conflict_columns[0];
+            let first_conflict = &quoted_conflict[0];
             self.sql.push_str(first_conflict);
             self.sql.push_str(" = EXCLUDED.");
             self.sql.push_str(first_conflict);
@@ -1885,7 +1903,7 @@ mod tests {
         g.build_insert("users", &data, &empty_types()).unwrap();
         let sql = g.get_sql();
         // serde_json 默认按 key 字母序：age 在前、name 在后
-        assert_eq!(sql, "INSERT INTO users (age, name) VALUES ($1, $2)");
+        assert_eq!(sql, "INSERT INTO \"users\" (\"age\", \"name\") VALUES ($1, $2)");
         // INSERT 本身不含 RETURNING（由 insert() 方法在外部追加）
         assert!(!sql.contains("RETURNING"));
         assert_eq!(g.get_params().len(), 2);
@@ -1900,7 +1918,7 @@ mod tests {
         // 字母序：deleted_at(NULL 内联) 在前、name($1) 在后；NULL 不占占位符编号
         assert_eq!(
             sql,
-            "INSERT INTO users (deleted_at, name) VALUES (NULL, $1)"
+            "INSERT INTO \"users\" (\"deleted_at\", \"name\") VALUES (NULL, $1)"
         );
         assert_eq!(g.get_params().len(), 1);
     }
@@ -1914,7 +1932,7 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：age=$1, name=$2；WHERE 接续为 $3
-        assert_eq!(sql, "UPDATE users SET age = $1, name = $2 WHERE id = $3");
+        assert_eq!(sql, "UPDATE \"users\" SET \"age\" = $1, \"name\" = $2 WHERE id = $3");
         assert_eq!(g.get_params().len(), 3);
     }
 
@@ -1929,7 +1947,7 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：description 内联 NULL（不占编号），name=$1，WHERE 接续 $2
-        assert_eq!(sql, "UPDATE users SET description = NULL, name = $1 WHERE id = $2");
+        assert_eq!(sql, "UPDATE \"users\" SET \"description\" = NULL, \"name\" = $1 WHERE id = $2");
         // NULL 不压参数：仅 name + WHERE id 两个参数
         assert_eq!(g.get_params().len(), 2);
     }
@@ -1939,7 +1957,7 @@ mod tests {
         let mut g = SqlGenerator::new();
         let conditions = vec![Condition::Eq("id".to_string(), SqlValue::Int(7))];
         g.build_delete("users", &conditions).unwrap();
-        assert_eq!(g.get_sql(), "DELETE FROM users WHERE id = $1");
+        assert_eq!(g.get_sql(), "DELETE FROM \"users\" WHERE id = $1");
         assert_eq!(g.get_params().len(), 1);
     }
 
@@ -1959,12 +1977,12 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序字段：email($1), id($2), name($3)
-        assert!(sql.starts_with("INSERT INTO users (email, id, name) VALUES ($1, $2, $3)"));
-        assert!(sql.contains("ON CONFLICT (id) DO UPDATE SET"));
+        assert!(sql.starts_with("INSERT INTO \"users\" (\"email\", \"id\", \"name\") VALUES ($1, $2, $3)"));
+        assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
         // 冲突列 id 不参与更新，其余列用 EXCLUDED.col
-        assert!(sql.contains("name = EXCLUDED.name"));
-        assert!(sql.contains("email = EXCLUDED.email"));
-        assert!(!sql.contains("id = EXCLUDED.id"));
+        assert!(sql.contains("\"name\" = EXCLUDED.\"name\""));
+        assert!(sql.contains("\"email\" = EXCLUDED.\"email\""));
+        assert!(!sql.contains("\"id\" = EXCLUDED.\"id\""));
         assert_eq!(g.get_params().len(), 3);
     }
 
@@ -1989,7 +2007,7 @@ mod tests {
         // 字母序字段：age, name；占位符跨记录连续递增
         assert_eq!(
             sql,
-            "INSERT INTO users (age, name) VALUES ($1, $2), ($3, $4)"
+            "INSERT INTO \"users\" (\"age\", \"name\") VALUES ($1, $2), ($3, $4)"
         );
         assert_eq!(g.get_params().len(), 4);
     }

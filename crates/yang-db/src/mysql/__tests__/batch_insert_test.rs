@@ -26,8 +26,8 @@ fn test_batch_insert_single_record() {
 
     // SQL 应包含正确的 INSERT 头部
     assert!(
-        sql.starts_with("INSERT INTO users ("),
-        "SQL 应以 'INSERT INTO users (' 开头，实际: {}",
+        sql.starts_with("INSERT INTO `users` ("),
+        "SQL 应以 'INSERT INTO `users` (' 开头，实际: {}",
         sql
     );
     // SQL 应包含 VALUES 关键字
@@ -211,8 +211,8 @@ proptest! {
 
         // 验证 SQL 基本结构
         prop_assert!(
-            sql.starts_with("INSERT INTO test_table ("),
-            "SQL 应以 'INSERT INTO test_table (' 开头，实际: {}",
+            sql.starts_with("INSERT INTO `test_table` ("),
+            "SQL 应以 'INSERT INTO `test_table` (' 开头，实际: {}",
             sql
         );
         prop_assert!(

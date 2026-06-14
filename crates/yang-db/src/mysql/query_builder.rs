@@ -333,12 +333,12 @@ impl SqlGenerator {
             ));
         }
 
-        // 提取字段名和值
+        // 提取字段名和值（列名经 quote_identifier 校验+转义，杜绝注入；DB-1）
         let mut fields = Vec::new();
         let mut placeholders = Vec::new();
 
         for (key, value) in obj.iter() {
-            fields.push(key.clone());
+            fields.push(super::identifier::quote_identifier(key)?);
             placeholders.push("?".to_string());
 
             // 根据字段类型转换值
@@ -346,9 +346,9 @@ impl SqlGenerator {
             self.add_param(sql_value);
         }
 
-        // 构建 INSERT 语句
+        // 构建 INSERT 语句（表名亦 quote）
         self.append("INSERT INTO ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" (");
         self.append(&fields.join(", "));
         self.append(") VALUES (");
@@ -411,11 +411,15 @@ impl SqlGenerator {
             }
         }
 
-        // 构建 INSERT 语句头部
+        // 构建 INSERT 语句头部（表名与列名经 quote_identifier 校验+转义；DB-1。
+        // 注意 fields 仍为原始 JSON 键，用于后续 obj.get 查值；列头单独 quote。）
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
+            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields = quoted_fields?;
         self.append("INSERT INTO ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" (");
-        self.append(&fields.join(", "));
+        self.append(&quoted_fields.join(", "));
         self.append(") VALUES ");
 
         // 直接将每条记录的 VALUES 子句写入 self.sql，避免中间 Vec<String> 分配
@@ -492,16 +496,16 @@ impl SqlGenerator {
             ));
         }
 
-        // 构建 UPDATE 语句
+        // 构建 UPDATE 语句（表名 quote；DB-1）
         self.append("UPDATE ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
         self.append(" SET ");
 
-        // 构建 SET 子句
+        // 构建 SET 子句（列名 quote）
         let mut set_clauses = Vec::new();
 
         for (key, value) in obj.iter() {
-            set_clauses.push(format!("{} = ?", key));
+            set_clauses.push(format!("{} = ?", super::identifier::quote_identifier(key)?));
 
             // 根据字段类型转换值
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
@@ -538,9 +542,9 @@ impl SqlGenerator {
             return Err(crate::error::DbError::MissingWhereClause);
         }
 
-        // 构建 DELETE 语句
+        // 构建 DELETE 语句（表名 quote；DB-1）
         self.append("DELETE FROM ");
-        self.append(table);
+        self.append(&super::identifier::quote_identifier(table)?);
 
         // 添加 WHERE 子句
         self.build_where(conditions)?;
@@ -606,9 +610,11 @@ impl SqlGenerator {
             }
         }
 
-        // 写入 UPDATE ... SET 头部
+        // 写入 UPDATE ... SET 头部（表名 quote；DB-1。id_field/列名在各发射点单独 quote，
+        // 原始值保留用于 record.get 查值。）
+        let quoted_id = super::identifier::quote_identifier(id_field)?;
         self.sql.push_str("UPDATE ");
-        self.sql.push_str(table);
+        self.sql.push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" SET ");
 
         // 为每个字段生成 CASE WHEN 子句，直接追加到 self.sql
@@ -619,8 +625,8 @@ impl SqlGenerator {
                 self.sql.push_str(", ");
             }
 
-            // 写入 "字段名 = CASE "
-            self.sql.push_str(field);
+            // 写入 "字段名 = CASE "（列名 quote）
+            self.sql.push_str(&super::identifier::quote_identifier(field)?);
             self.sql.push_str(" = CASE ");
 
             // 为每条记录生成 WHEN id=? THEN ? 子句，直接追加，替代 format! 收集再 join 的模式
@@ -637,7 +643,7 @@ impl SqlGenerator {
 
                 // 直接追加 WHEN id=? THEN ? 片段，替代 format!("WHEN {}=? THEN ?", id_field)
                 self.sql.push_str("WHEN ");
-                self.sql.push_str(id_field);
+                self.sql.push_str(&quoted_id);
                 self.sql.push_str("=? THEN ? ");
 
                 // 绑定 id 参数和字段值参数
@@ -651,7 +657,7 @@ impl SqlGenerator {
 
         // 生成 WHERE id IN (?, ?, ...) 子句
         self.sql.push_str(" WHERE ");
-        self.sql.push_str(id_field);
+        self.sql.push_str(&quoted_id);
         self.sql.push_str(" IN (");
 
         // 直接追加占位符，替代 Vec<&str> 收集再 join 的模式
@@ -693,12 +699,16 @@ impl SqlGenerator {
 
         let fields: Vec<String> = obj.keys().cloned().collect();
         let placeholders: Vec<&str> = fields.iter().map(|_| "?").collect();
+        // 列名 quote（DB-1）；fields 保留原始键用于 obj.get 查值。
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
+            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields = quoted_fields?;
 
-        // 统一用 push_str 风格拼接，避免 format! 的额外分配（输出 SQL 完全不变）
+        // 统一用 push_str 风格拼接，避免 format! 的额外分配
         self.sql.push_str("INSERT INTO ");
-        self.sql.push_str(table);
+        self.sql.push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" (");
-        self.sql.push_str(&fields.join(", "));
+        self.sql.push_str(&quoted_fields.join(", "));
         self.sql.push_str(") VALUES (");
         self.sql.push_str(&placeholders.join(", "));
         self.sql.push(')');
@@ -709,13 +719,13 @@ impl SqlGenerator {
         }
 
         self.sql.push_str(" ON DUPLICATE KEY UPDATE ");
-        for (i, f) in fields.iter().enumerate() {
+        for (i, qf) in quoted_fields.iter().enumerate() {
             if i > 0 {
                 self.sql.push_str(", ");
             }
-            self.sql.push_str(f);
+            self.sql.push_str(qf);
             self.sql.push_str("=VALUES(");
-            self.sql.push_str(f);
+            self.sql.push_str(qf);
             self.sql.push(')');
         }
 
@@ -907,6 +917,14 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 选择字段
+    ///
+    /// # 安全
+    ///
+    /// 本方法按设计接受 SQL 表达式（如 `COUNT(*) AS c`、`users.id`、`YEAR(d)`），
+    /// 故**不**对入参做标识符校验/转义——属可信输入。若需把外部输入当列名，请先用
+    /// [`is_valid_identifier`](crate::mysql::is_valid_identifier) /
+    /// [`quote_identifier`](crate::mysql::quote_identifier) 校验或转义后再传入。
+    /// 写入路径（INSERT/UPDATE/UPSERT 的列名与各 DML 表名）已在生成层强制 quote。
     pub fn field(mut self, field: &str) -> Self {
         self.fields.push(field.to_string());
         self
@@ -3140,9 +3158,9 @@ mod tests {
             .build_update_batch("users", &records, "id", &std::collections::HashMap::new())
             .unwrap();
         let sql = generator.get_sql();
-        assert!(sql.starts_with("UPDATE users SET "));
-        assert!(sql.contains("CASE WHEN id=? THEN ?"));
-        assert!(sql.contains("WHERE id IN ("));
+        assert!(sql.starts_with("UPDATE `users` SET "));
+        assert!(sql.contains("CASE WHEN `id`=? THEN ?"));
+        assert!(sql.contains("WHERE `id` IN ("));
     }
 
     #[test]
@@ -3166,9 +3184,9 @@ mod tests {
             .build_upsert("users", &data, &std::collections::HashMap::new())
             .unwrap();
         let sql = generator.get_sql();
-        assert!(sql.starts_with("INSERT INTO users"));
+        assert!(sql.starts_with("INSERT INTO `users`"));
         assert!(sql.contains("ON DUPLICATE KEY UPDATE"));
-        assert!(sql.contains("name=VALUES(name)"));
+        assert!(sql.contains("`name`=VALUES(`name`)"));
     }
 
     #[test]
@@ -3378,7 +3396,7 @@ mod tests {
         assert!(result.is_ok());
 
         let sql = generator.get_sql();
-        assert!(sql.starts_with("INSERT INTO users"));
+        assert!(sql.starts_with("INSERT INTO `users`"));
         assert!(sql.contains("name"));
         assert!(sql.contains("age"));
         assert!(sql.contains("email"));
@@ -3401,7 +3419,7 @@ mod tests {
         assert!(result.is_ok());
 
         let sql = generator.get_sql();
-        assert!(sql.contains("INSERT INTO users"));
+        assert!(sql.contains("INSERT INTO `users`"));
         assert!(sql.contains("name"));
         assert!(sql.contains("data"));
         assert_eq!(generator.get_params().len(), 2);

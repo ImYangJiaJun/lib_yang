@@ -167,8 +167,8 @@ proptest! {
 
         // 验证 SQL 结构正确性
         prop_assert!(
-            sql.starts_with("INSERT INTO test_table ("),
-            "SQL 应以 'INSERT INTO test_table (' 开头，实际: {}",
+            sql.starts_with("INSERT INTO `test_table` ("),
+            "SQL 应以 'INSERT INTO `test_table` (' 开头，实际: {}",
             sql
         );
         prop_assert!(
