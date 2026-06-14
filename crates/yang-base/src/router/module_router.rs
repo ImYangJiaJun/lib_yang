@@ -337,9 +337,13 @@ impl ModuleRouter {
             .ok_or_else(|| BaseError::ActionNotFound(action_name.to_string()))?
             .clone();
 
-        // 2. 设置表配置到上下文
+        // 2. 设置表配置与模块名到上下文
         if let Some(table_config) = &self.table_config {
             context = context.with_table_config(table_config.clone());
+        }
+        // 注入模块名，供 metrics module 标签等可观测性标注（NEW-2）
+        if context.module.is_none() {
+            context = context.with_module(self.module_name.clone());
         }
 
         // 3. 进入中间件链（最外层）。链尾执行内置鉴权 + Action 派发，
@@ -351,13 +355,16 @@ impl ModuleRouter {
         };
 
         // 根 span：串联整条派发链路。静态 span 名 + 借用字段，成功路径零分配；
-        // request_id 先以 Empty 占位，由 RequestIdMiddleware 在链内 record 透传值。
+        // request_id 以 Empty 声明——只有 Empty 字段才能被后续 record 更新，故
+        // RequestIdMiddleware 透传上游 X-Request-Id 时能改写本字段（NEW-1）。
+        // 同时在此先 record 一次默认值，保证未注册该中间件时根 span 也带 request_id。
         let span = tracing::info_span!(
             "dispatch",
             module = %self.module_name,
             action = %action_name,
-            request_id = %context.request_id,
+            request_id = tracing::field::Empty,
         );
+        span.record("request_id", tracing::field::display(context.request_id));
         next.run(context).instrument(span).await
     }
 

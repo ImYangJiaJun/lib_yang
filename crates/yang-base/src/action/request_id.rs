@@ -45,15 +45,31 @@ impl RequestId {
         self.0
     }
 
-    /// 解析十六进制字符串为 RequestId（供透传上游 `X-Request-Id`）。
+    /// 解析上游 `X-Request-Id` 为 RequestId（供透传跨服务标识）。
     ///
-    /// 接受 1..=32 位十六进制；非法字符或超长返回 `None`，调用方据此降级为新生成。
+    /// 接受形式：
+    /// - 1..=32 位十六进制（无分隔），如 `2a`、`0192f4a1c3d5...`；
+    /// - 标准 UUID（带连字符，如 `550e8400-e29b-41d4-a716-446655440000`）——
+    ///   去连字符后恰为 32 位十六进制，覆盖最常见的上游标识与 W3C traceparent 的
+    ///   trace-id 段。
+    ///
+    /// 非十六进制或去连字符后超 32 位返回 `None`，调用方据此降级为新生成。
+    ///
+    /// **限制**：`RequestId` 底层是 `u128`，无法承载任意字符串标识（如纯字母 trace
+    /// id）。这类上游标识会被拒绝并降级——若需端到端透传任意字符串标识，应在传输层
+    /// 自行记录原始 header，本类型只负责进程内可排序的数值标识。
     pub fn parse_hex(s: &str) -> Option<Self> {
         let s = s.trim();
-        if s.is_empty() || s.len() > 32 {
+        // 标准 UUID：去连字符后按十六进制解析（36→32 位）
+        let normalized = if s.contains('-') {
+            s.replace('-', "")
+        } else {
+            s.to_string()
+        };
+        if normalized.is_empty() || normalized.len() > 32 {
             return None;
         }
-        u128::from_str_radix(s, 16).ok().map(RequestId)
+        u128::from_str_radix(&normalized, 16).ok().map(RequestId)
     }
 }
 
@@ -110,5 +126,15 @@ mod tests {
     fn parse_hex_accepts_upstream_short_form() {
         let parsed = RequestId::parse_hex("2a").expect("短十六进制应可解析");
         assert_eq!(parsed.as_u128(), 0x2a);
+    }
+
+    /// NEW-7：标准带连字符 UUID 去连字符后应可解析（覆盖最常见上游标识）。
+    #[test]
+    fn parse_hex_accepts_hyphenated_uuid() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let parsed = RequestId::parse_hex(uuid).expect("UUID 应可解析");
+        assert_eq!(parsed.as_u128(), 0x550e8400_e29b_41d4_a716_446655440000);
+        // 纯字母 trace id 仍拒绝（u128 无法承载），降级为新生成
+        assert!(RequestId::parse_hex("not-a-hex-id-zz").is_none());
     }
 }

@@ -90,6 +90,10 @@ impl<T: TypedAction> DynAction for T {
         // feature="metrics" 时在唯一必经边界埋点；关闭时整段 #[cfg] 消失零开销
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
+        // 在 ctx 被移动进 async 块前，捕获 module 标签（NEW-2：跨模块同名 Action 区分）。
+        // 未经路由的上下文 module 为 None，回退为 "unknown" 保持低基数。
+        #[cfg(feature = "metrics")]
+        let module: String = ctx.module.clone().unwrap_or_else(|| "unknown".to_string());
 
         let result: Result<ApiResponse, BaseError> = async {
             let input: T::Input = ctx.extract_input()?;
@@ -102,12 +106,17 @@ impl<T: TypedAction> DynAction for T {
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_secs_f64();
-            metrics::histogram!("yang_action_duration_seconds", "action" => action_name)
-                .record(elapsed);
+            metrics::histogram!(
+                "yang_action_duration_seconds",
+                "module" => module.clone(),
+                "action" => action_name,
+            )
+            .record(elapsed);
             match &result {
                 Ok(_) => {
                     metrics::counter!(
                         "yang_action_requests_total",
+                        "module" => module.clone(),
                         "action" => action_name,
                         "status" => "ok",
                     )
@@ -116,12 +125,14 @@ impl<T: TypedAction> DynAction for T {
                 Err(e) => {
                     metrics::counter!(
                         "yang_action_requests_total",
+                        "module" => module.clone(),
                         "action" => action_name,
                         "status" => "error",
                     )
                     .increment(1);
                     metrics::counter!(
                         "yang_action_errors_total",
+                        "module" => module,
                         "action" => action_name,
                         "code" => e.code_str(),
                     )

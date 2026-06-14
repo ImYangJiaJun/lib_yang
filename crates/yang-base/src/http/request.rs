@@ -631,8 +631,34 @@ impl RequestBuilder {
             request = request.body(body.clone());
         }
 
-        // 发送请求
-        let response = request.send().await.map_err(BaseError::HttpRequestFailed)?;
+        // 发送请求（NG-1：记录方法/URL/状态码/耗时，便于排查外部 API 慢响应与失败）。
+        // URL 仅记 self.url（不含 query 参数，query 经 reqwest 单独拼接，避免泄漏敏感参数）。
+        let start = std::time::Instant::now();
+        let result = request.send().await;
+        let elapsed_ms = start.elapsed().as_millis();
+        match &result {
+            Ok(resp) => {
+                tracing::debug!(
+                    target: "yang_base::http",
+                    method = %self.method,
+                    url = %self.url,
+                    status = resp.status().as_u16(),
+                    elapsed_ms = elapsed_ms as u64,
+                    "HTTP 出站请求完成"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "yang_base::http",
+                    method = %self.method,
+                    url = %self.url,
+                    elapsed_ms = elapsed_ms as u64,
+                    error = %e,
+                    "HTTP 出站请求失败"
+                );
+            }
+        }
+        let response = result.map_err(BaseError::HttpRequestFailed)?;
 
         Ok(Response::new(response))
     }

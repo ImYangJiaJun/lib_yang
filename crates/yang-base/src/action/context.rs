@@ -220,6 +220,11 @@ pub struct ActionContext {
     /// 由 `new`/`new_with_global_tools` 默认生成；`RequestIdMiddleware` 在洋葱链
     /// 最外层会按上游 `X-Request-Id` 透传或重新生成并 `span.record`。
     pub request_id: RequestId,
+    /// 本次派发所属模块名（由 `ModuleRouter::dispatch` 注入）。
+    ///
+    /// 仅用于可观测性标注（metrics `module` 标签、日志）。模块数量有界，作为 metrics
+    /// 标签不构成高基数问题。未经路由直接构造的上下文为 `None`。
+    pub module: Option<String>,
 }
 
 impl ActionContext {
@@ -231,6 +236,7 @@ impl ActionContext {
             tools,
             table_config: None,
             request_id: RequestId::generate(),
+            module: None,
         }
     }
 
@@ -259,6 +265,7 @@ impl ActionContext {
             tools,
             table_config: None,
             request_id: RequestId::generate(),
+            module: None,
         })
     }
 
@@ -274,6 +281,14 @@ impl ActionContext {
     /// 业务侧一般无需手动设置。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = request_id;
+        self
+    }
+
+    /// 设置所属模块名（链式调用）。
+    ///
+    /// 由 `ModuleRouter::dispatch` 注入，用于 metrics `module` 标签等可观测性标注。
+    pub fn with_module(mut self, module: impl Into<String>) -> Self {
+        self.module = Some(module.into());
         self
     }
 
