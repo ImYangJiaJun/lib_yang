@@ -28,12 +28,12 @@ async fn test_connect_to_test_database() {
 
 #[tokio::test]
 async fn test_connect_with_custom_config() {
-    let config = DatabaseConfig {
-        max_connections: 5,
-        connect_timeout: 10,
-        idle_timeout: 300,
-        enable_logging: true,
-    };
+    // DatabaseConfig 为 #[non_exhaustive]：集成测试是独立 crate，用 default() + 字段赋值。
+    let mut config = DatabaseConfig::default();
+    config.max_connections = 5;
+    config.connect_timeout = 10;
+    config.idle_timeout = 300;
+    config.enable_logging = true;
 
     let result = Database::connect_with_config(TEST_DB_URL, config).await;
 

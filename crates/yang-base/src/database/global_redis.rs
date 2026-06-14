@@ -159,6 +159,16 @@ impl GlobalRedis {
         Ok(Self::client()?.pool_status())
     }
 
+    /// 优雅关闭全局 Redis 连接池（I3）。
+    ///
+    /// 供编排式停机（[`crate::lifecycle`]）调用。`OnceLock` 单例不重置，仅原地关闭
+    /// 连接池——停机后不应再使用。未初始化时为 no-op。
+    pub fn close() {
+        if let Some(client) = GLOBAL_REDIS.get() {
+            client.close();
+        }
+    }
+
     // ==================== String 操作 ====================
 
     /// 设置字符串值

@@ -117,6 +117,19 @@ impl RedisClient {
         &self.pool
     }
 
+    /// 优雅关闭连接池（I3）：关闭后无法再借出连接，已借出的连接归还时被丢弃。
+    ///
+    /// 与 `Database::close` 对称，供编排式停机调用。幂等；close 后再用会返回连接池
+    /// 错误而非 panic（deadpool `Pool::get` 在关闭后返回错误）。
+    pub fn close(&self) {
+        self.pool.close();
+    }
+
+    /// 连接池是否已关闭（I3）。
+    pub fn is_closed(&self) -> bool {
+        self.pool.is_closed()
+    }
+
     /// 创建 Pipeline 批量操作
     ///
     /// Pipeline 允许将多个命令打包发送到 Redis 服务器，减少网络往返次数，提高性能。

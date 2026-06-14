@@ -79,12 +79,9 @@ impl GlobalDatabase {
     /// use yang_base::database::GlobalDatabase;
     /// use yang_db::DatabaseConfig;
     ///
-    /// let config = DatabaseConfig {
-    ///     max_connections: 20,
-    ///     connect_timeout: 10,
-    ///     idle_timeout: 300,
-    ///     enable_logging: true,
-    /// };
+    /// let config = DatabaseConfig::default()
+    ///     .with_min_connections(2)
+    ///     .with_max_lifetime(Some(1800));
     ///
     /// GlobalDatabase::init("mysql://root:password@localhost/test", config).await?;
     /// ```
@@ -362,6 +359,16 @@ impl GlobalDatabase {
     /// - `Err(BaseError::DatabaseNotInitialized)`: 数据库未初始化
     pub fn pool_status() -> Result<yang_db::PoolStatus, BaseError> {
         Ok(Self::get()?.pool_status())
+    }
+
+    /// 优雅关闭全局数据库连接池（I3）：停止发放新连接、等待在途连接归还后关闭。
+    ///
+    /// 供编排式停机（[`crate::lifecycle`]）调用。`OnceLock` 单例不重置，仅原地 drain
+    /// 连接池——**停机后不应再 dispatch**，再用会得到连接池关闭错误。未初始化时为 no-op。
+    pub async fn close() {
+        if let Some(db) = GLOBAL_DB.get() {
+            db.close().await;
+        }
     }
 }
 

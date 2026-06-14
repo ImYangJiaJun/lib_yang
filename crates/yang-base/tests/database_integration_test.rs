@@ -176,12 +176,12 @@ async fn test_global_database_initialization() {
     };
 
     // 初始化全局数据库
-    let config = DatabaseConfig {
-        max_connections: 5,
-        connect_timeout: 10,
-        idle_timeout: 300,
-        enable_logging: false,
-    };
+    // DatabaseConfig 为 #[non_exhaustive]：跨 crate 用 default() + 字段赋值构造。
+    let mut config = DatabaseConfig::default();
+    config.max_connections = 5;
+    config.connect_timeout = 10;
+    config.idle_timeout = 300;
+    config.enable_logging = false;
 
     let result = GlobalDatabase::init(&db_url, config).await;
     assert!(result.is_ok(), "全局数据库初始化失败: {:?}", result);

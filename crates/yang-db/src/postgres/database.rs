@@ -7,6 +7,9 @@ use sqlx::postgres::PgPool;
 ///
 /// 用于配置数据库连接池的参数
 ///
+/// 标注 `#[non_exhaustive]`：未来新增连接池参数不构成破坏性变更，外部请用
+/// `DatabaseConfig::default()` 加 `..Default::default()` 或链式 setter 构造。
+///
 /// # 示例
 ///
 /// ```rust
@@ -15,15 +18,15 @@ use sqlx::postgres::PgPool;
 /// // 使用默认配置
 /// let config = DatabaseConfig::default();
 ///
-/// // 自定义配置
-/// let config = DatabaseConfig {
-///     max_connections: 20,
-///     connect_timeout: 10,
-///     idle_timeout: 300,
-///     enable_logging: true,
-/// };
+/// // 自定义配置：#[non_exhaustive] 结构体跨 crate 不能用字面量，
+/// // 用 default() + 链式 setter 构造
+/// let config = DatabaseConfig::default()
+///     .with_min_connections(2)
+///     .with_max_lifetime(Some(1800))
+///     .with_test_before_acquire(true);
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DatabaseConfig {
     /// 最大连接数
     pub max_connections: u32,
@@ -33,6 +36,12 @@ pub struct DatabaseConfig {
     pub idle_timeout: u64,
     /// 是否启用日志
     pub enable_logging: bool,
+    /// 最小（保活）连接数。默认 0（行为同改造前）。
+    pub min_connections: u32,
+    /// 连接最大存活时间（秒）。`None`（默认）表示不限制，行为同改造前。
+    pub max_lifetime: Option<u64>,
+    /// 借出前是否 PING 探活。默认 false（行为同改造前）。
+    pub test_before_acquire: bool,
 }
 
 impl Default for DatabaseConfig {
@@ -42,7 +51,30 @@ impl Default for DatabaseConfig {
             connect_timeout: 30,
             idle_timeout: 600,
             enable_logging: false,
+            min_connections: 0,
+            max_lifetime: None,
+            test_before_acquire: false,
         }
+    }
+}
+
+impl DatabaseConfig {
+    /// 设置最小（保活）连接数（链式）。
+    pub fn with_min_connections(mut self, n: u32) -> Self {
+        self.min_connections = n;
+        self
+    }
+
+    /// 设置连接最大存活时间（秒，`None` 为不限制）（链式）。
+    pub fn with_max_lifetime(mut self, secs: Option<u64>) -> Self {
+        self.max_lifetime = secs;
+        self
+    }
+
+    /// 设置借出前是否 PING 探活（链式）。
+    pub fn with_test_before_acquire(mut self, enabled: bool) -> Self {
+        self.test_before_acquire = enabled;
+        self
     }
 }
 
@@ -95,12 +127,16 @@ impl Database {
         use std::time::Duration;
 
         // 使用配置参数创建连接池
-        let pool = PgPoolOptions::new()
+        let mut options = PgPoolOptions::new()
             .max_connections(config.max_connections)
+            .min_connections(config.min_connections)
             .acquire_timeout(Duration::from_secs(config.connect_timeout))
             .idle_timeout(Duration::from_secs(config.idle_timeout))
-            .connect(url)
-            .await?;
+            .test_before_acquire(config.test_before_acquire);
+        if let Some(secs) = config.max_lifetime {
+            options = options.max_lifetime(Duration::from_secs(secs));
+        }
+        let pool = options.connect(url).await?;
 
         Ok(Self { pool, config })
     }
@@ -145,6 +181,18 @@ impl Database {
     pub async fn health_check(&self) -> Result<(), DbError> {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
+    }
+
+    /// 优雅关闭连接池（I3）：停止发放新连接、等待在途连接归还后关闭。与 MySQL 对称。
+    ///
+    /// 幂等；close 后再用返回 `PoolClosed` 类错误而非 panic。
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
+    /// 连接池是否已关闭（I3）。
+    pub fn is_closed(&self) -> bool {
+        self.pool.is_closed()
     }
 
     /// 执行原生 SELECT 查询

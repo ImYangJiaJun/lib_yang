@@ -63,10 +63,12 @@
 extern crate self as yang_base;
 
 pub mod action;
+pub mod config;
 pub mod database;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
+pub mod lifecycle;
 pub mod observability;
 pub mod plugin;
 pub mod router;

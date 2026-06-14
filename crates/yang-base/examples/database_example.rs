@@ -22,12 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 初始化全局数据库
     println!("1. 初始化全局数据库...");
     let db_url = "mysql://root:password@localhost:3306/test_db";
-    let config = DatabaseConfig {
-        max_connections: 10,
-        connect_timeout: 30,
-        idle_timeout: 600,
-        enable_logging: true,
-    };
+    // DatabaseConfig 为 #[non_exhaustive]：跨 crate 不能用结构体字面量，
+    // 改用 default() + 字段赋值 / 链式 setter 构造。
+    let mut config = DatabaseConfig::default();
+    config.max_connections = 10;
+    config.connect_timeout = 30;
+    config.idle_timeout = 600;
+    config.enable_logging = true;
 
     match GlobalDatabase::init(db_url, config).await {
         Ok(_) => println!("   ✓ 数据库初始化成功\n"),
