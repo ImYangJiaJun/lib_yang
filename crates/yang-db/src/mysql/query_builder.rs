@@ -787,12 +787,34 @@ impl SqlGenerator {
                     }
                 }
                 FieldType::Decimal => {
-                    // DECIMAL 类型：转换为浮点数
-                    if let Some(f) = value.as_f64() {
-                        return Ok(SqlValue::Float(f));
-                    } else if let Some(i) = value.as_i64() {
-                        return Ok(SqlValue::Float(i as f64));
+                    // DECIMAL/NUMERIC：JSON 数字经 f64 会丢任意精度（NG-3）。仅当值能被
+                    // f64 精确表示（|v| < 2^53）时走 Float（性能优）；超出安全整数范围、
+                    // 高精度小数或字符串数字降级为字符串，由 MySQL 隐式转换/CAST 保精度。
+                    const SAFE_INT: f64 = 9_007_199_254_740_992.0; // 2^53
+                    if let Some(i) = value.as_i64() {
+                        if (i.unsigned_abs() as f64) < SAFE_INT {
+                            return Ok(SqlValue::Float(i as f64));
+                        }
+                        return Ok(SqlValue::String(i.to_string()));
                     }
+                    if let Some(f) = value.as_f64() {
+                        if f.is_finite() && f.abs() < SAFE_INT {
+                            return Ok(SqlValue::Float(f));
+                        }
+                    }
+                    if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    }
+                    // 数字（高精度/超大）或字符串数字：以字符串保精度绑定
+                    if value.is_number() {
+                        return Ok(SqlValue::String(value.to_string()));
+                    }
+                    if let Some(s) = value.as_str() {
+                        return Ok(SqlValue::String(s.to_string()));
+                    }
+                    return Err(crate::error::DbError::TypeConversionError(format!(
+                        "Decimal 字段期望数字或数字字符串，实得 {value}"
+                    )));
                 }
                 FieldType::Blob => {
                     // BLOB 类型：期望字节数组或 base64 字符串
@@ -2214,30 +2236,65 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
-        // 使用 data.chunks(batch_size) 分批，每批调用内部插入逻辑，累加受影响行数
+        // 单批次：直接走 pool 执行，免事务开销。
+        // 多批次：用单个事务包裹所有 chunk，任一批失败整体回滚（DB-4，比照 update_batch；
+        // 此前每 chunk 独立 execute(pool)，第 N 批失败时前 N-1 批已落库无法回滚）。
+        let chunks: Vec<&[T]> = data.chunks(batch_size).collect();
+        if chunks.len() == 1 {
+            let affected = self.insert_chunk(chunks[0]).await?;
+            if self.enable_logging {
+                log::debug!("insert_batch_with_size() 单批完成，影响 {} 行", affected);
+            }
+            return Ok(affected);
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(crate::error::DbError::from)?;
         let mut total_affected = 0u64;
 
-        for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
+        for (batch_index, chunk) in chunks.iter().enumerate() {
+            // 序列化本批数据
+            let json_data_list: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|item| {
+                    serde_json::to_value(item).map_err(|e| {
+                        crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+
+            let mut generator = SqlGenerator::new();
+            generator.build_insert_batch(&self.table, &json_data_list, &self.field_types)?;
+            let sql = generator.get_sql();
+            let params = generator.get_params();
+
+            let mut query = sqlx::query(sql);
+            for param in params {
+                query = bind_execute_param(query, param);
+            }
+            let result = query
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::error::DbError::from)?;
+            total_affected += result.rows_affected();
+
             if self.enable_logging {
                 log::debug!(
-                    "执行第 {} 批插入，本批记录数: {}",
+                    "第 {} 批插入成功，影响 {} 行",
                     batch_index + 1,
-                    chunk.len()
+                    result.rows_affected()
                 );
-            }
-
-            // insert_chunk 只借用 &self，无需为每批克隆整个 builder
-            let affected = self.insert_chunk(chunk).await?;
-            total_affected += affected;
-
-            if self.enable_logging {
-                log::debug!("第 {} 批插入成功，影响 {} 行", batch_index + 1, affected);
             }
         }
 
+        tx.commit().await.map_err(crate::error::DbError::from)?;
+
         if self.enable_logging {
             log::debug!(
-                "insert_batch_with_size() 全部完成，总共影响 {} 行",
+                "insert_batch_with_size() 多批事务提交完成，总共影响 {} 行",
                 total_affected
             );
         }

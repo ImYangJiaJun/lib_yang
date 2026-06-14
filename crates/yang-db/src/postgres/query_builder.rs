@@ -812,11 +812,32 @@ impl SqlGenerator {
                     }
                 }
                 FieldType::Decimal => {
-                    if let Some(f) = value.as_f64() {
-                        return Ok(SqlValue::Float(f));
-                    } else if let Some(i) = value.as_i64() {
-                        return Ok(SqlValue::Float(i as f64));
+                    // DECIMAL/NUMERIC：见 MySQL 同名分支（NG-3）。仅当值能被 f64 精确
+                    // 表示（|v| < 2^53）才走 Float；超出/高精度降级字符串，PG 隐式转换保精度。
+                    const SAFE_INT: f64 = 9_007_199_254_740_992.0; // 2^53
+                    if let Some(i) = value.as_i64() {
+                        if (i.unsigned_abs() as f64) < SAFE_INT {
+                            return Ok(SqlValue::Float(i as f64));
+                        }
+                        return Ok(SqlValue::String(i.to_string()));
                     }
+                    if let Some(f) = value.as_f64() {
+                        if f.is_finite() && f.abs() < SAFE_INT {
+                            return Ok(SqlValue::Float(f));
+                        }
+                    }
+                    if value.is_null() {
+                        return Ok(SqlValue::Null);
+                    }
+                    if value.is_number() {
+                        return Ok(SqlValue::String(value.to_string()));
+                    }
+                    if let Some(s) = value.as_str() {
+                        return Ok(SqlValue::String(s.to_string()));
+                    }
+                    return Err(crate::error::DbError::TypeConversionError(format!(
+                        "Decimal 字段期望数字或数字字符串，实得 {value}"
+                    )));
                 }
                 FieldType::Blob => {
                     if let Some(s) = value.as_str() {
@@ -1525,22 +1546,61 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
+        // 单批次走 pool 免事务；多批次单事务包裹整体回滚（DB-4，比照 update_batch）。
+        let chunks: Vec<&[T]> = data.chunks(batch_size).collect();
+        if chunks.len() == 1 {
+            let affected = self.insert_chunk(chunks[0]).await?;
+            if self.enable_logging {
+                log::debug!("insert_batch_with_size() 单批完成，影响 {} 行", affected);
+            }
+            return Ok(affected);
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(crate::error::DbError::from)?;
         let mut total_affected = 0u64;
-        for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
+        for (batch_index, chunk) in chunks.iter().enumerate() {
+            let json_data_list: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|item| {
+                    serde_json::to_value(item).map_err(|e| {
+                        crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+
+            let mut generator = SqlGenerator::new();
+            generator.build_insert_batch(&self.table, &json_data_list, &self.field_types)?;
+            let sql = generator.get_sql();
+            let params = generator.get_params();
+
+            let mut query = sqlx::query(sql);
+            for param in params {
+                query = bind_execute_param(query, param);
+            }
+            let result = query
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::error::DbError::from)?;
+            total_affected += result.rows_affected();
+
             if self.enable_logging {
                 log::debug!(
-                    "执行第 {} 批插入，本批记录数: {}",
+                    "第 {} 批插入成功，影响 {} 行",
                     batch_index + 1,
-                    chunk.len()
+                    result.rows_affected()
                 );
             }
-            let affected = self.insert_chunk(chunk).await?;
-            total_affected += affected;
         }
+
+        tx.commit().await.map_err(crate::error::DbError::from)?;
 
         if self.enable_logging {
             log::debug!(
-                "insert_batch_with_size() 全部完成，总共影响 {} 行",
+                "insert_batch_with_size() 多批事务提交完成，总共影响 {} 行",
                 total_affected
             );
         }

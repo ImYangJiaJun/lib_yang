@@ -420,3 +420,31 @@ fn test_field_type_timestamp_shape_mismatch_and_null() {
         "Timestamp 字段的 NULL 值应放行"
     );
 }
+
+/// NG-3：Decimal 字段对高精度/超大数字降级为字符串绑定，保精度；小值仍走 Float。
+#[test]
+fn test_field_type_decimal_high_precision_uses_string() {
+    use crate::mysql::condition::SqlValue;
+    use crate::mysql::FieldType;
+
+    let mut field_types = HashMap::new();
+    field_types.insert("price".to_string(), FieldType::Decimal);
+
+    // 超出 f64 安全整数范围的大整数 → 字符串保精度
+    let big = vec![serde_json::json!({"price": 9_007_199_254_740_993i64})];
+    let mut g = SqlGenerator::new();
+    g.build_insert_batch("t", &big, &field_types).unwrap();
+    match &g.get_params()[0] {
+        SqlValue::String(s) => assert_eq!(s, "9007199254740993"),
+        other => panic!("超大 Decimal 应转 String，实得 {:?}", other),
+    }
+
+    // 普通小值 → 仍走 Float（性能优）
+    let small = vec![serde_json::json!({"price": 12.5})];
+    let mut g2 = SqlGenerator::new();
+    g2.build_insert_batch("t", &small, &field_types).unwrap();
+    assert!(
+        matches!(g2.get_params()[0], SqlValue::Float(_)),
+        "普通小 Decimal 应走 Float"
+    );
+}

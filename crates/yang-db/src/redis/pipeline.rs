@@ -168,10 +168,12 @@ impl RedisPipeline {
     ///
     /// # 返回
     /// 返回 self 以支持链式调用
+    ///
+    /// 多元素打包为**单条** LPUSH 命令（NEW-21），保证「每方法调用一条命令一个结果」
+    /// 契约。空切片为 no-op（不下发命令）以避免 redis 报参数错误。
     pub fn lpush(&mut self, key: impl Into<String>, values: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for value in values {
-            self.pipe.lpush(&key_str, value);
+        if !values.is_empty() {
+            self.pipe.lpush(key.into(), values);
         }
         self
     }
@@ -185,9 +187,8 @@ impl RedisPipeline {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn rpush(&mut self, key: impl Into<String>, values: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for value in values {
-            self.pipe.rpush(&key_str, value);
+        if !values.is_empty() {
+            self.pipe.rpush(key.into(), values);
         }
         self
     }
@@ -201,9 +202,8 @@ impl RedisPipeline {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn sadd(&mut self, key: impl Into<String>, members: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for member in members {
-            self.pipe.sadd(&key_str, member);
+        if !members.is_empty() {
+            self.pipe.sadd(key.into(), members);
         }
         self
     }
@@ -217,9 +217,11 @@ impl RedisPipeline {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn zadd(&mut self, key: impl Into<String>, members: &[(f64, String)]) -> &mut Self {
-        let key_str = key.into();
-        for (score, member) in members {
-            self.pipe.zadd(&key_str, member, *score);
+        if !members.is_empty() {
+            // redis-rs zadd_multiple 接受 &[(score, member)]，一次性打包为单条命令
+            let pairs: Vec<(f64, &str)> =
+                members.iter().map(|(s, m)| (*s, m.as_str())).collect();
+            self.pipe.zadd_multiple(key.into(), &pairs);
         }
         self
     }

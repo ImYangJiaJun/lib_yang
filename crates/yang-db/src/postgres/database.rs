@@ -220,9 +220,26 @@ impl Database {
         Ok(result.rows_affected())
     }
 
-    /// 开始事务
+    /// 开始事务（使用数据库默认隔离级别 READ COMMITTED）
     pub async fn transaction(&self) -> Result<Transaction, DbError> {
         let tx = self.pool.begin().await?;
+        Ok(Transaction::new(tx, self.config.enable_logging))
+    }
+
+    /// 开始事务并设置隔离级别（NG-2）。
+    ///
+    /// 在 `BEGIN` 后立即执行 `SET TRANSACTION ISOLATION LEVEL <level>`。级别名取自
+    /// [`IsolationLevel::as_sql`] 的 `&'static str` 字面量，无注入面。
+    pub async fn transaction_with_isolation(
+        &self,
+        isolation: crate::isolation::IsolationLevel,
+    ) -> Result<Transaction, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let sql = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation.as_sql());
+        if self.config.enable_logging {
+            log::debug!("设置 PostgreSQL 事务隔离级别: {}", sql);
+        }
+        sqlx::query(&sql).execute(&mut *tx).await?;
         Ok(Transaction::new(tx, self.config.enable_logging))
     }
 
@@ -249,8 +266,12 @@ impl Database {
     }
 
     /// 删除表
+    ///
+    /// 表名经 `quote_identifier` 校验+转义（DB-6，双引号方言）；非法表名返回
+    /// `InvalidArgument`。
     pub async fn drop_table(&self, table_name: &str) -> Result<(), DbError> {
-        let sql = format!("DROP TABLE IF EXISTS \"{}\"", table_name);
+        let quoted = crate::postgres::identifier::quote_identifier(table_name)?;
+        let sql = format!("DROP TABLE IF EXISTS {}", quoted);
         self.execute(&sql).await?;
         Ok(())
     }

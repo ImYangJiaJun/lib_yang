@@ -1,6 +1,9 @@
 // 错误类型模块
 pub mod error;
 
+// 事务隔离级别（NG-2）
+pub mod isolation;
+
 // MySQL 数据库模块
 pub mod mysql;
 
@@ -12,6 +15,9 @@ pub mod redis;
 
 // 重新导出错误类型
 pub use error::{DbError, DbErrorCategory};
+
+// 重新导出事务隔离级别
+pub use isolation::IsolationLevel;
 
 // 重新导出 MySQL 核心类型
 pub use mysql::{

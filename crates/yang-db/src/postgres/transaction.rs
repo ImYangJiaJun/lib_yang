@@ -220,6 +220,9 @@ pub struct TransactionQueryBuilder<'a> {
     /// 延迟错误：链式 setter（如 `where_and`）无法返回 `Result`，
     /// 故将首个错误暂存于此，在终端方法（insert/update/delete）统一返回。
     error: Option<DbError>,
+    /// 事务内 INSERT 的 RETURNING 主键列名（默认 `id`）。非 id 主键表用 `.returning()`
+    /// 覆盖，与非事务路径对称（DB-9）。
+    returning: String,
 }
 
 impl<'a> TransactionQueryBuilder<'a> {
@@ -231,12 +234,22 @@ impl<'a> TransactionQueryBuilder<'a> {
             conditions: Vec::new(),
             field_types: HashMap::new(),
             error: None,
+            returning: "id".to_string(),
         }
     }
 
     /// 标记字段为 JSON 类型
     pub fn json(mut self, field: &str) -> Self {
         self.field_types.insert(field.to_string(), FieldType::Json);
+        self
+    }
+
+    /// 设置事务内 INSERT 的 RETURNING 主键列名（默认 `id`）。
+    ///
+    /// 非 id 主键表必须用本方法覆盖，否则事务内 insert 会因 `RETURNING id` 失败
+    /// （DB-9，与非事务路径 `.returning()` 对称）。
+    pub fn returning(mut self, column: &str) -> Self {
+        self.returning = column.to_string();
         self
     }
 
@@ -344,10 +357,15 @@ impl<'a> TransactionQueryBuilder<'a> {
         let mut generator = crate::postgres::query_builder::SqlGenerator::new();
         generator.build_insert(&self.table, &json_data, &self.field_types)?;
 
-        // PostgreSQL 无 last_insert_id()，改用 RETURNING 取回自增主键。
-        // CAST(id AS BIGINT) 统一首列类型（SERIAL=INT4 / BIGSERIAL=INT8），
-        // 便于 sqlx 严格类型解码统一按 i64 处理。
-        let sql = format!("{} RETURNING CAST(id AS BIGINT)", generator.get_sql());
+        // PostgreSQL 无 last_insert_id()，改用 RETURNING 取回主键。RETURNING 列名
+        // 默认 id、可由 .returning() 覆盖（DB-9），经 quote_identifier 校验+转义防注入。
+        // CAST(col AS BIGINT) 统一首列类型（SERIAL=INT4 / BIGSERIAL=INT8）便于按 i64 解码。
+        let quoted_ret = crate::postgres::identifier::quote_identifier(&self.returning)?;
+        let sql = format!(
+            "{} RETURNING CAST({} AS BIGINT)",
+            generator.get_sql(),
+            quoted_ret
+        );
         let params = generator.get_params();
 
         // 记录日志
@@ -582,8 +600,9 @@ fn bind_json_param_tx<'q>(
             if let Some(i) = n.as_i64() {
                 query.bind(i)
             } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
+                // 绑定原生 f64（float8），与主 builder bind_value_match 一致；
+                // 此前 f.to_string() 绑 text，对 numeric/float8 列报类型不匹配（DB-10）。
+                query.bind(f)
             } else {
                 query.bind(Option::<String>::None)
             }
@@ -621,8 +640,9 @@ where
             if let Some(i) = n.as_i64() {
                 query.bind(i)
             } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
+                // 绑定原生 f64（float8），与主 builder bind_value_match 一致；
+                // 此前 f.to_string() 绑 text，对 numeric/float8 列报类型不匹配（DB-10）。
+                query.bind(f)
             } else {
                 query.bind(Option::<String>::None)
             }

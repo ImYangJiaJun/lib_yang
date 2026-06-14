@@ -84,17 +84,15 @@ impl RedisTransaction {
     /// - 如果被监视的键在事务执行前被修改，事务将被取消并自动重试
     /// - 必须在添加命令之前调用
     ///
-    /// # 示例
-    /// ```no_run
-    /// # use yang_db::RedisClient;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
-    /// let mut tx = client.transaction();
-    /// tx.watch(&["balance".to_string()]);
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// # 限制（NEW-19：仅支持固定值 CAS，不支持读-改-写）
+    ///
+    /// 本事务为「构建一次、重试时重放同一批固定命令」模型：命令在 build 期即固定，
+    /// `watch` 与 `EXEC` 之间**没有**重新读取被监视键、据此重算后续命令的钩子。因此
+    /// 典型的乐观锁「读余额 → 减 100 → 写回」**无法**用本 API 表达——冲突重试只会
+    /// 重放同一组固定值，退化为固定值 CAS-set。
+    ///
+    /// 若需读-改-写循环，请改用 Lua 脚本（`eval_script`，在 Redis 端原子读改写），
+    /// 或在业务层手动「读取 → 计算 → `watch` + 固定值事务」并自行重试。
     pub fn watch(&mut self, keys: &[String]) -> &mut Self {
         self.watched_keys.extend_from_slice(keys);
         self
@@ -202,10 +200,12 @@ impl RedisTransaction {
     ///
     /// # 返回
     /// 返回 self 以支持链式调用
+    ///
+    /// 多元素打包为**单条**命令（NEW-21），保证事务内「每方法调用一条命令一个结果」。
+    /// 空切片为 no-op。
     pub fn lpush(&mut self, key: impl Into<String>, values: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for value in values {
-            self.pipe.lpush(&key_str, value);
+        if !values.is_empty() {
+            self.pipe.lpush(key.into(), values);
         }
         self
     }
@@ -219,9 +219,8 @@ impl RedisTransaction {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn rpush(&mut self, key: impl Into<String>, values: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for value in values {
-            self.pipe.rpush(&key_str, value);
+        if !values.is_empty() {
+            self.pipe.rpush(key.into(), values);
         }
         self
     }
@@ -235,9 +234,8 @@ impl RedisTransaction {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn sadd(&mut self, key: impl Into<String>, members: &[String]) -> &mut Self {
-        let key_str = key.into();
-        for member in members {
-            self.pipe.sadd(&key_str, member);
+        if !members.is_empty() {
+            self.pipe.sadd(key.into(), members);
         }
         self
     }
@@ -251,9 +249,10 @@ impl RedisTransaction {
     /// # 返回
     /// 返回 self 以支持链式调用
     pub fn zadd(&mut self, key: impl Into<String>, members: &[(f64, String)]) -> &mut Self {
-        let key_str = key.into();
-        for (score, member) in members {
-            self.pipe.zadd(&key_str, member, *score);
+        if !members.is_empty() {
+            let pairs: Vec<(f64, &str)> =
+                members.iter().map(|(s, m)| (*s, m.as_str())).collect();
+            self.pipe.zadd_multiple(key.into(), &pairs);
         }
         self
     }
