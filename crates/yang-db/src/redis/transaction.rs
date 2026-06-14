@@ -43,6 +43,16 @@ pub struct RedisTransaction {
     watched_keys: Vec<String>,
 }
 
+/// 判定一次 EXEC 回复是否为 WATCH 冲突（DB-2）。
+///
+/// 被监视的键在 MULTI/EXEC 之间被改写时，Redis 的 EXEC 返回 `Nil`。只有在确实
+/// WATCH 了键（`has_watched_keys`）的前提下，顶层 `Nil` 才判为乐观锁冲突需要重试；
+/// 无监视键时 `Nil` 是正常业务结果（如普通 pipeline 里 GET 不存在的键），应透传。
+fn is_watch_conflict(raw: &redis::Value, has_watched_keys: bool) -> bool {
+    has_watched_keys && matches!(raw, redis::Value::Nil)
+}
+
+
 impl RedisTransaction {
     /// 创建新的事务
     ///
@@ -314,17 +324,34 @@ impl RedisTransaction {
                     .map_err(|e| DbError::RedisCommandError(format!("WATCH 命令失败: {}", e)))?;
             }
 
-            // 执行事务
-            match self.pipe.query_async::<T>(&mut *conn).await {
-                Ok(result) => {
-                    return Ok(result);
+            // 执行事务：先解码为原始 redis::Value，以便在协议层检测 WATCH 冲突。
+            // redis-rs 对 `Vec<T>`/`()` 会把 EXEC 的 Nil 回复无声解码成 Ok(空)，
+            // 使 WATCH 冲突被吞掉、乐观锁失效（DB-2）。故先取 Value 判定冲突，再转 T。
+            match self.pipe.query_async::<redis::Value>(&mut *conn).await {
+                Ok(raw) => {
+                    // WATCH 冲突：被监视键在 EXEC 前被改写时，Redis 返回 Nil。
+                    // 仅在存在监视键时才把整体 Nil 判为冲突；无监视键时 Nil 正常透传
+                    // （如普通 pipeline 中 GET 不存在的键）。
+                    if is_watch_conflict(&raw, !self.watched_keys.is_empty()) {
+                        retries += 1;
+                        if retries >= MAX_RETRIES {
+                            return Err(DbError::RedisCommandError(format!(
+                                "事务执行失败：WATCH 冲突已重试 {} 次",
+                                MAX_RETRIES
+                            )));
+                        }
+                        // WATCH 冲突，重试
+                        continue;
+                    }
+                    // 非冲突：解码为调用方期望的类型 T
+                    return T::from_redis_value(raw).map_err(|e| {
+                        DbError::RedisCommandError(format!("事务结果解码失败: {}", e))
+                    });
                 }
                 Err(e) => {
-                    // 检查是否是 WATCH 冲突导致的失败
+                    // 检查是否是 WATCH 冲突导致的失败（EXECABORT）
                     let err_msg = e.to_string();
-                    if (err_msg.contains("EXECABORT") || err_msg.contains("nil"))
-                        && !self.watched_keys.is_empty()
-                    {
+                    if err_msg.contains("EXECABORT") && !self.watched_keys.is_empty() {
                         retries += 1;
                         if retries >= MAX_RETRIES {
                             return Err(DbError::RedisCommandError(format!(
@@ -390,9 +417,26 @@ impl RedisTransaction {
 
 #[cfg(test)]
 mod tests {
+    use super::is_watch_conflict;
+
     #[test]
     fn test_transaction_creation() {
         // 注意：这里只测试结构体创建，不测试实际连接
         // 实际连接测试在集成测试中进行
+    }
+
+    /// DB-2：有监视键且 EXEC 返回 Nil 判为冲突；无监视键时 Nil 透传不重试。
+    #[test]
+    fn test_is_watch_conflict() {
+        // 有监视键 + Nil → 冲突（应重试）
+        assert!(is_watch_conflict(&redis::Value::Nil, true));
+        // 无监视键 + Nil → 非冲突（业务结果，透传）
+        assert!(!is_watch_conflict(&redis::Value::Nil, false));
+        // 有监视键但非 Nil（成功结果）→ 非冲突
+        assert!(!is_watch_conflict(&redis::Value::Int(1), true));
+        assert!(!is_watch_conflict(
+            &redis::Value::Array(vec![redis::Value::Int(1)]),
+            true
+        ));
     }
 }

@@ -490,16 +490,23 @@ impl SqlGenerator {
         self.append(table);
         self.append(" SET ");
 
-        // 逐字段压入参数并生成 `字段 = $N`，直接写入 self.sql 避免中间 Vec 分配
+        // 逐字段生成 `字段 = $N`；值为 NULL 时内联字面量 NULL（不占占位符编号），
+        // 与 build_insert/build_update_batch/build_upsert 一致。PG 对未类型化绑定的
+        // NULL 默认按 INT4，对 text/timestamp 等列 SET col=$1 绑 NULL 会报类型不匹配（DB-3）。
         for (i, (key, value)) in obj.iter().enumerate() {
             if i > 0 {
                 self.sql.push_str(", ");
             }
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
-            let ph = push_placeholder(&mut self.params, sql_value);
             self.sql.push_str(key);
             self.sql.push_str(" = ");
-            self.sql.push_str(&ph);
+            match sql_value {
+                SqlValue::Null => self.sql.push_str("NULL"),
+                v => {
+                    let ph = push_placeholder(&mut self.params, v);
+                    self.sql.push_str(&ph);
+                }
+            }
         }
 
         // WHERE 子句的占位符编号接续 SET 子句已压入的参数
@@ -1909,6 +1916,22 @@ mod tests {
         // 字母序：age=$1, name=$2；WHERE 接续为 $3
         assert_eq!(sql, "UPDATE users SET age = $1, name = $2 WHERE id = $3");
         assert_eq!(g.get_params().len(), 3);
+    }
+
+    /// DB-3：单行 UPDATE 的 SET 子句对 NULL 内联字面量，不占占位符编号。
+    #[test]
+    fn test_build_update_inlines_null_in_set() {
+        let mut g = SqlGenerator::new();
+        // description 设为 NULL，name 为普通值
+        let data = serde_json::json!({"description": serde_json::Value::Null, "name": "张三"});
+        let conditions = vec![Condition::Eq("id".to_string(), SqlValue::Int(1))];
+        g.build_update("users", &data, &empty_types(), &conditions)
+            .unwrap();
+        let sql = g.get_sql();
+        // 字母序：description 内联 NULL（不占编号），name=$1，WHERE 接续 $2
+        assert_eq!(sql, "UPDATE users SET description = NULL, name = $1 WHERE id = $2");
+        // NULL 不压参数：仅 name + WHERE id 两个参数
+        assert_eq!(g.get_params().len(), 2);
     }
 
     #[test]
