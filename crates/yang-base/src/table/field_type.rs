@@ -57,6 +57,7 @@ fn value_type_name(value: &serde_json::Value) -> &'static str {
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FieldType {
     /// 字符串类型
     ///
