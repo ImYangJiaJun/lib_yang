@@ -375,9 +375,7 @@ impl StableRng {
     ///
     /// 返回随机选中的元素引用，如果切片为空或权重总和为 0 则返回 None
     ///
-    /// # Panics
-    ///
-    /// 当 slice 和 weights 长度不匹配时会 panic
+    /// 当 slice 和 weights 长度不匹配时返回 `None`（不会 panic）。
     ///
     /// # 示例
     ///

@@ -101,7 +101,6 @@ GenerationRequest
 
 - 根目录有若干 `*_SUMMARY.md` / `DOCS_*` / `API_COMPATIBILITY_CHECK_SUMMARY.md` 等是**历史工作日志**，不是当前规范源，不要把它们当 spec。
 - `docs/BACKLOG.md` 是带状态标记（✅/🟨/⏳）的问题追踪表，记录了 C/H/M/L 各项的修复进展。遇到"某文档说 X 坏了/缺失"时先查这里——很多旧描述（`serde_json::Value` Action、RedisConfig 静默失效、edition 2024、缺撤销机制等）都已修复，BACKLOG 给出当前真相。唯一仍 ⏳ 未处理的是 M-1（测试里 `unwrap()` 过多）。
-- `.kiro/specs/` 目录可能不存在（已移除或迁移），不要依赖其内容。
 - `docs/yang-db.md` / `docs/yang-base.md` 是较广的生成参考，速查可看；细节以代码为准。
 
 ## CodeGraph 索引
