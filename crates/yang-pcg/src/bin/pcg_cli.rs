@@ -101,13 +101,13 @@ fn main() -> ExitCode {
     };
 
     // 生成
-    let request = GenerationRequest {
-        seed: args.seed,
-        config,
-        constraints: vec![],
-        runtime_context: None,
-        trace_id: args.trace_id,
-    };
+    let mut request = GenerationRequest::new(config);
+    if let Some(seed) = args.seed {
+        request = request.with_seed(seed);
+    }
+    if let Some(trace_id) = args.trace_id {
+        request = request.with_trace_id(trace_id);
+    }
     let result = match MapGenerator::new().generate(request) {
         Ok(result) => result,
         Err(e) => {

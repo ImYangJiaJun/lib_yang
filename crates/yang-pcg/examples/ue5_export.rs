@@ -17,13 +17,9 @@ fn main() {
 
     // 1. 生成地图
     let config = GenerationConfig::default();
-    let request = GenerationRequest {
-        seed: Some(7777),
-        config: config.clone(),
-        constraints: vec![],
-        runtime_context: None,
-        trace_id: Some("ue5-export-demo".to_string()),
-    };
+    let request = GenerationRequest::new(config.clone())
+        .with_seed(7777)
+        .with_trace_id("ue5-export-demo".to_string());
 
     let generator = MapGenerator::new();
     let result = generator.generate(request).expect("地图生成失败");

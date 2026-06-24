@@ -5,21 +5,36 @@ use serde::{Deserialize, Serialize};
 
 /// 世界坐标点
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WorldPoint {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
 
+impl WorldPoint {
+    pub fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+}
+
 /// 逻辑网格坐标点
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GridPoint {
     pub x: i32,
     pub y: i32,
 }
 
+impl GridPoint {
+    pub fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// 网格尺寸
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GridSize {
     pub width: u32,
     pub height: u32,
@@ -27,6 +42,7 @@ pub struct GridSize {
 
 /// 房间边界(逻辑网格空间)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RoomBounds {
     /// 左下角坐标
     pub min: GridPoint,
@@ -72,6 +88,7 @@ impl RoomBounds {
 
 /// 基本方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CardinalDir {
     /// 北(上)
     North,
@@ -85,6 +102,7 @@ pub enum CardinalDir {
 
 /// 3D 变换
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Transform3 {
     /// 位置
     pub position: WorldPoint,
@@ -92,6 +110,12 @@ pub struct Transform3 {
     pub rotation: (f32, f32, f32),
     /// 缩放
     pub scale: (f32, f32, f32),
+}
+
+impl Transform3 {
+    pub fn new(position: WorldPoint, rotation: (f32, f32, f32), scale: (f32, f32, f32)) -> Self {
+        Self { position, rotation, scale }
+    }
 }
 
 impl Default for Transform3 {
@@ -110,9 +134,16 @@ impl Default for Transform3 {
 
 /// 3D 边界盒
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Bounds3 {
     /// 最小点
     pub min: WorldPoint,
     /// 最大点
     pub max: WorldPoint,
+}
+
+impl Bounds3 {
+    pub fn new(min: WorldPoint, max: WorldPoint) -> Self {
+        Self { min, max }
+    }
 }

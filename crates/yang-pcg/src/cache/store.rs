@@ -8,6 +8,7 @@ use super::key::CacheKey;
 
 /// 简单的内存结果缓存。
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ResultCache {
     entries: HashMap<String, GenerationResult>,
 }

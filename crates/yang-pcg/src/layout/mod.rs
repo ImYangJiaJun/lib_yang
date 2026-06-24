@@ -12,6 +12,7 @@ use crate::rng::StableRng;
 
 /// 布局结果。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LayoutOutput {
     pub rooms: Vec<Room>,
     pub door_anchors: Vec<DoorAnchor>,

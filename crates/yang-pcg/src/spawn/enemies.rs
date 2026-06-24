@@ -14,6 +14,7 @@ use super::sampling::{select_spaced_points_excluding, select_spaced_points_track
 
 /// 敌人点位生成的跟踪结果。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EnemySpawnTracked {
     /// 生成的点位列表
     pub spawns: Vec<SpawnPoint>,

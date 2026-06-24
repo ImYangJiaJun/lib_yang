@@ -18,6 +18,7 @@ pub type TemplateRef = String;
 
 /// 房间
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Room {
     /// 房间 ID
     pub id: RoomId,
@@ -45,6 +46,7 @@ pub struct Room {
 
 /// 房间类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RoomType {
     /// 起始房间
     Start,
@@ -70,6 +72,7 @@ pub enum RoomType {
 
 /// 房间图
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RoomGraph {
     /// 房间节点列表
     pub nodes: Vec<Room>,
@@ -83,6 +86,7 @@ pub struct RoomGraph {
 
 /// 房间边(拓扑连接)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RoomEdge {
     /// 边 ID
     pub id: RoomEdgeId,
@@ -96,6 +100,7 @@ pub struct RoomEdge {
 
 /// 分支
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Branch {
     /// 分支 ID
     pub id: BranchId,
@@ -114,6 +119,7 @@ pub type DoorAnchorId = String;
 
 /// 门锚点
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DoorAnchor {
     /// 锚点 ID
     pub id: DoorAnchorId,
@@ -140,6 +146,7 @@ pub type CorridorId = String;
 
 /// 走廊
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Corridor {
     /// 走廊 ID
     pub id: CorridorId,
@@ -165,6 +172,7 @@ pub struct Corridor {
 
 /// 走廊路径
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CorridorPath {
     /// 直线路径
     Straight(Vec<crate::model::geometry::GridPoint>),
@@ -178,6 +186,7 @@ pub enum CorridorPath {
 ///
 /// 描述走廊某一段的几何和主题属性，供外部 Grammar 系统选择对应模块。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CorridorSegmentTag {
     /// 段长度（瓦片数）
     pub length: u16,
@@ -189,6 +198,7 @@ pub struct CorridorSegmentTag {
 
 /// 走廊转折类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TurnType {
     /// 直行（无转折）
     Straight,

@@ -17,6 +17,7 @@ use crate::rng::StableRng;
 
 /// 点位生成结果。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SpawnOutput {
     pub item_spawns: Vec<SpawnPoint>,
     pub enemy_spawns: Vec<SpawnPoint>,
@@ -52,6 +53,7 @@ pub(crate) fn occupied_local_points(room: &Room, spawns: &[SpawnPoint]) -> Vec<G
 
 /// 带调试信息的点位生成结果。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SpawnOutputWithDebug {
     /// 点位生成结果
     pub output: SpawnOutput,

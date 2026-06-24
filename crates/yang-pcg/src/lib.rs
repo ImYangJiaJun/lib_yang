@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(request.seed, Some(12345));
 
         let generator = MapGenerator::new();
-        // 注意：实际生成功能尚未实现，这里只测试类型创建
+        // MapGenerator::generate() 已完整实现全流程 6 阶段（拓扑→布局→地形→spawn→分块→校验）
         let _ = generator;
     }
 

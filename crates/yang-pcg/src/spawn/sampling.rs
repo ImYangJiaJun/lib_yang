@@ -6,6 +6,7 @@ use crate::rng::StableRng;
 
 /// 采样结果，包含选中的点位和拒绝信息。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SamplingResult {
     /// 最终选中的点位列表
     pub selected: Vec<GridPoint>,

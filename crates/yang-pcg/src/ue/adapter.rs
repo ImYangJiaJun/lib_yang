@@ -55,10 +55,10 @@ pub fn export_named_channels(result: &GenerationResult) -> PcgResult<Vec<NamedCh
 pub fn export_named_channels_json(result: &GenerationResult) -> PcgResult<String> {
     let channels = export_named_channels(result)?;
     serde_json::to_string(&channels).map_err(|e| {
-        crate::error::PcgError::export_with_format(
+        crate::error::PcgError::export_err(
             format!("具名通道序列化失败: {}", e),
             "ue_channels_json",
-            Some(e.to_string()),
+            e,
         )
     })
 }

@@ -5,6 +5,7 @@ use crate::backend::{select_backend, ValidationScope};
 use crate::debug::{elapsed_ms, stage_stat, stage_stat_timed, DebugBundle, DebugChannels};
 use crate::digest::ConfigDigest;
 use crate::error::PcgResult;
+use crate::export::CURRENT_SCHEMA_VERSION;
 use crate::model::request::GenerationRequest;
 use crate::model::result::{GenerationResult, ResultMetadata};
 use crate::model::room::CorridorPath;
@@ -17,6 +18,7 @@ use std::time::Instant;
 use crate::chunked::{ChunkDetailResult, TopologyResult};
 
 /// 地图生成器
+#[non_exhaustive]
 pub struct MapGenerator {
     debug_enabled: bool,
 }
@@ -169,7 +171,7 @@ impl MapGenerator {
             metadata: ResultMetadata {
                 seed,
                 config_digest,
-                schema_version: "1.0.0".to_string(),
+                schema_version: CURRENT_SCHEMA_VERSION.to_string(),
                 algorithm_version: env!("CARGO_PKG_VERSION").to_string(),
                 target_engine_version: None,
                 trace_id: request.trace_id,

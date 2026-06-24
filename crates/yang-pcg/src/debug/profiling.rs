@@ -5,6 +5,7 @@ use std::time::Instant;
 
 /// 单个阶段的统计信息。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StageStat {
     /// 阶段名称
     pub stage_name: String,

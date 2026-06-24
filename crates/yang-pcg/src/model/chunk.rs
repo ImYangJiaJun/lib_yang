@@ -10,6 +10,7 @@ pub type ChunkId = String;
 
 /// 分块
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Chunk {
     /// 分块 ID
     pub id: ChunkId,
@@ -25,6 +26,7 @@ pub struct Chunk {
 
 /// 流式元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StreamingMetadata {
     /// Data Layer 名称(可选)
     pub data_layer: Option<String>,

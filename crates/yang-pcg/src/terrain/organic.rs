@@ -24,6 +24,7 @@ use super::strategy::TerrainStrategy;
 /// 3. 保留外墙边框
 /// 4. 标记门口瓦片
 /// 5. 确保所有门口之间连通
+#[non_exhaustive]
 pub struct OrganicStrategy;
 
 /// Cellular automata 迭代次数

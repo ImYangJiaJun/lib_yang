@@ -9,6 +9,7 @@ use super::graph::{branch_id, edge_id, room_id, sample_range_u16, theme_tags};
 use super::room_types::{apply_branch_room_types, assign_critical_room_type, branch_purpose};
 
 /// 拓扑生成器。
+#[non_exhaustive]
 pub struct TopologyGenerator<'a> {
     config: &'a NormalizedConfig,
 }

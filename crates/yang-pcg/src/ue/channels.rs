@@ -13,6 +13,7 @@ pub type Polyline3 = Vec<WorldPoint>;
 
 /// 通道类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ChannelKind {
     Rooms,
     Doors,
@@ -26,6 +27,7 @@ pub enum ChannelKind {
 
 /// 具名通道。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct NamedChannel {
     pub name: String,
     pub kind: ChannelKind,

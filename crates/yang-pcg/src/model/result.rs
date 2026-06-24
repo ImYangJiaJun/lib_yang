@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// 单次地图生成结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GenerationResult {
     /// 结果元数据
     pub metadata: ResultMetadata,
@@ -35,6 +36,7 @@ pub struct GenerationResult {
 
 /// 结果元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ResultMetadata {
     /// 使用的随机种子
     pub seed: u64,

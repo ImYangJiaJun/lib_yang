@@ -10,6 +10,7 @@ pub type SpawnPointId = String;
 
 /// 点位
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SpawnPoint {
     /// 点位 ID
     pub id: SpawnPointId,
@@ -27,6 +28,7 @@ pub struct SpawnPoint {
 
 /// 点位类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SpawnKind {
     /// 交互物
     Item,
@@ -42,6 +44,7 @@ pub enum SpawnKind {
 
 /// 点位元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SpawnMetadata {
     /// 生成标签
     pub spawn_tag: String,

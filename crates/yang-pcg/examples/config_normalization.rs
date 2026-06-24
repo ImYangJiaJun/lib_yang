@@ -20,11 +20,9 @@ fn main() -> PcgResult<()> {
 
     // 2. 创建自定义配置
     println!("2. 自定义配置:");
-    let mut custom_config = GenerationConfig {
-        room_count: RangeU16 { min: 15, max: 25 },
-        theme_tags: vec!["dungeon".to_string(), "dark".to_string()],
-        ..Default::default()
-    };
+    let mut custom_config = GenerationConfig::default();
+    custom_config.room_count = RangeU16::new(15, 25);
+    custom_config.theme_tags = vec!["dungeon".to_string(), "dark".to_string()];
     custom_config.terrain.obstacle_density = 0.3;
 
     let _custom_normalized = custom_config.normalize()?;
@@ -41,11 +39,9 @@ fn main() -> PcgResult<()> {
     // 3. 配置合并
     println!("3. 配置合并:");
     let base_config = GenerationConfig::default();
-    let override_config = GenerationConfig {
-        room_count: RangeU16 { min: 20, max: 30 },
-        theme_tags: vec!["forest".to_string()],
-        ..Default::default()
-    };
+    let mut override_config = GenerationConfig::default();
+    override_config.room_count = RangeU16::new(20, 30);
+    override_config.theme_tags = vec!["forest".to_string()];
 
     let merged_config = base_config.merge(&override_config);
     let merged_digest = ConfigDigest::from_config(&merged_config);
@@ -59,10 +55,8 @@ fn main() -> PcgResult<()> {
 
     // 4. 配置验证
     println!("4. 配置验证:");
-    let invalid_config = GenerationConfig {
-        room_count: RangeU16 { min: 30, max: 10 }, // 非法范围
-        ..Default::default()
-    };
+    let mut invalid_config = GenerationConfig::default();
+    invalid_config.room_count = RangeU16::new(30, 10); // 非法范围
 
     match invalid_config.normalize() {
         Ok(_) => println!("   配置有效"),
@@ -84,10 +78,8 @@ fn main() -> PcgResult<()> {
     // 6. 摘要唯一性验证
     println!("6. 摘要唯一性验证:");
     let config_a = GenerationConfig::default();
-    let config_b = GenerationConfig {
-        room_count: RangeU16 { min: 15, max: 25 },
-        ..Default::default()
-    };
+    let mut config_b = GenerationConfig::default();
+    config_b.room_count = RangeU16::new(15, 25);
     let digest_a = ConfigDigest::from_config(&config_a);
     let digest_b = ConfigDigest::from_config(&config_b);
     println!("   不同配置生成不同摘要: {}", digest_a != digest_b);

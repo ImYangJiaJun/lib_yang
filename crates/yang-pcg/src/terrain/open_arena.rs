@@ -24,6 +24,7 @@ use super::strategy::TerrainStrategy;
 /// 3. 中心区域保持完全开放（地板）
 /// 4. 障碍物仅放置在靠近墙体的边缘区域
 /// 5. 确保所有门口之间连通
+#[non_exhaustive]
 pub struct OpenArenaStrategy;
 
 impl TerrainStrategy for OpenArenaStrategy {

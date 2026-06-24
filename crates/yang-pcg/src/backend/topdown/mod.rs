@@ -25,6 +25,7 @@ use crate::{spawn::min_cross_type_spacing, terrain};
 
 /// 俯视角网格 backend（无状态）。
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct TopDownBackend;
 
 impl PipelineBackend for TopDownBackend {

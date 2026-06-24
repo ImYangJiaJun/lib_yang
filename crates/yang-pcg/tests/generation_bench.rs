@@ -172,13 +172,9 @@ fn run_benchmark(name: &str, config: GenerationConfig, iterations: usize) -> Ben
         let mut generator = MapGenerator::new();
         generator.set_debug(true);
 
-        let request = GenerationRequest {
-            seed: Some(seed),
-            config: config.clone(),
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: Some(format!("bench-{}-iter-{}", name, i)),
-        };
+        let request = GenerationRequest::new(config.clone())
+            .with_seed(seed)
+            .with_trace_id(format!("bench-{}-iter-{}", name, i));
 
         let start = Instant::now();
         let result = generator
@@ -219,35 +215,32 @@ fn run_benchmark(name: &str, config: GenerationConfig, iterations: usize) -> Ben
 
 /// 构建 small 配置：10 房间级
 fn small_config() -> GenerationConfig {
-    GenerationConfig {
-        room_count: RangeU16 { min: 8, max: 10 },
-        critical_path_length: RangeU16 { min: 4, max: 6 },
-        branch_count: RangeU16 { min: 1, max: 2 },
-        dead_end_count: RangeU16 { min: 0, max: 1 },
-        ..Default::default()
-    }
+    let mut c = GenerationConfig::default();
+    c.room_count = RangeU16::new(8, 10);
+    c.critical_path_length = RangeU16::new(4, 6);
+    c.branch_count = RangeU16::new(1, 2);
+    c.dead_end_count = RangeU16::new(0, 1);
+    c
 }
 
 /// 构建 medium 配置：20 房间级
 fn medium_config() -> GenerationConfig {
-    GenerationConfig {
-        room_count: RangeU16 { min: 15, max: 20 },
-        critical_path_length: RangeU16 { min: 7, max: 12 },
-        branch_count: RangeU16 { min: 2, max: 4 },
-        dead_end_count: RangeU16 { min: 1, max: 3 },
-        ..Default::default()
-    }
+    let mut c = GenerationConfig::default();
+    c.room_count = RangeU16::new(15, 20);
+    c.critical_path_length = RangeU16::new(7, 12);
+    c.branch_count = RangeU16::new(2, 4);
+    c.dead_end_count = RangeU16::new(1, 3);
+    c
 }
 
 /// 构建 large 配置：40 房间级
 fn large_config() -> GenerationConfig {
-    GenerationConfig {
-        room_count: RangeU16 { min: 30, max: 40 },
-        critical_path_length: RangeU16 { min: 12, max: 20 },
-        branch_count: RangeU16 { min: 3, max: 6 },
-        dead_end_count: RangeU16 { min: 2, max: 5 },
-        ..Default::default()
-    }
+    let mut c = GenerationConfig::default();
+    c.room_count = RangeU16::new(30, 40);
+    c.critical_path_length = RangeU16::new(12, 20);
+    c.branch_count = RangeU16::new(3, 6);
+    c.dead_end_count = RangeU16::new(2, 5);
+    c
 }
 
 /// 性能基准：small 配置（10 房间级）

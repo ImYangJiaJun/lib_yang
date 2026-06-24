@@ -22,13 +22,7 @@ fn main() {
     );
 
     // 2. 构建生成请求（指定固定种子以保证可复现）
-    let request = GenerationRequest {
-        seed: Some(42),
-        config,
-        constraints: vec![],
-        runtime_context: None,
-        trace_id: None,
-    };
+    let request = GenerationRequest::new(config).with_seed(42);
 
     // 3. 创建生成器并执行生成
     let generator = MapGenerator::new();

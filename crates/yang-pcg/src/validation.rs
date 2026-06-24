@@ -306,6 +306,7 @@ const DEFAULT_MIN_SPACING: i32 = 2;
 
 /// 点位间距违规详情
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SpacingViolation {
     /// 第一个点位 ID
     pub spawn_a_id: String,
@@ -321,6 +322,7 @@ pub struct SpacingViolation {
 
 /// 排除区违规详情
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ExclusionViolation {
     /// 违规点位 ID
     pub spawn_id: String,
@@ -524,6 +526,7 @@ pub fn validate_result(result: &GenerationResult) -> PcgResult<()> {
 /// - 需求 6.6: 约束验证报告
 /// - 需求 15.3: 输出约束验证报告，说明哪些不变量被满足或被拒绝
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ValidationItem {
     /// 验证项名称（如 "reachability"、"no_overlap" 等）
     pub name: String,
@@ -562,6 +565,7 @@ impl ValidationItem {
 /// - 需求 6.6: 约束验证报告
 /// - 需求 15.3: 输出约束验证报告，说明哪些不变量被满足或被拒绝
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ValidationReport {
     /// 房间可达性验证（BFS 从 Start 出发）
     pub reachability: ValidationItem,

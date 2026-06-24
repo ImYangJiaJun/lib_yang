@@ -17,41 +17,36 @@ fn main() {
     println!("=== 约束输入示例 ===\n");
 
     // 1. 创建锚点约束：指定 Boss 房间出现在特定位置
-    let anchor = Constraint::Anchor(AnchorConstraint {
-        label: "boss_anchor".to_string(),
-        room_id: None,
-        room_type: Some(RoomType::Boss),
-        target_grid_pos: Some(yang_pcg::model::geometry::GridPoint { x: 50, y: 50 }),
-    });
+    let anchor = Constraint::Anchor(
+        AnchorConstraint::new("boss_anchor")
+            .with_room_type(RoomType::Boss)
+            .with_target_grid_pos(yang_pcg::model::geometry::GridPoint::new(50, 50)),
+    );
     println!("锚点约束: 指定 Boss 房间锚定到 (50, 50)");
 
     // 2. 创建排除区约束：禁止在指定区域放置房间和点位
-    let exclusion = Constraint::ExclusionZone(ExclusionZoneConstraint {
-        label: "forbidden_zone".to_string(),
-        min: yang_pcg::model::geometry::GridPoint { x: 0, y: 0 },
-        max: yang_pcg::model::geometry::GridPoint { x: 10, y: 10 },
-        exclude_rooms: true,
-        exclude_spawns: true,
-    });
+    let exclusion = Constraint::ExclusionZone(
+        ExclusionZoneConstraint::new(
+            "forbidden_zone",
+            yang_pcg::model::geometry::GridPoint::new(0, 0),
+            yang_pcg::model::geometry::GridPoint::new(10, 10),
+        ),
+    );
     println!("排除区约束: 禁止在 (0,0)-(10,10) 区域放置房间和点位");
 
     // 3. 创建模板引用约束：为 Treasure 房间指定模板
-    let template = Constraint::Template(TemplateConstraint {
-        room_id: None,
-        room_type: Some(RoomType::Treasure),
-        template_ref: "treasure_vault_01".to_string(),
-    });
+    let template = Constraint::Template(
+        TemplateConstraint::new("treasure_vault_01")
+            .with_room_type(RoomType::Treasure),
+    );
     println!("模板约束: 为 Treasure 房间指定模板 'treasure_vault_01'");
 
     // 4. 组合约束并构建请求
     let constraints = vec![anchor, exclusion, template];
-    let request = GenerationRequest {
-        seed: Some(12345),
-        config: GenerationConfig::default(),
-        constraints,
-        runtime_context: None,
-        trace_id: Some("constrained-demo-001".to_string()),
-    };
+    let request = GenerationRequest::new(GenerationConfig::default())
+        .with_seed(12345)
+        .with_trace_id("constrained-demo-001".to_string())
+        .with_constraints(constraints);
 
     // 5. 执行生成
     let generator = MapGenerator::new();

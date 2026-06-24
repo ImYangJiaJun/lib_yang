@@ -15,6 +15,7 @@ use crate::validation::ValidationReport;
 /// - 需求 15.3: 输出被拒绝点位
 /// - 需求 15.5: 失败阶段与失败约束输出
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RejectionReason {
     /// 被拒绝的候选点位坐标
     pub position: GridPoint,
@@ -31,6 +32,7 @@ pub struct RejectionReason {
 /// - 需求 15.3: 输出被拒绝点位
 /// - 需求 15.5: 失败阶段与失败约束输出
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SpawnDebugInfo {
     /// 候选点位总数
     pub candidate_count: usize,
@@ -50,6 +52,7 @@ pub struct SpawnDebugInfo {
 /// # 需求映射
 /// - 需求 15.1: 调试通道输出
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DebugChannels {
     /// 关键路径上的房间 ID 列表
     pub critical_path_nodes: Vec<String>,
@@ -75,6 +78,7 @@ pub struct DebugChannels {
 /// 包含生成过程中的阶段统计、备注信息、约束验证报告和调试通道数据。
 /// `trace_id` 字段用于串联日志、缓存与导出结果，实现全链路追踪。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DebugBundle {
     /// 追踪标识（可选）
     ///

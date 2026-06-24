@@ -24,6 +24,7 @@ use super::strategy::TerrainStrategy;
 /// 3. 按固定间距放置 1x1 或 2x2 的柱子
 /// 4. 柱子不能覆盖门口位置
 /// 5. 确保所有门口之间连通
+#[non_exhaustive]
 pub struct PillarStrategy;
 
 impl TerrainStrategy for PillarStrategy {

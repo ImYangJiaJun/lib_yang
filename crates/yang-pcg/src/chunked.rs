@@ -8,6 +8,7 @@ use crate::config::NormalizedConfig;
 use crate::constraint;
 use crate::digest::ConfigDigest;
 use crate::error::{PcgError, PcgResult};
+use crate::export::CURRENT_SCHEMA_VERSION;
 use crate::layout::LayoutOutput;
 use crate::model::chunk::Chunk;
 use crate::model::request::{ChunkId, GenerationRequest};
@@ -27,6 +28,7 @@ use crate::{terrain, topology};
 ///
 /// 包含楼层拓扑和布局信息，可复用于后续分块细节填充。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TopologyResult {
     /// 随机种子
     pub seed: u64,
@@ -50,6 +52,7 @@ pub struct TopologyResult {
 ///
 /// 包含单个分块内房间的地形和点位数据。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ChunkDetailResult {
     /// 分块 ID
     pub chunk_id: ChunkId,
@@ -446,7 +449,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
         metadata: ResultMetadata {
             seed,
             config_digest,
-            schema_version: "1.0.0".to_string(),
+            schema_version: CURRENT_SCHEMA_VERSION.to_string(),
             algorithm_version: env!("CARGO_PKG_VERSION").to_string(),
             target_engine_version: None,
             trace_id: request.trace_id,

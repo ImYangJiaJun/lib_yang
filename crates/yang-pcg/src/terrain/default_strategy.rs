@@ -23,6 +23,7 @@ use super::strategy::TerrainStrategy;
 /// - 事件房间（Event）
 /// - 秘密房间（Secret）
 /// - 其他未指定特殊策略的房间
+#[non_exhaustive]
 pub struct DefaultCarveStrategy;
 
 impl TerrainStrategy for DefaultCarveStrategy {

@@ -23,6 +23,7 @@ use super::strategy::TerrainStrategy;
 /// 2. 使用递归回溯算法雕刻通道
 /// 3. 确保门口位置被连接到迷宫网络
 /// 4. 根据配置的可通行比例调整迷宫密度
+#[non_exhaustive]
 pub struct MazeStrategy;
 
 impl TerrainStrategy for MazeStrategy {

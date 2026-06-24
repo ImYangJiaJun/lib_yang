@@ -39,10 +39,10 @@ pub const CURRENT_SCHEMA_VERSION: &str = "1.0.0";
 /// ```
 pub fn export_json(result: &GenerationResult) -> PcgResult<String> {
     serde_json::to_string_pretty(result).map_err(|e| {
-        PcgError::export_with_format(
+        PcgError::export_err(
             format!("JSON 序列化失败: {}", e),
             "json",
-            Some(e.to_string()),
+            e,
         )
     })
 }
@@ -72,10 +72,10 @@ pub fn export_json(result: &GenerationResult) -> PcgResult<String> {
 /// ```
 pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
     serde_json::to_string(result).map_err(|e| {
-        PcgError::export_with_format(
+        PcgError::export_err(
             format!("JSON 序列化失败: {}", e),
             "json",
-            Some(e.to_string()),
+            e,
         )
     })
 }
@@ -111,10 +111,10 @@ pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
 pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
     // 反序列化 JSON 字符串
     let result: GenerationResult = serde_json::from_str(json).map_err(|e| {
-        PcgError::export_with_format(
+        PcgError::export_err(
             format!("JSON 反序列化失败: {}", e),
             "json",
-            Some(e.to_string()),
+            e,
         )
     })?;
 

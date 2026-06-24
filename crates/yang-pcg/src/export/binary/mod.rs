@@ -66,10 +66,10 @@ pub fn export_binary(result: &GenerationResult) -> PcgResult<Vec<u8>> {
     // 因此使用 JSON 字节作为 body，保证完全兼容性。
     // 二进制格式的价值在于结构化头部和 CRC32 校验和。
     let body = serde_json::to_vec(result).map_err(|e| {
-        PcgError::export_with_format(
+        PcgError::export_err(
             format!("二进制序列化失败: {}", e),
             "binary",
-            Some(e.to_string()),
+            e,
         )
     })?;
 
@@ -227,10 +227,10 @@ pub fn import_binary(data: &[u8]) -> PcgResult<GenerationResult> {
     // 反序列化 Body（从紧凑 JSON 字节解码）
     let body = &data[HEADER_SIZE..HEADER_SIZE + body_len];
     let result: GenerationResult = serde_json::from_slice(body).map_err(|e| {
-        PcgError::export_with_format(
+        PcgError::export_err(
             format!("二进制反序列化失败: {}", e),
             "binary",
-            Some(e.to_string()),
+            e,
         )
     })?;
 

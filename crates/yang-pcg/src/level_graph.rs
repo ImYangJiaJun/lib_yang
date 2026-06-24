@@ -2,6 +2,7 @@
 
 /// 房间类型
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum RoomType {
     ///  开始
     Start,
@@ -21,6 +22,7 @@ pub enum RoomType {
 
 #[derive(Clone, Debug)]
 /// 房间节点
+#[non_exhaustive]
 pub struct RoomNode {
     ///  房间id
     pub id: usize,
@@ -31,11 +33,13 @@ pub struct RoomNode {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Edge {
     pub from: usize,
     pub to: usize,
 }
 
+#[non_exhaustive]
 pub struct LevelGraph {
     pub nodes: Vec<RoomNode>,
     pub edges: Vec<Edge>,

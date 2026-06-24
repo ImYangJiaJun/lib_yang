@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// 地形
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Terrain {
     /// 所属房间 ID
     pub room_id: RoomId,
@@ -22,6 +23,7 @@ pub struct Terrain {
 
 /// 瓦片类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TileKind {
     /// 空白(未定义)
     Empty,
@@ -39,6 +41,7 @@ pub enum TileKind {
 
 /// 2D 网格
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Grid2D<T> {
     /// 网格宽度
     pub width: u32,
@@ -85,6 +88,7 @@ impl<T: Clone> Grid2D<T> {
 
 /// 保留区
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ReservedZone {
     /// 区域 ID
     pub id: String,
@@ -100,6 +104,7 @@ pub struct ReservedZone {
 
 /// 保留区边界
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ReservedZoneBounds {
     /// 矩形区域
     Rect { min: GridPoint, max: GridPoint },
@@ -111,6 +116,7 @@ pub enum ReservedZoneBounds {
 
 /// 连通性摘要
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ConnectivitySummary {
     /// 是否所有门口之间可达
     pub all_doors_connected: bool,

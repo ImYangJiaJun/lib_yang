@@ -26,6 +26,7 @@ use crate::spawn::{SpawnOutput, SpawnOutputWithDebug};
 /// 部分结果（分块切片）天然不满足「rooms 数量 == topology.nodes 数量」之类的整图结构检查，
 /// 也不应被当作独立可达图校验。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValidationScope {
     /// 整层结果：覆盖完整图的全部不变量（结构一致性 + 可达性 + 重叠 + 连通 + 间距）。
     FullFloor,

@@ -4,6 +4,7 @@ use crate::model::result::GenerationResult;
 
 /// 缓存作用域。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CacheScope {
     FullFloor,
     Chunk(String),
@@ -17,6 +18,7 @@ pub enum CacheScope {
 /// 注意：`trace_id` 故意不包含在缓存键中，因为相同的 seed + config 应该命中缓存，
 /// 不论调用方使用什么追踪标识。`trace_id` 仅用于日志串联和导出元数据关联。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CacheKey {
     pub schema_version: String,
     pub algorithm_version: String,

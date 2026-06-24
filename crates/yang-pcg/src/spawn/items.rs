@@ -13,6 +13,7 @@ use super::sampling::{select_spaced_points, select_spaced_points_tracked};
 
 /// 交互物点位生成的跟踪结果。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ItemSpawnTracked {
     /// 生成的点位列表
     pub spawns: Vec<SpawnPoint>,
