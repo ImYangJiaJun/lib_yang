@@ -5,9 +5,20 @@ use rand::RngExt;
 use rand::TryRng;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
-use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
-use std::hash::{Hash, Hasher};
+
+/// FNV-1a 64-bit hash — deterministic, stable across all Rust versions.
+/// 用于替代 std DefaultHasher（SipHash 无跨版本稳定契约）。
+pub(crate) fn fnv1a_64(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
 
 /// 稳定的随机数生成器接口
 ///
@@ -42,6 +53,7 @@ use std::hash::{Hash, Hasher};
 /// let mut rng2 = StableRng::from_seed(12345);
 /// assert_eq!(rng1.random_range(0, 100), rng2.random_range(0, 100));
 /// ```
+#[non_exhaustive]
 pub struct StableRng {
     /// 底层 PCG 随机数生成器
     inner: Pcg64,
@@ -79,10 +91,8 @@ impl StableRng {
     /// * `seed` - 32 字节的种子数组
     pub fn from_seed_bytes(seed: [u8; 32]) -> Self {
         let inner = Pcg64::from_seed(seed);
-        // 从字节数组计算一个 u64 种子用于记录
-        let mut hasher = DefaultHasher::new();
-        seed.hash(&mut hasher);
-        let seed_u64 = hasher.finish();
+        // 从字节数组计算一个 u64 种子用于记录（FNV-1a，跨版本稳定）
+        let seed_u64 = fnv1a_64(&seed);
 
         Self {
             inner,
@@ -127,13 +137,12 @@ impl StableRng {
     /// let mut room_1_rng = topology_rng.derive("room:1");
     /// ```
     pub fn derive(&self, label: &str) -> Self {
-        // 使用当前种子和标签计算新种子
-        let mut hasher = DefaultHasher::new();
-        self.seed.hash(&mut hasher);
-        label.hash(&mut hasher);
-        let new_seed = hasher.finish();
+        // 使用当前种子和标签计算新种子（FNV-1a，跨版本稳定）
+        let mut bytes = self.seed.to_le_bytes().to_vec();
+        bytes.extend_from_slice(label.as_bytes());
+        let derived = fnv1a_64(&bytes);
 
-        Self::from_seed(new_seed)
+        Self::from_seed(derived)
     }
 
     /// 获取当前种子值
@@ -203,6 +212,15 @@ impl StableRng {
     /// let value = rng.gen_bool_with_probability(0.7); // 70% 概率返回 true
     /// ```
     pub fn gen_bool_with_probability(&mut self, probability: f64) -> bool {
+        if !probability.is_finite() {
+            return false;
+        }
+        if probability <= 0.0 {
+            return false;
+        }
+        if probability >= 1.0 {
+            return true;
+        }
         self.inner.random_bool(probability)
     }
 
@@ -374,14 +392,16 @@ impl StableRng {
     /// }
     /// ```
     pub fn choose_weighted<'a, T>(&mut self, slice: &'a [T], weights: &[f64]) -> Option<&'a T> {
-        assert_eq!(slice.len(), weights.len(), "slice 和 weights 长度必须相同");
+        if slice.len() != weights.len() {
+            return None;
+        }
 
         if slice.is_empty() {
             return None;
         }
 
         let total_weight: f64 = weights.iter().sum();
-        if total_weight <= 0.0 {
+        if !total_weight.is_finite() || total_weight <= 0.0 {
             return None;
         }
 
