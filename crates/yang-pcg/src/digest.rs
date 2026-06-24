@@ -2,8 +2,7 @@
 // 用于生成配置的稳定哈希，用于缓存和回归验证
 
 use crate::config::GenerationConfig;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use crate::rng::fnv1a_64;
 
 /// 配置摘要
 ///
@@ -13,10 +12,11 @@ use std::hash::{Hash, Hasher};
 /// - 导出签名
 ///
 /// 摘要保证：
-/// - 相同配置生成相同摘要
+/// - 相同配置生成相同摘要（同一编译二进制内确定）
 /// - 不同配置生成不同摘要（高概率）
-/// - 摘要格式稳定，不受 Rust 版本影响
+/// - 跨 Rust 版本稳定性取决于 FNV-1a (fnv1a_64) 的算法不变性——FNV 是固定规范，不随 Rust 版本变化
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct ConfigDigest {
     /// 十六进制哈希字符串
     hash: String,
@@ -38,11 +38,8 @@ impl ConfigDigest {
     pub fn from_config(config: &GenerationConfig) -> Self {
         // 使用 serde_json 序列化配置以确保稳定性
         // 这样可以避免 Rust 默认 Hash 实现的不稳定性
-        let json = serde_json::to_string(config).unwrap_or_else(|_| String::new());
-
-        let mut hasher = DefaultHasher::new();
-        json.hash(&mut hasher);
-        let hash_value = hasher.finish();
+        let json = serde_json::to_string(config).expect("GenerationConfig 必须可序列化");
+        let hash_value = fnv1a_64(json.as_bytes());
 
         Self {
             hash: format!("{:016x}", hash_value),
@@ -69,10 +66,8 @@ impl ConfigDigest {
     /// );
     /// ```
     pub fn seed_from_config(config: &GenerationConfig) -> u64 {
-        let json = serde_json::to_string(config).unwrap_or_else(|_| String::new());
-        let mut hasher = DefaultHasher::new();
-        json.hash(&mut hasher);
-        hasher.finish()
+        let json = serde_json::to_string(config).expect("GenerationConfig 必须可序列化");
+        fnv1a_64(json.as_bytes())
     }
 
     /// 从字符串创建摘要
