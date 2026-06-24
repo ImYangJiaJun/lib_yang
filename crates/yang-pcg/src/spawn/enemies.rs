@@ -223,7 +223,7 @@ fn adjusted_enemy_count_range(room_type: RoomType, base: RangeU16) -> RangeU16 {
 }
 
 fn candidate_points(terrain: &Terrain, min_distance_from_entrance: u16) -> Vec<GridPoint> {
-    let mut points = Vec::new();
+    let mut points = Vec::with_capacity((terrain.grid_size.width * terrain.grid_size.height) as usize);
     let min_safe_distance = i32::from(min_distance_from_entrance);
     let doorway_positions: Vec<GridPoint> = (0..terrain.grid_size.height as i32)
         .flat_map(|y| {

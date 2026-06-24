@@ -1,7 +1,7 @@
 // 验证逻辑
 // 负责验证配置、请求与生成结果的不变量
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -374,7 +374,7 @@ pub fn validate_spawn_spacing(
     let spacing = min_spacing.unwrap_or(DEFAULT_MIN_SPACING);
 
     // 1. 按房间分组点位
-    let mut room_spawns: HashMap<&str, Vec<&SpawnPoint>> = HashMap::new();
+    let mut room_spawns: BTreeMap<&str, Vec<&SpawnPoint>> = BTreeMap::new();
     for spawn in spawns {
         room_spawns
             .entry(spawn.room_id.as_str())

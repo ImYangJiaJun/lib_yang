@@ -68,12 +68,15 @@ impl TerrainStrategy for OrganicStrategy {
             .collect();
 
         // 步骤 1：随机初始化网格
-        let mut tiles = initialize_random_grid(width, height, config.obstacle_density, rng);
+        let mut grid_a = initialize_random_grid(width, height, config.obstacle_density, rng);
+        let mut grid_b = grid_a.clone();
 
-        // 步骤 2：应用 cellular automata 规则
+        // 步骤 2：应用 cellular automata 规则（双缓冲，避免每次迭代重新分配）
         for _ in 0..CA_ITERATIONS {
-            tiles = apply_ca_step(&tiles, width, height);
+            apply_ca_step_into(&grid_a, &mut grid_b, width, height);
+            std::mem::swap(&mut grid_a, &mut grid_b);
         }
+        let mut tiles = grid_a;
 
         // 步骤 3：确保外墙边框
         for y in 0..height as i32 {
@@ -151,33 +154,37 @@ fn initialize_random_grid(
     tiles
 }
 
-/// 应用一步 cellular automata 规则
+/// 应用一步 cellular automata 规则（双缓冲版本，写入目标网格以避免分配）
 ///
 /// 使用 B5678/S45678 变体规则（适合生成洞穴）：
 /// - 如果一个格子周围有 >= WALL_THRESHOLD 个墙体邻居，则变为墙
 /// - 否则变为地板
-fn apply_ca_step(tiles: &Grid2D<TileKind>, width: u32, height: u32) -> Grid2D<TileKind> {
-    let mut new_tiles = Grid2D::new(width, height, TileKind::Floor);
-
+///
+/// `src` 为当前代网格（只读），`dst` 为下一代网格（写入目标）。
+/// 调用方通过 swap 交替双缓冲来复用在两个网格之间。
+fn apply_ca_step_into(
+    src: &Grid2D<TileKind>,
+    dst: &mut Grid2D<TileKind>,
+    width: u32,
+    height: u32,
+) {
     for y in 0..height as i32 {
         for x in 0..width as i32 {
             // 边框始终为墙
             if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
-                new_tiles.set(x, y, TileKind::Wall);
+                dst.set(x, y, TileKind::Wall);
                 continue;
             }
 
-            let wall_count = count_wall_neighbors(tiles, x, y);
+            let wall_count = count_wall_neighbors(src, x, y);
 
             if wall_count >= WALL_THRESHOLD {
-                new_tiles.set(x, y, TileKind::Wall);
+                dst.set(x, y, TileKind::Wall);
             } else {
-                new_tiles.set(x, y, TileKind::Floor);
+                dst.set(x, y, TileKind::Floor);
             }
         }
     }
-
-    new_tiles
 }
 
 /// 计算 8 邻域中的墙体数量

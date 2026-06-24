@@ -1,29 +1,48 @@
 // 走廊生成
 
+use std::collections::HashMap;
+
 use crate::config::ConnectionStrategy;
+use crate::error::{PcgError, PcgResult};
 use crate::model::geometry::GridPoint;
 use crate::model::room::{Corridor, CorridorPath, DoorAnchor, RoomEdge};
 
 /// 依据拓扑边和门锚点生成走廊路径。
+///
+/// # 错误
+///
+/// 当某条边缺少对应的门锚点时返回 `PcgError::Layout`。
 pub fn generate_corridors(
     edges: &[RoomEdge],
     anchors: &[DoorAnchor],
     width_tiles: u16,
     strategy: ConnectionStrategy,
-) -> Vec<Corridor> {
+) -> PcgResult<Vec<Corridor>> {
+    // 构建 (edge_id, room_id) -> &DoorAnchor 的 HashMap，将 O(n) 查找降为 O(1)
+    let anchor_map: HashMap<(&str, &str), &DoorAnchor> = anchors
+        .iter()
+        .map(|a| ((a.edge_id.as_str(), a.room_id.as_str()), a))
+        .collect();
+
     let mut corridors = Vec::with_capacity(edges.len());
 
     for (edge_index, edge) in edges.iter().enumerate() {
-        let from_anchor = anchors
-            .iter()
-            .find(|anchor| anchor.edge_id == edge.id && anchor.room_id == edge.from_room);
-        let to_anchor = anchors
-            .iter()
-            .find(|anchor| anchor.edge_id == edge.id && anchor.room_id == edge.to_room);
-
-        let (Some(from_anchor), Some(to_anchor)) = (from_anchor, to_anchor) else {
-            continue;
-        };
+        let from_anchor = anchor_map
+            .get(&(edge.id.as_str(), edge.from_room.as_str()))
+            .ok_or_else(|| {
+                PcgError::layout(format!(
+                    "边 '{}' 缺少 from_room '{}' 的门锚点",
+                    edge.id, edge.from_room
+                ))
+            })?;
+        let to_anchor = anchor_map
+            .get(&(edge.id.as_str(), edge.to_room.as_str()))
+            .ok_or_else(|| {
+                PcgError::layout(format!(
+                    "边 '{}' 缺少 to_room '{}' 的门锚点",
+                    edge.id, edge.to_room
+                ))
+            })?;
 
         let path = match strategy {
             ConnectionStrategy::Straight | ConnectionStrategy::SharedEdge
@@ -61,5 +80,5 @@ pub fn generate_corridors(
         });
     }
 
-    corridors
+    Ok(corridors)
 }

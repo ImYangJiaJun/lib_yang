@@ -1,14 +1,18 @@
 // 地形策略选择器
 // 根据房间类型、主题标签和模板引用选择合适的地形生成策略
 
-use crate::model::room::{Room, RoomType};
+use crate::config::TerrainConfig;
+use crate::error::PcgResult;
+use crate::model::room::{DoorAnchor, Room, RoomType};
+use crate::model::terrain::Terrain;
+use crate::rng::StableRng;
 
 use super::default_strategy::DefaultCarveStrategy;
 use super::maze::MazeStrategy;
 use super::open_arena::OpenArenaStrategy;
 use super::organic::OrganicStrategy;
 use super::pillar::PillarStrategy;
-use super::strategy::TerrainStrategy;
+use super::strategy::{TerrainStrategy, TerrainStrategyKind};
 
 /// 地形策略选择器
 ///
@@ -32,31 +36,66 @@ use super::strategy::TerrainStrategy;
 /// let strategy = select_strategy(&room);
 /// assert_eq!(strategy.name(), "open_arena");
 /// ```
-pub fn select_strategy(room: &Room) -> Box<dyn TerrainStrategy> {
+pub fn select_strategy(room: &Room) -> TerrainStrategyKind {
     // 规则 1：Boss 房间使用开放式策略
     if room.room_type == RoomType::Boss {
-        return Box::new(OpenArenaStrategy);
+        return TerrainStrategyKind::OpenArena;
     }
 
     // 规则 2：Combat/Elite 且带有 "pillar" 标签使用柱状策略
     if matches!(room.room_type, RoomType::Combat | RoomType::Elite)
         && has_theme_tag(room, "pillar")
     {
-        return Box::new(PillarStrategy);
+        return TerrainStrategyKind::Pillar;
     }
 
     // 规则 3：Puzzle 且带有 "maze" 标签使用迷宫策略
     if room.room_type == RoomType::Puzzle && has_theme_tag(room, "maze") {
-        return Box::new(MazeStrategy);
+        return TerrainStrategyKind::Maze;
     }
 
     // 规则 4：任何房间带有 "organic" 或 "cave" 标签使用有机策略
     if has_theme_tag(room, "organic") || has_theme_tag(room, "cave") {
-        return Box::new(OrganicStrategy);
+        return TerrainStrategyKind::Organic;
     }
 
     // 规则 5：默认策略
-    Box::new(DefaultCarveStrategy)
+    TerrainStrategyKind::DefaultCarve
+}
+
+impl TerrainStrategyKind {
+    /// 获取策略名称（与各策略结构体的 `TerrainStrategy::name()` 返回值一致）。
+    pub fn name(&self) -> &str {
+        match self {
+            Self::DefaultCarve => "default_carve",
+            Self::OpenArena => "open_arena",
+            Self::Maze => "maze",
+            Self::Organic => "organic",
+            Self::Pillar => "pillar",
+        }
+    }
+
+    /// 生成房间地形 —— 枚举匹配派发到具体策略结构体。
+    ///
+    /// 签名与 [`TerrainStrategy::generate`] 完全一致，调用方无需感知
+    /// 底层是哪个具体结构体。
+    pub fn generate(
+        &self,
+        room: &Room,
+        anchors: &[DoorAnchor],
+        config: &TerrainConfig,
+        rng: &mut StableRng,
+    ) -> PcgResult<Terrain> {
+        match self {
+            Self::DefaultCarve => {
+                DefaultCarveStrategy.generate(room, anchors, config, rng)
+            }
+            Self::OpenArena => OpenArenaStrategy.generate(room, anchors, config, rng),
+            Self::Maze => MazeStrategy.generate(room, anchors, config, rng),
+            Self::Organic => OrganicStrategy.generate(room, anchors, config, rng),
+            Self::Pillar => PillarStrategy.generate(room, anchors, config, rng),
+        }
+    }
 }
 
 /// 检查房间是否包含指定的主题标签

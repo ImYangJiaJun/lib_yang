@@ -29,7 +29,7 @@ pub use open_arena::OpenArenaStrategy;
 pub use organic::OrganicStrategy;
 pub use pillar::PillarStrategy;
 pub use selector::select_strategy;
-pub use strategy::TerrainStrategy;
+pub use strategy::{TerrainStrategy, TerrainStrategyKind};
 
 /// 批量生成房间地形。
 ///
@@ -50,15 +50,12 @@ pub fn generate_terrains(
             continue;
         }
 
-        // 根据房间属性选择策略
-        let strategy = select_strategy(room);
-
-        // 使用选定策略生成地形；策略失败回退默认策略，回退也失败则传播错误
-        let mut terrain = match strategy.generate(room, door_anchors, terrain_config, rng) {
+        // 根据房间属性选择策略并生成地形；策略失败回退默认策略，回退也失败则传播错误
+        let mut terrain = match select_strategy(room).generate(room, door_anchors, terrain_config, rng) {
             Ok(terrain) => terrain,
             Err(primary_err) => {
                 let mut fallback_rng = rng.derive(&format!("fallback:{}", room.id));
-                DefaultCarveStrategy
+                TerrainStrategyKind::DefaultCarve
                     .generate(room, door_anchors, terrain_config, &mut fallback_rng)
                     .map_err(|_| primary_err)?
             }

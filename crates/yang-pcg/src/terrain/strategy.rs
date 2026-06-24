@@ -7,6 +7,34 @@ use crate::model::room::{DoorAnchor, Room};
 use crate::model::terrain::Terrain;
 use crate::rng::StableRng;
 
+/// 地形策略枚举 —— 静态派发替代 `Box<dyn TerrainStrategy>`
+///
+/// 每个变体对应一种地形生成策略。通过 [`generate`](TerrainStrategyKind::generate)
+/// 方法统一派发到各具体策略结构体的实现，消除动态派发开销。
+///
+/// # 变体
+///
+/// | 变体 | 对应结构体 | 触发条件 |
+/// |------|-----------|---------|
+/// | `DefaultCarve` | [`DefaultCarveStrategy`] | 默认回退 |
+/// | `OpenArena` | [`OpenArenaStrategy`] | Boss 房间 |
+/// | `Maze` | [`MazeStrategy`] | Puzzle + maze 标签 |
+/// | `Organic` | [`OrganicStrategy`] | organic / cave 标签 |
+/// | `Pillar` | [`PillarStrategy`] | Combat/Elite + pillar 标签 |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainStrategyKind {
+    /// 默认雕刻策略
+    DefaultCarve,
+    /// 开放竞技场策略
+    OpenArena,
+    /// 迷宫策略
+    Maze,
+    /// 有机洞穴策略
+    Organic,
+    /// 柱状掩体策略
+    Pillar,
+}
+
 /// 地形生成策略 trait
 ///
 /// 定义统一的地形生成接口，所有地形策略（如开放式、柱状、迷宫式、有机式等）

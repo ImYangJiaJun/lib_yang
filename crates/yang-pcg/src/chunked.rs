@@ -17,7 +17,7 @@ use crate::model::room::{Corridor, DoorAnchor, Room, RoomGraph};
 use crate::model::spawn::SpawnPoint;
 use crate::model::terrain::Terrain;
 use crate::rng::StableRng;
-use crate::terrain::strategy::TerrainStrategy;
+use crate::terrain::strategy::TerrainStrategyKind;
 use crate::ue;
 use crate::validation::{
     validate_no_overlap, validate_request, validate_spawn_spacing, validate_terrain_connectivity,
@@ -149,12 +149,13 @@ pub fn fill_chunk_details(
         .filter(|room| chunk.room_ids.contains(&room.id))
         .collect();
 
-    // 筛选分块内房间相关的门锚点
-    let chunk_anchors: Vec<&DoorAnchor> = topology_result
+    // 筛选分块内房间相关的门锚点（owned，避免在循环内每轮重复 clone）
+    let chunk_anchors: Vec<DoorAnchor> = topology_result
         .layout
         .door_anchors
         .iter()
         .filter(|anchor| chunk.room_ids.contains(&anchor.room_id))
+        .cloned()
         .collect();
 
     let normalized = &topology_result.normalized;
@@ -192,10 +193,9 @@ pub fn fill_chunk_details(
 
         // 生成地形
         let terrain_config = &normalized.config.terrain;
-        let strategy = terrain::select_strategy(room);
-        let terrain_result = strategy.generate(
+        let terrain_result = terrain::select_strategy(room).generate(
             room,
-            &chunk_anchors.iter().copied().cloned().collect::<Vec<_>>(),
+            &chunk_anchors,
             terrain_config,
             &mut terrain_rng,
         );
@@ -244,10 +244,10 @@ pub fn fill_chunk_details(
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng =
                     root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
-                let mut t = terrain::DefaultCarveStrategy
+                let mut t = TerrainStrategyKind::DefaultCarve
                     .generate(
                         room,
-                        &chunk_anchors.iter().copied().cloned().collect::<Vec<_>>(),
+                        &chunk_anchors,
                         terrain_config,
                         &mut fallback_rng,
                     )
@@ -391,9 +391,12 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
         let mut terrain_rng = root_rng.derive(&format!("terrain:{}", room.id));
 
         let terrain_config = &normalized.config.terrain;
-        let strategy = terrain::select_strategy(room);
-        let terrain_result =
-            strategy.generate(room, &target_anchors, terrain_config, &mut terrain_rng);
+        let terrain_result = terrain::select_strategy(room).generate(
+            room,
+            &target_anchors,
+            terrain_config,
+            &mut terrain_rng,
+        );
 
         match terrain_result {
             Ok(mut t) => {
@@ -435,7 +438,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
             Err(primary_err) => {
                 // 策略失败时回退到默认策略；若回退也失败，则传播错误而非静默丢房间
                 let mut fallback_rng = root_rng.derive(&format!("terrain:fallback:{}", room.id));
-                let mut t = terrain::DefaultCarveStrategy
+                let mut t = TerrainStrategyKind::DefaultCarve
                     .generate(room, &target_anchors, terrain_config, &mut fallback_rng)
                     .map_err(|_| primary_err)?;
                 terrain::repair_terrain_connectivity(&mut t);

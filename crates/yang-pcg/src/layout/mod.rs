@@ -34,7 +34,7 @@ pub fn solve_layout(
         &door_anchors,
         config.config.corridor.width,
         config.config.corridor.connection_strategy,
-    );
+    )?;
 
     Ok(LayoutOutput {
         rooms,

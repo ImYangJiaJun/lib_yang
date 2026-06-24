@@ -7,6 +7,97 @@ use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use std::convert::Infallible;
 
+// ============================================================================
+// RNG 派生标签契约（确定性种子复现的基础）
+// ============================================================================
+//
+// 以下列出 PCG 管线中所有 `StableRng::derive(label)` 调用使用的标签字符串。
+// 标签通过 FNV-1a 哈希生成子种子，因此标签的**任何改动**（重命名、增删字符、
+// 调整大小写）都会改变派生出的随机流，破坏相同种子下的地图复现性。
+//
+// 变更纪律：
+//   - 绝对不要重命名已有标签。如需新标签，追加新的。
+//   - 绝对不要改变标签的派生层级（从哪个父 RNG 派生）。因为父 RNG 的种子不同，
+//     同一标签字符串也会产生不同的子种子。
+//   - 绝对不要在已有标签之前插入新的 derive() 调用——PCG64 是顺序生成器，
+//     额外的 derive 调用会消费父 RNG 的随机字节，使后续 derive 的种子漂移。
+//     StableRng::derive() 仅基于当前 seed 做哈希，不消费 inner RNG，
+//     所以同层级新增 derive 不会影响已有的派生标签；但在同一父 RNG 上增删不同
+//     标签的 derive 调用顺序不影响结果——derive 是纯函数，只依赖 self.seed 和
+//     label 字符串。
+//
+// ============================
+// 模式一：OfflineFullFloor（generator.rs: generate）
+// ============================
+//
+// 第一阶段标签（直接派生自根 RNG）：
+//   "topology"          generator.rs:66    topology::generate_topology
+//   "layout"            generator.rs:73    backend.solve_layout
+//   "terrain"           generator.rs:79    backend.generate_terrains
+//   "spawn"             generator.rs:90    generate_spawn_full_floor
+//
+// 第二阶段标签（派生自 "terrain" RNG）：
+//   "fallback:{id}"     terrain/mod.rs:60  DefaultCarveStrategy 地形回退
+//     ^-- {id} = room.id，如 "fallback:Room_0"
+//
+// 第二阶段标签（派生自 "spawn" RNG）：
+//   "items:{id}"        spawn/mod.rs:81    generate_item_spawns_for_room
+//   "enemies:{id}"      spawn/mod.rs:82    generate_enemy_spawns_for_room_excluding
+//     ^-- {id} = room.id，如 "items:Room_0"、"enemies:Room_0"
+//   （带调试跟踪版本同路径：spawn/mod.rs:132-133）
+//
+// ============================
+// 模式二：RuntimeChunked（chunked.rs: generate_chunk）
+// ============================
+//
+// 第一阶段标签（直接派生自根 RNG）：
+//   "topology"          chunked.rs:312     topology::generate_topology
+//   "layout"            chunked.rs:317     backend.solve_layout
+//
+// 第二阶段标签（直接派生自根 RNG）：
+//   "terrain:{id}"      chunked.rs:391     per-room terrain generation
+//     ^-- {id} = room.id，如 "terrain:Room_0"
+//   "items:{id}"        chunked.rs:404     generate_item_spawns_for_room
+//   "enemies:{id}"      chunked.rs:405     generate_enemy_spawns_for_room_excluding
+//     ^-- {id} = room.id，如 "items:Room_0"、"enemies:Room_0"
+//
+// 回退标签（地形策略失败时，直接派生自根 RNG）：
+//   "terrain:fallback:{id}"  chunked.rs:437  DefaultCarveStrategy fallback
+//     ^-- {id} = room.id，如 "terrain:fallback:Room_0"
+//
+// ============================
+// 模式三：HybridPrecompute（chunked.rs: generate_topology_only + fill_chunk_details）
+// ============================
+//
+// 第一阶段（generate_topology_only）：
+//   "topology"          chunked.rs:93      topology::generate_topology
+//   "layout"            chunked.rs:98      backend.solve_layout
+//
+// 第二阶段 — 按分块填充（fill_chunk_details），直接派生自根 RNG：
+//   "terrain:chunk:{c}:{r}"    chunked.rs:191  per-chunk per-room terrain
+//   "items:chunk:{c}:{r}"      chunked.rs:210  per-chunk per-room items
+//   "enemies:chunk:{c}:{r}"    chunked.rs:212  per-chunk per-room enemies
+//     ^-- {c} = chunk_id, {r} = room.id
+//     如 "terrain:chunk:Chunk_0:Room_0"
+//
+// 回退标签（地形策略失败时，直接派生自根 RNG）：
+//   "terrain:fallback:{c}:{r}"  chunked.rs:246  DefaultCarveStrategy fallback
+//     ^-- {c} = chunk_id, {r} = room.id
+//     如 "terrain:fallback:Chunk_0:Room_0"
+//
+// ============================
+// 跨模式兼容性说明
+// ============================
+//
+// 同一 seed 在不同模式下会产出不同地图，这是**有意设计**：
+// 三种模式的 RNG 派生路径不同（标签字符串、派生层级、派生顺序均不同），
+// 因此相同的根种子会产生不同的子 RNG 序列。这不是 bug——分块/混合路径需要
+// 按 chunk 维度派生标签以避免不同 chunk 间的随机数碰撞，而整层路径按阶段
+// 派生更高效。
+//
+// 如果想跨模式获得可比较的结果，必须在各模式的请求中显式指定相同的 seed，
+// 并接受不同模式的自然差异。
+
 /// FNV-1a 64-bit hash — deterministic, stable across all Rust versions.
 /// 用于替代 std DefaultHasher（SipHash 无跨版本稳定契约）。
 pub(crate) fn fnv1a_64(data: &[u8]) -> u64 {

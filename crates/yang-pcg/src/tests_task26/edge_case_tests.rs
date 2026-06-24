@@ -3,11 +3,11 @@
 // 需求映射：18.1
 
 use crate::config::{
-    EnemySpawnConfig, GenerationConfig, ItemSpawnConfig, RangeU16, RoomSizeConfig,
+    EnemySpawnConfig, GenerationConfig, GenerationMode, ItemSpawnConfig, RangeU16, RoomSizeConfig,
 };
 use crate::generator::MapGenerator;
 use crate::layout;
-use crate::model::request::GenerationRequest;
+use crate::model::request::{GenerationRequest, RuntimeContext};
 use crate::rng::StableRng;
 use crate::spawn;
 use crate::terrain;
@@ -352,4 +352,85 @@ fn test_full_pipeline_min_config() {
 
     assert_eq!(result.rooms.len(), 2);
     assert!(!result.corridors.is_empty());
+}
+
+/// 完整流水线在 RuntimeChunked 模式下应成功
+#[test]
+fn test_full_pipeline_min_config_runtime_chunked() {
+    let config = GenerationConfig {
+        room_count: RangeU16 { min: 2, max: 2 },
+        critical_path_length: RangeU16 { min: 2, max: 2 },
+        branch_count: RangeU16 { min: 0, max: 0 },
+        dead_end_count: RangeU16 { min: 0, max: 0 },
+        generation_mode: GenerationMode::RuntimeChunked,
+        capability_flags: crate::config::CapabilityFlags {
+            runtime_chunked: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let generator = MapGenerator::new();
+    let result = generator
+        .generate(GenerationRequest {
+            seed: Some(42),
+            config,
+            constraints: vec![],
+            runtime_context: Some(RuntimeContext {
+                focus_position: None,
+                interest_radius: None,
+                requested_chunks: vec!["chunk-0-0".to_string()],
+                caller_tag: None,
+            }),
+            trace_id: None,
+        })
+        .expect("RuntimeChunked 模式最小配置完整流水线应成功");
+
+    assert_eq!(result.rooms.len(), 2);
+    assert!(!result.corridors.is_empty());
+}
+
+/// 完整流水线在 HybridPrecompute 模式下应成功
+#[test]
+fn test_full_pipeline_min_config_hybrid() {
+    let config = GenerationConfig {
+        room_count: RangeU16 { min: 2, max: 2 },
+        critical_path_length: RangeU16 { min: 2, max: 2 },
+        branch_count: RangeU16 { min: 0, max: 0 },
+        dead_end_count: RangeU16 { min: 0, max: 0 },
+        generation_mode: GenerationMode::HybridPrecompute,
+        capability_flags: crate::config::CapabilityFlags {
+            hybrid_precompute: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let generator = MapGenerator::new();
+
+    // 第一阶段：生成拓扑和布局
+    let topology_result = generator
+        .generate_topology_only(GenerationRequest {
+            seed: Some(42),
+            config,
+            constraints: vec![],
+            runtime_context: None,
+            trace_id: None,
+        })
+        .expect("HybridPrecompute 拓扑阶段应成功");
+
+    // 第二轮：填充分块细节
+    assert!(
+        !topology_result.chunks.is_empty(),
+        "预计算阶段应生成至少一个分块"
+    );
+    for chunk in &topology_result.chunks {
+        let detail_result = generator
+            .fill_chunk_details(&topology_result, &chunk.id)
+            .expect("分块细节填充应成功");
+        assert_eq!(detail_result.chunk_id, chunk.id);
+        assert!(
+            !detail_result.terrains.is_empty(),
+            "分块 {} 应包含地形",
+            chunk.id
+        );
+    }
 }
