@@ -43,7 +43,7 @@ use crate::rng::StableRng;
 ///     }
 /// }
 /// ```
-pub trait TerrainStrategy {
+pub trait TerrainStrategy: Send + Sync {
     /// 获取策略名称
     ///
     /// 返回策略的唯一标识名称，用于调试输出和日志记录。

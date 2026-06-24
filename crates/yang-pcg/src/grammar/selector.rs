@@ -11,6 +11,7 @@ use crate::rng::StableRng;
 ///
 /// 表示一条可选的 Grammar 规则，包含名称和基础权重。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct GrammarRule {
     /// 规则名称（对应外部 Grammar 系统的规则标识）
     pub name: String,
@@ -22,6 +23,7 @@ pub struct GrammarRule {
 ///
 /// 提供确定性权重选择所需的上下文信息，包括朝向、房间主题、走廊长度和房间类型。
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct GrammarContext {
     /// 朝向（影响规则权重调整）
     pub facing: Option<CardinalDir>,
@@ -65,6 +67,7 @@ pub struct GrammarContext {
 /// let selector = WeightedRuleSelector;
 /// let selected = selector.select(&rules, &context, &mut rng).unwrap();
 /// ```
+#[non_exhaustive]
 pub struct WeightedRuleSelector;
 
 impl WeightedRuleSelector {
@@ -103,7 +106,7 @@ impl WeightedRuleSelector {
             .collect();
 
         let total_weight: f64 = adjusted_weights.iter().sum();
-        if total_weight <= 0.0 {
+        if !total_weight.is_finite() || total_weight <= 0.0 {
             return Err(PcgError::capability_unavailable(
                 "所有 Grammar 规则的调整后权重为零",
                 "grammar",
