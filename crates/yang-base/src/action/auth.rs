@@ -432,33 +432,47 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> RefreshAction<R, A> {
     }
 }
 
+/// Refresh Token 旋转刷新 Action。
+///
+/// 此方法使用 **Token Rotation** 模式：每次刷新时同时撤销旧 Refresh Token 并签发
+/// 新的 Token 对（Access Token + Refresh Token），防止 Refresh Token 被盗后的
+/// 无限刷新攻击。
+///
+/// # 破坏性变更（BREAKING CHANGE）
+///
+/// 原 `RefreshAction` 仅返回 [`AccessTokenResponse`]（只含新的 Access Token）。
+/// 现改为返回 [`TokenPairResponse`]（同时包含新的 Access Token 与新的 Refresh Token）。
+/// 请更新客户端以替换保存的 Refresh Token，否则旧 Refresh Token 将无法用于后续刷新。
 #[async_trait]
 impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<R, A> {
     type Input = RefreshInput;
-    type Output = AccessTokenResponse;
+    type Output = TokenPairResponse;
 
     async fn handle(
         &self,
         ctx: ActionContext,
         input: RefreshInput,
-    ) -> Result<AccessTokenResponse, BaseError> {
+    ) -> Result<TokenPairResponse, BaseError> {
         let request_id = ctx.request_id.to_string();
         let manager = ctx.tools.token_manager();
 
         let run = async {
-            // 撤销校验：被拉黑的 Refresh Token 不能再刷新（已含签名 + 过期校验）
+            // 先验证旧 Token 以获取 subject（供业务解析器确定新声明）
             let claims = manager.verify_token_checked(&input.refresh_token).await?;
             if claims.token_type != "refresh" {
                 return Err(BaseError::TokenTypeInvalid("期望 refresh token".to_string()));
             }
-            // 复用已验证的 claims，按业务解析器决定新声明，直接签发——不再二次验证
+            // 按业务解析器决定新 Token 的自定义声明
             let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
-            let access_token = manager.generate_access_token(&claims.sub, custom_claims)?;
-            Ok::<(String, String), BaseError>((access_token, claims.sub))
+            // 使用 Token Rotation：撤销旧 Refresh Token 并签发新 Token 对
+            let (access_token, refresh_token) = manager
+                .rotate_refresh_token(&input.refresh_token, custom_claims)
+                .await?;
+            Ok::<_, BaseError>((access_token, refresh_token, claims.sub))
         };
 
         match run.await {
-            Ok((access_token, sub)) => {
+            Ok((access_token, refresh_token, sub)) => {
                 self.audit
                     .on_success(AuthAuditEvent {
                         request_id,
@@ -467,7 +481,10 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
                         error_code: None,
                     })
                     .await;
-                Ok(AccessTokenResponse { access_token })
+                Ok(TokenPairResponse {
+                    access_token,
+                    refresh_token,
+                })
             }
             Err(e) => {
                 self.audit

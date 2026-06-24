@@ -2,44 +2,42 @@
 // 使用固定种子生成结果，验证关键字段的哈希值稳定
 // 需求映射：18.2
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use crate::config::GenerationConfig;
 use crate::generator::MapGenerator;
 use crate::model::request::GenerationRequest;
+use crate::rng::fnv1a_64;
 
-/// 计算房间 ID 列表的哈希值
+/// 计算房间 ID 列表的哈希值（FNV-1a，跨版本稳定）
 fn hash_room_ids(rooms: &[crate::model::room::Room]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut data = Vec::new();
     for room in rooms {
-        room.id.hash(&mut hasher);
-        format!("{:?}", room.room_type).hash(&mut hasher);
+        data.extend_from_slice(room.id.as_bytes());
+        data.extend_from_slice(format!("{:?}", room.room_type).as_bytes());
     }
-    hasher.finish()
+    fnv1a_64(&data)
 }
 
-/// 计算走廊 ID 列表的哈希值
+/// 计算走廊 ID 列表的哈希值（FNV-1a，跨版本稳定）
 fn hash_corridor_ids(corridors: &[crate::model::room::Corridor]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut data = Vec::new();
     for corridor in corridors {
-        corridor.id.hash(&mut hasher);
-        corridor.from_room.hash(&mut hasher);
-        corridor.to_room.hash(&mut hasher);
+        data.extend_from_slice(corridor.id.as_bytes());
+        data.extend_from_slice(corridor.from_room.as_bytes());
+        data.extend_from_slice(corridor.to_room.as_bytes());
     }
-    hasher.finish()
+    fnv1a_64(&data)
 }
 
-/// 计算点位的哈希值（基于位置和类型）
+/// 计算点位的哈希值（基于位置和类型，FNV-1a）
 fn hash_spawns(spawns: &[crate::model::spawn::SpawnPoint]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut data = Vec::new();
     for spawn in spawns {
-        spawn.room_id.hash(&mut hasher);
-        spawn.grid_pos.x.hash(&mut hasher);
-        spawn.grid_pos.y.hash(&mut hasher);
-        format!("{:?}", spawn.kind).hash(&mut hasher);
+        data.extend_from_slice(spawn.room_id.as_bytes());
+        data.extend_from_slice(&spawn.grid_pos.x.to_le_bytes());
+        data.extend_from_slice(&spawn.grid_pos.y.to_le_bytes());
+        data.extend_from_slice(format!("{:?}", spawn.kind).as_bytes());
     }
-    hasher.finish()
+    fnv1a_64(&data)
 }
 
 /// 固定种子 42 的黄金样本测试

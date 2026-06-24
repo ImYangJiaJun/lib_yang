@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7c4f91bc59c669bd114aa17955d98a46db8ffb723655ad511994532479383494 # shrinks to field = "a", value = Null
+cc fc720e320239595aa7d1483efce4875a3505553c5f2189a8bc774646c13fdbe1 # shrinks to field = "a", pattern = "A"
+cc 333a7973164c32f8d3246e82d49611a56b997603592b944e355606118fe38916 # shrinks to field = "a", value = Null
+cc 3bd616e1961934e8fbdf74bedb6541d19a9856f8b14bbff6f4ee0c8253682b79 # shrinks to field = "a", value = Null
+cc bb55cc7015d7e979cc2564be213a230c3c21aa9059fe564ee36fa5982cd04a95 # shrinks to field = "a", value = Null
+cc ef1aa0ba0836a24748b48509eef54443994476f935af552c300c6467ed0d4b23 # shrinks to field = "a", value = Null
+cc 56141bc198de1c15992b378f9b898fb11039870080fd6fe82349f61b228d7276 # shrinks to field = "a", value = Null
+cc 62051e9e5c41dec843538aab69ad1caa614780044341deea06decc0c7101094f # shrinks to field = "a", values = [Null]
+cc 4a079c5b7981c62b8aa6cc2a9b642cb8638dacad22c4361d22e3350674ddf7b4 # shrinks to field = "a", start = Null, end = Null

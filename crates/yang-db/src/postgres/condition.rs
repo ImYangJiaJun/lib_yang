@@ -1,6 +1,8 @@
 use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
+use super::identifier::quote_identifier;
+
 /// SQL 值类型（PostgreSQL）
 ///
 /// 与 MySQL 后端的 `SqlValue` 结构一致，独立定义以保持 `postgres` 模块自包含，
@@ -160,6 +162,18 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
     condition_to_sql_owned(condition.clone(), params)
 }
 
+/// 安全转义字段标识符，失败时回退到原始值并记录警告。
+///
+/// 这是对 `quote_identifier` 的 defense-in-depth 包装：合法标识符返回双引号包裹形式，
+/// 非法标识符（如 a.b 限定名或含特殊字符的表达式）回退到原始值并记录 `log::warn!`。
+/// 注意: `quote_identifier` 仅处理单段标识符，`a.b` 限定名需用 `quote_qualified`。
+fn safe_quote_identifier(field: &str) -> String {
+    quote_identifier(field).unwrap_or_else(|e| {
+        log::warn!("无法转义字段标识符 {field:?}: {e}，使用原始值");
+        field.to_string()
+    })
+}
+
 /// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
 ///
 /// 与 MySQL 后端不同，本函数生成 PostgreSQL 风格的编号占位符 `$N`，
@@ -176,27 +190,27 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
     match condition {
         Condition::Eq(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} = {}", field, ph)
+            format!("{} = {}", safe_quote_identifier(&field), ph)
         }
         Condition::Ne(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} != {}", field, ph)
+            format!("{} != {}", safe_quote_identifier(&field), ph)
         }
         Condition::Gt(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} > {}", field, ph)
+            format!("{} > {}", safe_quote_identifier(&field), ph)
         }
         Condition::Lt(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} < {}", field, ph)
+            format!("{} < {}", safe_quote_identifier(&field), ph)
         }
         Condition::Gte(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} >= {}", field, ph)
+            format!("{} >= {}", safe_quote_identifier(&field), ph)
         }
         Condition::Lte(field, value) => {
             let ph = push_placeholder(params, value);
-            format!("{} <= {}", field, ph)
+            format!("{} <= {}", safe_quote_identifier(&field), ph)
         }
         Condition::In(field, values) => {
             if values.is_empty() {
@@ -208,19 +222,19 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
                 .into_iter()
                 .map(|v| push_placeholder(params, v))
                 .collect();
-            format!("{} IN ({})", field, placeholders.join(", "))
+            format!("{} IN ({})", safe_quote_identifier(&field), placeholders.join(", "))
         }
         Condition::Between(field, start, end) => {
             let ph_start = push_placeholder(params, start);
             let ph_end = push_placeholder(params, end);
-            format!("{} BETWEEN {} AND {}", field, ph_start, ph_end)
+            format!("{} BETWEEN {} AND {}", safe_quote_identifier(&field), ph_start, ph_end)
         }
         Condition::Like(field, pattern) => {
             let ph = push_placeholder(params, SqlValue::String(pattern));
-            format!("{} LIKE {}", field, ph)
+            format!("{} LIKE {}", safe_quote_identifier(&field), ph)
         }
-        Condition::IsNull(field) => format!("{} IS NULL", field),
-        Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
+        Condition::IsNull(field) => format!("{} IS NULL", safe_quote_identifier(&field)),
+        Condition::IsNotNull(field) => format!("{} IS NOT NULL", safe_quote_identifier(&field)),
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
                 return "1 = 1".to_string();
@@ -265,7 +279,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Eq("name".to_string(), SqlValue::String("test".to_string()));
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "name = $1");
+        assert_eq!(sql, "\"name\" = $1");
         assert_eq!(params.len(), 1);
     }
 
@@ -277,7 +291,7 @@ mod tests {
             vec![SqlValue::Int(1), SqlValue::Int(2), SqlValue::Int(3)],
         );
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "id IN ($1, $2, $3)");
+        assert_eq!(sql, "\"id\" IN ($1, $2, $3)");
         assert_eq!(params.len(), 3);
     }
 
@@ -295,7 +309,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Between("age".to_string(), SqlValue::Int(18), SqlValue::Int(65));
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "age BETWEEN $1 AND $2");
+        assert_eq!(sql, "\"age\" BETWEEN $1 AND $2");
         assert_eq!(params.len(), 2);
     }
 
@@ -305,14 +319,14 @@ mod tests {
         let mut params = vec![SqlValue::Int(100), SqlValue::String("x".to_string())];
         let cond = Condition::Eq("id".to_string(), SqlValue::Int(1));
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "id = $3");
+        assert_eq!(sql, "\"id\" = $3");
         assert_eq!(params.len(), 3);
     }
 
     #[test]
     fn test_condition_and_priority_and_numbering() {
         let mut params = Vec::new();
-        // (name = $1 OR name = $2) AND age > $3
+        // ("name" = $1 OR "name" = $2) AND "age" > $3
         let cond = Condition::And(vec![
             Condition::Or(vec![
                 Condition::Eq("name".to_string(), SqlValue::String("test".to_string())),
@@ -321,7 +335,7 @@ mod tests {
             Condition::Gt("age".to_string(), SqlValue::Int(18)),
         ]);
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "((name = $1 OR name = $2) AND age > $3)");
+        assert_eq!(sql, "((\"name\" = $1 OR \"name\" = $2) AND \"age\" > $3)");
         assert_eq!(params.len(), 3);
     }
 
@@ -333,7 +347,7 @@ mod tests {
             Condition::IsNotNull("b".to_string()),
         ]);
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "(a IS NULL AND b IS NOT NULL)");
+        assert_eq!(sql, "(\"a\" IS NULL AND \"b\" IS NOT NULL)");
         assert_eq!(params.len(), 0);
     }
 

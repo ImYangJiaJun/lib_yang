@@ -157,12 +157,13 @@ impl SqlGenerator {
         if builder.fields.is_empty() {
             self.append("*");
         } else {
+            // 验证需求: ID-1 — field() 按设计接受 SQL 表达式，标识符转义由调用方负责
             self.append(&builder.fields.join(", "));
         }
 
         // FROM 子句
         self.append(" FROM ");
-        self.append(&builder.table);
+        self.append(&super::identifier::quote_identifier(&builder.table)?);
 
         // JOIN 子句
         if !builder.joins.is_empty() {
@@ -248,6 +249,9 @@ impl SqlGenerator {
     ///
     /// # 参数
     /// - joins: JOIN 子句列表
+    ///
+    /// 注意：`join.table` 和 `join.on` 按设计接受原始 SQL 表达式（与 MySQL 设计一致），
+    /// 标识符转义由调用方负责。
     fn build_joins(&mut self, joins: &[JoinClause]) {
         use crate::postgres::field::JoinType;
 
@@ -269,6 +273,9 @@ impl SqlGenerator {
     ///
     /// # 参数
     /// - orders: 排序子句列表
+    ///
+    /// 注意：`order.field` 按设计接受原始 SQL 表达式（与 MySQL 设计一致），
+    /// 标识符转义由调用方负责。
     fn build_order_by(&mut self, orders: &[OrderClause]) {
         if orders.is_empty() {
             return;
@@ -291,6 +298,9 @@ impl SqlGenerator {
     ///
     /// # 参数
     /// - groups: 分组字段列表
+    ///
+    /// 注意：分组字段按设计接受原始 SQL 表达式（与 MySQL 设计一致），
+    /// 标识符转义由调用方负责。
     fn build_group_by(&mut self, groups: &[String]) {
         if groups.is_empty() {
             return;
@@ -357,8 +367,8 @@ impl SqlGenerator {
         }
 
         // 提取字段名和占位符（列名经 quote_identifier 校验+转义；DB-1）
-        let mut fields = Vec::new();
-        let mut placeholders = Vec::new();
+        let mut fields = Vec::with_capacity(obj.len());
+        let mut placeholders = Vec::with_capacity(obj.len());
 
         for (key, value) in obj.iter() {
             fields.push(super::identifier::quote_identifier(key)?);
@@ -1400,7 +1410,9 @@ impl<'a> QueryBuilder<'a> {
         if self.enable_logging {
             log::debug!("执行 sum() 查询，字段: {}", field);
         }
-        let sum_expr = format!("CAST(SUM({}) AS DOUBLE PRECISION)", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let sum_expr = format!("CAST(SUM({quoted_field}) AS DOUBLE PRECISION)");
         self.fetch_scalar::<Option<f64>>(&sum_expr)
             .await
             .map(Option::flatten)
@@ -1413,7 +1425,9 @@ impl<'a> QueryBuilder<'a> {
         if self.enable_logging {
             log::debug!("执行 avg() 查询，字段: {}", field);
         }
-        let avg_expr = format!("CAST(AVG({}) AS DOUBLE PRECISION)", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let avg_expr = format!("CAST(AVG({quoted_field}) AS DOUBLE PRECISION)");
         self.fetch_scalar::<Option<f64>>(&avg_expr)
             .await
             .map(Option::flatten)
@@ -1427,7 +1441,9 @@ impl<'a> QueryBuilder<'a> {
         if self.enable_logging {
             log::debug!("执行 min() 查询，字段: {}", field);
         }
-        let min_expr = format!("MIN({})", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let min_expr = format!("MIN({quoted_field})");
         self.fetch_scalar::<Option<T>>(&min_expr)
             .await
             .map(Option::flatten)
@@ -1441,7 +1457,9 @@ impl<'a> QueryBuilder<'a> {
         if self.enable_logging {
             log::debug!("执行 max() 查询，字段: {}", field);
         }
-        let max_expr = format!("MAX({})", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let max_expr = format!("MAX({quoted_field})");
         self.fetch_scalar::<Option<T>>(&max_expr)
             .await
             .map(Option::flatten)
@@ -1472,10 +1490,11 @@ impl<'a> QueryBuilder<'a> {
         // PostgreSQL 无 last_insert_id()，改用 RETURNING 取回自增主键。
         // 用 CAST(... AS BIGINT) 统一首列类型：SERIAL 为 INT4、BIGSERIAL 为 INT8，
         // sqlx 解码严格匹配类型，强制转为 BIGINT 后即可统一按 i64 解码。
+        let returning_quoted = super::identifier::quote_identifier(&self.returning)?;
         let sql = format!(
             "{} RETURNING CAST({} AS BIGINT)",
             generator.get_sql(),
-            self.returning
+            returning_quoted
         );
         let params = generator.get_params();
 
@@ -1992,7 +2011,7 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：age=$1, name=$2；WHERE 接续为 $3
-        assert_eq!(sql, "UPDATE \"users\" SET \"age\" = $1, \"name\" = $2 WHERE id = $3");
+        assert_eq!(sql, "UPDATE \"users\" SET \"age\" = $1, \"name\" = $2 WHERE \"id\" = $3");
         assert_eq!(g.get_params().len(), 3);
     }
 
@@ -2007,7 +2026,7 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：description 内联 NULL（不占编号），name=$1，WHERE 接续 $2
-        assert_eq!(sql, "UPDATE \"users\" SET \"description\" = NULL, \"name\" = $1 WHERE id = $2");
+        assert_eq!(sql, "UPDATE \"users\" SET \"description\" = NULL, \"name\" = $1 WHERE \"id\" = $2");
         // NULL 不压参数：仅 name + WHERE id 两个参数
         assert_eq!(g.get_params().len(), 2);
     }
@@ -2017,7 +2036,7 @@ mod tests {
         let mut g = SqlGenerator::new();
         let conditions = vec![Condition::Eq("id".to_string(), SqlValue::Int(7))];
         g.build_delete("users", &conditions).unwrap();
-        assert_eq!(g.get_sql(), "DELETE FROM \"users\" WHERE id = $1");
+        assert_eq!(g.get_sql(), "DELETE FROM \"users\" WHERE \"id\" = $1");
         assert_eq!(g.get_params().len(), 1);
     }
 
@@ -2083,7 +2102,7 @@ mod tests {
             .field(&expr)
             .to_sql();
         assert!(sql.contains("DOUBLE PRECISION"));
-        assert!(sql.contains("FROM orders"));
+        assert!(sql.contains("FROM \"orders\""));
     }
 
     #[test]
@@ -2099,7 +2118,7 @@ mod tests {
             .field("id")
             .field("name")
             .to_sql();
-        assert_eq!(sql, "SELECT id, name FROM users");
+        assert_eq!(sql, "SELECT id, name FROM \"users\"");
     }
 
     #[test]
@@ -2108,7 +2127,7 @@ mod tests {
         let sql = QueryBuilder::new(pool, "users", false)
             .where_and_unchecked("id", "=", 1)
             .to_sql();
-        assert_eq!(sql, "SELECT * FROM users WHERE id = $1");
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
     }
 
     #[test]

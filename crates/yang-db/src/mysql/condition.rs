@@ -1,6 +1,8 @@
 use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
+use super::identifier::quote_identifier;
+
 /// SQL 值类型
 #[derive(Debug, Clone)]
 pub enum SqlValue {
@@ -159,32 +161,44 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
 ///
 /// # 返回
 /// - SQL 字符串片段
+/// 安全转义字段标识符，失败时回退到原始值并记录警告。
+///
+/// 这是对 `quote_identifier` 的 defense-in-depth 包装：合法标识符返回反引号包裹形式，
+/// 非法标识符（如 a.b 限定名或含特殊字符的表达式）回退到原始值并记录 `log::warn!`。
+/// 注意: `quote_identifier` 仅处理单段标识符，`a.b` 限定名需用 `quote_qualified`。
+fn safe_quote_identifier(field: &str) -> String {
+    quote_identifier(field).unwrap_or_else(|e| {
+        log::warn!("无法转义字段标识符 {field:?}: {e}，使用原始值");
+        field.to_string()
+    })
+}
+
 pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
     match condition {
         Condition::Eq(field, value) => {
             // 直接 push，无需 clone
             params.push(value);
-            format!("{} = ?", field)
+            format!("{} = ?", safe_quote_identifier(&field))
         }
         Condition::Ne(field, value) => {
             params.push(value);
-            format!("{} != ?", field)
+            format!("{} != ?", safe_quote_identifier(&field))
         }
         Condition::Gt(field, value) => {
             params.push(value);
-            format!("{} > ?", field)
+            format!("{} > ?", safe_quote_identifier(&field))
         }
         Condition::Lt(field, value) => {
             params.push(value);
-            format!("{} < ?", field)
+            format!("{} < ?", safe_quote_identifier(&field))
         }
         Condition::Gte(field, value) => {
             params.push(value);
-            format!("{} >= ?", field)
+            format!("{} >= ?", safe_quote_identifier(&field))
         }
         Condition::Lte(field, value) => {
             params.push(value);
-            format!("{} <= ?", field)
+            format!("{} <= ?", safe_quote_identifier(&field))
         }
         Condition::In(field, values) => {
             if values.is_empty() {
@@ -195,21 +209,21 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
             // 直接 extend，无需逐个 clone
             params.extend(values);
             let placeholders = vec!["?"; count].join(", ");
-            format!("{} IN ({})", field, placeholders)
+            format!("{} IN ({})", safe_quote_identifier(&field), placeholders)
         }
         Condition::Between(field, start, end) => {
             // 直接 push 两个值，无需 clone
             params.push(start);
             params.push(end);
-            format!("{} BETWEEN ? AND ?", field)
+            format!("{} BETWEEN ? AND ?", safe_quote_identifier(&field))
         }
         Condition::Like(field, pattern) => {
             // pattern 是 String，直接消费
             params.push(SqlValue::String(pattern));
-            format!("{} LIKE ?", field)
+            format!("{} LIKE ?", safe_quote_identifier(&field))
         }
-        Condition::IsNull(field) => format!("{} IS NULL", field),
-        Condition::IsNotNull(field) => format!("{} IS NOT NULL", field),
+        Condition::IsNull(field) => format!("{} IS NULL", safe_quote_identifier(&field)),
+        Condition::IsNotNull(field) => format!("{} IS NOT NULL", safe_quote_identifier(&field)),
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
                 return "1 = 1".to_string();
@@ -481,7 +495,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Eq("name".to_string(), SqlValue::String("test".to_string()));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "name = ?");
+        assert_eq!(sql, "`name` = ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -490,7 +504,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Ne("status".to_string(), SqlValue::Int(1));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "status != ?");
+        assert_eq!(sql, "`status` != ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -499,7 +513,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Gt("age".to_string(), SqlValue::Int(18));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "age > ?");
+        assert_eq!(sql, "`age` > ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -508,7 +522,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Lt("price".to_string(), SqlValue::Float(100.0));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "price < ?");
+        assert_eq!(sql, "`price` < ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -517,7 +531,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Gte("score".to_string(), SqlValue::Int(60));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "score >= ?");
+        assert_eq!(sql, "`score` >= ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -526,7 +540,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Lte("count".to_string(), SqlValue::Int(10));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "count <= ?");
+        assert_eq!(sql, "`count` <= ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -538,7 +552,7 @@ mod tests {
             vec![SqlValue::Int(1), SqlValue::Int(2), SqlValue::Int(3)],
         );
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "id IN (?, ?, ?)");
+        assert_eq!(sql, "`id` IN (?, ?, ?)");
         assert_eq!(params.len(), 3);
     }
 
@@ -556,7 +570,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Between("age".to_string(), SqlValue::Int(18), SqlValue::Int(65));
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "age BETWEEN ? AND ?");
+        assert_eq!(sql, "`age` BETWEEN ? AND ?");
         assert_eq!(params.len(), 2);
     }
 
@@ -565,7 +579,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Like("name".to_string(), "%test%".to_string());
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "name LIKE ?");
+        assert_eq!(sql, "`name` LIKE ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -577,7 +591,7 @@ mod tests {
             Condition::Gt("age".to_string(), SqlValue::Int(18)),
         ]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "(name = ? AND age > ?)");
+        assert_eq!(sql, "(`name` = ? AND `age` > ?)");
         assert_eq!(params.len(), 2);
     }
 
@@ -589,7 +603,7 @@ mod tests {
             Condition::Eq("status".to_string(), SqlValue::Int(2)),
         ]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "(status = ? OR status = ?)");
+        assert_eq!(sql, "(`status` = ? OR `status` = ?)");
         assert_eq!(params.len(), 2);
     }
 
@@ -606,7 +620,7 @@ mod tests {
         ]);
         let sql = super::condition_to_sql(&cond, &mut params);
         // OR 条件应该被括号包围
-        assert_eq!(sql, "((name = ? OR name = ?) AND age > ?)");
+        assert_eq!(sql, "((`name` = ? OR `name` = ?) AND `age` > ?)");
         assert_eq!(params.len(), 3);
     }
 
@@ -633,7 +647,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::And(vec![Condition::Eq("id".to_string(), SqlValue::Int(1))]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "id = ?");
+        assert_eq!(sql, "`id` = ?");
         assert_eq!(params.len(), 1);
     }
 
@@ -642,7 +656,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Or(vec![Condition::Eq("id".to_string(), SqlValue::Int(1))]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "id = ?");
+        assert_eq!(sql, "`id` = ?");
         assert_eq!(params.len(), 1);
     }
 }
@@ -694,8 +708,8 @@ mod property_tests {
             let cond = Condition::Eq(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            // 验证 SQL 包含正确的操作符
-            let expected = format!("{} = {{placeholder}}", field).replace("{placeholder}", "?");
+            // 验证 SQL 包含正确的操作符（字段名会被反引号转义）
+            let expected = format!("`{}` = {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -709,7 +723,7 @@ mod property_tests {
             let cond = Condition::Ne(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} != {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` != {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -723,7 +737,7 @@ mod property_tests {
             let cond = Condition::Gt(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} > {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` > {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -737,7 +751,7 @@ mod property_tests {
             let cond = Condition::Lt(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} < {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` < {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -751,7 +765,7 @@ mod property_tests {
             let cond = Condition::Gte(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} >= {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` >= {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -765,7 +779,7 @@ mod property_tests {
             let cond = Condition::Lte(field.clone(), value);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} <= {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` <= {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }
@@ -780,7 +794,7 @@ mod property_tests {
             let cond = Condition::In(field.clone(), values);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} IN", field);
+            let expected = format!("`{}` IN", field);
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), values_len);
         }
@@ -795,7 +809,7 @@ mod property_tests {
             let cond = Condition::Between(field.clone(), start, end);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} BETWEEN {{p1}} AND {{p2}}", field)
+            let expected = format!("`{}` BETWEEN {{p1}} AND {{p2}}", field)
                 .replace("{p1}", "?")
                 .replace("{p2}", "?");
             prop_assert!(sql.contains(&expected));
@@ -811,7 +825,7 @@ mod property_tests {
             let cond = Condition::Like(field.clone(), pattern);
             let sql = condition_to_sql(&cond, &mut params);
 
-            let expected = format!("{} LIKE {{placeholder}}", field).replace("{placeholder}", "?");
+            let expected = format!("`{}` LIKE {{placeholder}}", field).replace("{placeholder}", "?");
             prop_assert!(sql.contains(&expected));
             prop_assert_eq!(params.len(), 1);
         }

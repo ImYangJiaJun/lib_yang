@@ -392,6 +392,9 @@ impl TokenManager {
 
     /// 解析 Token（不验证签名）
     ///
+    /// ⚠️ **安全警告：此方法不验证签名、不检查过期、不校验签发者/受众。
+    /// 攻击者可伪造任意 JWT。严禁在鉴权/授权决策中使用此方法的返回值。**
+    ///
     /// 用于调试或获取 Token 信息而不验证其有效性。
     ///
     /// # 参数
@@ -428,6 +431,7 @@ impl TokenManager {
     /// let claims = manager.parse_token_unsafe(&token)?;
     /// println!("Token 内容: {:?}", claims);
     /// ```
+    #[deprecated(since = "0.1.0", note = "此方法跳过所有 JWT 安全验证（签名/过期/签发者），仅可用于调试日志和单元测试。鉴权路径必须使用 verify_token 或 verify_token_checked。")]
     pub fn parse_token_unsafe(&self, token: &str) -> Result<TokenClaims, BaseError> {
         // 使用 dangerous::insecure_decode 进行不安全解析
         // 注意：此方法不验证签名、过期时间等，仅用于调试
@@ -474,6 +478,8 @@ impl TokenManager {
 
     /// 使用 Refresh Token 刷新 Access Token
     ///
+    /// 此方法会检查 Redis 黑名单，已撤销的 Refresh Token 将被拒绝。
+    ///
     /// # 参数
     ///
     /// - `refresh_token`: Refresh Token 字符串
@@ -490,15 +496,15 @@ impl TokenManager {
     /// let new_access_token = manager.refresh_access_token(
     ///     &refresh_token,
     ///     serde_json::json!({"role": "admin"}),
-    /// )?;
+    /// ).await?;
     /// ```
-    pub fn refresh_access_token(
+    pub async fn refresh_access_token(
         &self,
         refresh_token: &str,
         custom_claims: serde_json::Value,
     ) -> Result<String, BaseError> {
-        // 验证 Refresh Token
-        let claims = self.verify_token(refresh_token)?;
+        // 验证 Refresh Token（含黑名单检查，阻止已撤销的 Token 获取新 Access Token）
+        let claims = self.verify_token_checked(refresh_token).await?;
 
         // 检查 Token 类型
         if claims.token_type != "refresh" {

@@ -350,8 +350,15 @@ fn test_is_token_expiring_soon() {
 }
 
 /// 测试 refresh_access_token 方法
-#[test]
-fn test_refresh_access_token() {
+///
+/// 此方法内部调用 `verify_token_checked`，需要 Redis 黑名单支持。
+/// 运行时需先初始化 `GlobalRedis`，并通过 `--ignored` 执行：
+/// ```bash
+/// cargo test --test '' test_refresh_access_token -- --ignored --test-threads=1
+/// ```
+#[tokio::test]
+#[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
+async fn test_refresh_access_token() {
     let manager = TokenManager::new_symmetric(
         "test_secret",
         Algorithm::HS256,
@@ -366,9 +373,10 @@ fn test_refresh_access_token() {
         .generate_refresh_token("user_test")
         .expect("生成 Refresh Token 失败");
 
-    // 使用 Refresh Token 刷新 Access Token
+    // 使用 Refresh Token 刷新 Access Token（async: 走 verify_token_checked 含黑名单检查）
     let new_access_token = manager
         .refresh_access_token(&refresh_token, json!({"role": "user"}))
+        .await
         .expect("刷新 Access Token 失败");
 
     // 验证新的 Access Token
@@ -382,8 +390,15 @@ fn test_refresh_access_token() {
 }
 
 /// 测试使用 Access Token 刷新应该失败
-#[test]
-fn test_refresh_with_access_token_should_fail() {
+///
+/// 此方法内部调用 `verify_token_checked`，需要 Redis 黑名单支持。
+/// 运行时需先初始化 `GlobalRedis`，并通过 `--ignored` 执行：
+/// ```bash
+/// cargo test --test '' test_refresh_with_access_token_should_fail -- --ignored --test-threads=1
+/// ```
+#[tokio::test]
+#[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
+async fn test_refresh_with_access_token_should_fail() {
     let manager = TokenManager::new_symmetric(
         "test_secret",
         Algorithm::HS256,
@@ -399,7 +414,7 @@ fn test_refresh_with_access_token_should_fail() {
         .expect("生成 Access Token 失败");
 
     // 尝试使用 Access Token 刷新（应该失败）
-    let result = manager.refresh_access_token(&access_token, json!({}));
+    let result = manager.refresh_access_token(&access_token, json!({})).await;
 
     assert!(result.is_err());
 

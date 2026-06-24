@@ -142,12 +142,13 @@ impl SqlGenerator {
         if builder.fields.is_empty() {
             self.append("*");
         } else {
+            // 验证需求: ID-1 — field() 按设计接受 SQL 表达式，标识符转义由调用方负责
             self.append(&builder.fields.join(", "));
         }
 
         // FROM 子句
         self.append(" FROM ");
-        self.append(&builder.table);
+        self.append(&super::identifier::quote_identifier(&builder.table)?);
 
         // JOIN 子句
         if !builder.joins.is_empty() {
@@ -285,20 +286,18 @@ impl SqlGenerator {
     /// 生成 HAVING 子句
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
         self.append(" HAVING ");
+        // 与 build_where 对齐：走 owned 版本避免借用版内部对每个值再 clone 一次
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql_owned(
+                conditions[0].clone(),
+                &mut self.params,
+            );
             self.append(&sql);
         } else {
-            // 直接 push_str 写入 self.sql，避免先 collect Vec<String> 再 join。
-            // 先把片段存入局部变量结束对 self.params 的可变借用，再 push_str 到 self.sql，
-            // 避免同时可变借用两个字段。参数 push 顺序与原 collect 顺序一致（均按 conditions 迭代序）。
-            for (i, c) in conditions.iter().enumerate() {
-                if i > 0 {
-                    self.sql.push_str(" AND ");
-                }
-                let frag = crate::mysql::condition::condition_to_sql(c, &mut self.params);
-                self.sql.push_str(&frag);
-            }
+            let combined = Condition::And(conditions.to_vec());
+            let sql =
+                crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
+            self.append(&sql);
         }
         Ok(())
     }
@@ -334,8 +333,8 @@ impl SqlGenerator {
         }
 
         // 提取字段名和值（列名经 quote_identifier 校验+转义，杜绝注入；DB-1）
-        let mut fields = Vec::new();
-        let mut placeholders = Vec::new();
+        let mut fields = Vec::with_capacity(obj.len());
+        let mut placeholders = Vec::with_capacity(obj.len());
 
         for (key, value) in obj.iter() {
             fields.push(super::identifier::quote_identifier(key)?);
@@ -502,7 +501,7 @@ impl SqlGenerator {
         self.append(" SET ");
 
         // 构建 SET 子句（列名 quote）
-        let mut set_clauses = Vec::new();
+        let mut set_clauses = Vec::with_capacity(obj.len());
 
         for (key, value) in obj.iter() {
             set_clauses.push(format!("{} = ?", super::identifier::quote_identifier(key)?));
@@ -1060,6 +1059,10 @@ impl<'a> QueryBuilder<'a> {
     /// - `field`: 字段名
     /// - `op`: 比较操作符（必须是支持的操作符，否则 panic）
     /// - `value`: 比较值
+    #[deprecated(
+        since = "0.1.3",
+        note = "使用 `where_and` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
+    )]
     pub fn where_and_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
@@ -1138,6 +1141,10 @@ impl<'a> QueryBuilder<'a> {
     /// - `field`: 字段名
     /// - `op`: 比较操作符（必须是支持的操作符，否则 panic）
     /// - `value`: 比较值
+    #[deprecated(
+        since = "0.1.3",
+        note = "使用 `where_or` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
+    )]
     pub fn where_or_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
@@ -1654,6 +1661,8 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 直接解码为 T（NULL 列触发解码错误的语义保持不变）
+        // 验证需求: ID-1 — field 按设计接受 SQL 表达式，与 field() 一致；
+        // 若字段来自不可信输入，调用方需先通过 quote_identifier 转义
         self.fetch_scalar::<T>(field).await
     }
 
@@ -1751,7 +1760,9 @@ impl<'a> QueryBuilder<'a> {
 
         // 构建 SUM(field) 表达式，并使用 CAST 转换为 DOUBLE
         // 这样可以统一处理整数和浮点数字段的求和结果
-        let sum_expr = format!("CAST(SUM({}) AS DOUBLE)", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let sum_expr = format!("CAST(SUM({quoted_field}) AS DOUBLE)");
 
         // 用 Option<f64> 解码处理 NULL；fetch_scalar 外层 Option 表示有无行，
         // flatten 后与原 fetch_optional + match 的返回完全一致
@@ -1815,7 +1826,9 @@ impl<'a> QueryBuilder<'a> {
 
         // 构建 AVG(field) 表达式，并使用 CAST 转换为 DOUBLE
         // 这样可以统一处理整数和浮点数字段的平均值结果
-        let avg_expr = format!("CAST(AVG({}) AS DOUBLE)", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let avg_expr = format!("CAST(AVG({quoted_field}) AS DOUBLE)");
 
         // 用 Option<f64> 解码处理 NULL；flatten 后与原实现返回完全一致
         self.fetch_scalar::<Option<f64>>(&avg_expr)
@@ -1895,7 +1908,9 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 构建 MIN(field) 表达式
-        let min_expr = format!("MIN({})", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let min_expr = format!("MIN({quoted_field})");
 
         // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
         self.fetch_scalar::<Option<T>>(&min_expr)
@@ -1975,7 +1990,9 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 构建 MAX(field) 表达式
-        let max_expr = format!("MAX({})", field);
+        // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
+        let quoted_field = super::identifier::quote_identifier(field)?;
+        let max_expr = format!("MAX({quoted_field})");
 
         // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
         self.fetch_scalar::<Option<T>>(&max_expr)
