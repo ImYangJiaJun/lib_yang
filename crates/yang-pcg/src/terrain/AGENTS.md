@@ -59,7 +59,7 @@ Typical priority: Boss/open arena first, then explicit maze/pillar/organic theme
 - Connectivity summaries are diagnostics; full invariants are checked in `validation.rs`.
 
 ## KNOWN GAPS
-- Some terrain outputs still fail entrance-to-exit connectivity under property tests; `prop_terrain_connectivity` is ignored for this reason.
+- 所有 6 个 property test 已全部解除 `#[ignore]` 并启用（0 ignored）。地形连通性已由 `repair_terrain_connectivity()` 兜底修复 + `backend.validate(FullFloor)` 硬校验守护，不再是已知 gap。
 - Obstacle placement is heuristic, not a full constraint solver.
 - Maze strategy forces doorway connectivity after carving, but not every strategy has equally strong repair logic.
 - Fallback to default strategy improves robustness but can hide a strategy-specific failure if not logged/tested.

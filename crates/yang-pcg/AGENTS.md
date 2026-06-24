@@ -63,7 +63,7 @@ GenerationRequest
 | Export/import | `src/export/`, `src/export/binary/` | schema versioned JSON/binary roundtrip |
 | Validation | `src/validation.rs` | structural checks and `ValidationReport` |
 | Bench/property tests | `src/tests_task27/`, `tests/generation_bench.rs` | proptest invariants and ignored benchmark cases |
-| Requirements/design | `.kiro/specs/ue5-roguelike-map-generator/` | canonical PRD/design/tasks for PCG behavior |
+| Requirements/design | `docs/` + `AGENTS.md` files | PRD/design/tasks for PCG behavior (`.kiro/` references in legacy docs may no longer exist — verify before relying on them) |
 
 ## CODE MAP
 | Symbol | Type | Location | Role |
@@ -85,10 +85,10 @@ GenerationRequest
 - Debug output is side-channel only; enabling `set_debug(true)` must not change gameplay outputs.
 - Public docs are Chinese and include requirement mapping comments (`验证需求`).
 - `PcgResult<T>` boxes `PcgError`; keep that shape unless addressing enum-size tradeoffs deliberately.
-- Config/docs live in both `docs/` and `.kiro/specs/ue5-roguelike-map-generator/`; `.kiro` is the product/design source of truth.
+- Config/docs live in `docs/`; `.kiro/` references in legacy docs may no longer exist — verify before relying on them.
 
 ## TESTING
-- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (305 passing, 0 ignored as of 2026-06).
+- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (307 passing, 0 ignored as of 2026-06).
 - `src/tests_task27/property_tests.rs` contains 6 proptest invariants; **all are now enabled (no `#[ignore]`)**. The three historically-ignored properties (room overlap / terrain connectivity / spawn spacing) were fixed by constructive algorithm passes and re-enabled — they now guard real invariants, not document gaps.
 - `tests/generation_bench.rs` contains ignored benchmark-style tests, not criterion benches.
 - `proptest-regressions/tests_task27/property_tests.txt` is intentional and should remain.
@@ -107,8 +107,8 @@ The "same seed+config → same map" contract holds **within a single generation 
 - ~~Layout can produce overlapping room bounds~~ — FIXED: `solve_room_bounds` deterministic anti-overlap (branch vertical extrusion); guarded by `prop_no_room_overlap` + hard validation.
 - ~~Terrain connectivity can fail~~ — FIXED: `repair_terrain_connectivity` forced fallback pass; guarded by `prop_terrain_connectivity` + hard validation.
 - ~~Cross-type spawn spacing only caught by validation~~ — FIXED: enemy sampling avoids placed items; guarded by `prop_spawn_spacing` + hard validation.
-- UE adapter channel types (`NamedChannel`/`PcgPoint`/`PropertyValue`) do **not** derive `Serialize`; they cannot be written to disk directly. The file export path for UE5 is `export_json`/`export_binary` over the whole `GenerationResult`.
+- UE adapter channel types (`NamedChannel`/`PcgPoint`/`PropertyValue`/`ChannelKind`) now **derive `Serialize + Deserialize`**; they can be serialized via `export_named_channels_json()`. For UE5 file export the primary paths are still `export_json`/`export_binary` over the whole `GenerationResult`.
 - Public structs (`GenerationRequest`/`GenerationConfig` and nested config) are all-pub-field with no `#[non_exhaustive]`; adding a field is a breaking change for all construction sites. Consider a builder before 1.0.
 - `INSTALL.md.md` is a double-extension documentation artifact.
 - No `LICENSE` file in the crate despite `license = "MIT OR Apache-2.0"`; add before publishing.
-- `docs/task_4_summary.md` and `TASK_3_SUMMARY.md` are historical summaries, not source-of-truth specs.
+- `docs/task_4_summary.md` is a historical summary from 2026-05, not a source-of-truth spec.

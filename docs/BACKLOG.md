@@ -2,6 +2,7 @@
 
 **生成日期**：2026-05-25
 **来源**：基于完整代码审查 + 架构评估对话（见 AGENTS.md）
+**覆盖范围**：本文仅覆盖 yang-db/yang-base。yang-pcg 问题追踪见 `crates/yang-pcg/AGENTS.md` 和 `crates/yang-pcg/docs/PRODUCTION_AUDIT_2026-06-24.md`。
 
 > 优先级：🔴 Critical（生产风险）/ 🟠 High（设计缺陷）/ 🟡 Medium（代码质量）/ 🟢 Low（改进建议）
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理

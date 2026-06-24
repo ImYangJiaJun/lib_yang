@@ -266,6 +266,6 @@ match config.normalize() {
 
 ## 参考
 
-- [需求文档](../../.kiro/specs/ue5-roguelike-map-generator/requirements.md) - 需求 10
-- [设计文档](../../.kiro/specs/ue5-roguelike-map-generator/design.md) - 配置模块设计
 - [示例代码](../examples/config_normalization.rs) - 完整示例
+- [AGENTS.md](../AGENTS.md) - 架构约定与已知状态
+- [PRODUCTION_AUDIT_2026-06-24.md](PRODUCTION_AUDIT_2026-06-24.md) - 生产就绪度审计

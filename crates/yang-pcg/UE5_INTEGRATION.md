@@ -309,7 +309,7 @@ UE 世界坐标 (cm) = 网格坐标 × TileSize
 
 **注意 yang-pcg 的 `ue` 适配层**（`ue::adapter::export_named_channels`、`PcgPoint.transform`）做的是 **1:1 直通映射**（网格坐标直接当 `WorldPoint`，z=0，无缩放）。它产出的 `transform.position` 数值仍是网格量级，**不是厘米**。所以无论你用 JSON 还是具名通道，缩放都必须在 UE 侧补上，别假设库已经转成厘米了。
 
-> ⚠️ **关于 `ue` 适配层的现状**：`export_named_channels` 返回的 `NamedChannel`/`PcgPoint` 当前**未实现 `serde::Serialize`**，无法直接 `serde_json::to_string` 落盘。它面向的是「同一进程内把结果转成 UE 友好的点/通道结构」的场景。**要导出到文件给 UE5 读，请用 `export_json` / `export_binary`（作用于完整 `GenerationResult`，本教程全程采用这条通路）**，不要试图序列化具名通道。
+> ℹ️ **关于 `ue` 适配层的现状**：`NamedChannel`/`PcgPoint`/`PropertyValue`/`ChannelKind` 现已全部实现 `serde::Serialize + Deserialize`，可通过 `export_named_channels_json()` 序列化。不过大图（数千通道以上）仍建议走 `export_json`/`export_binary` 主通路作用于完整 `GenerationResult`（性能更好且格式更紧凑），本教程全程采用这条通路。
 
 
 ---
@@ -599,7 +599,7 @@ UE5 侧在模块里 `FPlatformProcess::GetDllHandle` 加载，`GetDllExport` 取
 | 地块位置错乱/重叠 | tiles 局部坐标没加 `bounds.min` 偏移 | tiles 坐标 + 房间 `bounds.min`；spawns 的 `grid_pos` 不要再加偏移 |
 | 关卡尺寸太小/太大 | `TileSize` 选错 | 统一在 UE 侧定 `TileSize`，库导出的都是网格量级 |
 | 同 seed 两次地图不一样 | 换了生成模式（跨模式不保证） | 固定生成模式 |
-| 想序列化 `export_named_channels` 失败 | 具名通道类型未实现 Serialize | 改用 `export_json`/`export_binary` 作用于 `GenerationResult` |
+| 想序列化 `export_named_channels` 失败 | 确认是否使用 `export_named_channels_json()`（具名通道现已支持 Serialize） | `export_named_channels_json()` 序列化；大图仍建议 `export_json`/`export_binary` 主通路 |
 | `.ypcg` 读出来乱码 | 没跳过 16 字节头 | 按 §5 布局先读头再取 body |
 
 ---
