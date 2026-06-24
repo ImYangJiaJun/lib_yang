@@ -17,6 +17,7 @@ use thiserror::Error;
 ///
 /// 注意：为了减小 Result 类型的大小，建议在函数签名中使用 `Box<PcgError>`。
 #[derive(Error, Debug, Clone)]
+#[non_exhaustive]
 pub enum PcgError {
     /// 配置错误
     ///
@@ -167,7 +168,16 @@ pub enum PcgError {
         seed: Option<u64>,
         /// 追踪 ID
         trace_id: Option<String>,
-        /// 底层错误信息
+        /// 底层错误信息（`Display` 字符串表示）
+        ///
+        /// **设计权衡**: 为保持 `PcgError` 的 `Clone` 派生可用
+        /// （`Box<dyn std::error::Error>` 不支持 `Clone`），
+        /// 此处有意使用 `source.to_string()` 而非保存原始错误对象。
+        /// 这意味着下游无法通过 `Error::source()` 遍历错误链。
+        ///
+        /// 如需保留完整的错误链用于日志或诊断，请在构造 `PcgError::Export`
+        /// 之前自行记录底层错误的 `source()` 链。便捷构造函数
+        /// [`export_err`](Self::export_err) 封装了这一模式。
         source_error: Option<String>,
     },
 
@@ -504,6 +514,44 @@ impl PcgError {
             trace_id: None,
             source_error,
         })
+    }
+
+    /// 创建导出错误并捕获底层错误的 `Display` 输出
+    ///
+    /// 这是创建带底层错误上下文的 `Export` 错误的首选方式。
+    /// 内部调用 `source.to_string()` 将错误信息存入
+    /// [`Export::source_error`](PcgError::Export::source_error)，
+    /// 从而保持 `PcgError` 的 `Clone` 派生。
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// serde_json::to_string(&data).map_err(|e| {
+    ///     PcgError::export_err("序列化失败", "json", e)
+    /// })?;
+    /// ```
+    pub fn export_err(
+        message: impl Into<String>,
+        format: impl Into<String>,
+        source: impl std::error::Error,
+    ) -> Box<Self> {
+        Box::new(Self::export_err_unboxed(message, format, source))
+    }
+
+    /// 创建导出错误并捕获底层错误的 `Display` 输出（未装箱）
+    pub fn export_err_unboxed(
+        message: impl Into<String>,
+        format: impl Into<String>,
+        source: impl std::error::Error,
+    ) -> Self {
+        PcgError::Export {
+            message: message.into(),
+            format: Some(format.into()),
+            stage: Some("export".to_string()),
+            seed: None,
+            trace_id: None,
+            source_error: Some(source.to_string()),
+        }
     }
 
     /// 创建预算耗尽错误的便捷方法
