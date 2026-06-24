@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// 包含所有可配置的生成参数，支持序列化、反序列化和默认值填充。
 /// 配置采用层级合并策略：默认配置 -> 预设配置 -> 实例覆盖 -> 运行时覆盖。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GenerationConfig {
     /// 房间数量范围
     pub room_count: RangeU16,
@@ -182,11 +183,12 @@ impl GenerationConfig {
 
     /// 合并配置
     ///
-    /// 将当前配置与另一个配置合并，另一个配置的非默认值会覆盖当前配置。
+    /// 将当前配置与另一个配置合并。当前实现为无条件全量覆盖——other 中的所有字段
+    /// 直接覆盖 self 对应字段（非逐字段区分默认值/非默认值的语义合并）。
     /// 用于实现配置层级：默认配置 -> 预设配置 -> 实例覆盖 -> 运行时覆盖。
     pub fn merge(&self, other: &GenerationConfig) -> Self {
-        // 简化实现：直接使用 other 的值覆盖
-        // 在实际应用中，可以实现更细粒度的合并逻辑
+        // 简化实现：直接使用 other 的值全量覆盖
+        // 未来可改为更细粒度的合并逻辑（仅覆盖非默认值）
         let mut merged = self.clone();
 
         // 合并房间数量范围
@@ -203,7 +205,7 @@ impl GenerationConfig {
         merged.enemy_spawns = other.enemy_spawns.clone();
         merged.chunking = other.chunking.clone();
 
-        // 合并主题标签（追加而不是覆盖）
+        // 合并主题标签（直接覆盖）
         if !other.theme_tags.is_empty() {
             merged.theme_tags = other.theme_tags.clone();
         }
@@ -220,6 +222,7 @@ impl GenerationConfig {
 ///
 /// 经过验证和归一化处理的配置，保证所有字段都是有效的。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NormalizedConfig {
     /// 原始配置
     pub config: GenerationConfig,
@@ -250,6 +253,7 @@ impl NormalizedConfig {
 
 /// 无符号 16 位整数范围
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RangeU16 {
     pub min: u16,
     pub max: u16,
@@ -257,7 +261,7 @@ pub struct RangeU16 {
 
 impl RangeU16 {
     /// 创建新的范围
-    pub fn new(min: u16, max: u16) -> Self {
+    pub const fn new(min: u16, max: u16) -> Self {
         Self { min, max }
     }
 
@@ -275,6 +279,7 @@ impl RangeU16 {
 
 /// 房间尺寸配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RoomSizeConfig {
     /// 最小宽度（网格单位）
     pub min_width: u16,
@@ -332,6 +337,7 @@ impl RoomSizeConfig {
 
 /// 走廊配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CorridorConfig {
     /// 走廊宽度（网格单位）
     pub width: u16,
@@ -367,12 +373,19 @@ impl CorridorConfig {
             ));
         }
 
+        if self.max_turns == 0 || self.max_turns > 20 {
+            return Err(PcgError::config(
+                "max_turns 必须在 1..=20 范围内",
+            ));
+        }
+
         Ok(())
     }
 }
 
 /// 连接策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ConnectionStrategy {
     /// 正交连接（仅水平和垂直）
     Orthogonal,
@@ -384,6 +397,7 @@ pub enum ConnectionStrategy {
 
 /// 地形配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TerrainConfig {
     /// 障碍物密度（0.0 - 1.0）
     pub obstacle_density: f32,
@@ -435,6 +449,7 @@ impl TerrainConfig {
 
 /// 交互物生成配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ItemSpawnConfig {
     /// 每个房间的交互物数量范围
     pub count_per_room: RangeU16,
@@ -465,6 +480,11 @@ impl ItemSpawnConfig {
             ));
         }
 
+        // 拒绝 NaN 权重
+        if self.rarity_weights.iter().any(|w| w.is_nan()) {
+            return Err(PcgError::config("权重不能为 NaN"));
+        }
+
         // 验证稀有度权重总和
         let total_weight: f32 = self.rarity_weights.iter().sum();
         if (total_weight - 1.0).abs() > 0.01 {
@@ -480,6 +500,7 @@ impl ItemSpawnConfig {
 
 /// 敌人生成配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct EnemySpawnConfig {
     /// 每个房间的敌人数量范围
     pub count_per_room: RangeU16,
@@ -527,6 +548,7 @@ impl EnemySpawnConfig {
 
 /// 分块配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ChunkingConfig {
     /// 分块大小（网格单位）
     pub chunk_size: u16,
@@ -558,6 +580,7 @@ impl ChunkingConfig {
 
 /// 生成模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum GenerationMode {
     /// 离线整层生成
     OfflineFullFloor,
@@ -571,6 +594,7 @@ pub enum GenerationMode {
 ///
 /// 用于控制特定功能的启用状态，支持版本兼容和功能降级。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CapabilityFlags {
     /// 是否启用运行时分块
     #[serde(default)]
