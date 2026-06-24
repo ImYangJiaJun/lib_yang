@@ -89,7 +89,12 @@ impl GlobalRedis {
     /// use yang_base::database::GlobalRedis;
     /// use yang_db::redis::RedisConfig;
     ///
-    /// let config = RedisConfig::new(10, 5, 300, true);
+    /// let config = RedisConfig::default()
+    ///     .with_max_connections(10)
+    ///     .with_connect_timeout(5)
+    ///     .with_wait_timeout(30)
+    ///     .with_idle_timeout(300)
+    ///     .with_enable_logging(true);
     ///
     /// GlobalRedis::init("redis://127.0.0.1:6379", config).await?;
     /// ```
@@ -97,6 +102,8 @@ impl GlobalRedis {
         // 使用 yang-db::RedisClient::connect_with_config 创建 Redis 连接
         let client = RedisClient::connect_with_config(url, config)
             .await
+            // TODO(P1-4): 待 BaseError 添加 RedisConnectionDbError(#[source] yang_db::DbError)
+            // 变体后，改为 .map_err(BaseError::RedisConnectionDbError)? 以保留错误链
             .map_err(|e| BaseError::RedisConnectionFailed(e.to_string()))?;
 
         // 设置全局 Redis 实例
@@ -118,6 +125,13 @@ impl GlobalRedis {
     /// # 错误
     ///
     /// - `RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    ///
+    /// # API 一致性说明 (A-M4)
+    ///
+    /// 本方法名为 `client()`，而数据库对等方法名为
+    /// [`GlobalDatabase::get()`](crate::database::GlobalDatabase::get)。
+    /// 这是历史命名不对称，未来应统一为同一种命名风格（例如都叫 `get()` 或都叫
+    /// `client()`）。
     pub fn client() -> Result<&'static RedisClient, BaseError> {
         GLOBAL_REDIS.get().ok_or(BaseError::RedisNotInitialized)
     }

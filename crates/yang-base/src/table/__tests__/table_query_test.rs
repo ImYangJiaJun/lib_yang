@@ -8,6 +8,7 @@
 use crate::error::BaseError;
 use crate::table::{FieldConfig, FieldPermissions, FieldType, SortOrder, TableConfig, TableQuery};
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// 创建测试用的表配置
@@ -32,19 +33,19 @@ fn create_test_table_config() -> Arc<TableConfig> {
             ))
             .field(
                 FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
-                    readable_roles: vec!["admin".to_string()],
-                    writable_roles: vec!["admin".to_string()],
-                    filterable_roles: vec!["admin".to_string()],
-                    sortable_roles: vec!["admin".to_string()],
+                    readable_roles: HashSet::from(["admin".to_string()]),
+                    writable_roles: HashSet::from(["admin".to_string()]),
+                    filterable_roles: HashSet::from(["admin".to_string()]),
+                    sortable_roles: HashSet::from(["admin".to_string()]),
                 }),
             )
             .field(
                 FieldConfig::new("secret", FieldType::String { max_length: 255 }).permissions(
                     FieldPermissions {
-                        readable_roles: vec!["admin".to_string()],
-                        writable_roles: vec!["admin".to_string()],
-                        filterable_roles: vec!["admin".to_string()],
-                        sortable_roles: vec!["admin".to_string()],
+                        readable_roles: HashSet::from(["admin".to_string()]),
+                        writable_roles: HashSet::from(["admin".to_string()]),
+                        filterable_roles: HashSet::from(["admin".to_string()]),
+                        sortable_roles: HashSet::from(["admin".to_string()]),
                     },
                 ),
             ),
@@ -417,10 +418,10 @@ fn create_test_table_config_for_insert() -> Arc<TableConfig> {
             .field(FieldConfig::new("age", FieldType::Integer))
             .field(
                 FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
-                    readable_roles: vec!["admin".to_string()],
-                    writable_roles: vec!["admin".to_string()],
-                    filterable_roles: vec!["admin".to_string()],
-                    sortable_roles: vec!["admin".to_string()],
+                    readable_roles: HashSet::from(["admin".to_string()]),
+                    writable_roles: HashSet::from(["admin".to_string()]),
+                    filterable_roles: HashSet::from(["admin".to_string()]),
+                    sortable_roles: HashSet::from(["admin".to_string()]),
                 }),
             ),
     )

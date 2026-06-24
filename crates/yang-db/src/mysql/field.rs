@@ -1,5 +1,6 @@
 /// 字段类型标记
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FieldType {
     /// 标准类型（无需特殊处理）
     Standard,
@@ -19,6 +20,7 @@ pub enum FieldType {
 
 /// JOIN 类型
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum JoinType {
     Inner,
     Left,

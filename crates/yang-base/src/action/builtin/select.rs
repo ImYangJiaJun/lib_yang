@@ -2,7 +2,7 @@
 #![cfg(feature = "mysql")]
 
 use crate::action::sql_bridge::count_with_tree;
-use crate::action::{ActionContext, TypedHandler, User};
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
 use crate::table::{AsColumnName, Filter, SortOrder, TableEntity, WhereCondition};
 use async_trait::async_trait;
@@ -152,8 +152,10 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
 
         // 字段读权限强制：始终走整实体 select，先确认当前用户对全部字段可读，
         // 否则返回 FieldPermissionDenied（匿名访问以空角色用户判定）。
-        let anon = User::new(0, "");
-        let user = ctx.user.as_ref().unwrap_or(&anon);
+        let user = ctx
+            .user
+            .as_ref()
+            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
         let mut q = ctx.table_query()?;
         q.ensure_fields_readable(user)?;
         // 整棵 where 树一次性递归校验 + 并入（含字段存在性/筛选权限/嵌套深度）

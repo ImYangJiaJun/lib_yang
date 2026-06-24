@@ -65,7 +65,11 @@ impl RedisClient {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let config = RedisConfig::new(20, 10, 15, true);
+    ///     let config = RedisConfig::default()
+    ///         .with_max_connections(20)
+    ///         .with_connect_timeout(10)
+    ///         .with_wait_timeout(15)
+    ///         .with_enable_logging(true);
     ///     let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config).await?;
     ///     Ok(())
     /// }
@@ -80,7 +84,9 @@ impl RedisClient {
             timeouts: Timeouts {
                 wait: Some(config.wait_timeout_duration()),
                 create: Some(config.connect_timeout_duration()),
-                recycle: Some(config.connect_timeout_duration()),
+                // 修复 P-H1: recycle 不应使用 connect_timeout(默认5s)，否则连接几乎立即被回收，连接池形同虚设。
+                // 改为 idle_timeout（默认 300s = 5 分钟），空闲超过此时间的连接才会被回收。
+                recycle: Some(config.idle_timeout_duration()),
             },
             ..Default::default()
         });
@@ -121,6 +127,13 @@ impl RedisClient {
     ///
     /// 与 `Database::close` 对称，供编排式停机调用。幂等；close 后再用会返回连接池
     /// 错误而非 panic（deadpool `Pool::get` 在关闭后返回错误）。
+    ///
+    /// # API 一致性说明 (A-H1)
+    ///
+    /// 本方法为**同步**（`deadpool::Pool::close()` 即发即忘），而
+    /// [`Database::close`] 为 **async**（sqlx `MySqlPool::close()` 需 await
+    /// drain 在途连接）。这是底层连接池库的差异。编排式停机代码需注意：
+    /// `db.close().await` 需要 `.await`，`redis.close()` 不需要。
     pub fn close(&self) {
         self.pool.close();
     }
@@ -2010,7 +2023,11 @@ mod tests {
 
     #[test]
     fn test_redis_config_custom() {
-        let config = RedisConfig::new(20, 10, 15, true);
+        let config = RedisConfig::default()
+            .with_max_connections(20)
+            .with_connect_timeout(10)
+            .with_wait_timeout(15)
+            .with_enable_logging(true);
         assert_eq!(config.max_connections, 20);
         assert_eq!(config.connect_timeout, 10);
         assert_eq!(config.wait_timeout, 15);
@@ -2022,7 +2039,11 @@ mod tests {
     /// 验证 PoolConfig 和 Timeouts 是否正确应用了 RedisConfig 参数
     #[test]
     fn test_pool_config_construction() {
-        let redis_config = RedisConfig::new(25, 8, 12, true);
+        let redis_config = RedisConfig::default()
+            .with_max_connections(25)
+            .with_connect_timeout(8)
+            .with_wait_timeout(12)
+            .with_enable_logging(true);
 
         // 构建 PoolConfig
         let pool_config = PoolConfig {
@@ -2084,7 +2105,11 @@ mod tests {
 
     #[test]
     fn test_pool_status_reflects_configured_max_size() {
-        let config = RedisConfig::new(25, 8, 12, true);
+        let config = RedisConfig::default()
+            .with_max_connections(25)
+            .with_connect_timeout(8)
+            .with_wait_timeout(12)
+            .with_enable_logging(true);
         let mut pool_config = Config::from_url("redis://127.0.0.1:6379");
         pool_config.pool = Some(PoolConfig {
             max_size: config.max_connections,

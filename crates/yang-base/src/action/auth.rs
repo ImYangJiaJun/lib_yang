@@ -37,7 +37,7 @@
 
 use crate::action::{ActionContext, ApiResponse, TypedHandler, User};
 use crate::error::BaseError;
-use crate::router::{Middleware, Next};
+use crate::router::middleware::{Middleware, Next};
 use crate::token::TokenClaims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

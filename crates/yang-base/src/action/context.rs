@@ -210,6 +210,7 @@ pub struct ActionContext {
     /// 请求数据
     pub request: Request,
     /// 当前用户（已认证）
+    // SAFETY: 此字段为 pub 以支持中间件注入认证用户。外部代码直接设置此字段会绕过认证——请使用 TokenAuthMiddleware。
     pub user: Option<User>,
     /// 全局工具
     pub tools: Arc<GlobalTools>,
@@ -270,6 +271,9 @@ impl ActionContext {
     }
 
     /// 设置用户（链式调用）
+    ///
+    /// 仅供中间件/内部使用。调用方有责任确保 user 已经过认证（如 TokenAuthMiddleware），
+    /// 直接注入未验证的 User 将绕过所有鉴权。
     pub fn with_user(mut self, user: User) -> Self {
         self.user = Some(user);
         self

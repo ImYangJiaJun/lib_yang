@@ -664,16 +664,17 @@ impl BaseError {
             // 数据库错误：连接失败/超时/连接池为瞬时（可重试），
             // 已包装的 DbError 同理（底层连接/超时语义已由 From<DbError> 正确分桶）
             BaseError::DatabaseConnectionFailed(_)
-            | BaseError::DatabaseConnectionDbError(_)
-            | BaseError::DatabaseTransactionFailed(_) => C::Transient,
+            | BaseError::DatabaseConnectionDbError(_) => C::Transient,
             BaseError::MissingWhereClause(_)
             | BaseError::DatabaseMigrationFailed(_, _)
             | BaseError::MigrationFailed(_, _, _) => C::Client,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
             | BaseError::DatabaseInitFailed(_) => C::Server,
+            // 事务失败可能是死锁(可重试)或约束违反(不可重试)，保守归为 Server 避免无限重试
             BaseError::DatabaseQueryFailed(_)
-            | BaseError::DatabaseExecuteFailed(_) => C::Server,
+            | BaseError::DatabaseExecuteFailed(_)
+            | BaseError::DatabaseTransactionFailed(_) => C::Server,
             // Redis 错误：连接失败/超时/连接池为瞬时
             BaseError::RedisConnectionFailed(_)
             | BaseError::RedisOperationDbError(_) => C::Transient,
@@ -683,9 +684,11 @@ impl BaseError {
             BaseError::HttpClientCreateFailed(_)
             | BaseError::HttpClientNotInitialized
             | BaseError::HttpClientAlreadyInitialized => C::Client,
+            // 解析失败是客户端编程错误（期望的响应类型不匹配），不是瞬时网络问题
+            BaseError::HttpResponseParseFailed(_) => C::Client,
             BaseError::HttpRequestFailed(_) | BaseError::HttpTimeout => C::Transient,
-            BaseError::HttpResponseParseFailed(_)
-            | BaseError::HttpCircuitBreakerOpen(_) => C::Transient,
+            // 熔断器打开意味着下游服务不健康，立即重试无济于事
+            BaseError::HttpCircuitBreakerOpen(_) => C::Server,
             // Token 错误
             BaseError::TokenKeyInvalid(_)
             | BaseError::TokenGenerateFailed(_)

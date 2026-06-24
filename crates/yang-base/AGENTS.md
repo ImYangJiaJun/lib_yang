@@ -9,7 +9,7 @@ Application-facing backend primitives built on `yang-db`: plugin lifecycle, glob
 ```text
 yang-base/
 ├── src/
-│   ├── lib.rs           # 8 public modules; feature-gated http/token
+│   ├── lib.rs           # 11 public modules; feature-gated http/token
 │   ├── database/        # GlobalDatabase, GlobalRedis, DatabaseInitializer
 │   ├── plugin/          # Plugin trait + managers/registry in one file
 │   ├── action/          # child AGENTS.md: Action trait, context, builtin CRUD
@@ -45,7 +45,10 @@ yang-base/
 | `PluginRegistry` | `src/plugin/mod.rs` | runtime immutable plugin lookup |
 | `GlobalDatabase` | `src/database/global.rs` | global MySQL query/table access |
 | `GlobalRedis` | `src/database/global_redis.rs` | global Redis delegate API |
-| `Action` | `src/action/action_trait.rs` | backend action extension trait |
+| `TypedHandler` | `src/action/typed.rs` | user-written handler trait (Input/Output) |
+| `TypedAction` | `src/action/typed.rs` | derived trait layer (H-1 typed system) |
+| `DynAction` | `src/action/typed.rs` | type-erased dispatch layer |
+| `Permission` | `src/action/action_trait.rs` | action permission type |
 | `ActionContext` | `src/action/context.rs` | request/user/tools/table context |
 | `TableQuery` | `src/table/table_query.rs` | table-aware SQL query builder/executor |
 | `FieldType` | `src/table/field_type.rs` | JSON/MySQL field type validation/mapping |
@@ -73,11 +76,11 @@ Default enables all features for compatibility.
 - Unit tests are colocated in `__tests__/`; integration tests live in `tests/` and often require Docker.
 
 ## ANTI-PATTERNS
-- Builtin actions still use `serde_json::Value` for several inputs/outputs; do not spread that pattern without a deliberate type-safety decision.
-- Plugin code is a 1.1k-line single file with existing unwraps; avoid adding new panic paths.
+- Builtin actions (add/put/del/get/select/table) are now fully typed via `XxxAction<T: TableEntity>` (H-1 refactor); new actions should follow the `TypedHandler` → `TypedAction` → `DynAction` pattern in `action/typed.rs`, not the old `serde_json::Value` approach.
+- Plugin code is a 1.4k-line single file with existing unwraps; avoid adding new panic paths.
 - Do not bypass `TableQuery`/`FieldPermissions` when handling user-selected fields.
 - Do not add hardcoded production credentials; test/default Docker credentials belong only in test docs/examples.
-- Token system has no revocation/blacklist mechanism; do not imply logout invalidates existing JWTs unless adding that feature.
+- Token system supports revocation via Redis-based blacklist (`TokenManager::revoke_token` / `is_revoked` / `verify_token_checked` in `token/revocation.rs`). For auth paths that need logout/revoke support, use `verify_token_checked` instead of bare `verify_token` (which skips the blacklist check for backward compatibility).
 
 ## TESTING
 ```bash

@@ -448,7 +448,10 @@ async fn test_list_ops_concurrent() {
 async fn test_blocking_ops_timeout() {
     use yang_db::RedisConfig;
     // 使用更长的超时设置
-    let config = RedisConfig::new(10, 60, 60, false);
+    let config = RedisConfig::default()
+        .with_max_connections(10)
+        .with_connect_timeout(60)
+        .with_wait_timeout(60);
     let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
         .await
         .expect("连接失败");

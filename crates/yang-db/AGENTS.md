@@ -11,15 +11,24 @@ yang-db/
 ├── src/
 │   ├── lib.rs              # crate-level re-exports + Result<T>
 │   ├── error.rs            # DbError conversions
+│   ├── isolation.rs        # IsolationLevel enum (NG-2)
 │   ├── mysql/
-│   │   ├── query_builder.rs # 4.8k-line SQL builder hotspot
+│   │   ├── query_builder.rs # 5.5k-line SQL builder hotspot
 │   │   ├── condition.rs     # Condition / SqlValue / SQL conversion
 │   │   ├── database.rs      # sqlx MySQL pool wrapper
 │   │   ├── transaction.rs   # MySQL transaction wrapper
 │   │   ├── field.rs         # FieldType, JoinClause, OrderClause
+│   │   ├── identifier.rs    # SQL标识符校验与转义 (DB-1)
 │   │   └── init.rs          # migration config placeholder
+│   ├── postgres/
+│   │   ├── query_builder.rs # 2.1k-line PostgreSQL SQL builder
+│   │   ├── condition.rs     # PgCondition / SqlValue
+│   │   ├── database.rs      # sqlx PgPool wrapper
+│   │   ├── transaction.rs   # PostgreSQL transaction wrapper
+│   │   ├── field.rs         # PgFieldType, JoinClause, OrderClause
+│   │   └── identifier.rs    # SQL标识符校验与转义 (PG方言)
 │   └── redis/
-│       ├── client.rs        # 2k-line Redis API surface
+│       ├── client.rs        # 2.2k-line Redis API surface
 │       ├── config.rs        # RedisConfig + pool params
 │       ├── pipeline.rs      # RedisPipeline wrapper over redis::pipe()
 │       ├── transaction.rs   # WATCH/MULTI/EXEC helper
@@ -42,6 +51,13 @@ yang-db/
 | Redis transaction | `src/redis/transaction.rs` | optimistic locking with retry |
 | Redis value mapping | `src/redis/value.rs` | conversion from `redis::Value` |
 | Errors | `src/error.rs` | `DbError` variants and From impls |
+| PostgreSQL connection/raw SQL | `src/postgres/database.rs` | `PgDatabase::connect`, query, execute |
+| PostgreSQL query building | `src/postgres/query_builder.rs` | select/find/insert/update/delete/upsert/batch |
+| PostgreSQL conditions | `src/postgres/condition.rs` | `PgCondition`, `pg_condition_to_sql` |
+| PostgreSQL transactions | `src/postgres/transaction.rs` | `PgTransaction`, transaction query builder |
+| PostgreSQL field types | `src/postgres/field.rs` | `PgFieldType`, `JoinClause`, `OrderClause` |
+| Redis pool health | `src/redis/client.rs` | `RedisClient::pool_status()` → `PoolStatus` |
+| Transaction isolation | `src/isolation.rs` | `IsolationLevel` enum, `as_sql()` |
 
 ## CODE MAP
 | Symbol | Location | Role |
@@ -57,6 +73,12 @@ yang-db/
 | `RedisTransaction` | `src/redis/transaction.rs` | WATCH/MULTI/EXEC with retry |
 | `RedisValue` | `src/redis/value.rs` | typed Redis response values |
 | `DbError` | `src/error.rs` | database/Redis error type |
+| `PgDatabase` | `src/postgres/database.rs` | PostgreSQL pool and raw query entry |
+| `PgQueryBuilder` | `src/postgres/query_builder.rs` | PostgreSQL chainable SQL builder |
+| `PgCondition` | `src/postgres/condition.rs` | PostgreSQL nested boolean condition tree |
+| `PgFieldType` | `src/postgres/field.rs` | PostgreSQL field type markers |
+| `PoolStatus` | `src/redis/client.rs` | Redis pool health snapshot |
+| `IsolationLevel` | `src/isolation.rs` | SQL标准四级事务隔离 |
 
 ## CONVENTIONS
 - Public API is re-exported from `src/lib.rs`; downstream crates often import directly from `yang_db`.
@@ -67,8 +89,9 @@ yang-db/
 - Redis scripts use `redis::Script`; pipeline/transaction wrappers already build on `redis::pipe()`.
 
 ## HOTSPOTS
-- `src/mysql/query_builder.rs`: 4.8k lines, largest file; touches almost every SQL behavior.
-- `src/redis/client.rs`: 2k lines, large Redis operation surface.
+- `src/mysql/query_builder.rs`: 5.5k lines, largest file; touches almost every SQL behavior.
+- `src/redis/client.rs`: 2.2k lines, large Redis operation surface.
+- `src/postgres/query_builder.rs`: 2.1k lines, PostgreSQL SQL builder.
 - `src/mysql/condition.rs`: complex expression tree and SQL conversion.
 - `src/mysql/transaction.rs`: separate tx-bound query builder; operator behavior differs in places.
 

@@ -1,7 +1,7 @@
 //! GetAction - 根据主键获取单条数据
 #![cfg(feature = "mysql")]
 
-use crate::action::{ActionContext, TypedHandler, User};
+use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
 use crate::table::TableEntity;
 use async_trait::async_trait;
@@ -48,8 +48,10 @@ impl<T: TableEntity> TypedHandler for GetAction<T> {
         let pk_value = serde_json::to_value(&input.id)
             .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
         // 字段读权限强制：执行查询前确认当前用户对全部字段可读。
-        let anon = User::new(0, "");
-        let user = ctx.user.as_ref().unwrap_or(&anon);
+        let user = ctx
+            .user
+            .as_ref()
+            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
         let query = ctx.table_query()?;
         query.ensure_fields_readable(user)?;
         let query = query.where_eq(T::PK_FIELD, pk_value.clone())?;

@@ -12,7 +12,10 @@ async fn test_redis_connect() {
 /// 测试使用自定义配置连接
 #[tokio::test]
 async fn test_redis_connect_with_config() {
-    let config = RedisConfig::new(5, 3, 5, false);
+    let config = RedisConfig::default()
+        .with_max_connections(5)
+        .with_connect_timeout(3)
+        .with_wait_timeout(5);
     let result = RedisClient::connect_with_config("redis://127.0.0.1:6379", config).await;
     assert!(result.is_ok(), "使用自定义配置连接失败: {:?}", result.err());
 }

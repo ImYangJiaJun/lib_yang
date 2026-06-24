@@ -1,5 +1,5 @@
 //! ModuleRouter 集成测试（H-1 类型化迁移后重写）
-#![cfg(feature = "mysql")]
+#![cfg(all(feature = "mysql", feature = "token"))]
 
 use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::error::BaseError;

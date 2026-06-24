@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
@@ -170,20 +170,20 @@ fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
                 FieldConfig::new("name", FieldType::String { max_length: 50 })
                     .required(true)
                     .permissions(FieldPermissions {
-                        readable_roles: vec!["user".to_string(), "admin".to_string()],
-                        writable_roles: vec!["admin".to_string()],
-                        filterable_roles: vec!["user".to_string(), "admin".to_string()],
-                        sortable_roles: vec!["user".to_string(), "admin".to_string()],
+                        readable_roles: HashSet::from(["user".to_string(), "admin".to_string()]),
+                        writable_roles: HashSet::from(["admin".to_string()]),
+                        filterable_roles: HashSet::from(["user".to_string(), "admin".to_string()]),
+                        sortable_roles: HashSet::from(["user".to_string(), "admin".to_string()]),
                     }),
             )
             .field(
                 FieldConfig::new("email", FieldType::String { max_length: 100 })
                     .required(true)
                     .permissions(FieldPermissions {
-                        readable_roles: vec!["admin".to_string()],
-                        writable_roles: vec!["admin".to_string()],
-                        filterable_roles: vec!["admin".to_string()],
-                        sortable_roles: vec!["admin".to_string()],
+                        readable_roles: HashSet::from(["admin".to_string()]),
+                        writable_roles: HashSet::from(["admin".to_string()]),
+                        filterable_roles: HashSet::from(["admin".to_string()]),
+                        sortable_roles: HashSet::from(["admin".to_string()]),
                     }),
             )
             .field(FieldConfig::new("age", FieldType::Integer).required(true))

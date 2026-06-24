@@ -5,6 +5,7 @@ use crate::table::{
     FieldConfig, FieldPermissions, FieldType, RelationConfig, RelationType, Validator,
 };
 use serde_json::json;
+use std::collections::HashSet;
 
 #[test]
 fn test_field_config_new() {
@@ -42,10 +43,10 @@ fn test_field_config_builder() {
 #[test]
 fn test_field_config_with_permissions() {
     let permissions = FieldPermissions {
-        readable_roles: vec!["admin".to_string()],
-        writable_roles: vec!["admin".to_string()],
-        filterable_roles: vec![],
-        sortable_roles: vec![],
+        readable_roles: HashSet::from(["admin".to_string()]),
+        writable_roles: HashSet::from(["admin".to_string()]),
+        filterable_roles: HashSet::new(),
+        sortable_roles: HashSet::new(),
     };
 
     let field = FieldConfig::new("salary", FieldType::Double).permissions(permissions);
@@ -190,7 +191,7 @@ fn test_field_permissions_default() {
 #[test]
 fn test_field_permissions_can_read() {
     let permissions = FieldPermissions {
-        readable_roles: vec!["admin".to_string(), "user".to_string()],
+        readable_roles: HashSet::from(["admin".to_string(), "user".to_string()]),
         ..Default::default()
     };
 
@@ -208,7 +209,7 @@ fn test_field_permissions_can_read() {
 #[test]
 fn test_field_permissions_can_write() {
     let permissions = FieldPermissions {
-        writable_roles: vec!["admin".to_string()],
+        writable_roles: HashSet::from(["admin".to_string()]),
         ..Default::default()
     };
 
@@ -222,7 +223,7 @@ fn test_field_permissions_can_write() {
 #[test]
 fn test_field_permissions_can_filter() {
     let permissions = FieldPermissions {
-        filterable_roles: vec!["admin".to_string()],
+        filterable_roles: HashSet::from(["admin".to_string()]),
         ..Default::default()
     };
 
@@ -236,7 +237,7 @@ fn test_field_permissions_can_filter() {
 #[test]
 fn test_field_permissions_can_sort() {
     let permissions = FieldPermissions {
-        sortable_roles: vec!["admin".to_string()],
+        sortable_roles: HashSet::from(["admin".to_string()]),
         ..Default::default()
     };
 
@@ -250,10 +251,10 @@ fn test_field_permissions_can_sort() {
 #[test]
 fn test_field_permissions_empty_roles() {
     let permissions = FieldPermissions {
-        readable_roles: vec![],
-        writable_roles: vec![],
-        filterable_roles: vec![],
-        sortable_roles: vec![],
+        readable_roles: HashSet::new(),
+        writable_roles: HashSet::new(),
+        filterable_roles: HashSet::new(),
+        sortable_roles: HashSet::new(),
     };
 
     // 空列表表示所有人都可以访问

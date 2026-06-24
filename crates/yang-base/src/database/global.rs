@@ -89,7 +89,7 @@ impl GlobalDatabase {
         // 使用 yang-db::Database::connect_with_config 创建数据库连接
         let db = Database::connect_with_config(url, config)
             .await
-            .map_err(|e| BaseError::DatabaseConnectionFailed(e.to_string()))?;
+            .map_err(BaseError::DatabaseConnectionDbError)?;
 
         // 设置全局数据库实例
         GLOBAL_DB
@@ -110,6 +110,13 @@ impl GlobalDatabase {
     /// # 错误
     ///
     /// - `DatabaseNotInitialized`: 数据库未初始化，需要先调用 `init` 方法
+    ///
+    /// # API 一致性说明 (A-M4)
+    ///
+    /// 本方法名为 `get()`，而 Redis 对等方法名为
+    /// [`GlobalRedis::client()`](crate::database::GlobalRedis::client)。
+    /// 这是历史命名不对称，未来应统一为同一种命名风格（例如都叫 `get()` 或都叫
+    /// `client()`）。
     ///
     /// # 示例
     ///

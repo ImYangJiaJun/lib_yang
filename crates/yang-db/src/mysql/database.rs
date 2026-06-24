@@ -186,6 +186,13 @@ impl Database {
     /// # 返回
     /// - `Ok(())`：连接正常
     /// - `Err(DbError)`：查询失败（连接不可用）
+    ///
+    /// # API 一致性说明 (A-C2)
+    ///
+    /// 本方法返回 `Result<(), DbError>`，而 [`RedisClient::health_check`] 返回
+    /// `Result<bool>`。这是历史遗留的不一致：MySQL 侧将失败直接暴露为 `Err`，
+    /// Redis 侧将异常吞掉统一返回 `Ok(false)`。两端语义不同，在统一重构前调用方
+    /// 需分别处理。
     pub async fn health_check(&self) -> Result<(), DbError> {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())

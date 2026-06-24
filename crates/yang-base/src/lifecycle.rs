@@ -12,9 +12,7 @@
 //!
 //! `OnceLock` 单例不重置，停机为原地 drain——**停机后不应再 dispatch**。
 
-#[cfg(feature = "mysql")]
 use crate::error::BaseError;
-#[cfg(feature = "mysql")]
 use crate::plugin::PluginManager;
 
 /// 等待停机信号：`Ctrl+C`（SIGINT）或（Unix 上）`SIGTERM`。
@@ -53,10 +51,13 @@ pub async fn wait_for_shutdown_signal() {
     }
 }
 
-/// 编排式优雅停机：按启动逆序收尾（插件 → Redis → MySQL）。
+/// 编排式优雅停机：按启动逆序收尾（插件 → Redis → 可选的 MySQL）。
 ///
 /// 与 `DatabaseBundle::init`（先 MySQL 后 Redis）形成对称的「统一停机入口」。各步骤
 /// 独立执行，插件 `on_shutdown` 失败不阻断后续连接池 drain（停机应尽力收尾全部资源）。
+///
+/// 无需 `mysql` feature 时，本函数仍可处理 Redis + 插件的清理；启用 `mysql` feature
+/// 时才额外 drain MySQL 连接池。
 ///
 /// # 参数
 ///
@@ -66,7 +67,6 @@ pub async fn wait_for_shutdown_signal() {
 ///
 /// - `Ok(())`: 全部步骤完成
 /// - `Err(BaseError)`: 插件停机返回的首个错误（连接池仍已 drain，错误仅供上报）
-#[cfg(feature = "mysql")]
 pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), BaseError> {
     let mut plugin_err = None;
 
@@ -82,9 +82,12 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
     crate::database::GlobalRedis::close();
     log::info!("Redis 连接池已关闭");
 
-    // 3. drain MySQL（最后关，等待在途归还）
-    crate::database::GlobalDatabase::close().await;
-    log::info!("MySQL 连接池已 drain 关闭");
+    // 3. drain MySQL（最后关，等待在途归还）；仅 mysql feature 启用时可用
+    #[cfg(feature = "mysql")]
+    {
+        crate::database::GlobalDatabase::close().await;
+        log::info!("MySQL 连接池已 drain 关闭");
+    }
 
     match plugin_err {
         Some(e) => Err(e),

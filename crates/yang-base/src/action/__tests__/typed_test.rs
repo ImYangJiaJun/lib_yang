@@ -1,4 +1,5 @@
 //! TypedHandler / TypedAction / DynAction 单元测试
+#![cfg(feature = "token")]
 
 use crate::action::meta::ActionMeta;
 use crate::action::typed::{DynAction, TypedAction, TypedHandler};

@@ -22,6 +22,7 @@ pub enum SqlValue {
 
 /// 查询条件（PostgreSQL）
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Condition {
     /// 相等
     Eq(String, SqlValue),

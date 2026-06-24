@@ -5,6 +5,7 @@
 use crate::error::BaseError;
 use crate::table::{FieldType, Validator};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// 字段配置
 ///
@@ -42,10 +43,10 @@ use serde::{Deserialize, Serialize};
 ///     .required(true)
 ///     .validator(Validator::Email)
 ///     .permissions(FieldPermissions {
-///         readable_roles: vec!["admin".to_string(), "user".to_string()],
-///         writable_roles: vec!["admin".to_string()],
-///         filterable_roles: vec![],
-///         sortable_roles: vec![],
+///         readable_roles: HashSet::from(["admin".to_string(), "user".to_string()]),
+///         writable_roles: HashSet::from(["admin".to_string()]),
+///         filterable_roles: HashSet::new(),
+///         sortable_roles: HashSet::new(),
 ///     });
 /// ```
 #[derive(Debug, Clone)]
@@ -251,10 +252,10 @@ impl FieldConfig {
     /// use yang_base::table::{FieldConfig, FieldType, FieldPermissions};
     ///
     /// let permissions = FieldPermissions {
-    ///     readable_roles: vec!["admin".to_string()],
-    ///     writable_roles: vec!["admin".to_string()],
-    ///     filterable_roles: vec![],
-    ///     sortable_roles: vec![],
+    ///     readable_roles: HashSet::from(["admin".to_string()]),
+    ///     writable_roles: HashSet::from(["admin".to_string()]),
+    ///     filterable_roles: HashSet::new(),
+    ///     sortable_roles: HashSet::new(),
     /// };
     ///
     /// let field = FieldConfig::new("salary", FieldType::Double)
@@ -420,10 +421,10 @@ impl FieldConfig {
 ///
 /// // 创建一个只有管理员可以读写的字段权限
 /// let admin_only = FieldPermissions {
-///     readable_roles: vec!["admin".to_string()],
-///     writable_roles: vec!["admin".to_string()],
-///     filterable_roles: vec!["admin".to_string()],
-///     sortable_roles: vec!["admin".to_string()],
+///     readable_roles: HashSet::from(["admin".to_string()]),
+///     writable_roles: HashSet::from(["admin".to_string()]),
+///     filterable_roles: HashSet::from(["admin".to_string()]),
+///     sortable_roles: HashSet::from(["admin".to_string()]),
 /// };
 ///
 /// // 检查权限
@@ -440,25 +441,25 @@ impl FieldConfig {
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FieldPermissions {
-    /// 可读角色列表
+    /// 可读角色集合
     ///
-    /// 如果列表为空，表示所有用户都可以读取该字段
-    pub readable_roles: Vec<String>,
+    /// 如果集合为空，表示所有用户都可以读取该字段
+    pub readable_roles: HashSet<String>,
 
-    /// 可写角色列表
+    /// 可写角色集合
     ///
-    /// 如果列表为空，表示所有用户都可以写入该字段
-    pub writable_roles: Vec<String>,
+    /// 如果集合为空，表示所有用户都可以写入该字段
+    pub writable_roles: HashSet<String>,
 
-    /// 可筛选角色列表
+    /// 可筛选角色集合
     ///
-    /// 如果列表为空，表示所有用户都可以使用该字段进行筛选
-    pub filterable_roles: Vec<String>,
+    /// 如果集合为空，表示所有用户都可以使用该字段进行筛选
+    pub filterable_roles: HashSet<String>,
 
-    /// 可排序角色列表
+    /// 可排序角色集合
     ///
-    /// 如果列表为空，表示所有用户都可以使用该字段进行排序
-    pub sortable_roles: Vec<String>,
+    /// 如果集合为空，表示所有用户都可以使用该字段进行排序
+    pub sortable_roles: HashSet<String>,
 }
 
 impl FieldPermissions {
@@ -476,15 +477,16 @@ impl FieldPermissions {
     ///
     /// ```rust
     /// use yang_base::table::FieldPermissions;
+    /// use std::collections::HashSet;
     ///
     /// let permissions = FieldPermissions {
-    ///     readable_roles: vec!["admin".to_string(), "user".to_string()],
+    ///     readable_roles: HashSet::from(["admin".to_string(), "user".to_string()]),
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_read(&vec!["admin".to_string()]));
-    /// assert!(permissions.can_read(&vec!["user".to_string()]));
-    /// assert!(!permissions.can_read(&vec!["guest".to_string()]));
+    /// assert!(permissions.can_read(&["admin".to_string()]));
+    /// assert!(permissions.can_read(&["user".to_string()]));
+    /// assert!(!permissions.can_read(&["guest".to_string()]));
     /// ```
     pub fn can_read(&self, user_roles: &[String]) -> bool {
         self.readable_roles.is_empty() || user_roles.iter().any(|r| self.readable_roles.contains(r))
@@ -504,14 +506,15 @@ impl FieldPermissions {
     ///
     /// ```rust
     /// use yang_base::table::FieldPermissions;
+    /// use std::collections::HashSet;
     ///
     /// let permissions = FieldPermissions {
-    ///     writable_roles: vec!["admin".to_string()],
+    ///     writable_roles: HashSet::from(["admin".to_string()]),
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_write(&vec!["admin".to_string()]));
-    /// assert!(!permissions.can_write(&vec!["user".to_string()]));
+    /// assert!(permissions.can_write(&["admin".to_string()]));
+    /// assert!(!permissions.can_write(&["user".to_string()]));
     /// ```
     pub fn can_write(&self, user_roles: &[String]) -> bool {
         self.writable_roles.is_empty() || user_roles.iter().any(|r| self.writable_roles.contains(r))
@@ -531,14 +534,15 @@ impl FieldPermissions {
     ///
     /// ```rust
     /// use yang_base::table::FieldPermissions;
+    /// use std::collections::HashSet;
     ///
     /// let permissions = FieldPermissions {
-    ///     filterable_roles: vec!["admin".to_string()],
+    ///     filterable_roles: HashSet::from(["admin".to_string()]),
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_filter(&vec!["admin".to_string()]));
-    /// assert!(!permissions.can_filter(&vec!["user".to_string()]));
+    /// assert!(permissions.can_filter(&["admin".to_string()]));
+    /// assert!(!permissions.can_filter(&["user".to_string()]));
     /// ```
     pub fn can_filter(&self, user_roles: &[String]) -> bool {
         self.filterable_roles.is_empty()
@@ -559,14 +563,15 @@ impl FieldPermissions {
     ///
     /// ```rust
     /// use yang_base::table::FieldPermissions;
+    /// use std::collections::HashSet;
     ///
     /// let permissions = FieldPermissions {
-    ///     sortable_roles: vec!["admin".to_string()],
+    ///     sortable_roles: HashSet::from(["admin".to_string()]),
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_sort(&vec!["admin".to_string()]));
-    /// assert!(!permissions.can_sort(&vec!["user".to_string()]));
+    /// assert!(permissions.can_sort(&["admin".to_string()]));
+    /// assert!(!permissions.can_sort(&["user".to_string()]));
     /// ```
     pub fn can_sort(&self, user_roles: &[String]) -> bool {
         self.sortable_roles.is_empty() || user_roles.iter().any(|r| self.sortable_roles.contains(r))

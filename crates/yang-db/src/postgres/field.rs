@@ -3,6 +3,7 @@
 /// 与 MySQL 后端保持一致的字段类型枚举。`Blob` 在 PostgreSQL 中对应 `BYTEA`，
 /// `Json` 对应 `JSON`/`JSONB`，其余沿用通用语义。
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FieldType {
     /// 标准类型（无需特殊处理）
     Standard,
@@ -22,6 +23,7 @@ pub enum FieldType {
 
 /// JOIN 类型
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum JoinType {
     Inner,
     Left,

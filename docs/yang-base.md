@@ -56,15 +56,17 @@ yang-base
 
 | 错误码段 | 模块 | 示例 |
 |---------|------|------|
-| `1xxxxx` | 插件管理 | `PluginNotFound`(100002), `PluginCircularDependency`(100006) |
-| `2xxxxx` | MySQL 数据库 | `DatabaseNotInitialized`(200008), `DatabaseQueryFailed`(200003) |
+| `1xxxxx` | 插件管理 | `PluginNotFound`(100002), `PluginCircularDependency`(100006), `PluginShutdownFailed`(100008) |
+| `2xxxxx` | MySQL 数据库 | `DatabaseNotInitialized`(200008), `DatabaseQueryFailed`(200003), `DatabaseTransactionFailed`(200009), `MissingWhereClause`(200010) |
 | `21xxxx` | Redis | `RedisNotInitialized`(210003), `RedisOperationFailed`(210004) |
-| `3xxxxx` | HTTP 客户端 | `HttpTimeout`(300004), `HttpClientNotInitialized`(300006) |
-| `4xxxxx` | Token | `TokenExpired`(400005), `TokenVerifyFailed`(400003) |
-| `5xxxxx` | 序列化 | `JsonDeserializeFailed`(500002) |
-| `6xxxxx` | 字段验证 | `FieldRequired`(600006), `ValidationFailed`(600005) |
-| `7xxxxx` | Action 系统 | `ActionNotFound`(700001), `PermissionDenied`(700002), `RecordNotFound`(700006) |
-| `9xxxxx` | 通用 | `ConfigError`(900001), `Unknown`(999999) |
+| `3xxxxx` | HTTP 客户端 | `HttpTimeout`(300004), `HttpClientNotInitialized`(300006), `HttpCircuitBreakerOpen`(300007) |
+| `4xxxxx` | Token | `TokenExpired`(400005), `TokenVerifyFailed`(400003), `TokenRevoked`(400007) |
+| `5xxxxx` | 序列化 | `JsonDeserializeFailed`(500002), `JsonSerializeFailed`(500001) |
+| `6xxxxx` | 字段验证 | `FieldRequired`(600006), `ValidationFailed`(600005), `FieldNotFound`(600007), `FieldPermissionDenied`(600008) |
+| `7xxxxx` | Action 系统 | `ActionNotFound`(700001), `PermissionDenied`(700002), `RecordNotFound`(700006), `Unauthorized`(700003), `UserNotFound`(700007), `InvalidPassword`(700008), `TableConfigNotSet`(700009) |
+| `9xxxxx` | 通用 | `ConfigError`(900001), `IoError`(900002), `Unknown`(999999) |
+
+> **注意**：上表为代表性错误码摘录，非穷举列表。完整错误码列表见 `crates/yang-base/src/error/mod.rs` 中 `BaseError::code()` 方法的 match 臂。`BaseError` 标注 `#[non_exhaustive]`，未来可能新增变体。
 
 ```rust
 use yang_base::error::BaseError;
@@ -322,6 +324,30 @@ CREATE TABLE IF NOT EXISTS _migrations (
 )
 ```
 
+### DatabaseBundle（统一初始化入口）
+
+```rust
+use yang_base::database::DatabaseBundle;
+use yang_db::{DatabaseConfig, redis::RedisConfig};
+
+// 统一初始化 MySQL + Redis（按固定顺序：先 MySQL 再 Redis，任一失败即返回）
+DatabaseBundle::init(
+    "mysql://user:pass@localhost/db",
+    DatabaseConfig { max_connections: 20, ..Default::default() },
+    "redis://127.0.0.1:6379",
+    RedisConfig::default(),
+).await?;
+
+// 之后即可直接使用全局单例
+let db = GlobalDatabase::get()?;
+let redis = GlobalRedis::client()?;
+```
+
+相比分别调用 `GlobalDatabase::init()` + `GlobalRedis::init()`，`DatabaseBundle::init()` 的优势：
+- 单一入口，不会遗漏任一初始化
+- 固定初始化顺序，避免"半初始化"状态（MySQL 成功但 Redis 失败）
+- 任一失败立即返回错误，不会产生部分初始化
+
 ---
 
 ## Token 模块（`feature = "token"`）
@@ -410,7 +436,33 @@ let new_access = manager.refresh_access_token(&refresh, json!({ "role": "admin" 
 let claims = manager.parse_token_unsafe(&token)?;
 ```
 
-**错误**：`TokenExpired`(400005), `TokenVerifyFailed`(400003), `TokenTypeInvalid`(400006), `TokenKeyInvalid`(400001)
+**错误**：`TokenExpired`(400005), `TokenVerifyFailed`(400003), `TokenTypeInvalid`(400006), `TokenKeyInvalid`(400001), `TokenRevoked`(400007)
+
+### Token 撤销与黑名单机制（`feature = "token"`）
+
+`TokenManager` 提供基于 Redis 的 Token 撤销与黑名单机制：
+
+```rust
+// 撤销单个 Token（将 jti 写入 Redis 黑名单，TTL = token 剩余有效期）
+manager.revoke_token(&access_token).await?;
+
+// 按 claims 撤销（批量撤销某用户的所有 Token）
+manager.revoke_claims(&claims).await?;
+
+// 检查 Token 是否已被撤销
+let revoked: bool = manager.is_revoked(&jti).await?;
+
+// 带黑名单检查的验证（推荐用于需要登出/撤销能力的鉴权路径）
+let claims = manager.verify_token_checked(&access_token).await?;
+```
+
+**黑名单存储**：Redis key 格式 `token:blacklist:{jti}`，TTL = `exp - now`（Token 过期后自动清理，无需手动维护）。
+
+**重要区分**：
+- `verify_token()` — 标准签名+过期校验，**不查**黑名单（向后兼容）
+- `verify_token_checked()` — 签名+过期校验 **+ 黑名单检查**（需要撤销能力的鉴权路径必须用此方法）
+
+**错误**：`TokenRevoked`(400007)
 
 ---
 
@@ -500,6 +552,49 @@ let user: User = resp.json::<User>().await?;
 | `.text(str)` | 文本请求体（text/plain） |
 | `.timeout(secs)` | 覆盖超时时间 |
 | `.send() -> Result<Response>` | **发送请求** |
+
+### 重试与熔断配置
+
+**重试 + 指数退避**（`RetryConfig`）：
+
+```rust
+use yang_base::http::RetryConfig;
+
+let resp = client
+    .get("https://api.example.com/data")
+    .retry(RetryConfig {
+        max_retries: 3,                              // 最多重试 3 次
+        retry_on: Some(vec![500, 502, 503]),          // 仅这些状态码触发重试
+        backoff_ms: 100,                              // 初始退避 100ms，每次翻倍
+    })
+    .send()
+    .await?;
+// 默认不重试；启用后对连接/超时错误与命中 retry_on 的状态码按指数退避重试
+```
+
+**熔断器**（`CircuitBreaker`，按目标 host 分键）：
+
+```rust
+use yang_base::http::{HttpClientConfig, CircuitBreakerConfig};
+
+let client = HttpClient::with_config(HttpClientConfig {
+    circuit_breaker: Some(CircuitBreakerConfig {
+        failure_threshold: 5,   // 连续失败 5 次 → 熔断打开（默认）
+        cooldown_secs: 30,      // 冷却 30 秒后放行探测（默认）
+        success_threshold: 1,   // 连续成功 1 次 → 恢复（默认）
+    }),
+    ..Default::default()
+})?;
+
+// 当目标 host 熔断打开时，请求立即返回 HttpCircuitBreakerOpen(host)，不发网络请求
+// 不同 host 独立熔断，一个故障上游不影响其他健康 host
+```
+
+**三态状态机**：Closed（累计连续失败达阈值 → Open）/ Open（快速失败，冷却后放行探测 → HalfOpen）/ HalfOpen（累计 success_threshold 次成功 → Closed，任一失败 → 重新 Open）。
+
+**失败判定**：传输错误与 5xx 记失败；2xx/3xx/4xx 记成功（服务端正常拒绝不算上游故障）。`send()` 在每次发送前做准入检查，命中熔断打开时不发请求直接返回错误，与重试逻辑正交组合（熔断打开属于不可重试错误）。
+
+**错误**：`HttpCircuitBreakerOpen`(300007)
 
 ---
 
@@ -779,21 +874,26 @@ pub struct DynamicRow {
 
 Action 系统是请求处理的核心抽象，类似于 MVC 中的 Controller，但以可插拔的方式定义。
 
-### Action Trait
+> ⚠️ **已过时 — 本节描述的是旧版对象安全 `Action` trait（H-1 重构前）**
+>
+> 以下 `Action` trait、`ApiResponse`、`Request`、`ActionContext` 等 API 的签名和用法写于 H-1 端到端类型化重构之前。当前 Action 系统已改为三层类型化架构，旧的 `Action` trait 已删除（`action_trait.rs` 仅保留 `Permission`）。以下内容仅供理解历史演进参考，**实际开发请以 `action/typed.rs` 和内置 Action 泛型实现为准**。
+>
+> **当前类型化 Action 系统摘要**：
+>
+> - **`TypedHandler` trait**（用户手写）：声明关联类型 `Input` / `Output`，编译期固定输入输出契约。实现 `TypedHandler` 的 struct 通过 `#[derive(Action)]` 自动获得 `TypedAction` impl 和 `ActionMeta`。
+> - **`TypedAction` trait**（派生层）：由 `#[derive(Action)]` 自动生成，桥接 `TypedHandler` 的强类型世界与注册表所需的类型擦除层。
+> - **`DynAction` trait**（类型擦除层）：注册表存储 `Arc<dyn DynAction>`，`ModuleRouter::dispatch` 走 dyn dispatch。`DynAction` 有一个 blanket impl：任何实现了 `TypedAction` 的类型自动实现 `DynAction`。
+> - **`#[derive(TableEntity)]`**：生成 `<Name>Field` 封闭字段枚举 + `<Name>Where` 条件枚举 + 运行时 `TableConfig`，杜绝任意字符串列名拼接。
+> - **`#[derive(Action)]`**：生成 `TypedAction` impl + `ActionMeta`（含 name、permissions、is_public 等元数据）。
+> - **六个内置 Action**（`add`/`put`/`del`/`get`/`select`/`table`）已泛型化为 `XxxAction<T: TableEntity>`，`ModuleRouter::table_typed::<T>()` 一行注册全套 CRUD。
+> - **认证内置 Action**（`token` feature）：`LoginAction<V>`（凭证校验委托 `CredentialVerifier`）、`RefreshAction`、`LogoutAction`。
+> - 详细设计文档见 `docs/superpowers/plans/2026-05-27-action-typed-system.md`。
 
-```rust
-#[async_trait]
-pub trait Action: Send + Sync {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError>; // 必须实现
-    fn name(&self) -> &str;                              // 必须实现，唯一标识符
+---
 
-    fn display_name(&self) -> &str { self.name() }      // 可选：友好名称
-    fn description(&self) -> &str { "" }                // 可选：描述
-    fn permissions(&self) -> &[Permission] { &[] }      // 可选：所需权限
-    fn params_schema(&self) -> Option<Value> { None }   // 可选：参数 JSON Schema
-    fn is_public(&self) -> bool { false }               // 可选：是否跳过认证
-}
-```
+### 旧版 Action Trait（⚠️ 已删除，仅供参考）
+
+> 以下 Permission、User、GlobalTools、Request、ActionContext、ApiResponse、内置 CRUD Actions 等均为旧版 API 文档，已随 H-1 重构被新类型化系统替代。当前实现请以 `action/typed.rs` 为准。
 
 ### Permission（权限类型）
 
@@ -970,7 +1070,7 @@ use yang_base::router::{ModuleRouter, BUILTIN_ACTION_NAMES};
 let router = ModuleRouter::new("user", "用户管理")
     .with_table_config(Arc::new(table_config))
     .default_permissions(vec!["user:access".into()])
-    .register_builtin_actions()?   // 注册全部 6 个内置 CRUD（需 mysql feature）
+    .table_typed::<UserEntity>()?   // 一行注册全套类型化 CRUD（需 mysql feature）
     .register_action(LoginAction); // 注册自定义 Action
 
 // 分发请求（完整权限检查流程）
@@ -1072,7 +1172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_module(
             ModuleRouter::new("user", "用户管理")
                 .with_table_config(users_config)
-                .register_builtin_actions()?
+                .table_typed::<UserEntity>()?
         );
 
     // 6. 处理请求（示例）

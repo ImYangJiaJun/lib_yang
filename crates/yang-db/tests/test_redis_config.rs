@@ -7,7 +7,10 @@ use yang_db::{RedisClient, RedisConfig};
 #[tokio::test]
 async fn test_max_connections_config() {
     // 创建一个只允许 2 个连接的配置
-    let config = RedisConfig::new(2, 5, 10, false);
+    let config = RedisConfig::default()
+        .with_max_connections(2)
+        .with_connect_timeout(5)
+        .with_wait_timeout(10);
     let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
         .await
         .expect("连接失败");
@@ -39,7 +42,10 @@ async fn test_max_connections_config() {
 #[tokio::test]
 async fn test_wait_timeout_config() {
     // 创建一个等待超时为 2 秒的配置
-    let config = RedisConfig::new(1, 5, 2, false);
+    let config = RedisConfig::default()
+        .with_max_connections(1)
+        .with_connect_timeout(5)
+        .with_wait_timeout(2);
     let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
         .await
         .expect("连接失败");
@@ -74,7 +80,10 @@ async fn test_wait_timeout_config() {
 #[tokio::test]
 async fn test_connect_timeout_config() {
     // 创建一个连接超时为 1 秒的配置
-    let config = RedisConfig::new(10, 1, 10, false);
+    let config = RedisConfig::default()
+        .with_max_connections(10)
+        .with_connect_timeout(1)
+        .with_wait_timeout(10);
 
     // 尝试连接到一个不存在的主机
     let start = Instant::now();
@@ -109,7 +118,11 @@ async fn test_default_config() {
 /// 验证自定义配置的参数值
 #[tokio::test]
 async fn test_custom_config() {
-    let config = RedisConfig::new(20, 10, 15, true);
+    let config = RedisConfig::default()
+        .with_max_connections(20)
+        .with_connect_timeout(10)
+        .with_wait_timeout(15)
+        .with_enable_logging(true);
     assert_eq!(config.max_connections, 20, "最大连接数应为 20");
     assert_eq!(config.connect_timeout, 10, "连接超时应为 10 秒");
     assert_eq!(config.wait_timeout, 15, "等待超时应为 15 秒");
@@ -121,7 +134,11 @@ async fn test_custom_config() {
 /// 验证配置可以正确克隆
 #[test]
 fn test_config_clone() {
-    let config = RedisConfig::new(15, 8, 12, true);
+    let config = RedisConfig::default()
+        .with_max_connections(15)
+        .with_connect_timeout(8)
+        .with_wait_timeout(12)
+        .with_enable_logging(true);
     let cloned = config.clone();
 
     assert_eq!(config.max_connections, cloned.max_connections);
@@ -136,7 +153,10 @@ fn test_config_clone() {
 #[tokio::test]
 async fn test_concurrent_connection_limit() {
     // 创建一个最大连接数为 3 的配置
-    let config = RedisConfig::new(3, 5, 10, false);
+    let config = RedisConfig::default()
+        .with_max_connections(3)
+        .with_connect_timeout(5)
+        .with_wait_timeout(10);
     let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
         .await
         .expect("连接失败");
@@ -186,13 +206,20 @@ async fn test_concurrent_connection_limit() {
 #[tokio::test]
 async fn test_logging_config() {
     // 测试启用日志
-    let config_with_logging = RedisConfig::new(10, 5, 10, true);
+    let config_with_logging = RedisConfig::default()
+        .with_max_connections(10)
+        .with_connect_timeout(5)
+        .with_wait_timeout(10)
+        .with_enable_logging(true);
     let result =
         RedisClient::connect_with_config("redis://127.0.0.1:6379", config_with_logging).await;
     assert!(result.is_ok(), "启用日志时连接应该成功");
 
     // 测试禁用日志
-    let config_without_logging = RedisConfig::new(10, 5, 10, false);
+    let config_without_logging = RedisConfig::default()
+        .with_max_connections(10)
+        .with_connect_timeout(5)
+        .with_wait_timeout(10);
     let result =
         RedisClient::connect_with_config("redis://127.0.0.1:6379", config_without_logging).await;
     assert!(result.is_ok(), "禁用日志时连接应该成功");

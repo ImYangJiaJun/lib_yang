@@ -339,7 +339,13 @@ impl RedisTransaction {
                                 MAX_RETRIES
                             )));
                         }
-                        // WATCH 冲突，重试
+                        // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
+                        conn = self
+                            .client
+                            .pool()
+                            .get()
+                            .await
+                            .map_err(|e| DbError::RedisPoolError(format!("重试获取连接失败: {}", e)))?;
                         continue;
                     }
                     // 非冲突：解码为调用方期望的类型 T
@@ -358,7 +364,15 @@ impl RedisTransaction {
                                 MAX_RETRIES, e
                             )));
                         }
-                        // WATCH 冲突，重试
+                        // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
+                        conn = self
+                            .client
+                            .pool()
+                            .get()
+                            .await
+                            .map_err(|e| {
+                                DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
+                            })?;
                         continue;
                     } else {
                         // 其他错误，直接返回

@@ -1,4 +1,5 @@
 //! ActionContext 和 User 单元测试
+#![cfg(feature = "token")]
 
 use crate::action::{ActionContext, GlobalTools, Request, User};
 use crate::token::TokenManager;

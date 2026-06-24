@@ -994,9 +994,12 @@ impl TableQuery {
             }
             // 叶子：必有字段，校验存在性与筛选权限
             leaf => {
-                let field = leaf
-                    .field()
-                    .expect("非组节点必有字段名");
+                let field = leaf.field().ok_or_else(|| {
+                    BaseError::ParamInvalid(
+                        "condition".to_string(),
+                        "条件节点缺少字段名".to_string(),
+                    )
+                })?;
                 self.validate_filter_field(field)
             }
         }
@@ -2129,9 +2132,9 @@ impl TableQuery {
         &self,
         data: &std::collections::HashMap<String, Value>,
     ) -> Result<(String, Vec<SqlParam>), BaseError> {
-        let mut fields = Vec::new();
-        let mut placeholders = Vec::new();
-        let mut params = Vec::new();
+        let mut fields = Vec::with_capacity(data.len());
+        let mut placeholders = Vec::with_capacity(data.len());
+        let mut params = Vec::with_capacity(data.len());
 
         // 遍历数据，构建字段列表和参数列表
         for (field_name, value) in data {
@@ -2399,22 +2402,32 @@ impl TableQuery {
             ));
         }
 
-        // 1. 复制用户数据，并自动刷新 updated_at（若已配置且列存在于表）
-        let mut working: std::collections::HashMap<String, Value> = data.clone();
-        if let Some(ts) = &self.table_config.timestamp_fields {
-            if let Some(updated_at) = &ts.updated_at {
-                if self.table_config.fields.contains_key(updated_at) {
-                    let now = chrono::Utc::now().timestamp();
-                    working.insert(updated_at.clone(), Value::Number(now.into()));
-                }
-            }
-        }
+        // 1. 自动刷新 updated_at（若已配置且列存在于表），仅在需要时克隆
+        let need_timestamp = self
+            .table_config
+            .timestamp_fields
+            .as_ref()
+            .and_then(|ts| ts.updated_at.as_ref())
+            .is_some_and(|updated_at| self.table_config.fields.contains_key(updated_at));
 
-        let mut set_clauses = Vec::new();
-        let mut params = Vec::new();
+        let mut owned_data;
+        let working: &std::collections::HashMap<String, Value> = if need_timestamp {
+            owned_data = data.clone();
+            // SAFETY: need_timestamp 为 true 意味着 timestamp_fields 和 updated_at 一定存在
+            let ts = self.table_config.timestamp_fields.as_ref().unwrap();
+            let updated_at = ts.updated_at.as_ref().unwrap();
+            let now = chrono::Utc::now().timestamp();
+            owned_data.insert(updated_at.clone(), Value::Number(now.into()));
+            &owned_data
+        } else {
+            data
+        };
+
+        let mut set_clauses = Vec::with_capacity(working.len());
+        let mut params = Vec::with_capacity(working.len());
 
         // 2. 构建 SET 子句（通过 quote_identifier 转义字段名）
-        for (field_name, value) in &working {
+        for (field_name, value) in working {
             // 检查字段是否存在于表配置中
             if !self.table_config.fields.contains_key(field_name) {
                 return Err(BaseError::FieldNotFound(

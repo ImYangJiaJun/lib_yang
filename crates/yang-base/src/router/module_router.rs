@@ -75,6 +75,17 @@ pub struct ModuleRouter {
 impl ModuleRouter {
     /// 创建新的模块路由器
     ///
+    /// # 安全注意
+    ///
+    /// 若路由器将注册**非公开 Action**（`is_public() == false`），调用方**必须**
+    /// 通过 [`.middleware()`](Self::middleware) 注册认证中间件（如
+    /// `TokenAuthMiddleware`）。否则未认证请求到达非公开 Action 时，
+    /// [`authorize_and_dispatch`](Self::authorize_and_dispatch) 会返回
+    /// `Unauthorized`，但中间件层的短路返回可能被意外绕过。
+    ///
+    /// 本方法在 debug build 中会通过 `tracing::warn!` 在首次 dispatch 时
+    /// 检测此配置错误。
+    ///
     /// # 参数
     ///
     /// - `module_name`: 模块名称
@@ -330,6 +341,15 @@ impl ModuleRouter {
         action_name: &str,
         mut context: ActionContext,
     ) -> Result<ApiResponse, BaseError> {
+        // 0. 安全检查：存在非公开 Action 但未注册任何中间件时发出警告（S-NEW-AUTH-2）
+        if self.middlewares.is_empty() && self.actions.values().any(|a| !a.meta().is_public) {
+            tracing::warn!(
+                module = %self.module_name,
+                "模块 '{}' 包含非公开 Action 但未注册认证中间件（如 TokenAuthMiddleware）",
+                self.module_name,
+            );
+        }
+
         // 1. 查找 Action（克隆 Arc，便于后续移动进中间件链 / 执行）
         let action = self
             .actions

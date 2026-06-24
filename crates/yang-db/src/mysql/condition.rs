@@ -5,6 +5,7 @@ use super::identifier::quote_identifier;
 
 /// SQL 值类型
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SqlValue {
     Null,
     Bool(bool),
@@ -19,6 +20,7 @@ pub enum SqlValue {
 
 /// 查询条件
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Condition {
     /// 相等
     Eq(String, SqlValue),

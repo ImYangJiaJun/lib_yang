@@ -6,7 +6,7 @@
 
 > 优先级：🔴 Critical（生产风险）/ 🟠 High（设计缺陷）/ 🟡 Medium（代码质量）/ 🟢 Low（改进建议）
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
-> 最近更新：2026-05-31，基于当前工作区实现与 `cargo check -p yang-base --all-features`、`cargo test --lib -p yang-base`（326 passed / 8 ignored）验证结果。本轮同步了 H-1（核心完成）、H-3、H-4、H-5、L-2 的实现进展。
+> 最近更新：2026-06-25，同频 yang-base 审计新增 NEW-1~NEW-24、yang-pcg 生产审计新增 NEW-20~NEW-34
 
 ---
 
@@ -201,11 +201,11 @@ impl RedisPipeline {
 
 ## 🟡 Medium — 代码质量
 
-### ⏳ [M-1] 测试代码中 unwrap() 调用过多（20+）
+### ⏳ [M-1] 测试代码中 unwrap/expect 调用过多（~870+）
 
-**文件**：`crates/yang-db/tests/`、`crates/yang-base/tests/`
+**文件**：`crates/yang-db/tests/`、`crates/yang-base/tests/`、`crates/yang-pcg/src/`（测试模块）
 
-**问题**：集成测试和单元测试中存在大量 `.unwrap()` 调用，导致测试失败时错误信息不明确（thread panicked at 'called `Option::unwrap()` on a `None` value'，无上下文）。
+**问题**：全 workspace 集成测试和单元测试中存在大量 `.unwrap()` / `.expect()` 调用（yang-base ≈418 处、yang-pcg 约 254 处、yang-db 约 200+ 处，合计 ~870+），导致测试失败时错误信息不明确（thread panicked at 'called `Option::unwrap()` on a `None` value'，无上下文）。
 
 **修复方向**：
 ```rust
@@ -362,6 +362,168 @@ FieldType::Date => {
 
 ---
 
+## 🆕 yang-pcg 生产审计发现（NEW-20 ~ NEW-34）
+
+> 以下条目来自 `crates/yang-pcg/docs/PRODUCTION_AUDIT_2026-06-24.md`，按优先级摘录关键发现。完整清单与修复路线图见审计报告第九节。
+
+### 🔴 Critical
+
+#### ⏳ [NEW-20] 确定性契约漏洞：DefaultHasher 跨 Rust 版本不稳定
+
+**文件**：`crates/yang-pcg/src/rng.rs:131-134`、`crates/yang-pcg/src/digest.rs:71-75`
+
+**问题**：种子派生和 ConfigDigest 均使用 `std::collections::hash_map::DefaultHasher`（SipHash 算法）。Rust 标准库明确声明 DefaultHasher 的内部算法不保证跨编译器版本稳定。若 Rust 版本升级导致算法变更，所有 `seed: None` 的兜底种子、所有 RNG 派生标签产生的子流将全部改变，等价于破坏所有历史 seed 复现性和黄金测试。
+
+**修复方向**：将 DefaultHasher 替换为 FNV-1a 或 xxhash 等固定算法；更新 CLAUDE.md 声明覆盖全链路。
+
+---
+
+#### ⏳ [NEW-21] SemVer 兼容性：零处 `#[non_exhaustive]`
+
+**文件**：`crates/yang-pcg/src/`（全部 `pub enum` 和 `pub struct`）
+
+**问题**：yang-pcg 中完全没有使用 `#[non_exhaustive]` 标记。16 个公共枚举 + 75 个公共结构体在未来添加新变体/字段时将直接破坏下游编译。yang-base 已有 `#[non_exhaustive]` 先例（如 `FieldType`）。
+
+**修复方向**：在所有公共 enum 上添加 `#[non_exhaustive]`；在所有公共 struct 上添加 `#[non_exhaustive]`，并配套提供 `pub fn new(...)` 构造函数或 Builder 模式。
+
+---
+
+### 🟠 High
+
+#### ⏳ [NEW-22] NaN 权重静默绕过校验
+
+**文件**：`crates/yang-pcg/src/config.rs:469-475`、`crates/yang-pcg/src/rng.rs:383-398`、`crates/yang-pcg/src/grammar/selector.rs:105`
+
+**问题**：三环 NaN 传播链：配置校验中 `NaN.abs() > 0.01` 为 false（绕过）→ `choose_weighted` 中 `NaN <= 0.0` 为 false（不返回 None，fallthrough 到最后一项）→ 地形策略 `NaN as usize = 0`。恶意配置可产出静默错误结果。
+
+**修复方向**：`ItemSpawnConfig::validate()` 入口显式拒绝 NaN（`is_nan()` 检查）；`choose_weighted` 和 `WeightedRuleSelector::select` 添加纵深防御。
+
+---
+
+#### ⏳ [NEW-23] serde_json 序列化失败静默吞咽
+
+**文件**：`crates/yang-pcg/src/digest.rs:41,72`
+
+**问题**：两处使用 `serde_json::to_string(config).unwrap_or_else(|_| String::new())`。若新增不可序列化字段，所有配置摘要退化为空字符串哈希，全部碰撞且零错误信号。
+
+**修复方向**：将 `unwrap_or_else` 替换为显式错误传播（`.expect("GenerationConfig 必须可序列化")` 或返回 Result）。
+
+---
+
+#### ⏳ [NEW-24] 布局重叠检测 O(n²) 重复扫描
+
+**文件**：`crates/yang-pcg/src/layout/solver.rs:132-161,164-176`
+
+**问题**：`nudge_clear` 在 while 循环中每次迭代都调用 `overlaps_any` 遍历全部 placed 列表做 AABB 检测，且每次创建临时 inflated RoomBounds（堆分配）。当前房间数 ≤40 可接受，但 100+ 房间会成为瓶颈。
+
+**修复方向**：将 inflated bounds 提取到循环外；placed 集合使用 R-Tree 或空间哈希。
+
+---
+
+#### ⏳ [NEW-25] 错误链丢失
+
+**文件**：`crates/yang-pcg/src/error.rs:171`
+
+**问题**：`PcgError::Export::source_error` 为 `Option<String>`，底层 `serde_json::Error` 被转为字符串丢弃。下游无法通过 `Error::source()` 追溯根因。
+
+**修复方向**：改为 `Option<Box<dyn std::error::Error>>` 并添加 `#[source]` 属性。
+
+---
+
+#### ⏳ [NEW-26] 公共 API 暴露面过大（19 个 pub mod 全开）
+
+**文件**：`crates/yang-pcg/src/lib.rs`
+
+**问题**：`backend`/`chunked`/`layout`/`topology`/`spawn`/`terrain`/`debug`/`validation`/`constraint`/`cache`/`grammar` 等 10+ 个内部模块全部 `pub mod`，下游可直接 `use yang_pcg::layout::solver::*`。
+
+**修复方向**：改为 `pub(crate) mod`，仅通过 `lib.rs` 的 `pub use` 导出真正公开的类型。
+
+---
+
+#### ⏳ [NEW-27] 内部类型泄露
+
+**文件**：`crates/yang-pcg/src/backend/mod.rs`、`crates/yang-pcg/src/spawn/mod.rs`、`crates/yang-pcg/src/terrain/mod.rs`
+
+**问题**：`PipelineBackend` trait（5 方法）、`select_backend`、`TopDownBackend`、全部 5 个地形策略结构体、7 个 spawn 内部函数变体均 pub。
+
+**修复方向**：PipelineBackend/select_backend/TopDownBackend 改为 `pub(crate)`；地形策略仅暴露 trait；spawn 函数改为 `pub(crate)`。
+
+---
+
+### 🟡 Medium
+
+#### ⏳ [NEW-28] 三种模式 RNG 派生标签无集中契约/回归测试
+
+**文件**：`crates/yang-pcg/src/generator.rs:77-78`、`crates/yang-pcg/src/chunked.rs:388,188`
+
+**问题**：OfflineFullFloor 用单一 `"terrain"`、RuntimeChunked 用 `"terrain:{room_id}"`、HybridPrecompute 用 `"terrain:chunk:{chunk}:{room}"`。差异散落三处，无集中契约表或 goldfile 测试。若未来有人重构"统一"标签将静默破坏某一模式。
+
+**修复方向**：在 `rng.rs` 顶部添加三种模式的完整派生标签契约表；添加 goldfile 确定性回归测试。
+
+---
+
+#### ⏳ [NEW-29] 地形策略回退共享 RNG 流（与 chunked 路径不对称）
+
+**文件**：`crates/yang-pcg/src/terrain/mod.rs:57-62`
+
+**问题**：主策略失败后 DefaultCarveStrategy 回退使用**同一个 rng 引用**，与 chunked 路径中 fallback 的 `derive("terrain:fallback:...")` 不对称。主策略 RNG 消费变化会传播到回退结果。
+
+**修复方向**：在回退前 `rng.derive(&format!("fallback:{}", room.id))` 解耦。
+
+---
+
+#### ⏳ [NEW-30] gen_bool_with_probability 无概率范围校验
+
+**文件**：`crates/yang-pcg/src/rng.rs:205-207`
+
+**问题**：`gen_bool_with_probability` 将 probability 直接传递 rand crate，probability 不在 [0,1] 或 NaN 时 panic。
+
+**修复方向**：添加显式校验：`<=0` → false，`>=1` → true，NaN → false/error。
+
+---
+
+#### ⏳ [NEW-31] choose_weighted 中 assert! 在生产代码 panic
+
+**文件**：`crates/yang-pcg/src/rng.rs:377`
+
+**问题**：`assert_eq!(slice.len(), weights.len())` 在生产代码中 panic。函数已返回 `Option`，应保持 `None` 语义一致性。
+
+**修复方向**：改为 `if slice.len() != weights.len() { return None; }`。
+
+---
+
+### 🟢 Low
+
+#### ⏳ [NEW-32] Box\<dyn TerrainStrategy\> 每房间堆分配 + 虚表
+
+**文件**：`crates/yang-pcg/src/terrain/selector.rs:35-59`
+
+**问题**：对每个房间调用 `Box::new(strategy)` 产生堆分配+虚表。所有策略类型均为 ZST（unit struct）。
+
+**修复方向**：改用 `enum TerrainStrategyKind` + match 分发消除虚表调度和堆分配。
+
+---
+
+#### ⏳ [NEW-33] spawn 模块双份冗余实现
+
+**文件**：`crates/yang-pcg/src/spawn/mod.rs:63-102 vs 112-171`
+
+**问题**：`generate_spawns`（生产路径）和 `generate_spawns_with_debug`（调试路径）是独立函数体而非 tracked 包装 non-tracked。修改一处而忘记同步另一处会破坏 `set_debug(true)` 不改变输出的契约。
+
+**修复方向**：将 debug 版本改为生产版本 + 附加 debug 收集的包装器。
+
+---
+
+#### ⏳ [NEW-34] TerrainStrategy trait 缺 Send + Sync 超约束
+
+**文件**：`crates/yang-pcg/src/terrain/strategy.rs:46`
+
+**问题**：`TerrainStrategy` trait 无 `Send + Sync` 约束——`Box<dyn TerrainStrategy>` 不会被编译器视为 Send，直接阻塞 rayon 并行化。所有当前实现者为 ZST（自动 Send+Sync），添加约束无破坏性。
+
+**修复方向**：在 trait 定义添加 `+ Send + Sync` 约束。
+
+---
+
 ## 汇总表
 
 | ID | 状态 | 优先级 | Crate | 文件 | 一句话描述 |
@@ -374,7 +536,7 @@ FieldType::Date => {
 | H-4 | ✅ 已完成 | 🟠 High | yang-base | token/revocation.rs | Token 撤销/黑名单机制（Redis jti 黑名单） |
 | H-5 | ✅ 已完成 | 🟠 High | yang-base | router/middleware.rs | Router 中间件/拦截器（洋葱模型 Middleware/Next） |
 | H-6 | ✅ 已完成 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 |
-| M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap() 过多，错误信息不清 |
+| M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap/expect 过多（~870+），错误信息不清 |
 | M-2 | ✅ 已完成 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 |
 | M-3 | ✅ 审计完成 | 🟡 Medium | yang-db/yang-base | （生产代码） | 生产路径 panic 点均为受控不变量/显式契约，无未受控 panic |
 | M-4 | ✅ 已完成 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 |
@@ -383,3 +545,18 @@ FieldType::Date => {
 | L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate |
 | L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 |
 | L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 |
+| NEW-20 | ⏳ 待处理 | 🔴 Critical | yang-pcg | rng.rs / digest.rs | DefaultHasher 跨 Rust 版本不稳定，确定性契约漏洞 |
+| NEW-21 | ⏳ 待处理 | 🔴 Critical | yang-pcg | （全量 pub enum/struct） | 零处 #[non_exhaustive]，SemVer 兼容性债 |
+| NEW-22 | ⏳ 待处理 | 🟠 High | yang-pcg | config.rs / rng.rs / selector.rs | NaN 权重三环传播链静默绕过校验 |
+| NEW-23 | ⏳ 待处理 | 🟠 High | yang-pcg | digest.rs | serde_json 序列化失败静默吞咽，摘要全碰撞 |
+| NEW-24 | ⏳ 待处理 | 🟠 High | yang-pcg | layout/solver.rs | 布局重叠检测 O(n²) 重复扫描 + 临时堆分配 |
+| NEW-25 | ⏳ 待处理 | 🟠 High | yang-pcg | error.rs | 错误链丢失，Export::source_error 为 String |
+| NEW-26 | ⏳ 待处理 | 🟠 High | yang-pcg | lib.rs | 公共 API 暴露面过大，19 个 pub mod 全开 |
+| NEW-27 | ⏳ 待处理 | 🟠 High | yang-pcg | backend/spawn/terrain/mod.rs | 内部类型泄露（PipelineBackend/策略/spawn 函数） |
+| NEW-28 | ⏳ 待处理 | 🟡 Medium | yang-pcg | generator.rs / chunked.rs | 三种模式 RNG 标签无集中契约/回归测试 |
+| NEW-29 | ⏳ 待处理 | 🟡 Medium | yang-pcg | terrain/mod.rs | 地形策略回退共享 RNG 流，跨模式不一致 |
+| NEW-30 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | gen_bool_with_probability 无概率范围校验 |
+| NEW-31 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | choose_weighted 中 assert! 在生产代码 panic |
+| NEW-32 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/selector.rs | Box<dyn TerrainStrategy> 每房间堆分配+虚表 |
+| NEW-33 | ⏳ 待处理 | 🟢 Low | yang-pcg | spawn/mod.rs | spawn 双份冗余实现，修改同步风险 |
+| NEW-34 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/strategy.rs | TerrainStrategy trait 缺 Send+Sync 阻塞并行化 |

@@ -29,7 +29,7 @@
 //! ```
 
 mod app_router;
-mod middleware;
+pub mod middleware;
 mod module_router;
 
 pub use app_router::AppRouter;
