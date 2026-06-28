@@ -10,13 +10,16 @@ Application-facing backend primitives built on `yang-db`: plugin lifecycle, glob
 yang-base/
 ├── src/
 │   ├── lib.rs           # 11 public modules; feature-gated http/token
+│   ├── config.rs        # 全局配置结构
+│   ├── lifecycle.rs     # 应用生命周期钩子
+│   ├── observability.rs # 可观测性配置（慢查询阈值 OnceLock 单例，无 tracing/metrics 集成）
 │   ├── database/        # GlobalDatabase, GlobalRedis, DatabaseInitializer
 │   ├── plugin/          # Plugin trait + managers/registry in one file
-│   ├── action/          # child AGENTS.md: Action trait, context, builtin CRUD
-│   ├── table/           # child AGENTS.md: FieldType/TableConfig/TableQuery
+│   ├── action/          # child AGENTS.md: TypedHandler/TypedAction/DynAction, builtin CRUD
+│   ├── table/           # child AGENTS.md: FieldType/TableConfig/TableQuery/TableEntity
 │   ├── router/          # ModuleRouter + AppRouter
 │   ├── http/            # reqwest wrapper, `http` feature
-│   ├── token/           # JWT TokenManager, `token` feature
+│   ├── token/           # JWT TokenManager + revocation, `token` feature
 │   └── error/           # BaseError with numeric codes
 ├── tests/               # integration tests, Docker/manual where ignored
 ├── docs/                # api/guides/reference/examples

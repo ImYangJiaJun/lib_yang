@@ -25,6 +25,7 @@ yang-base = { path = "../yang-base", features = ["token", "http", "mysql", "vali
 | `mysql` | ✓ | sqlx | MySQL 查询执行（TableQuery 执行层） |
 | `validator` | ✓ | regex | 字段正则校验器 |
 | `plugin-schema` | ✓ | jsonschema | 插件配置 JSON Schema 验证 |
+| `metrics` | — | metrics | 运行期指标埋点门面（默认关闭，运行期由调用方挂 exporter） |
 
 ---
 
@@ -446,8 +447,14 @@ let claims = manager.parse_token_unsafe(&token)?;
 // 撤销单个 Token（将 jti 写入 Redis 黑名单，TTL = token 剩余有效期）
 manager.revoke_token(&access_token).await?;
 
-// 按 claims 撤销（批量撤销某用户的所有 Token）
+// 按已验证 claims 撤销该 Token（将 claims.jti 写入黑名单，与 revoke_token 等价但省略重复验证）
 manager.revoke_claims(&claims).await?;
+
+// 按用户（sub）批量撤销其全部旧 Token（写入 min_iat 水位线，用于改密/强制下线）
+manager.revoke_by_subject(&claims.sub).await?;
+
+// 查询某用户的最小有效签发时间水位线
+let min_iat: Option<u64> = manager.subject_min_iat(&claims.sub).await?;
 
 // 检查 Token 是否已被撤销
 let revoked: bool = manager.is_revoked(&jti).await?;
@@ -478,6 +485,7 @@ pub struct HttpClientConfig {
     pub user_agent: Option<String>,     // 自定义 UA，默认 None
     pub accept_invalid_certs: bool,     // 默认 false（生产环境不应设为 true）
     pub proxy_url: Option<String>,      // 代理 URL，默认 None
+    pub circuit_breaker: Option<CircuitBreakerConfig>, // 熔断器策略，默认 None（不启用）
 }
 ```
 
@@ -564,12 +572,13 @@ let resp = client
     .get("https://api.example.com/data")
     .retry(RetryConfig {
         max_retries: 3,                              // 最多重试 3 次
-        retry_on: Some(vec![500, 502, 503]),          // 仅这些状态码触发重试
+        retry_on: vec![502, 503, 504],               // 仅这些状态码触发重试（Vec<u16>，非 Option）
         backoff_ms: 100,                              // 初始退避 100ms，每次翻倍
     })
     .send()
     .await?;
-// 默认不重试；启用后对连接/超时错误与命中 retry_on 的状态码按指数退避重试
+// 默认值：max_retries=3, retry_on=[502,503,504], backoff_ms=100；默认不重试需显式传入 RetryConfig。
+// 启用后对连接/超时错误与命中 retry_on 的状态码按指数退避重试
 ```
 
 **熔断器**（`CircuitBreaker`，按目标 host 分键）：

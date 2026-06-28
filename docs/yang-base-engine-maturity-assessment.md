@@ -4,6 +4,8 @@
 > 所有结论均基于对当前代码的 file:line 取证；评估时分支 `master`。
 >
 > **2026-06-13 二次审计已并入**：60 agent 并行全量扫描 + 对抗式复核，确认 10 项 ✅ 全部真落地（2 处子项有设计偏差非退化）、校正大批 file:line 漂移（见 11.7）、修正 M-1 数字（73→实测 ≈418）、新发现 **24 条文档此前未覆盖的问题（NEW-1~24，见第十三节）**。代码已较快照演进（`query_builder.rs` 5345 行、事务文件多处变动），引用具体行号时以 11.7 校正表与第十三节为准。
+>
+> **2026-06-27 对抗式再审注记**：对 yang-base + yang-db（master，全 feature）做了本机实测与三轮对抗式代码复核——单元测试 704 全绿（yang-base 379 + yang-db 325），核心功能稳定；但项目唯一被 README 钦定的质量门 `cargo clippy --all-targets --all-features -- -D warnings` 当前为 RED（yang-db lib 自身 7 个 error，系上轮修复扫尾引入的回归：对内部方法标了 `#[deprecated]` 却漏处理库内调用方），`cargo fmt` 亦 RED（80 文件漂移），且 cargo-audit 工具链缺失、无依赖漏洞扫描；此外仍存在若干开放安全/正确性项（condition safe_quote 静默 RAW 回退、order/group/join/value 裸 SQL 面、6 个敏感 DTO `#[derive(Debug)]` 明文、PG Transaction 无 Drop、PG 方言 deprecated 不一致等）。综合评分 71/100，总判定 **CONDITIONAL（有条件就绪）**；本文中标 ✅ 的项请以 **`docs/audit/2026-06-27-yang-base-db-reaudit.md`** 为准逐项复核，转为完全就绪的硬前置为：clippy lib 回归清零 + condition checked 变体/裸 SQL 文档化收口 + 敏感 DTO 脱敏 Debug。
 
 ## 一、总判定
 

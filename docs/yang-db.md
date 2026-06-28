@@ -274,7 +274,7 @@ pub enum SqlValue {
 #### SQL 注入防护
 
 - **值**：所有用户值通过 `?` 占位符参数化绑定，不拼接进 SQL 字符串（注入安全）。
-- **标识符（表名/列名）**：yang-db **不**自动转义/校验，按调用方传入裸拼。`quote_identifier()`/`is_valid_identifier()` 位于上层 yang-base（`table/table_query.rs:140/167`），由受保护层负责。**直接使用 yang-db 者必须自行保证表名/列名来自可信常量或白名单**，勿将用户输入直接作为标识符（详见评估文档 10.3 DB-1 / 11.4 DOC-3）。
+- **标识符（表名/列名）**：yang-db 在 `mysql/identifier.rs`（反引号方言）和 `postgres/identifier.rs`（双引号方言）中各自实现了标识符转义，均独立导出 `is_valid_identifier`、`quote_identifier`、`quote_qualified`，不依赖 yang-base。写路径（INSERT/UPDATE/DELETE/UPSERT 的表名与列名）在 SQL 生成时调用 `quote_identifier`，无效标识符返回 `DbError::InvalidArgument`。`condition_to_sql_owned` 使用 `safe_quote_identifier`，对包含 `.`、`(` 等的表达式（如 `a.b`、`COUNT(*)`）会降级为原始值并打 `log::warn`。`field()`/`order()`/`group()`/JOIN ON 有意接受 SQL 表达式、不强制 quote；**通过这些路径传入外部输入的调用方，仍须手动用 `quote_identifier`/`quote_qualified` 校验**，上层 yang-base 类型层（`TableEntity` 派生的封闭字段枚举）是阻止任意字符串列名的推荐防线。
 
 #### 完整示例
 
@@ -331,14 +331,18 @@ tx.commit().await?;
 
 ```rust
 pub struct RedisConfig {
-    pub pool_size: usize,         // 连接池大小
-    pub min_idle: usize,          // 最小空闲连接数
-    pub idle_timeout: u64,        // 空闲超时（秒）
-    pub enable_logging: bool,     // 是否启用日志
+    pub max_connections: usize,      // 最大连接数
+    pub min_connections: usize,      // 最小连接数
+    pub connect_timeout: u64,        // 连接超时（秒）
+    pub wait_timeout: u64,           // 等待可用连接超时（秒）
+    pub idle_timeout: u64,           // 空闲超时（秒）
+    pub max_lifetime: Option<u64>,   // 连接最大生命周期（秒），None=不限
+    pub test_before_acquire: bool,   // 获取连接前 PING 检测
+    pub enable_logging: bool,        // 是否启用日志
 }
 ```
 
-> **已知问题**：`RedisConfig` 的连接池参数目前未实际生效（静默失效），待修复。
+各字段均可通过 Builder 方法（`with_max_connections`、`with_min_connections` 等）配置。注意：`connect_with_config` 当前仅将 `max_connections`/`wait_timeout`/`connect_timeout`/`idle_timeout`/`enable_logging` 五个字段应用到 deadpool 连接池；`min_connections`/`max_lifetime`/`test_before_acquire` 暂未被连接层消费（`max_lifetime_duration()` 标 `#[allow(dead_code)]`）。
 
 ### RedisClient（核心客户端）
 
@@ -529,7 +533,6 @@ let results: Vec<RedisValue> = tx.execute().await?;
 
 | 问题 | 影响 | 状态 |
 |------|------|------|
-| `RedisConfig` 连接池参数未实际生效 | Redis 连接池配置无效，使用库默认值 | 待修复 |
 | `insert_batch` 无自动分批（**已修复**，现有 `insert_batch_with_size`） | 大数据集可能超过 max_allowed_packet | 已修复 |
 | `having_cond` 中操作符验证 | `having_cond_unchecked` 不检查操作符合法性 | 低优先级 |
 | `unsafe` 代码 | MySqlPool 裸指针操作，需定期审查 | 持续关注 |

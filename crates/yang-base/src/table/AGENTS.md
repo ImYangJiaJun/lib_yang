@@ -9,6 +9,7 @@ Table-aware schema, validation, permissions, dynamic row decoding, and query bui
 ```text
 table/
 ├── mod.rs              # public exports
+├── entity.rs           # TableEntity trait + 衍生类型 AsColumnName(:67)/Filter(:322)（WhereCondition 定义在 query_params.rs:99、SortOrder 在 table_config.rs:522），H-1 类型化 Action 的核心基础
 ├── field_type.rs       # FieldType enum, MySQL mapping, JSON validation
 ├── field_config.rs     # FieldConfig, validators, permissions
 ├── table_config.rs     # TableConfig, indexes, timestamps, soft delete
@@ -16,7 +17,7 @@ table/
 ├── table_query.rs      # TableQuery chainable DB operations
 ├── dynamic_row.rs      # DynamicRow and BLOB base64 JSON conversion
 ├── validator.rs        # Validator enum and validation helpers
-└── __tests__/          # colocated unit tests
+└── __tests__/          # colocated unit tests（含 entity_test.rs）
 ```
 
 ## WHERE TO LOOK
@@ -34,6 +35,7 @@ table/
 ## CODE MAP
 | Symbol | Location | Role |
 |--------|----------|------|
+| `TableEntity` | `entity.rs` | H-1 类型化核心 trait；所有内置 Action（Add/Put/Del/Get/Select/Table）泛型约束；#[derive(TableEntity)] 派生入口 |
 | `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum/ForeignKey |
 | `FieldConfig` | `field_config.rs` | per-field name/type/display/permission/validator/default metadata |
 | `FieldPermissions` | `field_config.rs` | role-based read/write/filter/sort controls |

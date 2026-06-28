@@ -6,7 +6,7 @@
 
 > 优先级：🔴 Critical（生产风险）/ 🟠 High（设计缺陷）/ 🟡 Medium（代码质量）/ 🟢 Low（改进建议）
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
-> 最近更新：2026-06-25，同频 yang-base 审计新增 NEW-1~NEW-24、yang-pcg 生产审计新增 NEW-20~NEW-34
+> 最近更新：2026-06-27，对 yang-base/yang-db 进行生产就绪度再审（综合评分 71/100，判定 CONDITIONAL），新增 NEW-35~NEW-44 共 10 项发现，含 clippy 门禁修复回归（高优先）等；yang-pcg 不在本轮范围。
 
 ---
 
@@ -524,39 +524,161 @@ FieldType::Date => {
 
 ---
 
+## 🆕 2026-06-27 再审新发现（yang-base/yang-db）
+
+> 来源：2026-06-27 生产就绪度再审（综合评分 71/100，判定 CONDITIONAL）。完整报告见 `docs/audit/2026-06-27-yang-base-db-reaudit.md`。以下条目为本轮新发现或确认仍开放的项。
+
+### 🔴 Critical
+
+#### ⏳ [NEW-35] clippy 门禁 RED：yang-db lib 内部调用自身 #[deprecated] execute() 未加 #[allow(deprecated)]（修复回归）
+
+**文件**：`crates/yang-db/src/mysql/database.rs:281,289,300`、`crates/yang-db/src/postgres/database.rs:264,272,283`、`crates/yang-db/src/mysql/condition.rs:166`
+
+**问题**：上轮修复将 `Database::execute()/query()`、`Transaction::execute()` 标记为 `#[deprecated]`，但 `init()`/`create_table()`/`drop_table()` 这三个内部调用方未同步加 `#[allow(deprecated)]`。`doc_lazy_continuation` lint 亦在 `mysql/condition.rs:166` 触发。结果：项目唯一被 README 钦定的质量门 `cargo clippy --all-targets --all-features -- -D warnings` 退出 101，lib 7 个 error，是上轮修复扫尾引入的回归。
+
+**修复方向**：为 `init()`/`create_table()`/`drop_table()` 内对 `self.execute()` 的调用加 `#[allow(deprecated)]`（或将 DDL 工具改走未弃用的内部私有执行函数）；修正 `condition.rs:166` doc 列表缩进。目标：`cargo clippy --all-targets --all-features -- -D warnings` 转绿，这是宣称生产就绪的硬前置。
+
+---
+
+### 🟠 High
+
+#### ⏳ [NEW-36] condition safe_quote_identifier 对非法标识符静默回退 RAW，直接消费 yang-db 公有 API 的调用方存在可达注入旁路
+
+**文件**：`crates/yang-db/src/mysql/condition.rs:171-176`（`postgres/condition.rs` 同构）
+
+**问题**：`condition_to_sql_owned` 对非法标识符仅 `log::warn` 后输出 RAW 字段，而非返回错误。该回退为支持 `a.b` 限定名等 JOIN 表达式而设计，但同一代码路径对恶意载荷（如 `'; DROP TABLE t;--`）同样回退输出 RAW。yang-base `TableEntity` 封闭枚举路径已从类型层收口，但直接使用 yang-db 公有 API 并传入外部字符串的调用方仍面临真实注入面。
+
+**修复方向**：为 `condition_to_sql_owned` 增 checked 变体，非法标识符返回 `DbError::InvalidArgument` 而非 RAW 输出；保留 RAW 回退仅给显式标注的限定名 API（如 `quote_qualified`）。同时在 `lib.rs` 重导出 `quote_identifier`/`quote_qualified` 便于下游调用方自检。
+
+---
+
+#### ⏳ [NEW-37] order_by/group_by/join ON 与 value()/create_table()/init() 裸 SQL 面无安全属性
+
+**文件**：`crates/yang-db/src/mysql/query_builder.rs:244-283`（`build_joins`/`build_order_by`/`build_group_by`）、`:1655`（`value`）、`crates/yang-db/src/mysql/database.rs:272-291`（`init`/`create_table`）（PG 同构）
+
+**问题**：`build_joins` 直接 `append(join.table)` 与 `append(join.on)` 无转义；`build_order_by`/`build_group_by` 字段不转义；`value(field)` 仅行内注释无 doc/deprecated；`create_table(create_sql)` 与 `init(sql_script)` 执行任意 DDL 却无 `#[deprecated]` 或安全属性，且其内部调用 `#[deprecated]` `execute()` 未 `#[allow]`（即 NEW-35 lib error 来源之一）。yang-base `TableQuery` 对 `ORDER BY` 已通过 `get_field` 校验，JOIN/value 路径未收口。
+
+**修复方向**：为 `join ON`、`order/group` 字段提供 quoted 变体；`value()`/`create_table()`/`init()` 补 `#[deprecated]` 或安全文档；在 `lib.rs` 重导出 `quote_identifier`/`quote_qualified` 供调用方自检。
+
+---
+
+#### ⏳ [NEW-38] 敏感 DTO 全部 #[derive(Debug)] 明文，潜伏 CWE-312（先前审计 S-M8~M12 被误标为已修）
+
+**文件**：`crates/yang-base/src/action/auth.rs:55`（`LoginInput.password`）、`:67`（`TokenPairResponse`）、`:76`（`RefreshInput`）、`:84`（`AccessTokenResponse`）、`:94`（`LogoutInput`）、`crates/yang-base/src/token/mod.rs:85`（`TokenClaims`）
+
+**问题**：六个含明文 `password`/`access_token`/`refresh_token`/`jti` 字段的 DTO 均 `#[derive(Debug,...)]`，任意 `{:?}` 格式化即全量泄漏。当前审计走 FNV-1a 指纹，无生产 `{:?}` 调用，但一旦 tracing/日志框架启用 debug 格式化即触发 CWE-312。仅 `TokenManager` 本体手写了 Debug 遮蔽。2026-06-24 yang-base 审计将 S-M8~M12 标为已修，本轮复核证实实际仍开放。
+
+**修复方向**：为以上六个 DTO 手写 `impl Debug` 输出脱敏占位符（如 `password: "***"`），或用 `secrecy` crate 包装 `password`/`token` 字段。
+
+---
+
+### 🟡 Medium
+
+#### ⏳ [NEW-39] PG Transaction 缺 impl Drop，未提交事务丢弃无诊断日志（与 MySQL 不对称）
+
+**文件**：`crates/yang-db/src/postgres/transaction.rs`（全文无 `Drop`）
+
+**问题**：MySQL Transaction 在 `mysql/transaction.rs:223-231` 实现了 `Drop`，未提交时输出 `log::warn!`。PG Transaction 无 `impl Drop`——sqlx 底层仍自动回滚，不致数据损坏，但缺少诊断日志，形成可观测性不对称。
+
+**修复方向**：参照 MySQL 为 PG `Transaction` 实现 `Drop`，在 tx 未提交时 `log::warn!`。
+
+---
+
+#### ⏳ [NEW-40] PG SqlValue 漏 #[non_exhaustive] + PG Transaction::execute 漏 #[deprecated]（方言不一致 SemVer 回归）
+
+**文件**：`crates/yang-db/src/postgres/condition.rs:10-11`（PG `SqlValue`）、`crates/yang-db/src/postgres/transaction.rs`（PG `Transaction::execute`）
+
+**问题**：MySQL `SqlValue`（`mysql/condition.rs:8`）已标 `#[non_exhaustive]`，PG 孪生未标，未来加变体即破坏下游 exhaustive-match，属 SemVer 破坏风险。MySQL `Transaction::execute` 已标 `#[deprecated]`，PG 漏标，方言不一致。
+
+**修复方向**：为 PG `SqlValue` 补 `#[non_exhaustive]`；为 PG `Transaction::execute` 补 `#[deprecated]`（对齐 MySQL）。
+
+---
+
+#### ⏳ [NEW-41] cargo fmt 全树 80 文件漂移 + 无 cargo-audit 依赖漏洞扫描
+
+**文件**：`crates/yang-base/src/plugin/mod.rs` 等 80 文件（fmt 漂移最重约 290 diff 块）；工具链缺 `cargo-audit`
+
+**问题**：`cargo fmt --all -- --check` 退出 1，80 文件漂移。`cargo audit` 不可用（未安装），历史 rsa RUSTSEC-2023-0071（经 sqlx-mysql 引入）未被检测。项目有意无 CI，fmt 漂移不致流水线失败，但降低代码可读性；依赖漏洞扫描缺失属安全审计盲区。
+
+**修复方向**：执行 `cargo fmt --all` 一次性消除漂移；安装 `cargo-audit` 并执行一次，确认/记录 rsa RUSTSEC-2023-0071 处置决策。
+
+---
+
+### 🟢 Low
+
+#### ⏳ [NEW-42] GlobalRedis init/health_check 及操作方法用 e.to_string() 截断错误链
+
+**文件**：`crates/yang-base/src/database/global_redis.rs:107`（`init`，含 TODO(P1-4)）、`:157`（`health_check`）
+
+**问题**：`init` 用 `RedisConnectionFailed(e.to_string())` 截断错误链（TODO 注释指向尚不存在的变体）；`health_check` 用 `RedisOperationFailed(e.to_string())` 截断；约 30 个 Redis 操作方法绕开已存在的 `RedisOperationDbError` `From` 路径，丢失 `source()` 链。属可观测性缺陷，非功能故障。
+
+**修复方向**：在 `error/mod.rs` 新增 `RedisConnectionDbError(#[source] yang_db::DbError)` 变体；`health_check` 及各操作方法改经 `From` 路径保留 `source()` 链。
+
+---
+
+#### ⏳ [NEW-43] String/Bytes/JSON bind 单次 clone 未消除（写路径额外内存分配）
+
+**文件**：`crates/yang-db/src/mysql/query_builder.rs:30,32`、`crates/yang-db/src/postgres/query_builder.rs:35,37`、`crates/yang-db/src/mysql/transaction.rs:553,554`、`crates/yang-db/src/postgres/transaction.rs:552-576`
+
+**问题**：`String`/`Bytes`/`JSON` 类型在 bind 路径每个值各有一次 `clone()`（取 `&SqlValue` 引用后 clone 一次再交给 bind），高频写路径有额外内存分配。非正确性问题，但可在不改接口的情况下消除。
+
+**修复方向**：将 bind 路径从 `value.clone().into()` 重构为直接消费或借用，在可借用处避免该次 clone，减少高频写路径分配。
+
+---
+
+#### ⏳ [NEW-44] u64 as i64 非饱和转换 + verify_token_checked 两次独立 Redis GET 非原子（设计权衡，建议文档化）
+
+**文件**：`crates/yang-base/src/token/revocation.rs:83,131`（u64 as i64）、`:178,182`（两次 Redis GET）
+
+**问题**：`u64 as i64` 在 `exp` 超过 `i64::MAX`（约 2^63 秒，现实不可达）时非饱和截断，是 code smell 非生产缺陷。`verify_token_checked` 在 `:178` 与 `:182` 分两次独立 Redis GET，存在亚毫秒 TOCTOU 窗口，属 JWT-over-Redis 标准设计权衡。两者均非阻断性问题，但应在代码中文档化设计决策。
+
+**修复方向**：`u64 as i64` 改 `i64::try_from(...).unwrap_or(i64::MAX)` 消除 code smell；`verify_token_checked` 两次 GET 添加注释说明 TOCTOU 窗口为已知权衡。
+
+---
+
 ## 汇总表
 
-| ID | 状态 | 优先级 | Crate | 文件 | 一句话描述 |
-|----|------|--------|-------|------|------------|
-| C-1 | ✅ 已完成 | 🔴 Critical | yang-db | redis/client.rs | RedisConfig 连接池参数静默不生效 |
-| C-2 | ✅ 已完成 | 🔴 Critical | yang-db | mysql/（某处） | unsafe 裸指针代码未经充分审查 |
-| H-1 | ✅ 已完成 | 🟠 High | yang-base | action/typed.rs + builtin/* | 端到端类型化（Task 1-8 全完成）+ table_query 连接池注入修复 |
-| H-2 | ✅ 已满足 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 复核确认已直接包装原生 redis::Pipeline，条目陈旧无需改动 |
-| H-3 | ✅ 已完成 | 🟠 High | yang-base | database/bundle.rs | DatabaseBundle::init 统一初始化入口 |
-| H-4 | ✅ 已完成 | 🟠 High | yang-base | token/revocation.rs | Token 撤销/黑名单机制（Redis jti 黑名单） |
-| H-5 | ✅ 已完成 | 🟠 High | yang-base | router/middleware.rs | Router 中间件/拦截器（洋葱模型 Middleware/Next） |
-| H-6 | ✅ 已完成 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 |
-| M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap/expect 过多（~870+），错误信息不清 |
-| M-2 | ✅ 已完成 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 |
-| M-3 | ✅ 审计完成 | 🟡 Medium | yang-db/yang-base | （生产代码） | 生产路径 panic 点均为受控不变量/显式契约，无未受控 panic |
-| M-4 | ✅ 已完成 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 |
-| L-1 | ✅ 已完成 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 |
-| L-2 | ✅ 已完成 | 🟢 Low | yang-base | action/auth.rs | 认证内置 Action（login/refresh/logout） |
-| L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate |
-| L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 |
-| L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 |
-| NEW-20 | ⏳ 待处理 | 🔴 Critical | yang-pcg | rng.rs / digest.rs | DefaultHasher 跨 Rust 版本不稳定，确定性契约漏洞 |
-| NEW-21 | ⏳ 待处理 | 🔴 Critical | yang-pcg | （全量 pub enum/struct） | 零处 #[non_exhaustive]，SemVer 兼容性债 |
-| NEW-22 | ⏳ 待处理 | 🟠 High | yang-pcg | config.rs / rng.rs / selector.rs | NaN 权重三环传播链静默绕过校验 |
-| NEW-23 | ⏳ 待处理 | 🟠 High | yang-pcg | digest.rs | serde_json 序列化失败静默吞咽，摘要全碰撞 |
-| NEW-24 | ⏳ 待处理 | 🟠 High | yang-pcg | layout/solver.rs | 布局重叠检测 O(n²) 重复扫描 + 临时堆分配 |
-| NEW-25 | ⏳ 待处理 | 🟠 High | yang-pcg | error.rs | 错误链丢失，Export::source_error 为 String |
-| NEW-26 | ⏳ 待处理 | 🟠 High | yang-pcg | lib.rs | 公共 API 暴露面过大，19 个 pub mod 全开 |
-| NEW-27 | ⏳ 待处理 | 🟠 High | yang-pcg | backend/spawn/terrain/mod.rs | 内部类型泄露（PipelineBackend/策略/spawn 函数） |
-| NEW-28 | ⏳ 待处理 | 🟡 Medium | yang-pcg | generator.rs / chunked.rs | 三种模式 RNG 标签无集中契约/回归测试 |
-| NEW-29 | ⏳ 待处理 | 🟡 Medium | yang-pcg | terrain/mod.rs | 地形策略回退共享 RNG 流，跨模式不一致 |
-| NEW-30 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | gen_bool_with_probability 无概率范围校验 |
-| NEW-31 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | choose_weighted 中 assert! 在生产代码 panic |
-| NEW-32 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/selector.rs | Box<dyn TerrainStrategy> 每房间堆分配+虚表 |
-| NEW-33 | ⏳ 待处理 | 🟢 Low | yang-pcg | spawn/mod.rs | spawn 双份冗余实现，修改同步风险 |
-| NEW-34 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/strategy.rs | TerrainStrategy trait 缺 Send+Sync 阻塞并行化 |
+| ID | 状态 | 优先级 | Crate | 文件 | 一句话描述 | 再审注记（2026-06-27） |
+|----|------|--------|-------|------|------------|------------------------|
+| C-1 | ✅ 已完成 | 🔴 Critical | yang-db | redis/client.rs | RedisConfig 连接池参数静默不生效 | pool params 修复已验证；GlobalRedis 错误链丢失见 NEW-42 |
+| C-2 | ✅ 已完成 | 🔴 Critical | yang-db | mysql/（某处） | unsafe 裸指针代码未经充分审查 | — |
+| H-1 | ✅ 已完成 | 🟠 High | yang-base | action/typed.rs + builtin/* | 端到端类型化（Task 1-8 全完成）+ table_query 连接池注入修复 | — |
+| H-2 | ✅ 已满足 | 🟠 High | yang-db | redis/pipeline+transaction.rs | 复核确认已直接包装原生 redis::Pipeline，条目陈旧无需改动 | — |
+| H-3 | ✅ 已完成 | 🟠 High | yang-base | database/bundle.rs | DatabaseBundle::init 统一初始化入口 | — |
+| H-4 | ✅ 已完成 | 🟠 High | yang-base | token/revocation.rs | Token 撤销/黑名单机制（Redis jti 黑名单） | 撤销/轮换机制已验证；verify_token_checked 双 GET TOCTOU 见 NEW-44 |
+| H-5 | ✅ 已完成 | 🟠 High | yang-base | router/middleware.rs | Router 中间件/拦截器（洋葱模型 Middleware/Next） | — |
+| H-6 | ✅ 已完成 | 🟠 High | 全局 | Cargo.toml | Edition 标注可能存在不一致，需确认 | — |
+| M-1 | ⏳ 待处理 | 🟡 Medium | 全局 | tests/ | 测试中 unwrap/expect 过多（~870+），错误信息不清 | 再审确认仍开放；clippy test 131 errors 与本项强相关 |
+| M-2 | ✅ 已完成 | 🟡 Medium | yang-db | mysql/query_builder.rs | having_cond_unchecked 无操作符验证 | — |
+| M-3 | ✅ 审计完成 | 🟡 Medium | yang-db/yang-base | （生产代码） | 生产路径 panic 点均为受控不变量/显式契约，无未受控 panic | — |
+| M-4 | ✅ 已完成 | 🟡 Medium | 全局 | Cargo.toml | 无 workspace 共享依赖表，版本易漂移 | — |
+| L-1 | ✅ 已完成 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 | — |
+| L-2 | ✅ 已完成 | 🟢 Low | yang-base | action/auth.rs | 认证内置 Action（login/refresh/logout） | — |
+| L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate | — |
+| L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 | docs/yang-base.md 中 circuit_breaker 字段未同步文档（文档 stale）|
+| L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 | — |
+| NEW-20 | ⏳ 待处理 | 🔴 Critical | yang-pcg | rng.rs / digest.rs | DefaultHasher 跨 Rust 版本不稳定，确定性契约漏洞 | — |
+| NEW-21 | ⏳ 待处理 | 🔴 Critical | yang-pcg | （全量 pub enum/struct） | 零处 #[non_exhaustive]，SemVer 兼容性债 | — |
+| NEW-22 | ⏳ 待处理 | 🟠 High | yang-pcg | config.rs / rng.rs / selector.rs | NaN 权重三环传播链静默绕过校验 | — |
+| NEW-23 | ⏳ 待处理 | 🟠 High | yang-pcg | digest.rs | serde_json 序列化失败静默吞咽，摘要全碰撞 | — |
+| NEW-24 | ⏳ 待处理 | 🟠 High | yang-pcg | layout/solver.rs | 布局重叠检测 O(n²) 重复扫描 + 临时堆分配 | — |
+| NEW-25 | ⏳ 待处理 | 🟠 High | yang-pcg | error.rs | 错误链丢失，Export::source_error 为 String | — |
+| NEW-26 | ⏳ 待处理 | 🟠 High | yang-pcg | lib.rs | 公共 API 暴露面过大，19 个 pub mod 全开 | — |
+| NEW-27 | ⏳ 待处理 | 🟠 High | yang-pcg | backend/spawn/terrain/mod.rs | 内部类型泄露（PipelineBackend/策略/spawn 函数） | — |
+| NEW-28 | ⏳ 待处理 | 🟡 Medium | yang-pcg | generator.rs / chunked.rs | 三种模式 RNG 标签无集中契约/回归测试 | — |
+| NEW-29 | ⏳ 待处理 | 🟡 Medium | yang-pcg | terrain/mod.rs | 地形策略回退共享 RNG 流，跨模式不一致 | — |
+| NEW-30 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | gen_bool_with_probability 无概率范围校验 | — |
+| NEW-31 | ⏳ 待处理 | 🟡 Medium | yang-pcg | rng.rs | choose_weighted 中 assert! 在生产代码 panic | — |
+| NEW-32 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/selector.rs | Box<dyn TerrainStrategy> 每房间堆分配+虚表 | — |
+| NEW-33 | ⏳ 待处理 | 🟢 Low | yang-pcg | spawn/mod.rs | spawn 双份冗余实现，修改同步风险 | — |
+| NEW-34 | ⏳ 待处理 | 🟢 Low | yang-pcg | terrain/strategy.rs | TerrainStrategy trait 缺 Send+Sync 阻塞并行化 | — |
+| NEW-35 | ⏳ 待处理 | 🔴 Critical | yang-db | mysql/database.rs + pg/database.rs + mysql/condition.rs | clippy 门禁 RED：lib 内部调用 #[deprecated] execute() 未 allow，修复回归 | 2026-06-27 再审新增 |
+| NEW-36 | ⏳ 待处理 | 🟠 High | yang-db | mysql/condition.rs:171-176（pg 同构） | condition safe_quote_identifier 对非法标识符静默回退 RAW，直接消费 yang-db 的调用方存在注入旁路 | 2026-06-27 再审新增 |
+| NEW-37 | ⏳ 待处理 | 🟠 High | yang-db | mysql/query_builder.rs:244-283,1655 + mysql/database.rs:272-291（pg 同构） | order_by/group_by/join ON 与 value()/create_table()/init() 裸 SQL 面无安全属性 | 2026-06-27 再审新增 |
+| NEW-38 | ⏳ 待处理 | 🟠 High | yang-base | action/auth.rs:55,67,76,84,94 + token/mod.rs:85 | 敏感 DTO 全部 #[derive(Debug)] 明文（password/token），潜伏 CWE-312；先前审计 S-M8~M12 被误标为已修 | 2026-06-27 再审证伪"已修"标记 |
+| NEW-39 | ⏳ 待处理 | 🟡 Medium | yang-db | postgres/transaction.rs | PG Transaction 缺 impl Drop，未提交事务丢弃无诊断日志（与 MySQL 不对称） | 2026-06-27 再审新增 |
+| NEW-40 | ⏳ 待处理 | 🟡 Medium | yang-db | postgres/condition.rs:10-11 + postgres/transaction.rs | PG SqlValue 漏 #[non_exhaustive] + PG Transaction::execute 漏 #[deprecated]（方言不一致 SemVer 回归） | 2026-06-27 再审新增 |
+| NEW-41 | ⏳ 待处理 | 🟡 Medium | 全局 | 全树 80 文件 + 工具链 | cargo fmt 80 文件漂移 + 无 cargo-audit，rsa RUSTSEC-2023-0071 未检测 | 2026-06-27 再审新增 |
+| NEW-42 | ⏳ 待处理 | 🟢 Low | yang-base | database/global_redis.rs:107,157 | GlobalRedis init/health_check 及操作方法用 e.to_string() 截断错误链 | 2026-06-27 再审新增 |
+| NEW-43 | ⏳ 待处理 | 🟢 Low | yang-db | mysql/query_builder.rs:30,32 + pg:35,37 + 事务路径 | String/Bytes/JSON bind 单次 clone 未消除，高频写路径额外内存分配 | 2026-06-27 再审新增 |
+| NEW-44 | ⏳ 待处理 | 🟢 Low | yang-base | token/revocation.rs:83,131,178,182 | u64 as i64 非饱和转换 + verify_token_checked 两次独立 Redis GET 非原子，建议文档化设计权衡 | 2026-06-27 再审新增 |

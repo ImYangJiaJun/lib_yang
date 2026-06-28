@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-YANG 后端框架 — Rust workspace with three crates: `yang-db` database abstraction, `yang-base` backend service primitives, and `yang-pcg` UE5/Roguelike procedural map generation.
+YANG 后端框架 — Rust workspace with four crates: `yang-db` database abstraction, `yang-base` backend service primitives, `yang-base-derive` proc-macro crate (providing `#[derive(TableEntity)]` and `#[derive(Action)]`), and `yang-pcg` UE5/Roguelike procedural map generation.
 
 ## STRUCTURE
 ```text
@@ -22,7 +22,7 @@ lib_yang/
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| MySQL queries | `crates/yang-db/src/mysql/` | `query_builder.rs` is the 4.8k-line hotspot; `condition.rs` owns WHERE/HAVING expressions |
+| MySQL queries | `crates/yang-db/src/mysql/` | `query_builder.rs` is the 5.5k-line hotspot (~5,506 lines); `condition.rs` owns WHERE/HAVING expressions |
 | Redis operations | `crates/yang-db/src/redis/` | `client.rs` is the main API; pipeline/transaction wrap `redis::pipe()` patterns |
 | Backend globals | `crates/yang-base/src/database/` | `GlobalDatabase`, `GlobalRedis`, `DatabaseInitializer` |
 | Plugin system | `crates/yang-base/src/plugin/mod.rs` | single-file plugin lifecycle/registry implementation |
@@ -44,7 +44,7 @@ lib_yang/
 | `RedisClient` | struct | `crates/yang-db/src/redis/client.rs` | Redis string/hash/list/set/zset/pubsub/script API |
 | `Database` | struct | `crates/yang-db/src/mysql/database.rs` | sqlx MySQL pool wrapper and raw query entry |
 | `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/mod.rs` | build-time registration, dependency checks, runtime registry |
-| `Action` | trait | `crates/yang-base/src/action/action_trait.rs` | backend action extension point |
+| `TypedHandler` / `DynAction` | trait | `crates/yang-base/src/action/typed.rs` | H-1 类型化 action 系统：TypedHandler（用户实现）→ TypedAction（派生层）→ DynAction（注册表存储）；旧 Action trait 已删除，action_trait.rs 仅剩 Permission |
 | `ActionContext` | struct | `crates/yang-base/src/action/context.rs` | request/user/tools/table context passed to actions |
 | `TableQuery` | struct | `crates/yang-base/src/table/table_query.rs` | table-aware query builder with permissions |
 | `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL field validation and type mapping |
