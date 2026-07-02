@@ -103,6 +103,19 @@ pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
     let result: GenerationResult = serde_json::from_str(json)
         .map_err(|e| PcgError::export_err(format!("JSON 反序列化失败: {}", e), "json", e))?;
 
+    // 校验 schema_version 格式（必须为合法的三段 semver）
+    if !is_valid_semver(&result.metadata.schema_version) {
+        return Err(PcgError::corrupted_data_with_version(
+            format!(
+                "schema_version 格式非法: '{}'（要求 X.Y.Z，三段均为非负整数）",
+                result.metadata.schema_version,
+            ),
+            "json",
+            CURRENT_SCHEMA_VERSION,
+            &result.metadata.schema_version,
+        ));
+    }
+
     // 校验 schema_version 兼容性（主版本号必须一致）
     let imported_major = extract_major_version(&result.metadata.schema_version);
     let current_major = extract_major_version(CURRENT_SCHEMA_VERSION);
@@ -133,6 +146,17 @@ fn extract_major_version(version: &str) -> Option<u32> {
         .split('.')
         .next()
         .and_then(|s| s.parse::<u32>().ok())
+}
+
+/// 校验版本字符串是否为合法的三段 semver（X.Y.Z，每段均为非负整数）
+///
+/// 拒绝 "abc"、"1.2"、"1.2.3.4"、"" 等非法格式。
+fn is_valid_semver(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
 #[cfg(test)]

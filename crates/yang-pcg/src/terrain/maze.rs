@@ -10,7 +10,6 @@ use crate::rng::StableRng;
 
 use super::carve::extract_room_bounds;
 use super::connectivity::summarize_connectivity;
-use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
 /// 迷宫式地形策略
@@ -45,16 +44,7 @@ impl TerrainStrategy for MazeStrategy {
         let mut tiles = Grid2D::new(width, height, TileKind::Wall);
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> =
-            anchors.iter().filter(|a| a.room_id == room.id).collect();
-        let doorway_locals: Vec<GridPoint> = room_anchors
-            .iter()
-            .map(|a| to_local(bounds.min, a.grid_pos))
-            .collect();
-
-        for pos in &doorway_locals {
-            tiles.set(pos.x, pos.y, TileKind::Doorway);
-        }
+        let doorway_locals = super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
 
         // 使用递归回溯算法生成迷宫
         // 迷宫在奇数坐标上雕刻通道（确保墙体间隔）

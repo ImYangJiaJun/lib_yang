@@ -20,6 +20,20 @@
 
 use std::borrow::Cow;
 
+/// 权限匹配模式
+///
+/// 决定多个权限之间的逻辑关系：
+/// - `All`（AND）：用户必须同时拥有全部权限（默认行为，向后兼容）
+/// - `Any`（OR）：用户只需拥有其中任一权限
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PermissionMode {
+    /// AND 语义：用户必须拥有全部权限（默认）
+    #[default]
+    All,
+    /// OR 语义：用户只需拥有其中任一权限
+    Any,
+}
+
 /// 权限类型
 ///
 /// 表示 action 所需的权限，用于权限检查。

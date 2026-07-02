@@ -9,7 +9,6 @@ use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
 use super::carve::{extract_room_bounds, init_room_grid};
-use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
 /// 开放式地形策略

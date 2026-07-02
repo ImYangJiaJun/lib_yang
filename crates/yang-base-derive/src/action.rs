@@ -20,6 +20,9 @@ struct ActionOpts {
     public: bool,
     #[darling(default)]
     permissions: Option<PermissionList>,
+    /// 权限匹配模式："all"（AND，默认）或 "any"（OR）
+    #[darling(default)]
+    permission_mode: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -53,6 +56,12 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     let description = opts.description.unwrap_or_default();
     let is_public = opts.public;
     let perms: Vec<String> = opts.permissions.unwrap_or_default().0;
+
+    // 解析 permission_mode：支持 "all" / "any"，默认 "all"
+    let perm_mode = match opts.permission_mode.as_deref() {
+        Some("any") => quote! { ::yang_base::action::PermissionMode::Any },
+        _ => quote! { ::yang_base::action::PermissionMode::All },
+    };
 
     let perm_consts: Vec<TokenStream> = perms
         .iter()
@@ -93,6 +102,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             fn display_name(&self) -> &'static str { #display_name }
             fn description(&self) -> &'static str { #description }
             fn is_public(&self) -> bool { #is_public }
+            fn permission_mode(&self) -> ::yang_base::action::PermissionMode { #perm_mode }
 
             fn permissions(&self) -> &'static [::yang_base::action::Permission] {
                 Self::__action_permissions_static()
@@ -114,6 +124,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
                     #display_name,
                     #description,
                     Self::__action_permissions_static(),
+                    #perm_mode,
                     #is_public,
                     Self::__action_input_schema_static(),
                     Self::__action_output_schema_static(),

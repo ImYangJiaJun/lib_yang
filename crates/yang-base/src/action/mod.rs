@@ -60,7 +60,7 @@ mod response;
 pub mod sql_bridge;
 pub mod typed;
 
-pub use action_trait::Permission;
+pub use action_trait::{Permission, PermissionMode};
 #[cfg(feature = "token")]
 pub use auth::{
     AuthAuditEvent, AuthAuditHook, CredentialVerifier, DefaultRefreshClaims, LoginAction,

@@ -31,7 +31,7 @@
 /// 包含所有内置 Action 的名称，用于注册和验证
 pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select", "table"];
 
-use crate::action::{ActionContext, ApiResponse, DynAction, User};
+use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode, User};
 use crate::error::BaseError;
 use crate::router::middleware::{Middleware, Next};
 use crate::table::TableConfig;
@@ -68,6 +68,9 @@ pub struct ModuleRouter {
     /// 默认权限要求
     /// 所有 Action 都需要满足这些权限（除非 Action 是公开的）
     default_permissions: Vec<String>,
+
+    /// 默认权限匹配模式（AND / OR）
+    default_permission_mode: PermissionMode,
 
     /// 中间件链（按注册顺序构成洋葱模型，先注册的最先进入、最后离开）
     middlewares: Vec<Arc<dyn Middleware>>,
@@ -110,6 +113,7 @@ impl ModuleRouter {
             table_config: None,
             actions: HashMap::new(),
             default_permissions: Vec::new(),
+            default_permission_mode: PermissionMode::default(),
             middlewares: Vec::new(),
         }
     }
@@ -188,6 +192,35 @@ impl ModuleRouter {
     /// ```
     pub fn default_permissions(mut self, permissions: Vec<String>) -> Self {
         self.default_permissions = permissions;
+        self
+    }
+
+    /// 设置默认权限匹配模式（builder setter）
+    ///
+    /// 控制 `default_permissions` 中多个权限之间的逻辑关系：
+    /// - [`PermissionMode::All`]（默认）：用户必须拥有全部权限（AND）
+    /// - [`PermissionMode::Any`]：用户只需拥有其中任一权限（OR）
+    ///
+    /// # 参数
+    ///
+    /// - `mode`: 权限匹配模式
+    ///
+    /// # 返回
+    ///
+    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::router::ModuleRouter;
+    /// use yang_base::action::PermissionMode;
+    ///
+    /// let router = ModuleRouter::new("user", "用户管理")
+    ///     .default_permissions(vec!["user:read".to_string(), "user:write".to_string()])
+    ///     .default_permission_mode(PermissionMode::Any);
+    /// ```
+    pub fn default_permission_mode(mut self, mode: PermissionMode) -> Self {
+        self.default_permission_mode = mode;
         self
     }
 
@@ -420,7 +453,7 @@ impl ModuleRouter {
 
             // 检查默认权限
             if !self.default_permissions.is_empty()
-                && !self.check_permissions(user, &self.default_permissions)
+                && !self.check_permissions(user, &self.default_permissions, self.default_permission_mode)
             {
                 span.record("granted", false);
                 return Err(BaseError::PermissionDenied(format!(
@@ -431,13 +464,19 @@ impl ModuleRouter {
 
             // 检查 Action 权限
             //
-            // 热路径零分配：成功路径仅借用权限名做 `all` 判断，不构造任何
+            // 热路径零分配：成功路径仅借用权限名做模式判断，不构造任何
             // 中间集合；仅当权限不足时才 collect 格式化中文错误信息。
-            if !meta.permissions.is_empty()
-                && !meta
+            let action_perm_ok = match meta.permission_mode {
+                PermissionMode::All => meta
                     .permissions
                     .iter()
-                    .all(|p| user.has_permission(p.name()))
+                    .all(|p| user.has_permission(p.name())),
+                PermissionMode::Any => meta
+                    .permissions
+                    .iter()
+                    .any(|p| user.has_permission(p.name())),
+            };
+            if !meta.permissions.is_empty() && !action_perm_ok
             {
                 span.record("granted", false);
                 let permission_names: Vec<&str> =
@@ -516,11 +555,20 @@ impl ModuleRouter {
     ///
     /// - `true`: 有权限
     /// - `false`: 无权限
-    fn check_permissions(&self, user: &User, required_permissions: &[String]) -> bool {
-        // 检查用户是否有所有需要的权限
-        required_permissions
-            .iter()
-            .all(|perm| user.has_permission(perm))
+    fn check_permissions(
+        &self,
+        user: &User,
+        required_permissions: &[String],
+        mode: PermissionMode,
+    ) -> bool {
+        match mode {
+            PermissionMode::All => required_permissions
+                .iter()
+                .all(|perm| user.has_permission(perm)),
+            PermissionMode::Any => required_permissions
+                .iter()
+                .any(|perm| user.has_permission(perm)),
+        }
     }
 
     /// 获取模块名称

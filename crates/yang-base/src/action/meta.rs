@@ -3,7 +3,7 @@
 //! 由 `#[derive(Action)]` 在 `meta_static()` 里通过 `OnceLock` 一次性构造，
 //! 派发时不需要遍历 trait method 取元信息。
 
-use crate::action::action_trait::Permission;
+use crate::action::action_trait::{Permission, PermissionMode};
 
 /// 单个 Action 的静态元信息聚合体。
 ///
@@ -19,6 +19,8 @@ pub struct ActionMeta {
     pub description: &'static str,
     /// 所需权限列表（dispatch 时检查）
     pub permissions: &'static [Permission],
+    /// 权限匹配模式：All（AND）或 Any（OR）
+    pub permission_mode: PermissionMode,
     /// 是否公开（true 则跳过权限/登录检查）
     pub is_public: bool,
     /// 入参 JSON Schema（OnceLock 生成）
@@ -34,6 +36,7 @@ impl ActionMeta {
         display_name: &'static str,
         description: &'static str,
         permissions: &'static [Permission],
+        permission_mode: PermissionMode,
         is_public: bool,
         input_schema: &'static schemars::schema::RootSchema,
         output_schema: &'static schemars::schema::RootSchema,
@@ -43,6 +46,7 @@ impl ActionMeta {
             display_name,
             description,
             permissions,
+            permission_mode,
             is_public,
             input_schema,
             output_schema,

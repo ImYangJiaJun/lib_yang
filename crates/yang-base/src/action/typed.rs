@@ -6,7 +6,7 @@
 //!
 //! 通过 `blanket impl<T: TypedAction> DynAction for T` 自动桥接。
 
-use crate::action::action_trait::Permission;
+use crate::action::action_trait::{Permission, PermissionMode};
 use crate::action::{ActionContext, ApiResponse};
 use crate::error::BaseError;
 use async_trait::async_trait;
@@ -53,6 +53,11 @@ pub trait TypedAction: TypedHandler {
     /// 是否公开（默认 false）
     fn is_public(&self) -> bool {
         false
+    }
+
+    /// 权限匹配模式（默认 All，即 AND 语义）
+    fn permission_mode(&self) -> PermissionMode {
+        PermissionMode::default()
     }
 
     /// 入参 JSON Schema（OnceLock 生成）

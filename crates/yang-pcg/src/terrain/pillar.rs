@@ -9,7 +9,6 @@ use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
 use super::carve::{extract_room_bounds, init_room_grid};
-use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
 /// 柱状地形策略
@@ -43,12 +42,7 @@ impl TerrainStrategy for PillarStrategy {
         let mut tiles = init_room_grid(width, height);
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> =
-            anchors.iter().filter(|a| a.room_id == room.id).collect();
-        for anchor in &room_anchors {
-            let local = to_local(bounds.min, anchor.grid_pos);
-            tiles.set(local.x, local.y, TileKind::Doorway);
-        }
+        super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
 
         // 计算柱子间距（基于障碍物密度）
         // 密度越高，间距越小

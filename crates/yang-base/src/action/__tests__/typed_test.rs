@@ -62,6 +62,7 @@ impl TypedAction for EchoAction {
                 display_name: "echo",
                 description: "",
                 permissions: &[],
+                permission_mode: crate::action::action_trait::PermissionMode::All,
                 is_public: false,
                 input_schema: I.get_or_init(|| schemars::schema_for!(EchoInput)),
                 output_schema: O.get_or_init(|| schemars::schema_for!(EchoOutput)),
