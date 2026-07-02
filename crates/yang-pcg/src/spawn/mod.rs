@@ -1,10 +1,10 @@
 // 点位生成模块
 // 负责生成交互物和敌人点位
 
-pub mod budget;
-pub mod enemies;
-pub mod items;
-pub mod sampling;
+pub(crate) mod budget;
+pub(crate) mod enemies;
+pub(crate) mod items;
+pub(crate) mod sampling;
 
 use std::collections::HashMap;
 
@@ -20,16 +20,16 @@ use crate::rng::StableRng;
 /// 点位生成结果。
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SpawnOutput {
-    pub item_spawns: Vec<SpawnPoint>,
-    pub enemy_spawns: Vec<SpawnPoint>,
+pub(crate) struct SpawnOutput {
+    pub(crate) item_spawns: Vec<SpawnPoint>,
+    pub(crate) enemy_spawns: Vec<SpawnPoint>,
 }
 
 /// 跨类型点位间距阈值：交互物与敌人最小间距的较小者。
 ///
 /// 用作交互物↔敌人之间的生成期间距下限，以及校验期的统一阈值，
 /// 保证「生成时满足 ⟹ 校验通过」。
-pub fn min_cross_type_spacing(config: &crate::config::GenerationConfig) -> u16 {
+pub(crate) fn min_cross_type_spacing(config: &crate::config::GenerationConfig) -> u16 {
     config
         .item_spawns
         .min_spacing
@@ -56,17 +56,17 @@ pub(crate) fn occupied_local_points(room: &Room, spawns: &[SpawnPoint]) -> Vec<G
 /// 带调试信息的点位生成结果。
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SpawnOutputWithDebug {
+pub(crate) struct SpawnOutputWithDebug {
     /// 点位生成结果
-    pub output: SpawnOutput,
+    pub(crate) output: SpawnOutput,
     /// 点位生成调试信息
-    pub debug_info: SpawnDebugInfo,
+    pub(crate) debug_info: SpawnDebugInfo,
 }
 
 /// 为所有房间生成交互物和敌人点位。
 ///
 /// `rng` 只需 `&StableRng`——每房间通过 `derive` 派生独立子 RNG，父 RNG 无需可变借用。
-pub fn generate_spawns(
+pub(crate) fn generate_spawns(
     rooms: &[Room],
     terrains: &[Terrain],
     config: &NormalizedConfig,
@@ -121,7 +121,7 @@ pub fn generate_spawns(
 /// # 需求映射
 /// - 需求 15.3: 输出被拒绝点位
 /// - 需求 15.5: 失败阶段与失败约束输出
-pub fn generate_spawns_with_debug(
+pub(crate) fn generate_spawns_with_debug(
     rooms: &[Room],
     terrains: &[Terrain],
     config: &NormalizedConfig,

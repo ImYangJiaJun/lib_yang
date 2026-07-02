@@ -101,7 +101,8 @@ impl<T: TypedAction> DynAction for T {
         let module: String = ctx.module.clone().unwrap_or_else(|| "unknown".to_string());
 
         let result: Result<ApiResponse, BaseError> = async {
-            let input: T::Input = ctx.extract_input()?;
+            let mut ctx = ctx;
+            let input: T::Input = ctx.extract_input_owned()?;
             let output = self.handle(ctx, input).await?;
             ApiResponse::success(output, "成功")
         }

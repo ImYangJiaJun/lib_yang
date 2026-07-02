@@ -574,3 +574,77 @@ fn test_generation_result_full_json_roundtrip() {
     assert_eq!(spawn_debug.rejection_reasons.len(), 1);
     assert_eq!(spawn_debug.accepted_count, 15);
 }
+
+/// 验证 `room_by_id` 按 ID 正确查找房间
+#[test]
+fn test_room_by_id() {
+    use crate::model::geometry::{GridPoint, RoomBounds};
+    use crate::model::room::{Room, RoomType};
+
+    let room_start = Room {
+        id: "room-start".to_string(),
+        room_type: RoomType::Start,
+        depth_from_start: 0,
+        branch_id: None,
+        difficulty: 0,
+        theme_tags: vec!["dungeon".to_string()],
+        bounds: Some(RoomBounds {
+            min: GridPoint { x: 0, y: 0 },
+            max: GridPoint { x: 10, y: 10 },
+        }),
+        template_ref: None,
+        grammar_token: None,
+    };
+    let room_boss = Room {
+        id: "room-boss".to_string(),
+        room_type: RoomType::Boss,
+        depth_from_start: 5,
+        branch_id: None,
+        difficulty: 10,
+        theme_tags: vec!["fire".to_string()],
+        bounds: Some(RoomBounds {
+            min: GridPoint { x: 30, y: 0 },
+            max: GridPoint { x: 45, y: 15 },
+        }),
+        template_ref: None,
+        grammar_token: None,
+    };
+
+    let result = GenerationResult {
+        metadata: ResultMetadata {
+            seed: 777,
+            config_digest: "test-digest".to_string(),
+            schema_version: "1.0.0".to_string(),
+            algorithm_version: "0.1.0".to_string(),
+            target_engine_version: None,
+            trace_id: None,
+        },
+        topology: RoomGraph {
+            nodes: vec![],
+            edges: vec![],
+            critical_path: vec![],
+            branches: vec![],
+        },
+        rooms: vec![room_start.clone(), room_boss.clone()],
+        door_anchors: vec![],
+        corridors: vec![],
+        terrains: vec![],
+        item_spawns: vec![],
+        enemy_spawns: vec![],
+        chunks: vec![],
+        debug: None,
+    };
+
+    // 正常查找
+    let found = result.room_by_id("room-boss").expect("应找到 room-boss");
+    assert_eq!(found.room_type, RoomType::Boss);
+    assert_eq!(found.depth_from_start, 5);
+    assert!(found.bounds.is_some(), "room_by_id 返回的房间应有 bounds");
+
+    // 查找第一个房间
+    let found_start = result.room_by_id("room-start").expect("应找到 room-start");
+    assert_eq!(found_start.room_type, RoomType::Start);
+
+    // 不存在的 ID
+    assert!(result.room_by_id("nonexistent").is_none());
+}

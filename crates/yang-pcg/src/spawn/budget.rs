@@ -4,7 +4,7 @@ use crate::config::NormalizedConfig;
 use crate::model::room::{Room, RoomType};
 
 /// 计算房间的敌人预算。
-pub fn enemy_budget(room: &Room, config: &NormalizedConfig) -> u16 {
+pub(crate) fn enemy_budget(room: &Room, config: &NormalizedConfig) -> u16 {
     let base = config.config.enemy_spawns.base_difficulty_budget;
     match room.room_type {
         RoomType::Boss => base.saturating_mul(3),

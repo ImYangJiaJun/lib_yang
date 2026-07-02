@@ -14,17 +14,17 @@ use super::sampling::{select_spaced_points, select_spaced_points_tracked};
 /// 交互物点位生成的跟踪结果。
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct ItemSpawnTracked {
+pub(crate) struct ItemSpawnTracked {
     /// 生成的点位列表
-    pub spawns: Vec<SpawnPoint>,
+    pub(crate) spawns: Vec<SpawnPoint>,
     /// 候选点位总数
-    pub candidate_count: usize,
+    pub(crate) candidate_count: usize,
     /// 被拒绝的点位及原因
-    pub rejections: Vec<RejectionReason>,
+    pub(crate) rejections: Vec<RejectionReason>,
 }
 
 /// 生成单个房间的交互物点位。
-pub fn generate_item_spawns_for_room(
+pub(crate) fn generate_item_spawns_for_room(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,
@@ -56,7 +56,7 @@ pub fn generate_item_spawns_for_room(
 ///
 /// # 需求映射
 /// - 需求 15.3: 输出被拒绝点位
-pub fn generate_item_spawns_for_room_tracked(
+pub(crate) fn generate_item_spawns_for_room_tracked(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,

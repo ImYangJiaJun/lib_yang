@@ -39,7 +39,7 @@ pub enum ValidationScope {
 ///
 /// 数据容器（`LayoutOutput` / `Terrain` / `SpawnOutput` / `GenerationResult`）跨实现共享，
 /// trait 只分叉算法不分叉数据类型——UE 导出、序列化、结果组装因此保持地图种类无关。
-pub trait PipelineBackend: Send + Sync {
+pub(crate) trait PipelineBackend: Send + Sync {
     /// 布局：`RoomGraph` → 房间边界/门锚/走廊。RNG 已在外层派生为 `"layout"`。
     fn solve_layout(
         &self,
@@ -93,6 +93,6 @@ pub trait PipelineBackend: Send + Sync {
 /// 本迭代尚未引入 `MapKind`，故无条件返回 `TopDownBackend`；
 /// 下一迭代在此处按 `config.map_kind` 增加 `SidePlatformerBackend` 分支即可，
 /// 编排代码（generator / chunked）无需改动。
-pub fn select_backend(_config: &NormalizedConfig) -> Box<dyn PipelineBackend> {
+pub(crate) fn select_backend(_config: &NormalizedConfig) -> Box<dyn PipelineBackend> {
     Box::new(topdown::TopDownBackend)
 }

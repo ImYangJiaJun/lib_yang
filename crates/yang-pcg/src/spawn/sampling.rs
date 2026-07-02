@@ -7,15 +7,15 @@ use crate::rng::StableRng;
 /// 采样结果，包含选中的点位和拒绝信息。
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SamplingResult {
+pub(crate) struct SamplingResult {
     /// 最终选中的点位列表
-    pub selected: Vec<GridPoint>,
+    pub(crate) selected: Vec<GridPoint>,
     /// 被拒绝的点位及原因列表
-    pub rejections: Vec<RejectionReason>,
+    pub(crate) rejections: Vec<RejectionReason>,
 }
 
 /// 从候选点中选出满足最小间距的若干点。
-pub fn select_spaced_points(
+pub(crate) fn select_spaced_points(
     candidates: &[GridPoint],
     desired_count: usize,
     min_spacing: u16,
@@ -32,7 +32,7 @@ pub fn select_spaced_points(
 ///
 /// 注意：RNG 仅消耗于候选洗牌，**与 occupied 无关**——传空 occupied 时行为与
 /// `select_spaced_points_tracked` 完全一致，故不影响既有确定性。
-pub fn select_spaced_points_excluding(
+pub(crate) fn select_spaced_points_excluding(
     candidates: &[GridPoint],
     desired_count: usize,
     min_spacing: u16,
@@ -58,7 +58,7 @@ pub fn select_spaced_points_excluding(
 /// # 需求映射
 /// - 需求 15.3: 输出被拒绝点位
 /// - 需求 15.5: 失败阶段与失败约束输出
-pub fn select_spaced_points_tracked(
+pub(crate) fn select_spaced_points_tracked(
     candidates: &[GridPoint],
     desired_count: usize,
     min_spacing: u16,
@@ -72,7 +72,7 @@ pub fn select_spaced_points_tracked(
 ///
 /// 在原有「距已选点 ≥ min_spacing」之外，追加「距 `occupied` 中所有点 ≥ occupied_spacing」
 /// 的接受条件。RNG 仅消耗于候选洗牌，与 occupied 无关。
-pub fn select_spaced_points_tracked_excluding(
+pub(crate) fn select_spaced_points_tracked_excluding(
     candidates: &[GridPoint],
     desired_count: usize,
     min_spacing: u16,

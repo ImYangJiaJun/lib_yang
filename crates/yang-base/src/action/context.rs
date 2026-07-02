@@ -316,6 +316,16 @@ impl ActionContext {
             .map_err(|e| BaseError::ParamInvalid("body".to_string(), e.to_string()))
     }
 
+    /// 零拷贝版本：用 `std::mem::take` 替代 clone 请求体。
+    ///
+    /// 调用后 `self.request.body` 变为 `Value::Null`，仅在不再需要 body 时使用。
+    /// 仅限 crate 内部使用（`DynAction::dispatch` blanket impl 中 ctx 仅需传给 handle）。
+    pub(crate) fn extract_input_owned<I: DeserializeOwned>(&mut self) -> Result<I, BaseError> {
+        let body = std::mem::take(&mut self.request.body);
+        serde_json::from_value(body)
+            .map_err(|e| BaseError::ParamInvalid("body".to_string(), e.to_string()))
+    }
+
     /// 获取请求体参数（可选，严格模式）
     ///
     /// 从请求体中获取指定参数：

@@ -68,7 +68,7 @@ pub mod validation;
 // 生成流程模块
 pub mod constraint;
 pub mod layout;
-pub mod spawn;
+pub(crate) mod spawn;
 pub mod terrain;
 pub mod topology;
 

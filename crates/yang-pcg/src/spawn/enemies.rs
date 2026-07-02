@@ -15,20 +15,20 @@ use super::sampling::{select_spaced_points_excluding, select_spaced_points_track
 /// 敌人点位生成的跟踪结果。
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct EnemySpawnTracked {
+pub(crate) struct EnemySpawnTracked {
     /// 生成的点位列表
-    pub spawns: Vec<SpawnPoint>,
+    pub(crate) spawns: Vec<SpawnPoint>,
     /// 候选点位总数
-    pub candidate_count: usize,
+    pub(crate) candidate_count: usize,
     /// 被拒绝的点位及原因
-    pub rejections: Vec<RejectionReason>,
+    pub(crate) rejections: Vec<RejectionReason>,
 }
 
 /// 生成单个房间的敌人点位，并与「已占用点」（如先放置的交互物，局部坐标）保持跨类型间距。
 ///
 /// `occupied` 为局部坐标的已占用点集合，`occupied_spacing` 为跨类型间距阈值。
 /// 传空 occupied 时 RNG 消耗不受影响（仅取决于候选洗牌）。
-pub fn generate_enemy_spawns_for_room_excluding(
+pub(crate) fn generate_enemy_spawns_for_room_excluding(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,
@@ -72,7 +72,7 @@ pub fn generate_enemy_spawns_for_room_excluding(
 /// 生成单个房间的敌人点位，同时记录拒绝信息，并与「已占用点」保持跨类型间距。
 ///
 /// 与「已占用点」（局部坐标）保持 `occupied_spacing` 间距，其余行为一致。
-pub fn generate_enemy_spawns_for_room_tracked_excluding(
+pub(crate) fn generate_enemy_spawns_for_room_tracked_excluding(
     room: &Room,
     terrain: &Terrain,
     config: &NormalizedConfig,

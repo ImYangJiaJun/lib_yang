@@ -10,14 +10,33 @@ use crate::model::terrain::Terrain;
 use serde::{Deserialize, Serialize};
 
 /// 单次地图生成结果
+///
+/// # `rooms` 与 `topology.nodes` 的关系
+///
+/// 两者存储同一批房间的不同状态：
+/// - `topology.nodes`：拓扑阶段产物，`bounds` 为 `None`（尚未布局）；在分块模式下
+///   可能包含当前切片未涉及的房间（全层拓扑图的子集或全集，视模式而定）。
+/// - `rooms`：布局阶段之后的产物，`bounds` 为 `Some(...)`；在整图模式下数量等于
+///   `topology.nodes`，在分块模式下严格少于 `topology.nodes`（仅含当前切片已布局房间）。
+///
+/// 需要按 ID 查找房间时，**优先使用 [`GenerationResult::room_by_id`]**
+/// （搜索 `rooms`，保证 bounds 已填充）；仅在拓扑遍历场景下才直接访问
+/// `topology.nodes`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct GenerationResult {
     /// 结果元数据
     pub metadata: ResultMetadata,
     /// 拓扑图
+    ///
+    /// `nodes` 包含拓扑阶段确定的房间（`bounds` 为 `None`，布局后由 [`Self::rooms`]
+    /// 提供带边界版本）。分块模式下 `nodes` 可能包含未在当前切片布局的房间。
+    /// 详见结构体级文档。
     pub topology: RoomGraph,
-    /// 房间列表
+    /// 房间列表（布局阶段之后，`bounds` 已填充）
+    ///
+    /// 整图模式下数量等于 `topology.nodes`；分块模式下严格少于 `topology.nodes`。
+    /// 按 ID 查找房间请使用 [`Self::room_by_id`]。
     pub rooms: Vec<Room>,
     /// 门锚点列表
     pub door_anchors: Vec<DoorAnchor>,
@@ -33,6 +52,18 @@ pub struct GenerationResult {
     pub chunks: Vec<Chunk>,
     /// 调试信息(可选)
     pub debug: Option<DebugBundle>,
+}
+
+impl GenerationResult {
+    /// 按 ID 查找房间
+    ///
+    /// 在 `rooms`（布局后的完整房间列表）中按 ID 线性查找。
+    /// 返回的 `Room` 保证 `bounds` 已填充（整图和分块模式均如此）。
+    ///
+    /// 如果需要遍历拓扑结构（含未布局房间），请直接使用 `topology.nodes`。
+    pub fn room_by_id(&self, id: &str) -> Option<&Room> {
+        self.rooms.iter().find(|r| r.id == id)
+    }
 }
 
 /// 结果元数据

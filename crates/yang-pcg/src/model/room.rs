@@ -71,10 +71,21 @@ pub enum RoomType {
 }
 
 /// 房间图
+///
+/// 拓扑阶段的核心输出。`nodes` 中的 `Room` 在拓扑阶段 `bounds` 为 `None`；
+/// 布局阶段后由 [`GenerationResult::rooms`] 提供带边界版本。
+///
+/// [`GenerationResult::rooms`]: crate::model::result::GenerationResult::rooms
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RoomGraph {
     /// 房间节点列表
+    ///
+    /// 拓扑阶段产物，`Room::bounds` 为 `None`。分块模式下可能包含当前切片
+    /// 未布局的房间（全层拓扑图的子集或全集）。按 ID 查找带边界房间请使用
+    /// [`GenerationResult::room_by_id`]。
+    ///
+    /// [`GenerationResult::room_by_id`]: crate::model::result::GenerationResult::room_by_id
     pub nodes: Vec<Room>,
     /// 房间边列表
     pub edges: Vec<RoomEdge>,
