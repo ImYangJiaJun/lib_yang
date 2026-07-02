@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 /// 熔断器策略配置。默认关闭——只有在 [`HttpClientConfig`](crate::http::HttpClientConfig)
 /// 中显式设置 `circuit_breaker: Some(..)` 才启用。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CircuitBreakerConfig {
     /// 触发熔断的连续失败次数（Closed 状态下）。
     pub failure_threshold: u32,

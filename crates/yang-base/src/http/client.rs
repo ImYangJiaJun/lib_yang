@@ -29,6 +29,7 @@ static GLOBAL_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
 /// let client = HttpClient::with_config(config)?;
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct HttpClientConfig {
     /// 请求超时时间（秒），默认 30 秒
     pub timeout_secs: u64,

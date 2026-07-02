@@ -208,19 +208,24 @@ impl SqlGenerator {
 
         self.append(" WHERE ");
 
-        // 这里 conditions 是借用，但 build_where 已经决定要消费它构造的临时 Condition，
-        // 故走 owned 版本：避免借用版内部对每个值再 clone 一次（消除多余的双重 clone）。
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql_owned(
-                conditions[0].clone(),
+            let sql = crate::mysql::condition::condition_to_sql(
+                &conditions[0],
                 &mut self.params,
             );
             self.append(&sql);
         } else {
-            // 多个条件用 AND 连接
-            let combined = Condition::And(conditions.to_vec());
-            let sql = crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
-            self.append(&sql);
+            // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
+            // 避免 to_vec() 克隆全部条件 + Condition::And 包装 + parts Vec 中间分配。
+            self.sql.push('(');
+            for (i, cond) in conditions.iter().enumerate() {
+                if i > 0 {
+                    self.sql.push_str(" AND ");
+                }
+                let frag = crate::mysql::condition::condition_to_sql(cond, &mut self.params);
+                self.sql.push_str(&frag);
+            }
+            self.sql.push(')');
         }
 
         Ok(())
@@ -286,17 +291,23 @@ impl SqlGenerator {
     /// 生成 HAVING 子句
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
         self.append(" HAVING ");
-        // 与 build_where 对齐：走 owned 版本避免借用版内部对每个值再 clone 一次
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql_owned(
-                conditions[0].clone(),
+            let sql = crate::mysql::condition::condition_to_sql(
+                &conditions[0],
                 &mut self.params,
             );
             self.append(&sql);
         } else {
-            let combined = Condition::And(conditions.to_vec());
-            let sql = crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
-            self.append(&sql);
+            // 与 build_where 多条件路径对齐：内联拼接避免 to_vec + And 包装 + parts Vec。
+            self.sql.push('(');
+            for (i, cond) in conditions.iter().enumerate() {
+                if i > 0 {
+                    self.sql.push_str(" AND ");
+                }
+                let frag = crate::mysql::condition::condition_to_sql(cond, &mut self.params);
+                self.sql.push_str(&frag);
+            }
+            self.sql.push(')');
         }
         Ok(())
     }

@@ -267,7 +267,7 @@ impl TokenManager {
             nbf: now,
             iat: now,
             jti: uuid::Uuid::new_v4().to_string(),
-            token_type: "access".to_string(),
+            token_type: crate::token::TokenType::Access,
             custom: custom_claims,
         };
 
@@ -305,7 +305,7 @@ impl TokenManager {
             nbf: now,
             iat: now,
             jti: uuid::Uuid::new_v4().to_string(),
-            token_type: "refresh".to_string(),
+            token_type: crate::token::TokenType::Refresh,
             custom: serde_json::Value::Null,
         };
 
@@ -508,7 +508,7 @@ impl TokenManager {
         let claims = self.verify_token_checked(refresh_token).await?;
 
         // 检查 Token 类型
-        if claims.token_type != "refresh" {
+        if claims.token_type != crate::token::TokenType::Refresh {
             return Err(BaseError::TokenTypeInvalid(
                 "期望 refresh token".to_string(),
             ));
@@ -592,7 +592,7 @@ impl TokenManager {
         custom_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
         // 1. 校验 Token 类型必须为 refresh（防御性检查）
-        if old_claims.token_type != "refresh" {
+        if old_claims.token_type != crate::token::TokenType::Refresh {
             return Err(BaseError::TokenTypeInvalid(
                 "期望 refresh token".to_string(),
             ));

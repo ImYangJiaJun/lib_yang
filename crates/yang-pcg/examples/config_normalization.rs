@@ -36,21 +36,23 @@ fn main() -> PcgResult<()> {
     println!("   配置摘要: {}", custom_digest);
     println!();
 
-    // 3. 配置合并
-    println!("3. 配置合并:");
+    // 3. 配置覆盖
+    println!("3. 配置覆盖:");
     let base_config = GenerationConfig::default();
-    let mut override_config = GenerationConfig::default();
-    override_config.room_count = RangeU16::new(20, 30);
-    override_config.theme_tags = vec!["forest".to_string()];
+    let override_config = GenerationConfig {
+        room_count: RangeU16::new(20, 30),
+        theme_tags: vec!["forest".to_string()],
+        ..Default::default()
+    };
 
-    let merged_config = base_config.merge(&override_config);
-    let merged_digest = ConfigDigest::from_config(&merged_config);
+    let overridden_config = base_config.override_with(override_config);
+    let merged_digest = ConfigDigest::from_config(&overridden_config);
     println!(
-        "   合并后房间数量: {}-{}",
-        merged_config.room_count.min, merged_config.room_count.max
+        "   覆盖后房间数量: {}-{}",
+        overridden_config.room_count.min, overridden_config.room_count.max
     );
-    println!("   合并后主题: {:?}", merged_config.theme_tags);
-    println!("   合并后摘要: {}", merged_digest);
+    println!("   覆盖后主题: {:?}", overridden_config.theme_tags);
+    println!("   覆盖后摘要: {}", merged_digest);
     println!();
 
     // 4. 配置验证

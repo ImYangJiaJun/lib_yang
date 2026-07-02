@@ -38,7 +38,7 @@ fn test_symmetric_token_generation_and_verification() {
     assert_eq!(claims.iss, "test-issuer");
     assert_eq!(claims.sub, "user_123");
     assert_eq!(claims.aud, "test-audience");
-    assert_eq!(claims.token_type, "access");
+    assert_eq!(claims.token_type, crate::token::TokenType::Access);
 
     // 验证自定义声明
     assert_eq!(claims.custom.get("role").unwrap(), "admin");
@@ -96,7 +96,7 @@ fn test_refresh_token_generation() {
         .expect("验证 Refresh Token 失败");
 
     // 验证 Token 类型
-    assert_eq!(claims.token_type, "refresh");
+    assert_eq!(claims.token_type, crate::token::TokenType::Refresh);
     assert_eq!(claims.sub, "user_456");
 
     // 验证自定义声明为空
@@ -126,14 +126,14 @@ fn test_token_pair_generation() {
     let access_claims = manager
         .verify_token(&access_token)
         .expect("验证 Access Token 失败");
-    assert_eq!(access_claims.token_type, "access");
+    assert_eq!(access_claims.token_type, crate::token::TokenType::Access);
     assert_eq!(access_claims.sub, "user_789");
 
     // 验证 Refresh Token
     let refresh_claims = manager
         .verify_token(&refresh_token)
         .expect("验证 Refresh Token 失败");
-    assert_eq!(refresh_claims.token_type, "refresh");
+    assert_eq!(refresh_claims.token_type, crate::token::TokenType::Refresh);
     assert_eq!(refresh_claims.sub, "user_789");
 }
 
@@ -378,7 +378,7 @@ async fn test_refresh_access_token() {
         .verify_token(&new_access_token)
         .expect("验证新 Access Token 失败");
 
-    assert_eq!(claims.token_type, "access");
+    assert_eq!(claims.token_type, crate::token::TokenType::Access);
     assert_eq!(claims.sub, "user_test");
     assert_eq!(claims.custom.get("role").unwrap(), "user");
 }

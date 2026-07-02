@@ -19,6 +19,7 @@ static OBSERVABILITY_CONFIG: OnceLock<ObservabilityConfig> = OnceLock::new();
 /// 当前仅含慢查询阈值，预留后续扩展（如采样率、SQL 文本记录开关等）。
 /// 派生 `Default`（全部关闭），未初始化时即此默认值。
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ObservabilityConfig {
     /// 慢查询阈值：受保护层 `TableQuery` 单次执行耗时超过此值时 `warn` 日志。
     ///

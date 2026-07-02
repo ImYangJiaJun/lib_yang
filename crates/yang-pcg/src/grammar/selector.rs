@@ -70,6 +70,12 @@ pub struct GrammarContext {
 #[non_exhaustive]
 pub struct WeightedRuleSelector;
 
+impl Default for WeightedRuleSelector {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl WeightedRuleSelector {
     /// 根据上下文确定性地选择一条 Grammar 规则
     ///

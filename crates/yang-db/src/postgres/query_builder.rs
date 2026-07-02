@@ -226,20 +226,24 @@ impl SqlGenerator {
 
         self.append(" WHERE ");
 
-        // 走 owned 版本：避免借用版内部对每个值再 clone 一次（消除多余的双重 clone）。
-        // 占位符编号从 self.params 当前长度接续，UPDATE 的 SET 子句已压入的参数会被正确跳过。
         if conditions.len() == 1 {
-            let sql = crate::postgres::condition::condition_to_sql_owned(
-                conditions[0].clone(),
+            let sql = crate::postgres::condition::condition_to_sql(
+                &conditions[0],
                 &mut self.params,
             );
             self.append(&sql);
         } else {
-            // 多个条件用 AND 连接
-            let combined = Condition::And(conditions.to_vec());
-            let sql =
-                crate::postgres::condition::condition_to_sql_owned(combined, &mut self.params);
-            self.append(&sql);
+            // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
+            // 避免 to_vec() 克隆全部条件 + Condition::And 包装 + parts Vec 中间分配。
+            self.sql.push('(');
+            for (i, cond) in conditions.iter().enumerate() {
+                if i > 0 {
+                    self.sql.push_str(" AND ");
+                }
+                let frag = crate::postgres::condition::condition_to_sql(cond, &mut self.params);
+                self.sql.push_str(&frag);
+            }
+            self.sql.push(')');
         }
 
         Ok(())

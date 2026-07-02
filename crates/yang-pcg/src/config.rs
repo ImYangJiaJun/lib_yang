@@ -208,11 +208,42 @@ impl GenerationConfig {
         })
     }
 
-    /// 合并配置
+    /// 全量覆盖配置（推荐）
     ///
-    /// 将当前配置与另一个配置合并。当前实现为无条件全量覆盖——other 中的所有字段
+    /// 用 `other` 的所有字段**全量覆盖**当前配置，返回覆盖后的新实例。
+    /// 用于实现配置层级：默认配置 -> 预设配置 -> 实例覆盖 -> 运行时覆盖。
+    ///
+    /// 注意：此方法并非增量合并——`other` 中的所有字段（包括默认值）都会覆盖对应字段。
+    pub fn override_with(self, other: GenerationConfig) -> Self {
+        Self {
+            room_count: other.room_count,
+            critical_path_length: other.critical_path_length,
+            branch_count: other.branch_count,
+            dead_end_count: other.dead_end_count,
+            room_size: other.room_size,
+            corridor: other.corridor,
+            terrain: other.terrain,
+            item_spawns: other.item_spawns,
+            enemy_spawns: other.enemy_spawns,
+            chunking: other.chunking,
+            // theme_tags 仅在 other 非空时覆盖
+            theme_tags: if other.theme_tags.is_empty() {
+                self.theme_tags
+            } else {
+                other.theme_tags
+            },
+            generation_mode: other.generation_mode,
+            capability_flags: other.capability_flags,
+        }
+    }
+
+    /// 合并配置（全量覆盖）
+    ///
+    /// 将当前配置与另一个配置"合并"。**实际为无条件全量覆盖**——other 中的所有字段
     /// 直接覆盖 self 对应字段（非逐字段区分默认值/非默认值的语义合并）。
     /// 用于实现配置层级：默认配置 -> 预设配置 -> 实例覆盖 -> 运行时覆盖。
+    #[deprecated(note = "请用 override_with，此方法实为全量覆盖而非增量合并")]
+    #[allow(deprecated)]
     pub fn merge(&self, other: &GenerationConfig) -> Self {
         // 简化实现：直接使用 other 的值全量覆盖
         // 未来可改为更细粒度的合并逻辑（仅覆盖非默认值）
@@ -796,6 +827,23 @@ mod tests {
     }
 
     #[test]
+    fn test_config_override_with() {
+        let base = GenerationConfig::default();
+        let override_config = GenerationConfig {
+            room_count: RangeU16 { min: 15, max: 25 },
+            theme_tags: vec!["dungeon".to_string()],
+            ..Default::default()
+        };
+
+        let overridden = base.override_with(override_config);
+
+        assert_eq!(overridden.room_count.min, 15);
+        assert_eq!(overridden.room_count.max, 25);
+        assert_eq!(overridden.theme_tags, vec!["dungeon".to_string()]);
+    }
+
+    #[test]
+    #[allow(deprecated)]
     fn test_config_merge() {
         let base = GenerationConfig::default();
         let override_config = GenerationConfig {

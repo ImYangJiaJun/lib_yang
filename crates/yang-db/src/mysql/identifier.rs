@@ -40,22 +40,23 @@ pub fn quote_identifier(ident: &str) -> Result<String, DbError> {
             "非法 SQL 标识符: {ident:?}"
         )));
     }
-    // is_valid_identifier 已排除反引号，replace 仅为防御性冗余。
-    Ok(format!("`{}`", ident.replace('`', "``")))
+    // is_valid_identifier 仅允许 [A-Za-z0-9_]，已排除反引号，无需 replace。
+    Ok(format!("`{ident}`"))
 }
 
 /// 校验并转义可能带限定前缀的标识符：`列` → `` `列` ``，`表.列` → `` `表`.`列` ``。
 ///
 /// 各段分别校验并加引号；段数超过 2 或任一段非法返回 [`DbError::InvalidArgument`]。
 pub fn quote_qualified(ident: &str) -> Result<String, DbError> {
-    let parts: Vec<&str> = ident.split('.').collect();
-    if parts.is_empty() || parts.len() > 2 {
-        return Err(DbError::InvalidArgument(format!(
-            "非法限定标识符: {ident:?}"
-        )));
+    // split_once 避免 Vec 分配；超 2 段时第二段含 '.' 会在 quote_identifier 中报错。
+    match ident.split_once('.') {
+        None => quote_identifier(ident),
+        Some((table, column)) => Ok(format!(
+            "{}.{}",
+            quote_identifier(table)?,
+            quote_identifier(column)?
+        )),
     }
-    let quoted: Result<Vec<String>, DbError> = parts.iter().map(|p| quote_identifier(p)).collect();
-    Ok(quoted?.join("."))
 }
 
 #[cfg(test)]

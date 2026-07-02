@@ -42,6 +42,20 @@ pub use manager::TokenManager;
 
 use serde::{Deserialize, Serialize};
 
+/// Token 类型枚举
+///
+/// 封闭集合，仅允许 `Access` 与 `Refresh` 两种值。
+/// 序列化为小写字符串 `"access"` / `"refresh"`，与旧版 `String` 字段的 JSON 格式完全兼容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum TokenType {
+    /// 访问令牌，用于 API 访问
+    Access,
+    /// 刷新令牌，用于获取新的访问令牌
+    Refresh,
+}
+
 /// Token 声明
 ///
 /// JWT Token 的标准声明和自定义声明。
@@ -64,7 +78,7 @@ use serde::{Deserialize, Serialize};
 /// # 示例
 ///
 /// ```rust
-/// use yang_base::token::TokenClaims;
+/// use yang_base::token::{TokenClaims, TokenType};
 /// use serde_json::json;
 ///
 /// let claims = TokenClaims {
@@ -75,7 +89,7 @@ use serde::{Deserialize, Serialize};
 ///     nbf: 1234567800,
 ///     iat: 1234567800,
 ///     jti: "unique-token-id".to_string(),
-///     token_type: "access".to_string(),
+///     token_type: TokenType::Access,
 ///     custom: json!({
 ///         "role": "admin",
 ///         "permissions": ["read", "write"]
@@ -125,9 +139,9 @@ pub struct TokenClaims {
     /// Token 类型
     ///
     /// 可选值：
-    /// - `"access"`：访问令牌，用于 API 访问
-    /// - `"refresh"`：刷新令牌，用于获取新的访问令牌
-    pub token_type: String,
+    /// - `TokenType::Access`：访问令牌，用于 API 访问
+    /// - `TokenType::Refresh`：刷新令牌，用于获取新的访问令牌
+    pub token_type: TokenType,
 
     /// 自定义声明
     ///
@@ -157,7 +171,7 @@ impl TokenClaims {
         nbf: u64,
         iat: u64,
         jti: impl Into<String>,
-        token_type: impl Into<String>,
+        token_type: TokenType,
         custom: serde_json::Value,
     ) -> Self {
         Self {
@@ -168,7 +182,7 @@ impl TokenClaims {
             nbf,
             iat,
             jti: jti.into(),
-            token_type: token_type.into(),
+            token_type,
             custom,
         }
     }

@@ -2,6 +2,7 @@
 ///
 /// 表示 Redis 中的各种数据类型，提供类型安全的值表示
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RedisValue {
     /// 空值
     Nil,

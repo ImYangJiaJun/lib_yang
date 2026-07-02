@@ -14,7 +14,7 @@ fn test_token_claims_serialization() {
         nbf: 1234567800,
         iat: 1234567800,
         jti: "unique-token-id".to_string(),
-        token_type: "access".to_string(),
+        token_type: crate::token::TokenType::Access,
         custom: json!({
             "role": "admin",
             "permissions": ["read", "write"]
@@ -64,7 +64,7 @@ fn test_token_claims_deserialization() {
     assert_eq!(claims.nbf, 9876543200);
     assert_eq!(claims.iat, 9876543200);
     assert_eq!(claims.jti, "another-token-id");
-    assert_eq!(claims.token_type, "refresh");
+    assert_eq!(claims.token_type, crate::token::TokenType::Refresh);
 
     // 验证自定义字段
     assert_eq!(claims.custom.get("role").unwrap(), "user");
@@ -82,7 +82,7 @@ fn test_token_claims_round_trip() {
         nbf: 1111111100,
         iat: 1111111100,
         jti: "test-jti".to_string(),
-        token_type: "access".to_string(),
+        token_type: crate::token::TokenType::Access,
         custom: json!({
             "custom_field_1": "value1",
             "custom_field_2": 42,
@@ -130,7 +130,7 @@ fn test_token_claims_with_empty_custom() {
         nbf: 2222222200,
         iat: 2222222200,
         jti: "jti-id".to_string(),
-        token_type: "access".to_string(),
+        token_type: crate::token::TokenType::Access,
         custom: json!({}),
     };
 
@@ -159,7 +159,7 @@ fn test_token_claims_with_null_custom() {
         nbf: 3333333300,
         iat: 3333333300,
         jti: "jti-null".to_string(),
-        token_type: "refresh".to_string(),
+        token_type: crate::token::TokenType::Refresh,
         custom: json!(null),
     };
 
@@ -183,7 +183,7 @@ fn test_token_claims_flatten_behavior() {
         nbf: 4444444400,
         iat: 4444444400,
         jti: "jti-flatten".to_string(),
-        token_type: "access".to_string(),
+        token_type: crate::token::TokenType::Access,
         custom: json!({
             "user_role": "admin",
             "department": "engineering"

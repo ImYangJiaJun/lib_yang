@@ -463,7 +463,7 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
         let run = async {
             // 先验证旧 Token 以获取 subject（供业务解析器确定新声明）
             let claims = manager.verify_token_checked(&input.refresh_token).await?;
-            if claims.token_type != "refresh" {
+            if claims.token_type != crate::token::TokenType::Refresh {
                 return Err(BaseError::TokenTypeInvalid(
                     "期望 refresh token".to_string(),
                 ));
@@ -700,8 +700,8 @@ where
             .verify_token_checked(&token)
             .await?;
 
-        // 3. 校验 token_type 必须为 "access"
-        if claims.token_type != "access" {
+        // 3. 校验 token_type 必须为 Access
+        if claims.token_type != crate::token::TokenType::Access {
             return Err(BaseError::TokenTypeInvalid("期望 access token".into()));
         }
 

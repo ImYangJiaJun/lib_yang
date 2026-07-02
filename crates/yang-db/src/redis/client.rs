@@ -4,6 +4,7 @@ use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
 
 /// 连接池状态信息
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PoolStatus {
     /// 连接池最大连接数
     pub max_size: usize,
