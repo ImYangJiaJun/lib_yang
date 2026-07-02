@@ -1875,7 +1875,7 @@ impl TableQuery {
         {
             // 使用 saturating_sub 防止 page==0 时 usize 下溢（纵深防御，
             // 主校验在 page() 入口；直接构造 query_params 的调用方也安全）
-            let offset = page.saturating_sub(1) * page_size;
+            let offset = page.saturating_sub(1).saturating_mul(page_size);
             sql.push_str(&format!(" LIMIT {} OFFSET {}", page_size, offset));
         } else if let Some(limit) = hard_limit {
             // 无分页时应用硬上限（如 fetch_optional 仅需 1 行）

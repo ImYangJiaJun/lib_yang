@@ -1526,7 +1526,7 @@ impl<'a> QueryBuilder<'a> {
                 if self.enable_logging {
                     log::debug!("insert() 成功，插入 ID: {}", id);
                 }
-                Ok(id as u64)
+                u64::try_from(id).map_err(|_| crate::error::DbError::InvalidArgument("返回主键为负".into()))
             }
             Err(e) => {
                 log::error!("insert() 失败: {}", e);
