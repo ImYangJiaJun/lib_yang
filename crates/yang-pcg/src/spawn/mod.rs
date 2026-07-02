@@ -6,6 +6,8 @@ pub mod enemies;
 pub mod items;
 pub mod sampling;
 
+use std::collections::HashMap;
+
 use crate::config::NormalizedConfig;
 use crate::debug::{RejectionReason, SpawnDebugInfo};
 use crate::error::PcgResult;
@@ -75,8 +77,14 @@ pub fn generate_spawns(
 
     let cross_spacing = min_cross_type_spacing(&config.config);
 
+    // 构建 room_id -> terrain 映射，避免 O(R²) 线性扫描
+    let terrain_map: HashMap<&str, &Terrain> = terrains
+        .iter()
+        .map(|t| (t.room_id.as_str(), t))
+        .collect();
+
     for room in rooms {
-        let Some(terrain) = terrains.iter().find(|terrain| terrain.room_id == room.id) else {
+        let Some(terrain) = terrain_map.get(room.id.as_str()) else {
             continue;
         };
         // 先派生两个子 RNG（顺序与重构前一致，保持父 RNG 消耗不变），再依次生成
@@ -127,8 +135,14 @@ pub fn generate_spawns_with_debug(
 
     let cross_spacing = min_cross_type_spacing(&config.config);
 
+    // 构建 room_id -> terrain 映射，避免 O(R²) 线性扫描
+    let terrain_map: HashMap<&str, &Terrain> = terrains
+        .iter()
+        .map(|t| (t.room_id.as_str(), t))
+        .collect();
+
     for room in rooms {
-        let Some(terrain) = terrains.iter().find(|terrain| terrain.room_id == room.id) else {
+        let Some(terrain) = terrain_map.get(room.id.as_str()) else {
             continue;
         };
         let mut item_rng = rng.derive(&format!("items:{}", room.id));

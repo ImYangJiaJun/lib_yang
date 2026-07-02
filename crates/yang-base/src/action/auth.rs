@@ -582,12 +582,10 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
                 }
             }
 
-            // 用已解析的 claims 直接撤销（避免 revoke_token 内部重复验证）
-            manager.revoke_claims(&target_claims).await?;
-            // 若提供 Refresh Token，一并撤销以彻底终止会话
-            if let Some(refresh_token) = &input.refresh_token {
-                manager.revoke_token(refresh_token).await?;
-            }
+            // CONC-1：用 subject 水位线一次性原子撤销该用户所有 Token
+            //（Access + Refresh + 任何其他已签发 Token），避免双 revoke 非原子竞态。
+            // 水位线 TTL 取 Refresh Token 有效期，早于此时间签发的 Token 全部失效。
+            manager.revoke_by_subject(&target_claims.sub).await?;
             Ok::<(), BaseError>(())
         };
 
