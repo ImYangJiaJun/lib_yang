@@ -515,19 +515,23 @@ impl PluginManager {
         let mut plugins = self.get_all().await;
         plugins.reverse(); // 逆序关闭
 
+        let mut errors: Vec<(String, String)> = Vec::new();
+
         for plugin in plugins {
             let name = plugin.name();
             if let Err(e) = plugin.on_shutdown().await {
                 log::error!("插件 {} 关闭失败: {}", name, e);
-                return Err(BaseError::PluginShutdownFailed(
-                    name.to_string(),
-                    e.to_string(),
-                ));
+                errors.push((name.to_string(), e.to_string()));
+            } else {
+                log::info!("插件已关闭: {}", name);
             }
-            log::info!("插件已关闭: {}", name);
         }
 
-        Ok(())
+        if let Some((name, reason)) = errors.into_iter().next() {
+            Err(BaseError::PluginShutdownFailed(name, reason))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -830,18 +834,23 @@ impl PluginRegistry {
     /// ```
     pub async fn shutdown(&self) -> Result<(), BaseError> {
         // 逆序遍历缓存的排序结果，确保依赖插件最后关闭
+        let mut errors: Vec<(String, String)> = Vec::new();
+
         for plugin in self.sorted_plugins.iter().rev() {
             let name = plugin.name();
             if let Err(e) = plugin.on_shutdown().await {
                 log::error!("插件 {} 关闭失败: {}", name, e);
-                return Err(BaseError::PluginShutdownFailed(
-                    name.to_string(),
-                    e.to_string(),
-                ));
+                errors.push((name.to_string(), e.to_string()));
+            } else {
+                log::info!("插件已关闭: {}", name);
             }
-            log::info!("插件已关闭: {}", name);
         }
-        Ok(())
+
+        if let Some((name, reason)) = errors.into_iter().next() {
+            Err(BaseError::PluginShutdownFailed(name, reason))
+        } else {
+            Ok(())
+        }
     }
 
     /// 计算拓扑排序（私有方法，构建时调用一次）

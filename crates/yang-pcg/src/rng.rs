@@ -181,14 +181,9 @@ impl StableRng {
     ///
     /// * `seed` - 32 字节的种子数组
     pub fn from_seed_bytes(seed: [u8; 32]) -> Self {
-        let inner = Pcg64::from_seed(seed);
-        // 从字节数组计算一个 u64 种子用于记录（FNV-1a，跨版本稳定）
-        let seed_u64 = fnv1a_64(&seed);
-
-        Self {
-            inner,
-            seed: seed_u64,
-        }
+        // OPT-D-02: inner 与 seed 同源，均基于 FNV-1a 哈希
+        let s = fnv1a_64(&seed);
+        Self::from_seed(s)
     }
 
     /// 派生子随机流
@@ -791,9 +786,20 @@ mod tests {
         let seed_bytes = [42u8; 32];
         let rng = StableRng::from_seed_bytes(seed_bytes);
 
-        // 验证可以正常生成随机数
-        let mut rng_mut = rng;
-        let _value: u32 = rng_mut.random();
+        // OPT-D-02: 验证 seed 与 inner 同源（均来自 fnv1a_64）
+        let expected_seed = fnv1a_64(&seed_bytes);
+        assert_eq!(rng.seed(), expected_seed, "seed 字段应等于 fnv1a_64(seed_bytes)");
+
+        // 验证与 from_seed(fnv1a_64(bytes)) 产生相同序列
+        let rng_from_seed = StableRng::from_seed(expected_seed);
+        assert_eq!(rng.seed(), rng_from_seed.seed(), "from_seed_bytes 应等价于 from_seed(fnv1a_64(bytes))");
+
+        // 验证确定性：相同字节产生相同随机序列
+        let mut rng1 = StableRng::from_seed_bytes(seed_bytes);
+        let mut rng2 = StableRng::from_seed_bytes(seed_bytes);
+        for _ in 0..100 {
+            assert_eq!(rng1.random::<u32>(), rng2.random::<u32>());
+        }
     }
 
     // ========================================================================
