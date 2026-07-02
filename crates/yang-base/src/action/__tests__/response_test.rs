@@ -189,7 +189,7 @@ fn test_all_error_types_have_valid_codes() {
         BaseError::Unknown("test".to_string()),
     ];
 
-    for error in errors {
+    for error in &errors {
         let response = ApiResponse::from_error(error);
         assert_ne!(response.code, 0, "错误响应的 code 不应该为 0");
         assert!(response.data.is_none(), "错误响应不应该包含 data");

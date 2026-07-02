@@ -19,7 +19,7 @@ use crate::model::terrain::{Grid2D, Terrain, TileKind};
 /// 当前阶段主要检查：
 /// 1. 配置是否可以成功归一化。
 /// 2. `RuntimeChunked` 模式下是否提供了运行时上下文。
-pub fn validate_request(request: &GenerationRequest) -> PcgResult<NormalizedConfig> {
+pub(crate) fn validate_request(request: &GenerationRequest) -> PcgResult<NormalizedConfig> {
     let normalized = request.config.normalize()?;
 
     if matches!(
@@ -51,7 +51,7 @@ pub fn validate_request(request: &GenerationRequest) -> PcgResult<NormalizedConf
 /// # 需求映射
 /// - 需求 3.2: 确保所有 Room 从 Start 房间可达
 /// - 需求 18.3: 验证拓扑连通性不变量
-pub fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
+pub(crate) fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
     // 查找 Start 房间
     let start_room = graph
         .nodes
@@ -141,7 +141,7 @@ pub fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
 /// # 需求映射
 /// - 需求 4.7: 房间边界不重叠
 /// - 需求 18.3: 验证布局不变量
-pub fn validate_no_overlap(rooms: &[Room]) -> PcgResult<()> {
+pub(crate) fn validate_no_overlap(rooms: &[Room]) -> PcgResult<()> {
     // 收集所有冲突房间对
     let mut conflicts: Vec<(String, String)> = Vec::new();
 
@@ -207,7 +207,7 @@ pub fn validate_no_overlap(rooms: &[Room]) -> PcgResult<()> {
 /// # 需求映射
 /// - 需求 5.4: 房间内所有入口到出口存在可通行路径
 /// - 需求 18.3: 验证地形连通性不变量
-pub fn validate_terrain_connectivity(terrains: &[Terrain]) -> PcgResult<()> {
+pub(crate) fn validate_terrain_connectivity(terrains: &[Terrain]) -> PcgResult<()> {
     for terrain in terrains {
         // 收集所有 Doorway 瓦片坐标
         let doorways = collect_doorway_tiles(&terrain.tiles);
@@ -318,31 +318,31 @@ const DEFAULT_MIN_SPACING: i32 = 2;
 /// 点位间距违规详情
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SpacingViolation {
+pub(crate) struct SpacingViolation {
     /// 第一个点位 ID
-    pub spawn_a_id: String,
+    pub(crate) spawn_a_id: String,
     /// 第二个点位 ID
-    pub spawn_b_id: String,
+    pub(crate) spawn_b_id: String,
     /// 所属房间 ID
-    pub room_id: String,
+    pub(crate) room_id: String,
     /// 实际距离
-    pub actual_distance: i64,
+    pub(crate) actual_distance: i64,
     /// 要求的最小间距
-    pub required_spacing: i32,
+    pub(crate) required_spacing: i32,
 }
 
 /// 排除区违规详情
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct ExclusionViolation {
+pub(crate) struct ExclusionViolation {
     /// 违规点位 ID
-    pub spawn_id: String,
+    pub(crate) spawn_id: String,
     /// 所属房间 ID
-    pub room_id: String,
+    pub(crate) room_id: String,
     /// 点位坐标
-    pub position: GridPoint,
+    pub(crate) position: GridPoint,
     /// 排除区标签
-    pub zone_label: String,
+    pub(crate) zone_label: String,
 }
 
 /// 计算两点之间的曼哈顿距离
@@ -374,7 +374,7 @@ fn is_point_in_exclusion_zone(point: GridPoint, zone: &ExclusionZoneConstraint) 
 /// - 需求 7.4: 交互物之间保持最小间距
 /// - 需求 8.3: 敌人点位与入口、交互物点位之间保持最小安全间距
 /// - 需求 18.3: 验证点位间距不变量
-pub fn validate_spawn_spacing(
+pub(crate) fn validate_spawn_spacing(
     spawns: &[SpawnPoint],
     constraints: &[Constraint],
     min_spacing: Option<i32>,
@@ -496,7 +496,7 @@ pub fn validate_spawn_spacing(
 /// - 门口连通性
 /// - 点位间距
 /// - 约束满足报告
-pub fn validate_result(result: &GenerationResult) -> PcgResult<()> {
+pub(crate) fn validate_result(result: &GenerationResult) -> PcgResult<()> {
     if result.rooms.len() != result.topology.nodes.len() {
         return Err(PcgError::topology(
             "生成结果中的 rooms 数量与 topology.nodes 数量不一致",
@@ -620,7 +620,7 @@ impl ValidationReport {
 /// # 需求映射
 /// - 需求 6.6: 约束验证报告
 /// - 需求 15.3: 输出约束验证报告
-pub fn run_full_validation(
+pub(crate) fn run_full_validation(
     result: &GenerationResult,
     constraints: &[Constraint],
     min_spacing: Option<i32>,

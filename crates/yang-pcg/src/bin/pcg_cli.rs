@@ -383,8 +383,11 @@ mod tests {
 
     #[test]
     fn load_config_invalid_json() {
-        let dir = std::env::temp_dir().join("pcg_cli_test_invalid_json");
-        let _ = std::fs::create_dir_all(&dir);
+        // 必须在当前工作目录下创建临时文件，否则 load_config 的路径穿越防护会先拦截
+        let dir = std::env::current_dir()
+            .expect("获取 CWD")
+            .join("__pcg_cli_test_invalid_json");
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
         let file_path = dir.join("bad.json");
         std::fs::write(&file_path, "{not valid json!!!").expect("写临时文件应成功");
 

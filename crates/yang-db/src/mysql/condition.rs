@@ -146,9 +146,114 @@ where
 /// # 返回
 /// - SQL 字符串片段
 pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> String {
-    // 借用版本是消费版本的薄委托：整树 clone 一次后交给 owned 实现，
-    // 二者共享同一套 match 分支，避免逻辑重复。输出 SQL 与参数顺序完全一致。
-    condition_to_sql_owned(condition.clone(), params)
+    let mut out = String::new();
+    write_condition_to_sql(condition, &mut out, params);
+    out
+}
+
+/// 以借用方式将条件树写入 SQL 字符串，仅在压参时 clone 单个 `SqlValue`
+///
+/// 与 [`condition_to_sql_owned`] 不同，本函数遍历 `&Condition` 引用树，
+/// 避免对整棵树做一次性 `clone()`，仅在叶节点需要把 `SqlValue` 压入参数
+/// 列表时才 clone 单个值。对深层嵌套或大 IN 列表的场景可显著减少堆分配。
+///
+/// # 参数
+/// - `cond`: 要转换的条件引用
+/// - `out`: 输出 SQL 的可变字符串（追加模式，不清空已有内容）
+/// - `params`: 用于收集参数的可变向量
+pub fn write_condition_to_sql(cond: &Condition, out: &mut String, params: &mut Vec<SqlValue>) {
+    match cond {
+        Condition::Eq(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} = ?", safe_quote_identifier(field));
+        }
+        Condition::Ne(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} != ?", safe_quote_identifier(field));
+        }
+        Condition::Gt(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} > ?", safe_quote_identifier(field));
+        }
+        Condition::Lt(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} < ?", safe_quote_identifier(field));
+        }
+        Condition::Gte(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} >= ?", safe_quote_identifier(field));
+        }
+        Condition::Lte(field, value) => {
+            params.push(value.clone());
+            *out += &format!("{} <= ?", safe_quote_identifier(field));
+        }
+        Condition::In(field, values) => {
+            if values.is_empty() {
+                out.push_str("1 = 0");
+                return;
+            }
+            *out += &format!("{} IN (", safe_quote_identifier(field));
+            for (i, v) in values.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('?');
+                params.push(v.clone());
+            }
+            out.push(')');
+        }
+        Condition::Between(field, start, end) => {
+            params.push(start.clone());
+            params.push(end.clone());
+            *out += &format!("{} BETWEEN ? AND ?", safe_quote_identifier(field));
+        }
+        Condition::Like(field, pattern) => {
+            params.push(SqlValue::String(pattern.clone()));
+            *out += &format!("{} LIKE ?", safe_quote_identifier(field));
+        }
+        Condition::IsNull(field) => {
+            *out += &format!("{} IS NULL", safe_quote_identifier(field));
+        }
+        Condition::IsNotNull(field) => {
+            *out += &format!("{} IS NOT NULL", safe_quote_identifier(field));
+        }
+        Condition::And(conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 1");
+                return;
+            }
+            if conditions.len() == 1 {
+                write_condition_to_sql(&conditions[0], out, params);
+                return;
+            }
+            out.push('(');
+            for (i, c) in conditions.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" AND ");
+                }
+                write_condition_to_sql(c, out, params);
+            }
+            out.push(')');
+        }
+        Condition::Or(conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 0");
+                return;
+            }
+            if conditions.len() == 1 {
+                write_condition_to_sql(&conditions[0], out, params);
+                return;
+            }
+            out.push('(');
+            for (i, c) in conditions.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" OR ");
+                }
+                write_condition_to_sql(c, out, params);
+            }
+            out.push(')');
+        }
+    }
 }
 
 /// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
