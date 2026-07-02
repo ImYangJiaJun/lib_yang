@@ -1,5 +1,5 @@
 // 默认雕刻策略
-// 将现有的 carve_room_terrain 逻辑封装为 TerrainStrategy 实现
+// 将 carve_room_terrain_with_config 封装为 TerrainStrategy 实现
 
 use crate::config::TerrainConfig;
 use crate::error::PcgResult;
@@ -12,7 +12,7 @@ use super::strategy::TerrainStrategy;
 
 /// 默认雕刻策略
 ///
-/// 基于现有的 `carve_room_terrain` 逻辑实现，适用于大多数房间类型。
+/// 基于 `carve_room_terrain_with_config` 实现，适用于大多数房间类型。
 /// 生成标准的墙体边框、门口通行区、保留区和随机障碍物。
 ///
 /// # 适用场景

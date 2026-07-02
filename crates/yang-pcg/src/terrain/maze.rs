@@ -2,12 +2,13 @@
 // 使用递归回溯算法生成迷宫式通道布局
 
 use crate::config::TerrainConfig;
-use crate::error::{PcgError, PcgResult};
+use crate::error::PcgResult;
 use crate::model::geometry::{GridPoint, GridSize};
 use crate::model::room::{DoorAnchor, Room};
 use crate::model::terrain::{Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
+use super::carve::extract_room_bounds;
 use super::connectivity::summarize_connectivity;
 use super::grid::to_local;
 use super::strategy::TerrainStrategy;
@@ -38,17 +39,7 @@ impl TerrainStrategy for MazeStrategy {
         _config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room
-            .bounds
-            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
-        let width = bounds.width();
-        let height = bounds.height();
-        if width == 0 || height == 0 {
-            return Err(PcgError::terrain(format!(
-                "房间 {} 边界尺寸为零: {}x{}",
-                room.id, width, height
-            )));
-        }
+        let (bounds, width, height) = extract_room_bounds(room)?;
 
         // 初始化网格为墙体（迷宫从全墙开始雕刻）
         let mut tiles = Grid2D::new(width, height, TileKind::Wall);
@@ -117,16 +108,16 @@ fn generate_maze_recursive_backtrack(
 
     while let Some(current) = stack.last().copied() {
         // 获取未访问的邻居（步长为 2，确保墙体间隔）
-        let mut neighbors = get_unvisited_neighbors(current, &visited, width, height);
+        let (neighbors, count) = get_unvisited_neighbors(current, &visited, width, height);
 
-        if neighbors.is_empty() {
+        if count == 0 {
             stack.pop();
             continue;
         }
 
         // 随机选择一个邻居
-        let idx = rng.random_range(0, neighbors.len() as i32) as usize;
-        let next = neighbors.swap_remove(idx);
+        let idx = rng.random_range(0, count as i32) as usize;
+        let next = neighbors[idx];
 
         // 雕刻当前到邻居之间的墙
         let wall_x = (current.x + next.x) / 2;
@@ -140,14 +131,17 @@ fn generate_maze_recursive_backtrack(
 }
 
 /// 获取未访问的邻居节点（步长为 2）
+/// 返回栈数组 + 有效元素数量，避免每格分配 Vec
 fn get_unvisited_neighbors(
     point: GridPoint,
     visited: &Grid2D<bool>,
     width: u32,
     height: u32,
-) -> Vec<GridPoint> {
+) -> ([GridPoint; 4], usize) {
     let directions = [(0, 2), (0, -2), (2, 0), (-2, 0)];
-    let mut neighbors = Vec::new();
+    let default = GridPoint { x: 0, y: 0 };
+    let mut neighbors = [default; 4];
+    let mut count = 0usize;
 
     for (dx, dy) in &directions {
         let nx = point.x + dx;
@@ -159,11 +153,12 @@ fn get_unvisited_neighbors(
         }
 
         if visited.get(nx, ny).copied() == Some(false) {
-            neighbors.push(GridPoint { x: nx, y: ny });
+            neighbors[count] = GridPoint { x: nx, y: ny };
+            count += 1;
         }
     }
 
-    neighbors
+    (neighbors, count)
 }
 
 /// 将门口连接到最近的迷宫通道

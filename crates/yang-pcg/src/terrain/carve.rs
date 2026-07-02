@@ -1,27 +1,51 @@
 // 地形雕刻算法
 
-use crate::config::{NormalizedConfig, TerrainConfig};
+use crate::config::TerrainConfig;
 use crate::error::PcgResult;
-use crate::model::geometry::{GridPoint, GridSize};
+use crate::model::geometry::{GridPoint, GridSize, RoomBounds};
 use crate::model::room::{DoorAnchor, Room, RoomType};
 use crate::model::terrain::{ConnectivitySummary, Grid2D, ReservedZone, ReservedZoneBounds, Terrain, TileKind};
 use crate::rng::StableRng;
 
 use super::grid::to_local;
 
-/// 为单个房间生成地形。
-pub fn carve_room_terrain(
-    room: &Room,
-    door_anchors: &[DoorAnchor],
-    config: &NormalizedConfig,
-    rng: &mut StableRng,
-) -> Option<Terrain> {
-    carve_room_terrain_with_config(room, door_anchors, &config.config.terrain, rng).ok()
+/// 从房间中提取边界信息并校验尺寸。
+///
+/// 返回 `(bounds, width, height)`，房间无边界或尺寸为零时返回错误。
+pub(crate) fn extract_room_bounds(room: &Room) -> PcgResult<(RoomBounds, u32, u32)> {
+    use crate::error::PcgError;
+
+    let bounds = room
+        .bounds
+        .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
+    let width = bounds.width();
+    let height = bounds.height();
+    if width == 0 || height == 0 {
+        return Err(PcgError::terrain(format!(
+            "房间 {} 边界尺寸为零: {}x{}",
+            room.id, width, height
+        )));
+    }
+    Ok((bounds, width, height))
+}
+
+/// 初始化房间网格：外墙为 Wall，内部为 Floor。
+///
+/// 一次性完成全 Wall 填充 + 内部 Floor 覆写（与 OPT-P-13 单遍初始化合并），
+/// 避免各策略重复内联边框绘制循环。
+pub(crate) fn init_room_grid(width: u32, height: u32) -> Grid2D<TileKind> {
+    let mut tiles = Grid2D::new(width, height, TileKind::Wall);
+    for y in 1..height as i32 - 1 {
+        for x in 1..width as i32 - 1 {
+            tiles.set(x, y, TileKind::Floor);
+        }
+    }
+    tiles
 }
 
 /// 使用 TerrainConfig 为单个房间生成地形。
 ///
-/// 这是 `carve_room_terrain` 的核心实现，接受 `TerrainConfig` 而非 `NormalizedConfig`，
+/// 为单个房间生成地形，接受 `TerrainConfig`，
 /// 便于作为 `TerrainStrategy` trait 的底层实现使用。
 ///
 /// # 参数
@@ -40,28 +64,8 @@ pub fn carve_room_terrain_with_config(
     config: &TerrainConfig,
     rng: &mut StableRng,
 ) -> PcgResult<Terrain> {
-    use crate::error::PcgError;
-
-    let bounds = room
-        .bounds
-        .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
-    let width = bounds.width();
-    let height = bounds.height();
-    if width == 0 || height == 0 {
-        return Err(PcgError::terrain(format!(
-            "房间 {} 边界尺寸为零: {}x{}",
-            room.id, width, height
-        )));
-    }
-
-    let mut tiles = Grid2D::new(width, height, TileKind::Floor);
-    for y in 0..height as i32 {
-        for x in 0..width as i32 {
-            if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
-                tiles.set(x, y, TileKind::Wall);
-            }
-        }
-    }
+    let (bounds, width, height) = extract_room_bounds(room)?;
+    let mut tiles = init_room_grid(width, height);
 
     let room_anchors: Vec<&DoorAnchor> = door_anchors
         .iter()

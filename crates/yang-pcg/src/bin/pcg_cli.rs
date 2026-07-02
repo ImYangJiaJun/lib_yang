@@ -37,6 +37,7 @@ use yang_pcg::{
 };
 
 /// 输出格式。
+#[derive(Debug)]
 enum OutputFormat {
     Json,
     Compact,
@@ -44,6 +45,7 @@ enum OutputFormat {
 }
 
 /// 解析后的命令行参数。
+#[derive(Debug)]
 struct CliArgs {
     seed: Option<u64>,
     config_path: Option<String>,
@@ -248,5 +250,153 @@ fn load_config(path: Option<&str>) -> Result<GenerationConfig, String> {
             serde_json::from_str::<GenerationConfig>(&text)
                 .map_err(|e| format!("解析 {path} 失败: {e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── parse_args 正常路径 ───
+
+    #[test]
+    fn parse_args_minimal() {
+        let raw: Vec<String> = vec!["--out", "floor.json"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let args = parse_args(&raw).expect("最小参数应解析成功");
+        assert_eq!(args.out_path, "floor.json");
+        assert!(args.seed.is_none());
+        assert!(args.config_path.is_none());
+        assert!(args.trace_id.is_none());
+    }
+
+    #[test]
+    fn parse_args_full_options() {
+        let raw: Vec<String> = vec![
+            "--seed", "42", "--config", "cfg.json", "--out", "out.json",
+            "--format", "binary", "--trace-id", "run-001",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let args = parse_args(&raw).expect("全参数应解析成功");
+        assert_eq!(args.seed, Some(42));
+        assert_eq!(args.config_path.as_deref(), Some("cfg.json"));
+        assert_eq!(args.out_path, "out.json");
+        assert!(matches!(args.format, OutputFormat::Binary));
+        assert_eq!(args.trace_id.as_deref(), Some("run-001"));
+    }
+
+    #[test]
+    fn parse_args_format_compact() {
+        let raw: Vec<String> = vec!["--out", "x.json", "--format", "compact"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let args = parse_args(&raw).expect("compact 格式应解析成功");
+        assert!(matches!(args.format, OutputFormat::Compact));
+    }
+
+    // ─── parse_args 错误路径 ───
+
+    #[test]
+    fn parse_args_missing_out() {
+        let raw: Vec<String> = vec!["--seed", "42"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = parse_args(&raw).expect_err("缺 --out 应报错");
+        assert!(err.contains("--out"), "错误信息应提及 --out");
+    }
+
+    #[test]
+    fn parse_args_unknown_flag() {
+        let raw: Vec<String> = vec!["--out", "x.json", "--unknown-flag"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = parse_args(&raw).expect_err("未知参数应报错");
+        assert!(err.contains("未知参数"), "错误信息应提及未知参数");
+    }
+
+    #[test]
+    fn parse_args_seed_not_u64() {
+        let raw: Vec<String> = vec!["--out", "x.json", "--seed", "abc"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = parse_args(&raw).expect_err("非 u64 seed 应报错");
+        assert!(err.contains("u64"), "错误信息应提及 u64");
+    }
+
+    #[test]
+    fn parse_args_unknown_format() {
+        let raw: Vec<String> = vec!["--out", "x.json", "--format", "xml"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = parse_args(&raw).expect_err("未知 format 应报错");
+        assert!(err.contains("format"), "错误信息应提及 format");
+    }
+
+    #[test]
+    fn parse_args_seed_missing_value() {
+        let raw: Vec<String> = vec!["--out", "x.json", "--seed"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = parse_args(&raw).expect_err("--seed 缺值应报错");
+        assert!(
+            err.contains("缺少参数值"),
+            "错误信息应提及缺少参数值"
+        );
+    }
+
+    // ─── load_config 测试 ───
+
+    #[test]
+    fn load_config_none_returns_default() {
+        let config = load_config(None).expect("None 应返回默认配置");
+        let default = yang_pcg::GenerationConfig::default();
+        assert_eq!(
+            config.room_count.min, default.room_count.min,
+            "默认配置 room_count.min 应一致"
+        );
+        assert_eq!(
+            config.room_count.max, default.room_count.max,
+            "默认配置 room_count.max 应一致"
+        );
+    }
+
+    #[test]
+    fn load_config_nonexistent_file() {
+        let err = load_config(Some("nonexistent_file_12345.json"))
+            .expect_err("不存在的文件应报错");
+        assert!(
+            err.contains("无法解析") || err.contains("读取"),
+            "错误信息应包含路径错误描述: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_config_invalid_json() {
+        let dir = std::env::temp_dir().join("pcg_cli_test_invalid_json");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("bad.json");
+        std::fs::write(&file_path, "{not valid json!!!").expect("写临时文件应成功");
+
+        let err = load_config(Some(file_path.to_str().unwrap()))
+            .expect_err("非法 JSON 应报错");
+        assert!(
+            err.contains("解析"),
+            "错误信息应提及解析失败: {}",
+            err
+        );
+
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

@@ -455,6 +455,18 @@ impl TableQuery {
     /// let query = query.where_in("status", vec![json!(1), json!(2), json!(3)])?;
     /// ```
     pub fn where_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+        // QRY-2: IN 列表元素数上限
+        if values.len() > Self::MAX_IN_LIST_SIZE {
+            return Err(BaseError::ParamInvalid(
+                "values".to_string(),
+                format!(
+                    "IN 列表元素数 {} 超过上限 {}",
+                    values.len(),
+                    Self::MAX_IN_LIST_SIZE
+                ),
+            ));
+        }
+
         // 验证字段和权限
         self.validate_filter_field(field)?;
 
@@ -494,6 +506,18 @@ impl TableQuery {
     /// let query = query.where_like("name", "%alice%")?;
     /// ```
     pub fn where_like(mut self, field: &str, pattern: String) -> Result<Self, BaseError> {
+        // QRY-1: LIKE pattern 长度上限
+        if pattern.len() > Self::MAX_LIKE_PATTERN_LEN {
+            return Err(BaseError::ParamInvalid(
+                "pattern".to_string(),
+                format!(
+                    "LIKE pattern 长度 {} 超过上限 {}",
+                    pattern.len(),
+                    Self::MAX_LIKE_PATTERN_LEN
+                ),
+            ));
+        }
+
         // 验证字段和权限
         self.validate_filter_field(field)?;
 
@@ -505,6 +529,40 @@ impl TableQuery {
                 pattern,
             });
 
+        Ok(self)
+    }
+
+    /// 添加模糊匹配条件 (WHERE field LIKE '%keyword%')
+    ///
+    /// 便捷方法：自动将 `keyword` 用 `%` 包裹，并转义其中的 `%` 和 `_` 通配符，
+    /// 避免用户输入中的通配符被解释为 SQL LIKE 语法。
+    ///
+    /// # 参数
+    ///
+    /// - `field`：字段名
+    /// - `keyword`：搜索关键词（无需手动加 `%`）
+    ///
+    /// # 返回值
+    ///
+    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
+    /// - `Err(BaseError)`：验证失败（字段不存在 / 无权限 / 转义后超长）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// // WHERE name LIKE '%alice%'，且 "%" / "_" 被转义
+    /// let query = query.where_contains("name", "alice")?;
+    /// ```
+    pub fn where_contains(mut self, field: &str, keyword: &str) -> Result<Self, BaseError> {
+        // 转义 LIKE 通配符：% → \%，_ → \_
+        let escaped = keyword
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
+
+        // 复用 where_like 的校验（含 pattern 长度上限 + 字段权限）
+        self = self.where_like(field, pattern)?;
         Ok(self)
     }
 
@@ -771,6 +829,18 @@ impl TableQuery {
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_not_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+        // QRY-2: NOT IN 列表元素数上限
+        if values.len() > Self::MAX_IN_LIST_SIZE {
+            return Err(BaseError::ParamInvalid(
+                "values".to_string(),
+                format!(
+                    "NOT IN 列表元素数 {} 超过上限 {}",
+                    values.len(),
+                    Self::MAX_IN_LIST_SIZE
+                ),
+            ));
+        }
+
         self.validate_filter_field(field)?;
         self.query_params
             .where_conditions
@@ -948,6 +1018,18 @@ impl TableQuery {
     /// 校验期（`validate_condition_tree`）与渲染期（`render_condition`）共用同一上限。
     const MAX_WHERE_DEPTH: usize = 32;
 
+    /// LIKE pattern 最大字节长度（QRY-1 防 DoS）。
+    ///
+    /// 超长 pattern 会导致 MySQL 索引失效、全表扫描放大；`where_like` /
+    /// `where_contains` / 校验期 / 渲染期统一拦截。
+    const MAX_LIKE_PATTERN_LEN: usize = 128;
+
+    /// IN / NOT IN 列表最大元素数（QRY-2 防 DoS）。
+    ///
+    /// 过长的 IN 列表会导致 MySQL 优化器退化、解析/绑定开销放大；`where_in` /
+    /// `where_not_in` / 校验期 / 渲染期统一拦截。
+    const MAX_IN_LIST_SIZE: usize = 500;
+
     /// 递归校验一棵 WHERE 条件树的字段与筛选权限。
     ///
     /// 叶子条件校验其字段存在且当前角色可筛选；逻辑组（`And`/`Or`）递归下钻校验
@@ -987,7 +1069,7 @@ impl TableQuery {
                 }
                 Ok(())
             }
-            // 叶子：必有字段，校验存在性与筛选权限
+            // 叶子：必有字段，校验存在性与筛选权限；同时校验 LIKE/IN 上限（QRY-1/QRY-2）
             leaf => {
                 let field = leaf.field().ok_or_else(|| {
                     BaseError::ParamInvalid(
@@ -995,7 +1077,36 @@ impl TableQuery {
                         "条件节点缺少字段名".to_string(),
                     )
                 })?;
-                self.validate_filter_field(field)
+                self.validate_filter_field(field)?;
+                // LIKE pattern 长度上限（QRY-1）
+                if let WhereCondition::Like { pattern, .. } = leaf {
+                    if pattern.len() > Self::MAX_LIKE_PATTERN_LEN {
+                        return Err(BaseError::ParamInvalid(
+                            "pattern".to_string(),
+                            format!(
+                                "LIKE pattern 长度 {} 超过上限 {}",
+                                pattern.len(),
+                                Self::MAX_LIKE_PATTERN_LEN
+                            ),
+                        ));
+                    }
+                }
+                // IN / NOT IN 列表元素数上限（QRY-2）
+                if let WhereCondition::In { values, .. }
+                | WhereCondition::NotIn { values, .. } = leaf
+                {
+                    if values.len() > Self::MAX_IN_LIST_SIZE {
+                        return Err(BaseError::ParamInvalid(
+                            "values".to_string(),
+                            format!(
+                                "IN/NOT IN 列表元素数 {} 超过上限 {}",
+                                values.len(),
+                                Self::MAX_IN_LIST_SIZE
+                            ),
+                        ));
+                    }
+                }
+                Ok(())
             }
         }
     }
@@ -1384,6 +1495,17 @@ impl TableQuery {
                 params.push(SqlParam::from_json(value)?);
             }
             WhereCondition::In { field, values } => {
+                // QRY-2 安全网：渲染期再次校验 IN 列表元素数上限
+                if values.len() > Self::MAX_IN_LIST_SIZE {
+                    return Err(BaseError::ParamInvalid(
+                        "values".to_string(),
+                        format!(
+                            "IN 列表元素数 {} 超过上限 {}",
+                            values.len(),
+                            Self::MAX_IN_LIST_SIZE
+                        ),
+                    ));
+                }
                 let quoted = self.quote_identifier(field)?;
                 if values.is_empty() {
                     // 空 IN 集合：等价于恒假，避免拼出非法的 `IN ()`
@@ -1397,6 +1519,17 @@ impl TableQuery {
                 }
             }
             WhereCondition::Like { field, pattern } => {
+                // QRY-1 安全网：渲染期再次校验 LIKE pattern 长度上限
+                if pattern.len() > Self::MAX_LIKE_PATTERN_LEN {
+                    return Err(BaseError::ParamInvalid(
+                        "pattern".to_string(),
+                        format!(
+                            "LIKE pattern 长度 {} 超过上限 {}",
+                            pattern.len(),
+                            Self::MAX_LIKE_PATTERN_LEN
+                        ),
+                    ));
+                }
                 let quoted = self.quote_identifier(field)?;
                 sql.push_str(&format!("{} LIKE ?", quoted));
                 params.push(SqlParam::String(pattern.clone()));
@@ -1441,6 +1574,17 @@ impl TableQuery {
                 params.push(SqlParam::from_json(hi)?);
             }
             WhereCondition::NotIn { field, values } => {
+                // QRY-2 安全网：渲染期再次校验 NOT IN 列表元素数上限
+                if values.len() > Self::MAX_IN_LIST_SIZE {
+                    return Err(BaseError::ParamInvalid(
+                        "values".to_string(),
+                        format!(
+                            "NOT IN 列表元素数 {} 超过上限 {}",
+                            values.len(),
+                            Self::MAX_IN_LIST_SIZE
+                        ),
+                    ));
+                }
                 let quoted = self.quote_identifier(field)?;
                 if values.is_empty() {
                     // 空 NOT IN 集合：等价于恒真，不排除任何行

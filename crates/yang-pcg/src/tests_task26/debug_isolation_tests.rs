@@ -266,3 +266,108 @@ fn test_debug_toggle_different_seed() {
     assert!(result_off.debug.is_none(), "关闭调试不应有调试输出");
     assert!(result_on.debug.is_some(), "开启调试应有调试输出");
 }
+
+/// 验证调试开关不影响地形数据（tiles.data / grid_size / connectivity_summary）
+///
+/// OPT-T-05: 逐瓦片比较地形，确保 debug 侧通道不渗透到玩法数据。
+#[test]
+fn test_debug_toggle_terrains_identical() {
+    let config = GenerationConfig::default();
+
+    let generator_off = MapGenerator::new();
+    let result_off = generator_off
+        .generate(GenerationRequest {
+            seed: Some(42),
+            config: config.clone(),
+            constraints: vec![],
+            runtime_context: None,
+            trace_id: None,
+        })
+        .expect("关闭调试生成应成功");
+
+    let mut generator_on = MapGenerator::new();
+    generator_on.set_debug(true);
+    let result_on = generator_on
+        .generate(GenerationRequest {
+            seed: Some(42),
+            config: config.clone(),
+            constraints: vec![],
+            runtime_context: None,
+            trace_id: None,
+        })
+        .expect("开启调试生成应成功");
+
+    // 地形列表长度必须一致
+    assert_eq!(
+        result_off.terrains.len(),
+        result_on.terrains.len(),
+        "调试开关不应影响地形数量"
+    );
+
+    // 逐房间地形比较
+    for (idx, (terrain_off, terrain_on)) in result_off
+        .terrains
+        .iter()
+        .zip(result_on.terrains.iter())
+        .enumerate()
+    {
+        // 房间 ID 一致
+        assert_eq!(
+            terrain_off.room_id, terrain_on.room_id,
+            "地形[{}] room_id 应一致",
+            idx
+        );
+
+        // grid_size 一致
+        assert_eq!(
+            terrain_off.grid_size, terrain_on.grid_size,
+            "地形[{}] grid_size 应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+
+        // tiles.data 逐瓦片一致
+        assert_eq!(
+            terrain_off.tiles.data.len(),
+            terrain_on.tiles.data.len(),
+            "地形[{}] tiles.data 长度应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+        for (tile_idx, (tile_off, tile_on)) in terrain_off
+            .tiles
+            .data
+            .iter()
+            .zip(terrain_on.tiles.data.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                tile_off, tile_on,
+                "地形[{}] tile[{}] 应一致（房间 {}）",
+                idx, tile_idx, terrain_off.room_id
+            );
+        }
+
+        // connectivity_summary 各字段一致
+        let cs_off = &terrain_off.connectivity_summary;
+        let cs_on = &terrain_on.connectivity_summary;
+        assert_eq!(
+            cs_off.all_doors_connected, cs_on.all_doors_connected,
+            "地形[{}] all_doors_connected 应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+        assert_eq!(
+            cs_off.walkable_tile_count, cs_on.walkable_tile_count,
+            "地形[{}] walkable_tile_count 应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+        assert_eq!(
+            cs_off.total_tile_count, cs_on.total_tile_count,
+            "地形[{}] total_tile_count 应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+        assert_eq!(
+            cs_off.connected_region_count, cs_on.connected_region_count,
+            "地形[{}] connected_region_count 应一致（房间 {}）",
+            idx, terrain_off.room_id
+        );
+    }
+}

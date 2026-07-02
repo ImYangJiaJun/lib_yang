@@ -6,6 +6,10 @@
 use crate::action::action_trait::Permission;
 
 /// 单个 Action 的静态元信息聚合体。
+///
+/// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
+/// 请使用 [`ActionMeta::new`] 构造。
+#[non_exhaustive]
 pub struct ActionMeta {
     /// Action 唯一标识，路由 dispatch 时用
     pub name: &'static str,
@@ -21,4 +25,27 @@ pub struct ActionMeta {
     pub input_schema: &'static schemars::schema::RootSchema,
     /// 出参 JSON Schema
     pub output_schema: &'static schemars::schema::RootSchema,
+}
+
+impl ActionMeta {
+    /// 构造 `ActionMeta`（`#[non_exhaustive]` 后的唯一公开构造入口）。
+    pub const fn new(
+        name: &'static str,
+        display_name: &'static str,
+        description: &'static str,
+        permissions: &'static [Permission],
+        is_public: bool,
+        input_schema: &'static schemars::schema::RootSchema,
+        output_schema: &'static schemars::schema::RootSchema,
+    ) -> Self {
+        Self {
+            name,
+            display_name,
+            description,
+            permissions,
+            is_public,
+            input_schema,
+            output_schema,
+        }
+    }
 }

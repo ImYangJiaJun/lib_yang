@@ -2,12 +2,13 @@
 // 在地板上放置规则柱状障碍物，提供掩体
 
 use crate::config::TerrainConfig;
-use crate::error::{PcgError, PcgResult};
+use crate::error::PcgResult;
 use crate::model::geometry::GridSize;
 use crate::model::room::{DoorAnchor, Room};
 use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
+use super::carve::{extract_room_bounds, init_room_grid};
 use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
@@ -38,29 +39,8 @@ impl TerrainStrategy for PillarStrategy {
         config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room
-            .bounds
-            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
-        let width = bounds.width();
-        let height = bounds.height();
-        if width == 0 || height == 0 {
-            return Err(PcgError::terrain(format!(
-                "房间 {} 边界尺寸为零: {}x{}",
-                room.id, width, height
-            )));
-        }
-
-        // 初始化网格为地板
-        let mut tiles = Grid2D::new(width, height, TileKind::Floor);
-
-        // 生成墙体边框
-        for y in 0..height as i32 {
-            for x in 0..width as i32 {
-                if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
-                    tiles.set(x, y, TileKind::Wall);
-                }
-            }
-        }
+        let (bounds, width, height) = extract_room_bounds(room)?;
+        let mut tiles = init_room_grid(width, height);
 
         // 标记门口瓦片
         let room_anchors: Vec<&DoorAnchor> =

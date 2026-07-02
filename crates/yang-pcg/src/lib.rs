@@ -90,10 +90,13 @@ pub use export::{
 pub use generator::MapGenerator;
 pub use grammar::{GrammarContext, GrammarRule, WeightedRuleSelector};
 pub use model::{
+    geometry::{CardinalDir, GridPoint, WorldPoint},
     request::{GenerationRequest, RuntimeContext},
     result::{GenerationResult, ResultMetadata},
     room::{Room, RoomType},
 };
+pub use rng::StableRng;
+pub use validation::{ValidationItem, ValidationReport};
 
 // 任务 26 测试模块
 #[cfg(test)]

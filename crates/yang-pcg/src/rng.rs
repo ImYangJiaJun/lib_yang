@@ -795,4 +795,48 @@ mod tests {
         let mut rng_mut = rng;
         let _value: u32 = rng_mut.random();
     }
+
+    // ========================================================================
+    // OPT-T-09: RNG 锚点稳定性测试（固化期望值，防止静默漂移）
+    // ========================================================================
+
+    /// 验证 FNV-1a 哈希算法的输出稳定性
+    /// OPT-T-09：固化管线标签的哈希值，防止算法实现变更导致静默漂移
+    #[test]
+    fn test_fnv1a_stability() {
+        // 以下期望值在 2026-07-02 由 FNV-1a（offset_basis=0xcbf29ce484222325, prime=0x100000001b3）计算得出
+        // 修改任何一个值都意味着哈希算法或标签发生了变更——需要审查是否破坏了确定性契约
+        assert_eq!(fnv1a_64(b"topology"), 0x516188458c0dece4, "fnv1a_64(\"topology\") 漂移");
+        assert_eq!(fnv1a_64(b"layout"),   0x9c4f784aa5ce135f, "fnv1a_64(\"layout\") 漂移");
+        assert_eq!(fnv1a_64(b"terrain"),  0x3f8b069c872d66ae, "fnv1a_64(\"terrain\") 漂移");
+        assert_eq!(fnv1a_64(b"spawn"),    0x4328f78ab20e1f98, "fnv1a_64(\"spawn\") 漂移");
+    }
+
+    /// 验证 from_seed + random_range 的输出稳定性
+    /// OPT-T-09：固化种子→随机数的映射，防止 PRNG 库升级导致序列漂移
+    #[test]
+    fn test_seed_from_u64_stability() {
+        let mut rng = StableRng::from_seed(42);
+        let val: u32 = rng.random_range(0, 100);
+        assert_eq!(val, 63, "from_seed(42).random_range(0, 100) 漂移");
+    }
+
+    /// 验证 derive 子种子的确定性
+    /// OPT-T-09：固化种子+标签→子种子的映射，防止派生函数变更导致子流漂移
+    #[test]
+    fn test_derive_stability() {
+        let root = StableRng::from_seed(42);
+        let topo = root.derive("topology");
+        assert_eq!(
+            topo.seed(),
+            0x4f75c6aa467c06de,
+            "derive(\"topology\").seed() 漂移"
+        );
+        let layout = root.derive("layout");
+        assert_eq!(
+            layout.seed(),
+            0xc2c2a6698173ab15,
+            "derive(\"layout\").seed() 漂移"
+        );
+    }
 }

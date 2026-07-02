@@ -1,6 +1,7 @@
 // 运行时分块生成模块
 // 提供 RuntimeChunked 和 HybridPrecompute 模式的增量生成逻辑
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::backend::{select_backend, ValidationScope};
@@ -79,12 +80,12 @@ pub struct ChunkDetailResult {
 /// - `Err(PcgError)`: 配置或拓扑生成错误
 pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyResult> {
     let normalized = validate_request(&request)?;
-    let seed = match request.seed {
-        Some(s) => s,
-        None => ConfigDigest::seed_from_config(&normalized.config)?,
+    // seed_and_digest_from_config 一次序列化同时产出 seed 和 digest，避免双重序列化。
+    let (seed, config_digest) = match request.seed {
+        Some(s) => (s, ConfigDigest::from_config(&normalized.config)?.into_string()),
+        None => ConfigDigest::seed_and_digest_from_config(&normalized.config)?,
     };
     let root_rng = StableRng::from_seed(seed);
-    let config_digest = ConfigDigest::from_config(&normalized.config)?.into_string();
 
     constraint::validate_constraints(&request.constraints)?;
 
@@ -142,12 +143,15 @@ pub fn fill_chunk_details(
             PcgError::config_with_field(format!("分块 '{}' 不存在", chunk_id), "chunk_id")
         })?;
 
+    // 预建 HashSet，O(1) 查找替代 Vec::contains 的 O(N)
+    let room_id_set: HashSet<&str> = chunk.room_ids.iter().map(|s| s.as_str()).collect();
+
     // 筛选分块内的房间
     let chunk_rooms: Vec<&Room> = topology_result
         .layout
         .rooms
         .iter()
-        .filter(|room| chunk.room_ids.contains(&room.id))
+        .filter(|room| room_id_set.contains(room.id.as_str()))
         .collect();
 
     // 筛选分块内房间相关的门锚点（owned，避免在循环内每轮重复 clone）
@@ -155,7 +159,7 @@ pub fn fill_chunk_details(
         .layout
         .door_anchors
         .iter()
-        .filter(|anchor| chunk.room_ids.contains(&anchor.room_id))
+        .filter(|anchor| room_id_set.contains(anchor.room_id.as_str()))
         .cloned()
         .collect();
 
@@ -287,12 +291,12 @@ pub fn fill_chunk_details(
 /// - `Err(PcgError)`: 配置或生成错误
 pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult> {
     let normalized = validate_request(&request)?;
-    let seed = match request.seed {
-        Some(s) => s,
-        None => ConfigDigest::seed_from_config(&normalized.config)?,
+    // seed_and_digest_from_config 一次序列化同时产出 seed 和 digest，避免双重序列化。
+    let (seed, config_digest) = match request.seed {
+        Some(s) => (s, ConfigDigest::from_config(&normalized.config)?.into_string()),
+        None => ConfigDigest::seed_and_digest_from_config(&normalized.config)?,
     };
     let root_rng = StableRng::from_seed(seed);
-    let config_digest = ConfigDigest::from_config(&normalized.config)?.into_string();
 
     // 获取请求的分块 ID 列表
     let requested_chunks: Vec<ChunkId> = request

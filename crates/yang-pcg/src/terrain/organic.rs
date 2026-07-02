@@ -2,12 +2,13 @@
 // 使用 cellular automata 生成自然洞穴形态
 
 use crate::config::TerrainConfig;
-use crate::error::{PcgError, PcgResult};
+use crate::error::PcgResult;
 use crate::model::geometry::{GridPoint, GridSize};
 use crate::model::room::{DoorAnchor, Room};
 use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
+use super::carve::extract_room_bounds;
 use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
@@ -44,17 +45,7 @@ impl TerrainStrategy for OrganicStrategy {
         config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room
-            .bounds
-            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
-        let width = bounds.width();
-        let height = bounds.height();
-        if width == 0 || height == 0 {
-            return Err(PcgError::terrain(format!(
-                "房间 {} 边界尺寸为零: {}x{}",
-                room.id, width, height
-            )));
-        }
+        let (bounds, width, height) = extract_room_bounds(room)?;
 
         // 标记门口位置
         let room_anchors: Vec<&DoorAnchor> =
@@ -66,7 +57,8 @@ impl TerrainStrategy for OrganicStrategy {
 
         // 步骤 1：随机初始化网格
         let mut grid_a = initialize_random_grid(width, height, config.obstacle_density, rng);
-        let mut grid_b = grid_a.clone();
+        // grid_b 仅用于双缓冲写入目标，首次 apply_ca_step_into 会全覆盖，无需 clone
+        let mut grid_b = Grid2D::new(width, height, TileKind::Wall);
 
         // 步骤 2：应用 cellular automata 规则（双缓冲，避免每次迭代重新分配）
         for _ in 0..CA_ITERATIONS {

@@ -70,14 +70,8 @@ impl ConfigDigest {
     /// println!("配置摘要: {}", digest.as_str());
     /// ```
     pub fn from_config(config: &GenerationConfig) -> PcgResult<Self> {
-        validate_no_nan(config)?;
-        let json = serde_json::to_string(config)
-            .map_err(|e| PcgError::config(format!("GenerationConfig 序列化失败: {}", e)))?;
-        let hash_value = fnv1a_64(json.as_bytes());
-
-        Ok(Self {
-            hash: format!("{:016x}", hash_value),
-        })
+        let (_, hash) = Self::seed_and_digest_from_config(config)?;
+        Ok(Self { hash })
     }
 
     /// 从配置派生确定性种子（u64）。
@@ -105,10 +99,25 @@ impl ConfigDigest {
     /// );
     /// ```
     pub fn seed_from_config(config: &GenerationConfig) -> PcgResult<u64> {
+        let (seed, _) = Self::seed_and_digest_from_config(config)?;
+        Ok(seed)
+    }
+
+    /// 一次性从配置派生种子和摘要字符串。
+    ///
+    /// 内部只做一次 `serde_json::to_string`，避免调用方分别调用
+    /// `seed_from_config` + `from_config` 导致重复序列化。
+    ///
+    /// # 错误
+    ///
+    /// - 当配置包含 NaN 的 `f32` 字段时返回 `PcgError::Config`
+    /// - 当配置序列化失败时返回 `PcgError::Config`
+    pub fn seed_and_digest_from_config(config: &GenerationConfig) -> PcgResult<(u64, String)> {
         validate_no_nan(config)?;
         let json = serde_json::to_string(config)
             .map_err(|e| PcgError::config(format!("GenerationConfig 序列化失败: {}", e)))?;
-        Ok(fnv1a_64(json.as_bytes()))
+        let hash_value = fnv1a_64(json.as_bytes());
+        Ok((hash_value, format!("{:016x}", hash_value)))
     }
 
     /// 从字符串创建摘要

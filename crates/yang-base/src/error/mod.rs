@@ -510,7 +510,7 @@ impl BaseError {
 
             // ==================== 数据库错误 (2xxxxx) ====================
             BaseError::DatabaseConnectionFailed(_) => 200001,
-            BaseError::DatabaseConnectionDbError(_) => 200001,
+            BaseError::DatabaseConnectionDbError(_) => 200011,
             BaseError::DatabaseAlreadyInitialized => 200002,
             BaseError::DatabaseQueryFailed(_) => 200003,
             BaseError::DatabaseExecuteFailed(_) => 200004,
@@ -526,7 +526,7 @@ impl BaseError {
             BaseError::RedisAlreadyInitialized => 210002,
             BaseError::RedisNotInitialized => 210003,
             BaseError::RedisOperationFailed(_) => 210004,
-            BaseError::RedisOperationDbError(_) => 210004,
+            BaseError::RedisOperationDbError(_) => 210011,
 
             // ==================== HTTP 客户端错误 (3xxxxx) ====================
             BaseError::HttpClientCreateFailed(_) => 300001,
@@ -597,7 +597,7 @@ impl BaseError {
             BaseError::PluginShutdownFailed(_, _) => "100008",
             // 数据库错误 (2xxxxx)
             BaseError::DatabaseConnectionFailed(_) => "200001",
-            BaseError::DatabaseConnectionDbError(_) => "200001",
+            BaseError::DatabaseConnectionDbError(_) => "200011",
             BaseError::DatabaseAlreadyInitialized => "200002",
             BaseError::DatabaseQueryFailed(_) => "200003",
             BaseError::DatabaseExecuteFailed(_) => "200004",
@@ -612,7 +612,7 @@ impl BaseError {
             BaseError::RedisAlreadyInitialized => "210002",
             BaseError::RedisNotInitialized => "210003",
             BaseError::RedisOperationFailed(_) => "210004",
-            BaseError::RedisOperationDbError(_) => "210004",
+            BaseError::RedisOperationDbError(_) => "210011",
             // HTTP 客户端错误 (3xxxxx)
             BaseError::HttpClientCreateFailed(_) => "300001",
             BaseError::HttpRequestFailed(_) => "300002",
@@ -1048,8 +1048,10 @@ mod tests {
         let samples: Vec<BaseError> = vec![
             BaseError::PluginNotFound("p".into()),
             BaseError::DatabaseConnectionFailed("c".into()),
+            BaseError::DatabaseConnectionDbError(yang_db::DbError::ConnectionError("c".into())),
             BaseError::DatabaseNotInitialized,
             BaseError::RedisNotInitialized,
+            BaseError::RedisOperationDbError(yang_db::DbError::RedisConnectionError("c".into())),
             BaseError::HttpTimeout,
             BaseError::TokenExpired,
             BaseError::TokenRevoked,

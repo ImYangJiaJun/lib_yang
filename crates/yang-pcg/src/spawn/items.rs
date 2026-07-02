@@ -156,9 +156,10 @@ fn candidate_points(terrain: &Terrain) -> Vec<GridPoint> {
 }
 
 fn sample_rarity_tier(weights: &[f32], rng: &mut StableRng) -> u8 {
-    let weights_f64: Vec<f64> = weights.iter().copied().map(f64::from).collect();
+    // len==3 已由 OPT-L-04 config 校验保证
+    let w = [f64::from(weights[0]), f64::from(weights[1]), f64::from(weights[2])];
     let tiers = [0u8, 1, 2];
-    rng.choose_weighted(&tiers, &weights_f64)
+    rng.choose_weighted(&tiers, &w)
         .copied()
         .unwrap_or(0)
 }

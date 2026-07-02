@@ -24,16 +24,6 @@ pub struct EnemySpawnTracked {
     pub rejections: Vec<RejectionReason>,
 }
 
-/// 生成单个房间的敌人点位。
-pub fn generate_enemy_spawns_for_room(
-    room: &Room,
-    terrain: &Terrain,
-    config: &NormalizedConfig,
-    rng: &mut StableRng,
-) -> Vec<SpawnPoint> {
-    generate_enemy_spawns_for_room_excluding(room, terrain, config, &[], 0, rng)
-}
-
 /// 生成单个房间的敌人点位，并与「已占用点」（如先放置的交互物，局部坐标）保持跨类型间距。
 ///
 /// `occupied` 为局部坐标的已占用点集合，`occupied_spacing` 为跨类型间距阈值。
@@ -80,20 +70,7 @@ pub fn generate_enemy_spawns_for_room_excluding(
     build_enemy_spawn_points(room, &points, budget, rng)
 }
 
-/// 生成单个房间的敌人点位，同时记录拒绝信息。
-///
-/// # 需求映射
-/// - 需求 15.3: 输出被拒绝点位
-pub fn generate_enemy_spawns_for_room_tracked(
-    room: &Room,
-    terrain: &Terrain,
-    config: &NormalizedConfig,
-    rng: &mut StableRng,
-) -> EnemySpawnTracked {
-    generate_enemy_spawns_for_room_tracked_excluding(room, terrain, config, &[], 0, rng)
-}
-
-/// `generate_enemy_spawns_for_room_tracked` 的跨类型间距版本。
+/// 生成单个房间的敌人点位，同时记录拒绝信息，并与「已占用点」保持跨类型间距。
 ///
 /// 与「已占用点」（局部坐标）保持 `occupied_spacing` 间距，其余行为一致。
 pub fn generate_enemy_spawns_for_room_tracked_excluding(

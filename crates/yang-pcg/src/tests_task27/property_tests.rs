@@ -1,5 +1,6 @@
 // 属性测试 - 验证地图生成器的核心不变量
 // 使用 proptest 框架随机生成配置参数，验证生成结果满足不变量
+// OPT-T-03: 覆盖三模式（OfflineFullFloor / RuntimeChunked / HybridPrecompute）
 
 use proptest::prelude::*;
 
@@ -9,7 +10,7 @@ use crate::config::{
 };
 use crate::generator::MapGenerator;
 use crate::model::request::{
-    AnchorConstraint, Constraint, ExclusionZoneConstraint, GenerationRequest,
+    AnchorConstraint, Constraint, ExclusionZoneConstraint, GenerationRequest, RuntimeContext,
 };
 use crate::model::room::RoomType;
 use crate::model::spawn::SpawnPoint;
@@ -18,7 +19,7 @@ use crate::validation::{
     validate_terrain_connectivity,
 };
 
-/// 生成合法的 GenerationConfig 策略
+/// 生成合法的 GenerationConfig 策略（仅 OfflineFullFloor，用于无模式分发场景）
 ///
 /// 约束范围：
 /// - room_count: 2..=12（保持小规模以加速测试）
@@ -94,9 +95,150 @@ fn arb_generation_config() -> impl Strategy<Value = GenerationConfig> {
         )
 }
 
+/// 生成三模式分布策略
+///
+/// 权重分布：OfflineFullFloor 60% / RuntimeChunked 20% / HybridPrecompute 20%
+fn arb_generation_mode() -> impl Strategy<Value = GenerationMode> {
+    prop_oneof![
+        6 => Just(GenerationMode::OfflineFullFloor),
+        2 => Just(GenerationMode::RuntimeChunked),
+        2 => Just(GenerationMode::HybridPrecompute),
+    ]
+}
+
+/// 生成模式感知的测试输入
+///
+/// 返回 `(GenerationConfig, Option<RuntimeContext>)`，其中：
+/// - `capability_flags` 根据模式自动设置
+/// - `chunking.enabled` 在分块模式下为 true
+/// - `RuntimeContext` 仅在 RuntimeChunked 模式下提供
+fn arb_test_input() -> impl Strategy<Value = (GenerationConfig, Option<RuntimeContext>)> {
+    (arb_generation_config(), arb_generation_mode()).prop_map(|(mut config, mode)| {
+        config.generation_mode = mode.clone();
+        config.capability_flags = match mode {
+            GenerationMode::OfflineFullFloor => CapabilityFlags::default(),
+            GenerationMode::RuntimeChunked => CapabilityFlags {
+                runtime_chunked: true,
+                ..CapabilityFlags::default()
+            },
+            GenerationMode::HybridPrecompute => CapabilityFlags {
+                hybrid_precompute: true,
+                ..CapabilityFlags::default()
+            },
+        };
+        // 分块模式启用 chunking
+        if matches!(
+            mode,
+            GenerationMode::RuntimeChunked | GenerationMode::HybridPrecompute
+        ) {
+            config.chunking.enabled = true;
+        }
+
+        let runtime_ctx = match mode {
+            GenerationMode::RuntimeChunked => Some(RuntimeContext {
+                focus_position: None,
+                interest_radius: None,
+                requested_chunks: vec![],
+                caller_tag: Some("proptest".to_string()),
+            }),
+            _ => None,
+        };
+
+        (config, runtime_ctx)
+    })
+}
+
 /// 生成任意 u64 种子的策略
 fn arb_seed() -> impl Strategy<Value = u64> {
     any::<u64>()
+}
+
+/// 通过 HybridPrecompute 两阶段调用生成完整结果
+///
+/// 第一阶段：`generate_topology_only` 生成拓扑+布局
+/// 第二阶段：`fill_chunk_details` 为每个分块填充地形和点位
+/// 合并后返回等价的 `GenerationResult`
+fn generate_hybrid_full(
+    seed: u64,
+    config: GenerationConfig,
+    constraints: Vec<crate::model::request::Constraint>,
+    trace_id: Option<String>,
+) -> crate::error::PcgResult<crate::model::result::GenerationResult> {
+    let generator = MapGenerator::new();
+
+    // 第一阶段：拓扑 + 布局
+    let topo_req = GenerationRequest {
+        seed: Some(seed),
+        config,
+        constraints,
+        runtime_context: None,
+        trace_id,
+    };
+    let topo_result = generator.generate_topology_only(topo_req)?;
+
+    // 第二阶段：逐分块填充细节
+    let mut all_terrains = Vec::new();
+    let mut all_item_spawns = Vec::new();
+    let mut all_enemy_spawns = Vec::new();
+    for chunk in &topo_result.chunks {
+        let detail = generator.fill_chunk_details(&topo_result, &chunk.id)?;
+        all_terrains.extend(detail.terrains);
+        all_item_spawns.extend(detail.item_spawns);
+        all_enemy_spawns.extend(detail.enemy_spawns);
+    }
+
+    // 组装等价的 GenerationResult（供校验函数使用）
+    use crate::export::CURRENT_SCHEMA_VERSION;
+    Ok(crate::model::result::GenerationResult {
+        metadata: crate::model::result::ResultMetadata {
+            seed: topo_result.seed,
+            config_digest: topo_result.config_digest,
+            schema_version: CURRENT_SCHEMA_VERSION.to_string(),
+            algorithm_version: env!("CARGO_PKG_VERSION").to_string(),
+            target_engine_version: None,
+            trace_id: topo_result.trace_id,
+        },
+        topology: topo_result.topology,
+        rooms: topo_result.layout.rooms,
+        door_anchors: topo_result.layout.door_anchors,
+        corridors: topo_result.layout.corridors,
+        terrains: all_terrains,
+        item_spawns: all_item_spawns,
+        enemy_spawns: all_enemy_spawns,
+        chunks: topo_result.chunks,
+        debug: None,
+    })
+}
+
+/// 根据模式生成地图，返回统一的 GenerationResult
+///
+/// - OfflineFullFloor: `generator.generate()`
+/// - RuntimeChunked: `generator.generate()`（内部自动委托 generate_chunk）
+/// - HybridPrecompute: `generate_topology_only()` + `fill_chunk_details()`
+fn generate_by_mode(
+    seed: u64,
+    config: GenerationConfig,
+    runtime_ctx: Option<RuntimeContext>,
+    constraints: Vec<crate::model::request::Constraint>,
+    trace_id: Option<String>,
+) -> crate::error::PcgResult<crate::model::result::GenerationResult> {
+    let mode = config.generation_mode.clone();
+    match mode {
+        GenerationMode::HybridPrecompute => {
+            generate_hybrid_full(seed, config, constraints, trace_id)
+        }
+        _ => {
+            // OfflineFullFloor 和 RuntimeChunked 都走 generator.generate()
+            let generator = MapGenerator::new();
+            generator.generate(GenerationRequest {
+                seed: Some(seed),
+                config,
+                constraints,
+                runtime_context: runtime_ctx,
+                trace_id,
+            })
+        }
+    }
 }
 
 // ============================================================
@@ -108,31 +250,21 @@ fn arb_seed() -> impl Strategy<Value = u64> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 确定性属性：相同 seed + config 必须生成相同结果摘要
+    /// 确定性属性：相同 seed + config 必须生成相同结果摘要（三模式覆盖）
     #[test]
     fn prop_deterministic_generation(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
     ) {
-        let generator = MapGenerator::new();
-
         // 第一次生成
-        let result1 = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config: config.clone(),
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        });
+        let result1 = generate_by_mode(
+            seed, config.clone(), runtime_ctx.clone(), vec![], None,
+        );
 
-        // 第二次生成（相同 seed + config）
-        let result2 = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config: config.clone(),
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        });
+        // 第二次生成（相同 seed + config + mode）
+        let result2 = generate_by_mode(
+            seed, config.clone(), runtime_ctx.clone(), vec![], None,
+        );
 
         // 两次生成都应成功
         let r1 = result1.expect("第一次生成应成功");
@@ -175,21 +307,15 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 拓扑连通性属性：任意合法配置下所有房间从 Start 可达
+    /// 拓扑连通性属性：任意合法配置下所有房间从 Start 可达（三模式覆盖）
     #[test]
     fn prop_topology_reachability(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
     ) {
-        let generator = MapGenerator::new();
-
-        let result = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config,
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        }).expect("生成应成功");
+        let result = generate_by_mode(
+            seed, config, runtime_ctx, vec![], None,
+        ).expect("生成应成功");
 
         // 验证所有房间从 Start 可达
         let reachability_result = validate_reachability(&result.topology);
@@ -210,22 +336,16 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 房间边界不重叠属性：任意合法配置下房间 AABB 不重叠
+    /// 房间边界不重叠属性：任意合法配置下房间 AABB 不重叠（三模式覆盖）
     /// 由 `solve_room_bounds` 的确定性防重叠（分支竖直外推）保证（验证需求 4.7）。
     #[test]
     fn prop_no_room_overlap(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
     ) {
-        let generator = MapGenerator::new();
-
-        let result = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config,
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        }).expect("生成应成功");
+        let result = generate_by_mode(
+            seed, config, runtime_ctx, vec![], None,
+        ).expect("生成应成功");
 
         // 验证房间边界不重叠
         let overlap_result = validate_no_overlap(&result.rooms);
@@ -246,22 +366,16 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 地形连通性属性：任意房间从入口到出口存在通路
+    /// 地形连通性属性：任意房间从入口到出口存在通路（三模式覆盖）
     /// 由 `repair_terrain_connectivity` 的强制连通兜底 pass 保证（验证需求 5.4）。
     #[test]
     fn prop_terrain_connectivity(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
     ) {
-        let generator = MapGenerator::new();
-
-        let result = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config,
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        }).expect("生成应成功");
+        let result = generate_by_mode(
+            seed, config, runtime_ctx, vec![], None,
+        ).expect("生成应成功");
 
         // 验证地形连通性
         let connectivity_result = validate_terrain_connectivity(&result.terrains);
@@ -282,22 +396,16 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 点位最小间距属性：任意配置下点位满足最小间距
+    /// 点位最小间距属性：任意配置下点位满足最小间距（三模式覆盖）
     /// 由 spawn 阶段「敌人采样避开已放置交互物」的跨类型间距保证（验证需求 7.4/8.3）。
     #[test]
     fn prop_spawn_spacing(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
     ) {
-        let generator = MapGenerator::new();
-
-        let result = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config: config.clone(),
-            constraints: vec![],
-            runtime_context: None,
-            trace_id: None,
-        }).expect("生成应成功");
+        let result = generate_by_mode(
+            seed, config.clone(), runtime_ctx, vec![], None,
+        ).expect("生成应成功");
 
         // 合并所有点位
         let all_spawns: Vec<SpawnPoint> = result
@@ -330,17 +438,15 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// 约束满足属性：排除区约束在结果中被满足（点位不在排除区内）
+    /// 约束满足属性：排除区约束在结果中被满足（点位不在排除区内）（三模式覆盖）
     #[test]
     fn prop_constraints_satisfied(
         seed in arb_seed(),
-        config in arb_generation_config(),
+        (config, runtime_ctx) in arb_test_input(),
         // 生成一个排除区（坐标范围覆盖可能的生成区域）
         zone_x in 0i32..50i32,
         zone_y in 0i32..50i32,
     ) {
-        let generator = MapGenerator::new();
-
         // 构建排除区约束
         let exclusion_zone = Constraint::ExclusionZone(ExclusionZoneConstraint {
             label: "test-exclusion".to_string(),
@@ -360,13 +466,9 @@ proptest! {
 
         let constraints = vec![exclusion_zone.clone(), anchor];
 
-        let result = generator.generate(GenerationRequest {
-            seed: Some(seed),
-            config,
-            constraints: constraints.clone(),
-            runtime_context: None,
-            trace_id: None,
-        }).expect("带约束的生成应成功");
+        let result = generate_by_mode(
+            seed, config, runtime_ctx, constraints.clone(), None,
+        ).expect("带约束的生成应成功");
 
         // 验证排除区约束：所有点位不在排除区内
         let all_spawns: Vec<SpawnPoint> = result
