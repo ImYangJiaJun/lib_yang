@@ -10,7 +10,7 @@
 | **生产就绪度** | **CONDITIONAL（有条件就绪）** |
 | **综合评分** | **71 / 100** |
 | **单元测试** | PASS — yang-base 379 / yang-db 325（合计 704），0 failed |
-| **clippy 门禁（README 唯一钦定）** | **RED** — yang-db lib 7 errors（修复回归）+ test 131 errors，exit 101 |
+| **clippy 门禁（README 唯一钦定）** | **RED** — yang-db lib 7 errors（修复回归），exit 101；test 层另有大量 expect/unwrap 错（详见§三：src 单测 79 + 未跟踪 `tests/` 集成测试 ~356，根因 unwrap/expect lint）|
 | **cargo fmt** | **RED** — 80 文件漂移，exit 1 |
 | **cargo audit** | **不可用** — cargo-audit 未安装，无本地依赖漏洞扫描 |
 
@@ -34,11 +34,11 @@
 ## 三、构建 / 测试 / Lint 实测 ground truth
 
 - `cargo test --lib`：**PASS**。yang-base 379 passed / 0 failed / 8 ignored；yang-db 325 passed / 0 failed / 1 ignored。
-- `cargo fmt --all -- --check`：**FAIL（exit 1）**。80 文件漂移（最重 `crates/yang-base/src/plugin/mod.rs` 约 290 diff 块）。项目有意无 CI，故仅代码卫生问题，不致流水线失败。
+- `cargo fmt --all -- --check`：**FAIL（exit 1）**。80 文件漂移、共约 290 个 diff 块（最重 `crates/yang-pcg/src/validation.rs` 35 块、`export/__tests__/mod.rs` 23 块、`grammar/selector.rs` 12 块；`plugin/mod.rs` 仅 10 块——"290" 是全体文件的 hunk 总数，非单文件）。项目有意无 CI，故仅代码卫生问题，不致流水线失败。
 - `cargo clippy --all-targets --all-features -- -D warnings`：**FAIL（exit 101）**。
   - **LIB 7 errors**：`init()`/`create_table()`/`drop_table()` 内部调用自身 `#[deprecated]` 的 `execute()` 未加 `#[allow(deprecated)]`（MySQL `database.rs:281/289/300` + PG `database.rs:264/272/283`，共 6 处），外加 `doc_lazy_continuation`（`mysql/condition.rs:166`）。**这是修复扫尾引入的回归**：标了 deprecated 却漏处理库内调用方。
-  - **LIB TEST 131 errors**：测试 `unwrap()/expect()`（既知 M-1）+ 大量 `where_*_unchecked`/`having_cond_unchecked` deprecated 调用。
-  - 复核更正：`manual_range_contains` 子项**确实存在**——`error.rs:502` 的测试断言 `assert!(c >= 800000 && c < 900000)` 触发，属上述 LIB TEST 131 errors 之一；本轮仅更正 doc lint 的定位为 `mysql/condition.rs:166`（而非 `database.rs`）。
+  - **TEST 层 errors（实测复核更正）**：标准 `--all-targets -D warnings` 单次运行在上述 lib 7 errors 处即短路（`could not compile yang-db (lib)`），**测试层错误在该次 exit-101 运行中并不出现**——原"131"系 lib 可编译时另一上下文的旧计数，无法在 gate 单跑中精确复现。放行 lib 7 blocker 并加 `--keep-going` 强制全 target 编译后实测：**lib 单元测试（src，受 git 跟踪）79 errors + 14 个集成测试 target（`crates/yang-db/tests/`，未跟踪、`.gitignore` 含 `*/tests/`、`git ls-files crates/*/tests/`=0）共约 356 errors**，均为 `unwrap()/expect()`——根因 `yang-db` 的 `[lints.clippy] unwrap_used/expect_used = "warn"` 在 `-D warnings` 下升级为 error（既知 M-1，`manual_range_contains` 等 style lint 亦同此机制）；未放行 deprecated 时还叠加 `where_*_unchecked`/`having_cond_unchecked` 等。故测试层错误**既非"131"亦非"全在未跟踪文件"**（src 单测占 ~18%）——量级随是否放行 deprecated、是否 `--keep-going`、是否存在未跟踪 `tests/` 而变；clippy RED 的硬事实仅 exit 101 + lib 7 errors。
+  - 复核更正：`manual_range_contains` 子项**确实存在**——`error.rs:502`（src 内单元测试，受 git 跟踪）的断言 `assert!(c >= 800000 && c < 900000)` 触发，属测试层 clippy 错误之一；本轮仅更正 doc lint 的定位为 `mysql/condition.rs:166`（而非 `database.rs`）。
 - `cargo audit`：**不可用**（no such command: audit）。历史 rsa RUSTSEC-2023-0071（经 sqlx-mysql 引入）未被检测。
 - `cargo tree -d`：存在多版本依赖（windows-sys 等），与历史 S-H11/S-L10 一致。
 
@@ -88,14 +88,14 @@
 **LOW / PARTIAL**
 - parse_token_unsafe 已 `#[deprecated]` 但仍 pub（`manager.rs:434-442`）。
 - ActionContext.user 仍 pub，仅注释警告（`context.rs:213`）。
-- L-C2/NEW-B GlobalRedis::init(`global_redis.rs:107`，含 TODO(P1-4)) 与 health_check(:157) 用 `e.to_string()` 截断错误链；约 30 个 Redis 操作方法绕开 `From` 路径，未用已存在的 RedisOperationDbError 变体。
+- L-C2/NEW-B GlobalRedis::init(`global_redis.rs:107`，含 TODO(P1-4)) 与 health_check(:157) 用 `e.to_string()` 截断错误链；42 个 Redis 操作方法（set/get/del/exists/expire/ttl/persist/keys/hset/hget/hdel/hgetall/hexists/hlen/lpush/rpush/lpop/rpop/llen/lrange/sadd/srem/sismember/smembers/scard/zadd/zrem/zcard/zrange/incr/decr/incrby/decrby/incrbyfloat/hincrby/hincrbyfloat/mget/mset/zrange_with_scores/zrevrange/zincrby，共 43 处调用点，其中 set 含 setex/set 两分支）使用 `.map_err(|e| BaseError::RedisOperationFailed(e.to_string()))` 绕开 `From` 路径，未用已存在的 RedisOperationDbError(#[source] yang_db::DbError) 变体。另 init(:107) 使用 RedisConnectionFailed(e.to_string()) 截断连接错误链，含 TODO(P1-4) 注释待补 RedisConnectionDbError 变体。
 - identifier 工具未在 lib.rs 重导出，仅 `yang_db::mysql::quote_identifier` 子路径可用。
-- P-H4/P-NEW-1 String/Bytes/JSON bind 单次 clone 未消除（每值在绑定宏处 clone 一次；mysql 30/32、pg 35/37、事务路径 mysql 553/554、pg 552-576）。
+- P-H4/P-NEW-1 String/Bytes/JSON bind 单次 clone/序列化 未消除（每值在绑定处额外分配一次；mysql query_builder.rs:30/32/34（Json 为 to_string()）、pg query_builder.rs:35/37/39（Json 为 clone()）、事务路径 mysql transaction.rs:553/554/555（Json 为 to_string()）、pg transaction.rs:552/554/556 + :575/576/577（Json 为 clone()））。
 - A-C2 Redis close() 仍同步 fn，与 MySQL async close 不一致（`redis/client.rs:137`）。
 - A-H1 health_check 返回类型不一致（MySQL/PG Result<()> vs Redis Result<bool>）。
 - L-L4 u64 as i64 非饱和转换（`revocation.rs:83/131`，溢出需 2^63 秒不可达，code smell）。
 - L-L2 leeway 硬编码 0（复核更正：实为正确的严格姿态，非缺陷）；sub/jti 不在 required_spec_claims（但 TokenClaims 字段非 Optional，serde 反序列化已兜底）。
-- L-M6 verify_token_checked 两次独立 Redis GET 非原子（`revocation.rs:178/182`，亚毫秒 TOCTOU 窗口，JWT-over-Redis 标准权衡）。
+- L-M6 verify_token_checked 一次 EXISTS（`is_revoked`，调用 `revocation.rs:178`→实现 `:99` 用 `GlobalRedis::exists`）+ 一次 GET（`subject_min_iat`，调用 `:182`→实现 `:149` 用 `GlobalRedis::get`）非原子（亚毫秒 TOCTOU 窗口，JWT-over-Redis 标准权衡）。
 - C6 仅 happy-path 并发功能测试，全仓 grep stress 零命中——无高迭代压力/竞态回归。
 
 ### 4.3 新发现（NEW）

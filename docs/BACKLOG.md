@@ -596,7 +596,7 @@ FieldType::Date => {
 
 #### ⏳ [NEW-41] cargo fmt 全树 80 文件漂移 + 无 cargo-audit 依赖漏洞扫描
 
-**文件**：`crates/yang-base/src/plugin/mod.rs` 等 80 文件（fmt 漂移最重约 290 diff 块）；工具链缺 `cargo-audit`
+**文件**：`crates/yang-pcg/src/validation.rs`（最重 35 块）等 80 文件、共约 290 diff 块（"290" 为全体文件 hunk 总数，非单文件）；工具链缺 `cargo-audit`
 
 **问题**：`cargo fmt --all -- --check` 退出 1，80 文件漂移。`cargo audit` 不可用（未安装），历史 rsa RUSTSEC-2023-0071（经 sqlx-mysql 引入）未被检测。项目有意无 CI，fmt 漂移不致流水线失败，但降低代码可读性；依赖漏洞扫描缺失属安全审计盲区。
 
@@ -626,13 +626,13 @@ FieldType::Date => {
 
 ---
 
-#### ⏳ [NEW-44] u64 as i64 非饱和转换 + verify_token_checked 两次独立 Redis GET 非原子（设计权衡，建议文档化）
+#### ⏳ [NEW-44] u64 as i64 非饱和转换 + verify_token_checked EXISTS+GET 两步非原子（设计权衡，建议文档化）
 
-**文件**：`crates/yang-base/src/token/revocation.rs:83,131`（u64 as i64）、`:178,182`（两次 Redis GET）
+**文件**：`crates/yang-base/src/token/revocation.rs:83,131`（u64 as i64）、`:178`（EXISTS via is_revoked）、`:182`（GET via subject_min_iat）
 
-**问题**：`u64 as i64` 在 `exp` 超过 `i64::MAX`（约 2^63 秒，现实不可达）时非饱和截断，是 code smell 非生产缺陷。`verify_token_checked` 在 `:178` 与 `:182` 分两次独立 Redis GET，存在亚毫秒 TOCTOU 窗口，属 JWT-over-Redis 标准设计权衡。两者均非阻断性问题，但应在代码中文档化设计决策。
+**问题**：`u64 as i64` 在 `exp` 超过 `i64::MAX`（约 2^63 秒，现实不可达）时非饱和截断，是 code smell 非生产缺陷。`verify_token_checked` 在 `:178`（EXISTS，is_revoked）与 `:182`（GET，subject_min_iat）分两步非原子查询，存在亚毫秒 TOCTOU 窗口，属 JWT-over-Redis 标准设计权衡。两者均非阻断性问题，但应在代码中文档化设计决策。
 
-**修复方向**：`u64 as i64` 改 `i64::try_from(...).unwrap_or(i64::MAX)` 消除 code smell；`verify_token_checked` 两次 GET 添加注释说明 TOCTOU 窗口为已知权衡。
+**修复方向**：`u64 as i64` 改 `i64::try_from(...).unwrap_or(i64::MAX)` 消除 code smell；`verify_token_checked` EXISTS+GET 两步添加注释说明 TOCTOU 窗口为已知权衡。
 
 ---
 
@@ -681,4 +681,4 @@ FieldType::Date => {
 | NEW-41 | ⏳ 待处理 | 🟡 Medium | 全局 | 全树 80 文件 + 工具链 | cargo fmt 80 文件漂移 + 无 cargo-audit，rsa RUSTSEC-2023-0071 未检测 | 2026-06-27 再审新增 |
 | NEW-42 | ⏳ 待处理 | 🟢 Low | yang-base | database/global_redis.rs:107,157 | GlobalRedis init/health_check 及操作方法用 e.to_string() 截断错误链 | 2026-06-27 再审新增 |
 | NEW-43 | ⏳ 待处理 | 🟢 Low | yang-db | mysql/query_builder.rs:30,32 + pg:35,37 + 事务路径 | String/Bytes/JSON bind 单次 clone 未消除，高频写路径额外内存分配 | 2026-06-27 再审新增 |
-| NEW-44 | ⏳ 待处理 | 🟢 Low | yang-base | token/revocation.rs:83,131,178,182 | u64 as i64 非饱和转换 + verify_token_checked 两次独立 Redis GET 非原子，建议文档化设计权衡 | 2026-06-27 再审新增 |
+| NEW-44 | ⏳ 待处理 | 🟢 Low | yang-base | token/revocation.rs:83,131,178,182 | u64 as i64 非饱和转换 + verify_token_checked EXISTS+GET 两步非原子，建议文档化设计权衡 | 2026-06-27 再审新增 |

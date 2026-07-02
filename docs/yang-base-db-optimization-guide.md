@@ -8,7 +8,7 @@
 
 ## 0. 总览
 
-- **保留优化项**：76 条（已剔除核验为非问题/会引入回归的项）。
+- **保留优化项**：86 条（75 条原始 + 2026-06-29 完整性补全 11 条；已剔除核验为非问题/会引入回归的项）。
 - **主题分布**：
 
 | 主题 | 条数 |
@@ -17,15 +17,20 @@
 | 逻辑正确性与数据访问 | 5 |
 | 查询构建 DoS 防护与 MySQL/PG 抽象 | 6 |
 | 错误分类与可观测性语义 | 4 |
-| 性能与分配 | 16 |
+| 性能与分配 | 15 |
 | API 与 SemVer 演进 | 18 |
 | 插件系统 | 5 |
 | 测试与可测性 | 11 |
+| 并发与异步取消安全（2026-06-29 补全） | 2 |
+| DB 整数溢出守卫（2026-06-29 补全） | 2 |
+| 供应链卫生（2026-06-29 补全） | 3 |
+| 资源泄漏与停机健壮性（2026-06-29 补全） | 4 |
 
 ### 核验后被剔除 / 修正的项（透明记录）
 
 - **❌ 已驳回（核验为非问题）**：`dispatch()` 每次请求 O(#actions) 线性扫描安全守卫（PERF-1 / 质量 Q-5 / 架构 ARCH-11，三镜头同一问题）。`module_router.rs:345` 完整条件是 `self.middlewares.is_empty() && self.actions.values().any(...)`，`&&` 短路使右侧扫描**仅在零中间件的异常配置下**执行；任何挂载了认证中间件的生产路由器中该扫描从不运行。**不要把它当性能阻断处理。** 若仍想做，仅作为 NIT 级清理（加 `has_private_actions: bool` 字段）。
 - **🔧 已用核验者修正方案替换**（原方案会引入回归）：AUTH-2(SEC-2)、QRY-4(ARCH-2)、AUTH-11(ARCH-4)、API-2(SEMI-2)、TEST-2(T-SPAN-1)。各条目下用「⚠️ 修正」标注。
+- **📋 2026-06-29 事实复核修正**（独立再复核 master，逐条对照代码取证后回写）：ERR-4（补全目标 18→**19** 变体，含 InvalidArgument）、PERF-2（`GlobalRedis::pipeline()`→`GlobalRedis::client()?.pipeline()`，GlobalRedis 本身无此方法）、API-4（RedisValue **无 `Unknown` 变体**，「更名」改「新增」）、API-6（builder 行号 55→**65-83**，55 属 `Default::default()` 内）、API-11（环境变量 `DATABASE_URL`→**`YANG_DATABASE_URL`**，字段语义实为 MySQL 专用）、API-17（`action/request.rs`→**`action/context.rs:338`**）。详见各条目。
 
 ### 阅读说明
 
@@ -42,8 +47,8 @@
 
 | 优先级＼effort | S（快） | M（中） | L/XL（大重构） |
 |---|---|---|---|
-| **P0/P1 阻断** | AUTH-1（token_type 中间件校验）· AUTH-3（verify_token 误分类）· LOGIC-1（path_param 数值恒失败）· PLUG-1（插件注册 TOCTOU）· ERR-1（is_client_error 漏 NotFound）· API-1（4 个配置类型补 non_exhaustive）· API-6（DatabaseConfig builder 补全）· AUTH-6（token_type 改枚举）· TEST-1/3/4（慢查询 warn / Observability 单例 / RequestId 中间件测试） | AUTH-2（轮转原子化，修正）· LOGIC-2（软删除字段写权限）· PERF-2（User 权限 HashSet）· TEST-2（span 字段断言，修正） | QRY-3（Dialect trait 去重）· QRY-4（TableQuery 与 QueryBuilder 统一，修正为窄方案） |
-| **P2** | AUTH-4（Logout 所有权）· AUTH-5（RefreshAction 双重 verify）· AUTH-7（Validator::Url SSRF 文档/SafeUrl）· QRY-1/2（LIKE / In DoS 上限）· LOGIC-5（EXECABORT 枚举匹配）· ERR-2（错误码去重）· PERF-3（quote_identifier 去 replace）· PERF-6（build_where 去 to_vec）· API-3/4（TokenClaims/RedisValue non_exhaustive）· PLUG-2/3/4（拓扑环检测/双轨废弃/回调改 BaseError）· TEST-5/6/7（停机顺序/PG 事务 drop） | AUTH-11（ctx.user 封装，修正）· QRY-5/6（SqlParam→SqlValue / QueryBuilder 去生命周期）· PERF-5（condition_to_sql 借用遍历）· API-7（TokenManager builder）· ARCH 服务定位/JSON 往返 | — |
+| **P0/P1 阻断** | AUTH-1（token_type 中间件校验）· AUTH-3（verify_token 误分类）· LOGIC-1（path_param 数值恒失败）· PLUG-1（插件注册 TOCTOU）· ERR-1（is_client_error 漏 NotFound）· API-1（4 个配置类型补 non_exhaustive）· API-6（DatabaseConfig builder 补全）· AUTH-6（token_type 改枚举）· TEST-1/3/4（慢查询 warn / Observability 单例 / RequestId 中间件测试） | AUTH-2（轮转原子化，修正）· LOGIC-2（软删除字段写权限）· PERF-4（User 权限 HashSet）· TEST-2（span 字段断言，修正） | QRY-3（Dialect trait 去重） |
+| **P2** | AUTH-4（Logout 所有权）· AUTH-5（RefreshAction 双重 verify）· AUTH-7（Validator::Url SSRF 文档/SafeUrl）· QRY-1/2（LIKE / In DoS 上限）· LOGIC-5（EXECABORT 枚举匹配）· ERR-2（错误码去重）· PERF-3（quote_identifier 去 replace）· PERF-6（build_where 去 to_vec）· API-3/4（TokenClaims/RedisValue non_exhaustive）· PLUG-2/4（拓扑环检测/回调改 BaseError）· TEST-5/6（停机顺序）· PERF-2（Redis pipeline） | AUTH-11（ctx.user 封装，修正）· QRY-4（TableQuery SQL 参数统一，窄方案）· QRY-5/6（SqlParam→SqlValue / QueryBuilder 去生命周期）· PLUG-3（双轨废弃）· TEST-7（PG 事务 drop）· PERF-5（condition_to_sql 借用遍历）· API-7（TokenManager builder）· ARCH 服务定位/JSON 往返 | — |
 | **P3 / NIT** | 一批分配优化（PERF-7~12）· API ergonomics（ERG-5/6/8、merge 项）· 测试补强（TEST-8~11） | — | — |
 
 ---
@@ -79,7 +84,7 @@
 - ✅ 验收：A 实现下，用他人 token 登出返回 `PermissionDenied`；自己登出成功。
 
 ### AUTH-5 — RefreshAction 双重调用 verify_token_checked，4 次冗余 Redis RTT
-- **严重度 MEDIUM · P2 · effort M · 非 breaking** · confidence high
+- **严重度 MEDIUM · P2 · effort S · 非 breaking** · confidence high
 - 位置：`crates/yang-base/src/action/auth.rs:461-471` + `manager.rs:549`
 - 现状：`handle` 先 `verify_token_checked`（2 次 Redis 读）取 sub，随后 `rotate_refresh_token` 内部又 `verify_token_checked`（再 2 读）+ revoke（1 写），共 5 次，理论最小 3 次。
 - 更优解：新增 `rotate_refresh_token_from_claims(old_claims, custom)`，跳过内部二次 verify，直接 `revoke_claims(old_claims)` + `generate_token_pair`。`handle` 改为 verify→类型校验→resolver→rotate_from_claims。保留旧 API 兼容。与 AUTH-2 协同（共用 try_revoke_once）。
@@ -241,8 +246,8 @@
 - **严重度 NIT · P3 · effort S · 非 breaking** · confidence high
 - 位置：`crates/yang-db/src/error.rs:261-280`（`test_error_display_chinese`）
 - 现状：errors 向量仅 11 项，漏 `InvalidArgument/MissingGroupByClause/UnsupportedOperator/Redis* (5)`。
-- 更优解：补全至 18 个变体，或改 `strum::EnumIter` 遍历。
-- ✅ 验收：Display 测试覆盖全部变体。
+- 更优解：补全至 19 个变体（`DbError` 现共 19 个变体，含 `InvalidArgument`），或改 `strum::EnumIter` 遍历；`test_db_error_category_coverage`/`test_db_error_code_unique` 同样漏 `InvalidArgument` 覆盖，需一并补入。
+- ✅ 验收：Display / category / code 测试均覆盖全部 19 个变体。
 
 ---
 
@@ -252,7 +257,7 @@
 - **严重度 MEDIUM · P2 · effort S · 非 breaking** · 核验下调（HIGH→MEDIUM）
 - 位置：`crates/yang-base/src/token/revocation.rs:178-185`
 - 现状：`is_revoked`(EXISTS) 与 `subject_min_iat`(GET) 串行 = 2×RTT。
-- 更优解（核验建议优于原 try_join!）：用已实现的 `GlobalRedis::pipeline()`（`client.rs:173`）把 EXISTS+GET 合一条 pipeline → 1 RTT、单连接。**注意**：现状对已黑名单 token 会短路跳过第二次读，pipeline/try_join 会失去该早返；黑名单 token 稀少，可接受。
+- 更优解（核验建议优于原 try_join!）：用已实现的 `GlobalRedis::client()?.pipeline()`（`RedisClient::pipeline`, `redis/client.rs:173`；注意 `GlobalRedis` 本身无 `pipeline()`，须先经 `client()` 取连接，见 `global_redis.rs:135`）把 EXISTS+GET 合一条 pipeline → 1 RTT、单连接。**注意**：现状对已黑名单 token 会短路跳过第二次读，pipeline/try_join 会失去该早返；黑名单 token 稀少，可接受。
 - ✅ 验收：一次校验仅 1 次 Redis 往返（pipeline）；有效 token 路径延迟下降。
 
 ### PERF-3 — quote_identifier 在校验后仍 replace 分配新 String
@@ -381,7 +386,7 @@
 - **严重度 MEDIUM · P2 · effort S · breaking** · confidence high
 - 位置：`crates/yang-db/src/redis/value.rs`
 - 现状：RESP3 新类型（Map/Set/Double/Push…）升级时会强制 break 所有下游穷举 match。
-- 更优解：加 `#[non_exhaustive]`，下游 `_` arm 落 `Unknown`；可将 `Unknown` 更名 `Unsupported`。
+- 更优解：加 `#[non_exhaustive]`；如需在下游 `_` arm 之外保留未知值，可**新增** `Unknown(String)`（或命名 `Unsupported`）变体——注意 `RedisValue` 当前仅 Nil/Int/Float/String/Bytes/Array/Bool 七变体，**并无 `Unknown` 变体**可供更名。
 - ✅ 验收：枚举加属性；下游 match 含 `_` 兜底。
 
 ### API-5 — PoolStatus/ObservabilityConfig/HttpClientConfig/CircuitBreakerConfig 缺 #[non_exhaustive]
@@ -393,7 +398,7 @@
 
 ### API-6 — DatabaseConfig builder 不完整（max_connections 等缺 with_*）
 - **严重度 MEDIUM · P1 · effort S · 非 breaking** · confidence high
-- 位置：`crates/yang-db/src/mysql/database.rs:55-83`
+- 位置：`crates/yang-db/src/mysql/database.rs:65-83`（`impl DatabaseConfig` 的 `with_*`；第 55 行 `idle_timeout: 600` 属 `Default::default()` 内部，非 builder 方法）
 - 现状：仅 3 个 with_*，最关键的 `max_connections`/`connect_timeout`/`idle_timeout`/`enable_logging` 须字段直赋；而 `RedisConfig` 已全覆盖；`DatabaseConfig` 又有 `#[non_exhaustive]` 禁字面量，代价更大。
 - 更优解：补四个 `with_*` 方法，与 RedisConfig 对称。纯新增。
 - ✅ 验收：`DatabaseConfig::default().with_max_connections(20).with_connect_timeout(10)` 可链式编译。
@@ -429,9 +434,9 @@
 ### API-11 — EngineConfig.database_url 与 DatabaseBundle::init(mysql_url) 命名不一致
 - **严重度 LOW · P3 · effort S · breaking** · confidence medium
 - 位置：`crates/yang-base/src/config.rs`(EngineConfig) + `database/bundle.rs`
-- 现状：generic `database_url` + 读 `DATABASE_URL`，未来加 PG 支持时歧义。
-- 更优解：`#[cfg(feature="mysql")]` 字段改名 `mysql_url`，环境变量优先 `MYSQL_URL`、fallback `DATABASE_URL`(deprecated)。在加 PG 字段前完成成本最低。
-- ✅ 验收：字段/环境变量与 mysql 语义对齐；DATABASE_URL 兼容读取。
+- 现状：字段名 `database_url`（docstring 已注明"MySQL 连接串"），`from_env` 读环境变量 `YANG_DATABASE_URL`（`config.rs:83`）；字段名未带 mysql 前缀，与 `DatabaseBundle::init(mysql_url)` 命名不一致，未来加 PG 支持时歧义。
+- 更优解：`#[cfg(feature="mysql")]` 字段改名 `mysql_url`，环境变量优先 `YANG_MYSQL_URL`、兼容 `YANG_DATABASE_URL`(deprecated)。在加 PG 字段前完成成本最低。
+- ✅ 验收：字段/环境变量与 mysql 语义对齐；`YANG_DATABASE_URL` 兼容读取。
 
 ### API-12 — Permission 缺 Display / From<&str>
 - **严重度 LOW · P2 · effort S · 非 breaking** · confidence high
@@ -470,7 +475,7 @@
 
 ### API-17 — param_optional_strict 是 pub + deprecated + dead_code
 - **严重度 NIT · P3 · effort S · breaking** · confidence high（NIT-1）
-- 位置：`crates/yang-base/src/action/request.rs`
+- 位置：`crates/yang-base/src/action/context.rs:338`
 - 现状：已知无用、将删的方法仍 pub，增文档噪音。
 - 更优解：降 `pub(crate)`（或若无 crate 内调用直接删）。
 - ✅ 验收：不再出现在公共 API 文档。
@@ -508,7 +513,7 @@
 - ✅ 验收：旧 API 标 deprecated；shutdown 支持 Registry。
 
 ### PLUG-4 — Plugin 三个生命周期回调返回 Box<dyn Error>，丢错误链
-- **严重度 MEDIUM · P2 · effort M · breaking** · confidence high
+- **严重度 MEDIUM · P2 · effort S · breaking** · confidence high
 - 位置：`crates/yang-base/src/plugin/mod.rs:138,150,161`
 - 现状：`on_register/on_init/on_shutdown` 返回 `Box<dyn Error>`，调用处 `.to_string()` 转换丢 `#[source]` 链，违 yang-base BaseError 约定。
 - 更优解：改返回 `Result<(), BaseError>`，调用处直接传播；插件包装第三方错误用 `BaseError::Unknown`。需改所有插件实现与测试。
@@ -554,7 +559,7 @@
 - ✅ 验收：三条路径各有用例且通过。
 
 ### TEST-5 — lifecycle::graceful_shutdown 完全无测试
-- **严重度 MEDIUM · P2 · effort M · 非 breaking** · confidence high
+- **严重度 MEDIUM · P2 · effort S · 非 breaking** · confidence high
 - 位置：`crates/yang-base/src/lifecycle.rs:70-96`
 - 现状：plugins→Redis→MySQL 停机顺序（启动逆序）与"插件失败不阻断 drain"语义均无测试。
 - 更优解：(1) 注入故意返回 Err 的测试插件，断言 `graceful_shutdown(Some(&pm))` 返回 Err（失败被传播）；(2) plugins=None 时返回 Ok；顺序可用共享 `Vec` 记录器验证。
@@ -615,20 +620,127 @@
 
 **第 2 批 — 可测性护栏（P1，锁住上面修复不回退）**
 4. TEST-1/2/3/4（慢查询 warn / span 字段断言 / Observability 单例 / RequestId 中间件）
-5. TEST-5/6/7（停机顺序 · 插件 shutdown 逆序 · PG 事务 drop=NEW-39 验收）
+5. TEST-5/6（停机顺序 · 插件 shutdown 逆序）
+6. TEST-7（PG 事务 drop=NEW-39 验收）——属 M effort，提前批抵生产价值高
 
 **第 3 批 — 高频 ergonomics 与 SemVer 加固（P1/P2，S）**
-6. API-1/2 non_exhaustive（API-2 先改 derive 宏再加属性）· API-6 DatabaseConfig builder · AUTH-6 token_type 枚举 + API-3
-7. AUTH-4/5/7 · QRY-1/2 查询 DoS 上限 · LOGIC-5 EXECABORT · ERR-2
+7. API-1/2 non_exhaustive（API-2 先改 derive 宏再加属性）· API-6 DatabaseConfig builder · AUTH-6 token_type 枚举 + API-3
+8. AUTH-4/5/7 · QRY-1/2 查询 DoS 上限 · LOGIC-5 EXECABORT · ERR-2
 
 **第 4 批 — 性能与分配（P2/P3）**
-8. PERF-2 Redis pipeline · PERF-4 权限 HashSet · PERF-3/6 SQL 分配 · PERF-14 RedisValue as_str
-9. PERF-5 引入 `write_condition_to_sql` 借用遍历（基座）→ 顺带消除 PERF-7/8/9
-10. 其余 PERF-10~16、PLUG-2~5、剩余 API ergonomics
+9. PERF-2 Redis pipeline · PERF-4 权限 HashSet · PERF-3/6 SQL 分配 · PERF-14 RedisValue as_str
+10. PERF-5 引入 `write_condition_to_sql` 借用遍历（基座）→ 顺带消除 PERF-7/8/9
+11. 其余 PERF-10~16、PLUG-2~5、剩余 API ergonomics
 
 **第 5 批 — 大重构（P1 价值高但 L/XL，需配套回归）**
-11. QRY-5 SqlParam→SqlValue（窄、低风险，先行）
-12. QRY-3 Dialect trait 去重（配并行集成测试）· QRY-6 QueryBuilder 去生命周期
+12. QRY-5 SqlParam→SqlValue（窄、低风险，先行）
+13. QRY-3 Dialect trait 去重（配并行集成测试）· QRY-6 QueryBuilder 去生命周期
 13. QRY-4 TableQuery 与 QueryBuilder 统一——**仅在 yang-db 暴露 `where_condition(Condition)` API 之后**推进，否则停在 QRY-5 的参数统一即可
 
 > 每批结束跑 `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib`，并回写 `docs/BACKLOG.md` 状态。
+
+---
+
+## 11. 并发与异步取消安全（2026-06-29 事实复核完整性补全）
+
+> §11–14 系 2026-06-29 独立事实复核「完整性批判」指出的四类欠覆盖类别补全：由 4-lane 缺陷挖掘 + 对抗式校验 + 主控逐条代码取证产出；每条均保留与既有条目的「去重」交叉引用，标「已跟踪/建议并入」者不重复登记为新阻断。
+
+### CONC-1 — LogoutAction 双 revoke 非原子，取消窗口内只撤 Access Token 留 Refresh Token 有效
+- **严重度 MEDIUM · P2 · effort M · 非 breaking** · confidence high
+- 位置：`crates/yang-base/src/action/auth.rs:554-562`（async 块内一次无条件 + 一次**条件** `revoke_token().await?`，第二次仅当 `input.refresh_token` 为 Some 时执行）
+- 现状：handle 在单个 async 块内先无条件 await revoke Access Token（`auth.rs:556`），再在 `if let Some(refresh_token)` 内**条件** await revoke Refresh Token（`auth.rs:558-560`）。**仅当调用方提供 refresh_token 时**该块才存在取消窗口（未提供时只有单次 await，无原子性问题）：若外层 future 在两次 await 之间被 drop（Tower TimeoutLayer 超时、优雅停机取消 task 等），Access Token 已写入 Redis 黑名单而 Refresh Token 未写；两次写无 MULTI/EXEC 也无补偿。LogoutAction 从不调用 revoke_by_subject，subject_min_iat 水位线不被设置，未撤销的 Refresh Token 仍能通过 RefreshAction 的 verify_token_checked 续命——用户以为已登出，持 Refresh Token 的攻击者可保持会话存活。
+- 更优解：仅调换顺序（先 Refresh 后 Access）不够，仍留窗口；正解是一次性原子失效：用 `revoke_by_subject(sub)` 设置 subject_min_iat 水位线使该用户全部 token 失效，或用 Redis pipeline/MULTI 把两次撤销合并为单次原子往返。与 AUTH-2 的 pipeline 基建协同落地。
+- ✅ 验收：在两次撤销之间注入 cancel（drop future）后，被登出用户的 Refresh Token 经 RefreshAction 调用返回 TokenRevoked；正常登出仍 Ok。
+- 去重：同位置另有 AUTH-4（所有权校验）与 AUTH-5（双重 verify RTT），两者均不涉及取消安全/写入原子性，本条为独立新角度。
+
+### CONC-2 — PG Transaction 缺 Drop impl：未提交丢弃无 warn 日志，与 MySQL 诊断不对称
+- **严重度 LOW · P3 · effort S · 非 breaking · 已跟踪 NEW-39** · confidence high
+- 位置：`crates/yang-db/src/postgres/transaction.rs`（全文件无 `impl Drop for Transaction`）；对照 `crates/yang-db/src/mysql/transaction.rs:223-231`（Drop 内 `self.tx.is_some()` 时 `log::warn!`）
+- 现状：PG Transaction 包 `Option<SqlxTransaction<'static, Postgres>>`，未显式提交即被 drop（`?` 早返、panic、future 取消）时无任何告警日志，泄漏的未提交事务难以在生产定位；MySQL 侧有 warn。**核验修正**：sqlx 0.8.6 的 Transaction Drop 用 `now_or_never()`（非 tokio::spawn），且 PostgreSQL 服务端在客户端连接断开时自动 ROLLBACK 并释放行锁——故不存在「锁无限驻留」「spawn 在停机时静默失败」，真实缺口仅是诊断可观测性与 MySQL 不对称。
+- 更优解：为 PG Transaction 实现 Drop：`self.tx.is_some()` 时 `log::warn!`，与 MySQL 对齐。即 NEW-39 所指、TEST-7 给出验收测试的 Drop impl 落地。
+- ✅ 验收：未 commit 丢弃 PG 事务时可捕获 warn 事件；drop-without-commit 的行未落库（由 sqlx/PG 回滚保证）。
+- 去重：已跟踪 BACKLOG NEW-39 + TEST-7（验收测试）。本条不重复登记为阻断，仅补取消安全视角并修正严重度为 LOW（观测性缺口，非锁泄漏）。
+
+---
+
+## 12. DB 整数溢出守卫（2026-06-29 补全）
+
+### OVF-1 — PG insert 主键 i64 as u64 静默环绕（query_builder + transaction 两处无负值守卫）
+- **严重度 LOW · P3 · effort S · 非 breaking** · confidence high
+- 位置：`crates/yang-db/src/postgres/query_builder.rs:1517`（`Ok(id as u64)`）与 `crates/yang-db/src/postgres/transaction.rs:393`（`Ok(last_insert_id as u64)`）
+- 现状：PG 无 last_insert_id()，两处用 RETURNING 取回 i64 后直接 `as u64` 返回。Rust 的 `as` 为位重解释（wrapping），`-1i64 as u64 = 18446744073709551615`，不 panic 不报错。触发需非默认场景：`CREATE SEQUENCE ... MINVALUE <0 CYCLE`、setval 回拨负值、IDENTITY START WITH 负值，或业务显式插入负主键行。一旦触发，语句成功但调用方拿到天文数字假 ID，后续以该 ID 关联查询全部静默查空。MySQL 路径 last_insert_id() 原生 u64 不受影响。
+- 更优解：两处改 `u64::try_from(id).map_err(|_| DbError::InvalidArgument("返回主键为负，无法转 u64".into()))?`，或前置 `if id < 0 { return Err(...) }`。
+- ✅ 验收：负主键 insert 返回 Err 而非天文数字 u64；正常正值返回值不变；两处行为一致。
+- 去重：与 LOGIC-4（count_internal usize 截断）同属 DB 整数转换主题但位置与机制不同（主键符号位重解释 vs 计数宽度截断），不重叠。
+
+### OVF-2 — 分页 offset 的 usize 裸乘法，saturating 仅护减法未护乘法
+- **严重度 LOW · P3 · effort S · 非 breaking** · confidence high
+- 位置：`crates/yang-base/src/table/table_query.rs:1739`（`let offset = page.saturating_sub(1) * page_size;`）
+- 现状：saturating_sub 防 page==0 下溢，但乘法本身无溢出保护，release 模式下整数溢出静默环绕。64-bit + SelectAction 路径安全：`select.rs:133` 强制 `page_size<=100` 且 page/page_size 为 u32，乘积上限约 4.3e11 « usize::MAX。仅 32-bit 编译目标、或直接对 pub 字段 `QueryParams.page/page_size` 赋大值绕过 page() 校验时可触发——offset 回绕为小值，OFFSET 指向错误位置返回错误页数据且无 Err。`table_query.rs:1737-1738` 注释称「直接构造 query_params 的调用方也安全」在 32-bit 下不成立，属误导性注释。
+- 更优解：改 `page.saturating_sub(1).saturating_mul(page_size)`（或 checked_mul 失败返回 ParamInvalid）；顺手修正 1737-1738 注释。
+- ✅ 验收：32-bit 目标或大 page_size 旁路下 offset 不再回绕；64-bit HTTP 路径结果不变。
+- 去重：与 LOGIC-4 同处 table_query 分页域但行号与机制不同（1739 乘法溢出 vs count 宽度截断），独立。
+
+---
+
+## 13. 供应链卫生（2026-06-29 补全）
+
+### SUP-1 — 供应链扫描基建缺失：无 cargo-deny/cargo-audit，多版本依赖与 C 密码学库无人守护
+- **严重度 MEDIUM · P2 · effort M · 非 breaking · 已跟踪 NEW-41** · confidence high
+- 位置：根 workspace（无 `.github/`、无 `.cargo/`、无 `deny.toml`、无 `audit.toml`）
+- 现状：工具链缺 cargo-audit（审计文档实录 `no such command: audit`），无 cargo-deny 的 advisories/licenses/bans 三门。Cargo.lock 多版本并存（getrandom 0.2/0.3/0.4、reqwest 0.12/0.13），并含 aws-lc-rs 与 ring 两套原生 C 密码学库。**核验修正**：rsa RUSTSEC-2023-0071 在当前锁文件已自然缓解（rsa 0.9.10 ≥ 修复点 0.9.7），该 CVE 并不活跃；缺口在于未来 advisory/许可证冲突/禁用 crate 引入/版本爆炸均无自动感知渠道。CLAUDE.md 明确「CI 缺失是有意现状」。
+- 更优解：新增根 `deny.toml`（advisories + licenses + bans 三段），本地或 pre-commit 跑 `cargo deny check` 与 `cargo audit`；即便不开 CI，也提供一次性扫描脚本与处置决策文档。
+- ✅ 验收：`cargo deny check` 可本地运行并通过（或对每个 deny 显式 allow 并记录原因）；多版本依赖经 bans 收敛或写明豁免。
+- 去重：已跟踪 BACKLOG NEW-41 及历史散记。本条把卫生缺口纳入优化指南统一视角，并修正「rsa CVE 仍活跃」的不实陈述，不重复登记为阻断。
+
+### SUP-2 — 全部 crate 缺 rust-version（MSRV）声明
+- **严重度 LOW · P3 · effort S · 非 breaking** · confidence high
+- 位置：根 `Cargo.toml`（`[workspace.package]` 无 rust-version）+ `crates/*/Cargo.toml`（四个 `[package]` 均无）
+- 现状：workspace edition=2021，实际 MSRV 由依赖驱动（sqlx 0.8.6 等使用较新特性，但 sqlx 的 `rust-version` 元数据在其 Cargo.toml 中被注释、未正式声明），本仓库各 crate 亦无 `rust-version`；使用旧 Rust 的下游会在依赖内部收到无法归因的编译错误。仓库无 rust-toolchain.toml（CLAUDE.md 称有意），无 CI 兜底。影响层级为 DX/发布卫生，不涉运行时正确性。
+- 更优解：在 `[workspace.package]` 添加 `rust-version`（取依赖图实际可编译的最低版本，经验值约 1.80，可用 cargo-msrv 核定），四个 crate 通过 workspace 继承。
+- ✅ 验收：五个 Cargo.toml 经 workspace 继承声明 MSRV；用过低 toolchain 构建在顶层即报清晰的 MSRV 不匹配，而非依赖内部晦涩错误。
+- 去重：既有条目（含 BACKLOG/audit）未覆盖 MSRV，全新条目。
+
+### SUP-3 — reqwest 双版本同时编译（0.12 经 jsonschema 拉入 + 0.13 workspace 直依）
+- **严重度 LOW · P3 · effort M · 非 breaking · 已跟踪 S-H11** · confidence high
+- 位置：`Cargo.lock`（reqwest 0.12 / 0.13 两条目）；根源 `crates/yang-base/Cargo.toml` jsonschema 依赖，且 plugin-schema 在默认 features
+- 现状：默认构建下两个 reqwest crate 各编译一份。**核验修正**：底层 hyper/hyper-util/tower 在 lock 中各仅一份、被共享，并非「两套独立协议栈」；reqwest 0.12 在本依赖图中无 TLS 依赖，唯 0.13 携 TLS——「两份 TLS 协议栈」「TLS 行为不一致」均不成立；jsonschema 用法（plugin/mod.rs:463-483）是内存 validator_for + iter_errors，无远端 fetch，0.12 reqwest 根本不被触发。实际影响仅 reqwest crate 自身重复编译（秒级构建/有限体积），无运行时后果。
+- 更优解：对 jsonschema 依赖加 `default-features=false` 关闭其 retrieve/reqwest 特性，或升级 jsonschema 至无 reqwest 的版本；纳入 SUP-1 的 cargo-deny bans 统一收敛。
+- ✅ 验收：`cargo tree -d` 不再出现 reqwest 双版本；plugin-schema 功能与现有测试不变。
+- 去重：已跟踪历史 S-H11。本条修正其「攻击面翻倍/独立 TLS 栈」的夸大，严重度据实降为 LOW，不重复登记为阻断。
+
+---
+
+## 14. 资源泄漏与停机健壮性（2026-06-29 补全）
+
+### LEAK-1 — Plugin shutdown 首个错误提前返回，跳过其余插件致资源泄漏（PluginManager 与 PluginRegistry 两处）
+- **严重度 MEDIUM · P2 · effort S · 非 breaking** · confidence high
+- 位置：`crates/yang-base/src/plugin/mod.rs:511-528`（PluginManager::shutdown，`return Err` 在 519）与 `:828-842`（PluginRegistry::shutdown）
+- 现状：两处 shutdown 的 for 循环对首个 on_shutdown() 失败立即 `return Err(PluginShutdownFailed(..))`，后续插件的 on_shutdown() 不再被调用，其持有的文件句柄/后台 task/自建连接等泄漏。lifecycle::graceful_shutdown 仅补救了 GlobalDatabase/GlobalRedis 池 drain，对被跳过的插件无兜底，与 lifecycle.rs:57「停机应尽力收尾全部资源」矛盾。另：shutdown 取 &self 不消费、无已关闭状态追踪，重试会对已关闭插件重复调用。触发需插件 on_shutdown 实际返回 Err（默认实现返回 Ok）；若框架支持热重载则严重度应升 HIGH。
+- 更优解：循环改 best-effort：累积 `Vec<(name, BaseError)>` 继续遍历全部插件，最后聚合返回；并加已关闭标记或在 shutdown 中 take 插件 map 避免重复 on_shutdown。
+- ✅ 验收：注入中段 on_shutdown 失败的插件，断言其后插件 on_shutdown 仍被调用；返回错误聚合全部失败；重复 shutdown 不二次调用。
+- 去重：合并 async + leak 两路对同一缺陷的独立发现。与 TEST-5（lifecycle 外层 drain 不阻断的测试）相邻但不同；与 PLUG-1（注册 TOCTOU）无关。
+
+### LEAK-2 — DatabaseBundle::init MySQL 池写入 OnceLock 后 Redis 失败，错误路径未引导清理
+- **严重度 LOW · P3 · effort S · 非 breaking** · confidence high
+- 位置：`crates/yang-base/src/database/bundle.rs:69-70`（先 GlobalDatabase::init 成功 set，再 GlobalRedis::init 失败返回 Err）
+- 现状：MySQL 池已写入进程级 OnceLock（不可重置），Redis 失败返回 Err 后同进程无法再次有效 init。**核验修正**：①默认 DatabaseConfig min_connections=0，sqlx 不预热，错误返回时池持零活跃 TCP——「N 条常驻连接」仅在 min_connections>0 时成立；②GlobalDatabase::close() 存在且 graceful_shutdown 已调用它，准确说法是错误路径未主动指引调用 close()。实质危害需 min_connections>0 + 失败后进程长存 + 未走 graceful_shutdown 三非默认条件叠加。
+- 更优解：init 在 Redis 失败分支显式调用 `GlobalDatabase::close().await` 主动回滚半初始化——注：`bundle.rs:1-9` 模块文档**已**指引「失败只能重启进程」，故剩余开放点仅是「主动 close 回滚」而非「补文档」；min_connections>0 场景尤需。
+- ✅ 验收：模拟 MySQL OK / Redis 失败后，MySQL 池被 drain（活跃连接归零）；给出明确的半初始化清理路径。
+- 去重：与 A-C2（Redis close 异步一致性）主题相邻但不同（本条是 bundle 半初始化回滚 + 错误可发现性），未被既有条目覆盖。
+
+### LEAK-3 — graceful_shutdown 仅接受 &PluginManager，PluginRegistry 用户走「统一入口」会跳过插件 shutdown
+- **严重度 MEDIUM · P2 · effort M · breaking（签名）· 建议并入 PLUG-3** · confidence high
+- 位置：`crates/yang-base/src/lifecycle.rs:70`（`plugins: Option<&PluginManager>`）vs 推荐路径 `PluginManagerBuilder::build()->PluginRegistry`
+- 现状：两类型无桥接，PluginRegistry 无法传入 graceful_shutdown；lifecycle 模块文档宣称「单一停机入口」却只列 PluginManager→Redis→MySQL，对 PluginRegistry 只字未提。用户按推荐 Builder 拿到 Registry 后若以 graceful_shutdown(None) 调用，所有插件 on_shutdown() 被跳过，插件资源在 SIGTERM 停机期泄漏（DB/Redis 池仍被关）。
+- 更优解：graceful_shutdown 改接 `&PluginRegistry`，或抽 `PluginLifecycle` trait 让 Manager/Registry 皆可传入；并在 lifecycle 文档明确「用 Registry 时须先 registry.shutdown()」。
+- ✅ 验收：PluginRegistry 可经统一停机入口触发全部插件 on_shutdown；lifecycle 文档给出 Registry 停机指引。
+- 去重：与 PLUG-3 高度重叠（PLUG-3 现状已记「graceful_shutdown 仅接受 Option<&PluginManager>」）。**建议并入 PLUG-3 落地**，本条仅补资源泄漏后果 + lifecycle 文档缺口角度，不单独登记为新阻断。
+
+### LEAK-4 — graceful_shutdown 未关闭 GLOBAL_HTTP_CLIENT，停机期出站 HTTP 请求可能被 RST
+- **严重度 LOW · P3 · effort M · 非 breaking** · confidence high
+- 位置：`crates/yang-base/src/lifecycle.rs:70-96`（无 `#[cfg(feature="http")]` 分支、无 GLOBAL_HTTP_CLIENT 处理）；GLOBAL_HTTP_CLIENT 见 `crates/yang-base/src/http/client.rs:12`
+- 现状：graceful_shutdown 显式 drain 了 GlobalRedis 与 GlobalDatabase（mysql feature），但完全未处理 HTTP 客户端。**核验修正**「资源泄漏」定性：OnceLock 持静态到进程退出是预期行为，进程退出时 OS 回收 fd/TCP，非传统泄漏；且 reqwest::Client 无 close()/drain() API（上游限制）。真实缺口是优雅停机质量——若 grace period 内有活跃出站请求，进程退出时被 RST，对端可能收到不完整响应/重复提交。graceful_shutdown doc 声明的职责仅「插件→Redis→可选 MySQL」，HTTP 本不在契约内。
+- 更优解：在 graceful_shutdown 文档明确 HTTP 客户端不在收尾范围；若需收尾出站请求，于应用层追踪 in-flight 请求的 JoinHandle 并加超时 await（架构级，优先级低）。
+- ✅ 验收：文档明示 HTTP 客户端停机边界；若实现 in-flight 等待，则 grace period 内出站请求被正常完成或超时。
+- 去重：未见既有条目覆盖，全新；属优雅停机质量而非真资源泄漏，严重度据实定为 LOW。

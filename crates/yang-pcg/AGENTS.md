@@ -88,7 +88,7 @@ GenerationRequest
 - Config/docs live in `docs/`; `.kiro/` references in legacy docs may no longer exist — verify before relying on them.
 
 ## TESTING
-- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (307 passing, 0 ignored as of 2026-06).
+- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (309 passing, 0 ignored as of 2026-07).
 - `src/tests_task27/property_tests.rs` contains 6 proptest invariants; **all are now enabled (no `#[ignore]`)**. The three historically-ignored properties (room overlap / terrain connectivity / spawn spacing) were fixed by constructive algorithm passes and re-enabled — they now guard real invariants, not document gaps.
 - `tests/generation_bench.rs` contains ignored benchmark-style tests, not criterion benches.
 - `proptest-regressions/tests_task27/property_tests.txt` is intentional and should remain.

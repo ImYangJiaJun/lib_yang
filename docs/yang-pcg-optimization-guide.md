@@ -10,9 +10,9 @@
 
 1. **配合三份现有文档使用**：
    - `docs/BACKLOG.md` —— NEW-20~34 的状态表是"当前真相"。本指南中标注 `已跟踪 NEW-xx` 的条目，**不要**当作新阻断项重新登记，按这里给的"更优重构方案"落地即可。
-   - `PRODUCTION_AUDIT_2026-06-24.md` —— 历史审计基线，部分位置引用以它为锚。
+   - `crates/yang-pcg/docs/PRODUCTION_AUDIT_2026-06-24.md` —— 历史审计基线，部分位置引用以它为锚。
    - 各模块 `AGENTS.md`（`yang-pcg/src/terrain/AGENTS.md` 等）—— 改对应模块前先读。
-2. **确定性契约是第一约束**。`crates/yang-pcg/CLAUDE.md` 已声明：RNG 派生标签（`topology`/`layout`/`terrain`/`spawn` 及分块路径 `terrain:chunk:{c}:{r}`、逐房间 `items:{id}` 等）是确定性契约的一部分，**改名/改派生顺序/改 RNG 消耗量 = 破坏 seed 复现性和黄金测试**。本指南每条都标了 `breaksDeterminism`：
+2. **确定性契约是第一约束**。`crates/yang-pcg/AGENTS.md`（第 84 行）已声明：RNG 派生标签（`topology`/`layout`/`terrain`/`spawn` 及分块路径 `terrain:chunk:{c}:{r}`、逐房间 `items:{id}` 等）是确定性契约的一部分，**改名/改派生顺序/改 RNG 消耗量 = 破坏 seed 复现性和黄金测试**。本指南每条都标了 `breaksDeterminism`：
    - `否` —— 安全，可直接落地。
    - `是（破坏性）` —— 会改变 seed→地图输出，**必须**走新 major + 迁移说明 + 同步更新黄金测试，禁止在小版本顺手做。
 3. **核验已纠正若干原始发现的错误**，落地前请读每条的"现状/更优解"，已写入纠偏结论。典型：
@@ -49,6 +49,8 @@
 | ROB-02 | distance_sq 返回 i32 大坐标溢出 | 核验 INVALID：distance_sq 入参是单房间局部瓷砖索引（≤ terrain 宽），非全局世界坐标，默认配置 dx≤13，任何合理配置不可触发。其 i64 化仍随 OPT-R-01 一起做（编译需要），但不作为独立 bug。 |
 | ARCH-01 | critical_path_length.max 未与 room_count.max 比对 | 核验 INVALID：`topology/planner.rs:30-33` 采样后立即 `.clamp(2, room_count)`，不会运行时失败；新增校验反而把当前能正常生成的配置变成 config error。 |
 | QC-05（原方案） | 删除策略内部 BFS 连通修复 ~300 行 | 核验降级：内部修复与兜底 `connect_all_doorways` 算法不同（BFS 最短路 vs L 形），删除会改变 Floor 瓦片集合→改 spawn 位置→破坏黄金测试。仅保留"删 4 处冗余 summarize_connectivity"，见 OPT-Q-08。 |
+
+> **📋 2026-06-29 事实复核修正**（独立再复核 master，逐条对照代码取证后回写）：OPT-R-09（`load_config` 在 **`bin/pcg_cli.rs:224`** 非 config.rs）、OPT-A-09（`select_backend` 漏第三调用点 **chunked.rs:309**）、OPT-S-02（`DebugBundle` 在 **`debug/report.rs:82`**，`lib.rs:87` 实为 export 重导出块）、OPT-S-08（`merge()` docstring 已写明"全量覆盖"，问题仅在**方法名**）、OPT-T-05（隔离测试实为 **5 个**非 4 个）、OPT-T-07（越界拒绝测试**已存在**，真缺 NaN/负权重/空列表专项）、OPT-T-10（0.0/-1.0 测试**已存在**，真缺 NaN 专项）。详见各条目。
 
 ### 1.3 优先级 × effort 速览（高杠杆 Top 7）
 
@@ -156,7 +158,7 @@
 ### OPT-L-05　GrammarRule.base_weight=NaN：绕过 weight≤0 短路 + 误导错误消息
 - 严重度 LOW | 优先级 P3 | effort S | breaking 否 | breaksDeterminism 否　|　已跟踪 NEW-22
 - 合并自：QC-18 + ARCH-12
-- 位置：`grammar/selector.rs:130-174`（compute_adjusted_weight / select）
+- 位置：`grammar/selector.rs:89-174`（select 89-127 + compute_adjusted_weight 132-174）
 - 现状：`NaN <= 0.0` 为 false，NaN base_weight 不被短路，乘进 total → `!is_finite()` 触发，但错误文案是"所有规则权重为零"（与 sum≤0 共用），对 NaN 配置无法定位。NaN 本身被拦截（非静默绕过），问题在诊断质量。
 - 更优解：`compute_adjusted_weight` 改 `if !weight.is_finite() || weight <= 0.0 { return 0.0; }`；`select` 入口或 total 检查处区分 `total.is_nan()` 与 `total<=0.0`，分别给"含 NaN 权重"/"权重全零"消息，最好带规则名。
 - 验收：
@@ -249,7 +251,7 @@
 ### OPT-R-09　rarity_weights Vec 反序列化无长度上界，超大 config 致 OOM
 - 严重度 LOW | 优先级 P3 | effort S | breaking 否 | breaksDeterminism 否
 - 来源：ROB-12
-- 位置：`config.rs` ItemSpawnConfig（serde Deserialize）、`load_config`
+- 位置：`config.rs` ItemSpawnConfig（serde Deserialize）、`bin/pcg_cli.rs:224` `load_config`
 - 现状：`rarity_weights: Vec<f32>` 由 serde_json 直填无限制，`load_config` 读文件无大小检查，10⁹ 元素 JSON 致 OOM。
 - 更优解：`load_config` 先 `std::fs::metadata(path)` 检查文件 ≤1MB；或结合 OPT-L-04 的 `len()==3` 约束 + serde `deserialize_with` 提前截断。
 - 验收：
@@ -277,7 +279,7 @@
 - 严重度 LOW | 优先级 P3 | effort S | breaking 否（infallible 兜底方案） | breaksDeterminism 否　|　已跟踪 NEW-23
 - 合并自：PCG-L-11 + API-11
 - 位置：`digest.rs:41`、`digest.rs:69`
-- 现状：`serde_json::to_string(config).expect(...)`，传入含 NaN f32 的未归一化 config 时 panic 而非 PcgError。两函数为 pub，可在 normalize() 前被调用。
+- 现状：`serde_json::to_string(config).expect(...)`——若 serde_json 序列化因任何原因失败（虽对全派生 Serialize 的 GenerationConfig 概率极低），`.expect()` 直接 panic 而非返回 PcgError。注意：serde_json 1.0.140 默认行为下 f32::NAN 被序列化为 JSON `null` 而**不触发错误**（NaN 不会导致 panic，但会基于含 null 的 JSON 产生错误的哈希/种子）。两函数为 pub，外部调用者可能在未 normalize 的 config 上调用它们。生产路径（generator.rs:51-57）先调 validate_request 再调 seed_from_config/from_config，故安全。
 - 更优解（择一）：① 改返回 `PcgResult<...>`，调用方已普遍用 `?`（breaking）；② 保持 infallible，内部对 f32 字段先做 NaN 校验（与 validate() 对齐）或 `unwrap_or_default` 兜底 + 注释；③ 最佳：手写字段级 fnv1a_64 组合替代 serde_json，彻底消除 serde 依赖与 panic（同时给 OPT-P-05 性能收益）。
 - 验收：
   - [ ] from_config/seed_from_config 不再对调用者环境 panic
@@ -530,7 +532,7 @@
 ### OPT-A-09　select_backend 每次为 ZST 创建 Box<dyn>，引入不必要 vtable
 - 严重度 LOW | 优先级 P3 | effort M | breaking 否（Backend 类型可不导出）| breaksDeterminism 否　|　关联 NEW-32（strategy 已 enum 化，backend 漏）
 - 来源：ARCH-11
-- 位置：`backend/mod.rs:96-98`（被 generator.rs:62、chunked.rs:90 调用）
+- 位置：`backend/mod.rs:96-98`（被 generator.rs:62、chunked.rs:90、chunked.rs:309 调用）
 - 现状：唯一 backend 仍包成 `Box<dyn PipelineBackend>`，每次方法调用走 vtable 间接。`_config` 带下划线说明无分支逻辑。PCG 单次重计算，开销极小，但属提前引入的复杂度。
 - 更优解：引入 `enum Backend { TopDown(TopDownBackend) }` 静态派发，`impl PipelineBackend for Backend { match ... }`，待第二个 backend 需要 object safety 再回 Box<dyn>。
 - 验收：
@@ -552,8 +554,8 @@
 ### OPT-S-02　ValidationReport / ValidationItem 出现在公开 DebugBundle 却不在根 re-export
 - 严重度 MEDIUM | 优先级 P2 | effort S | breaking 否 | breaksDeterminism 否
 - 来源：API-04（与 OPT-A-02 联动）
-- 位置：`lib.rs:87`（DebugBundle）；`debug/report.rs:103`；`validation.rs:569`
-- 现状：DebugBundle.validation_report: Option<ValidationReport>，但类型仅 `validation::` 路径可达，导入不对称。
+- 位置：`debug/report.rs:82`（DebugBundle，经 `lib.rs:59` 的 `pub mod debug` 以 `yang_pcg::debug::DebugBundle` 可达）；`validation_report` 字段 `debug/report.rs:102`；`validation.rs:569`（ValidationReport）。`lib.rs:87` 实为 export 重导出块、并非 DebugBundle。
+- 现状：DebugBundle.validation_report: Option<ValidationReport>，但 DebugBundle 本身仅 `yang_pcg::debug::` 可达、字段类型 ValidationReport 仅 `yang_pcg::validation::` 可达，二者前缀不一致；且 ValidationReport/ValidationItem 均未在根 re-export，导入不对称。
 - 更优解：`pub use validation::{ValidationReport, ValidationItem}`（或移入 debug 模块随 DebugBundle 一起导出）。与 OPT-A-02 一并落地。
 - 验收：
   - [ ] ValidationReport/ValidationItem 与 DebugBundle 同前缀可达
@@ -607,7 +609,7 @@
 - 严重度 MEDIUM | 优先级 P2 | effort S | breaking 否（重命名 + 保留 deprecated alias）| breaksDeterminism 否
 - 合并自：ARCH-06 + API-12
 - 位置：`config.rs:184-218`
-- 现状：doc 说"层级合并"，实现是无条件全量覆盖 other 全部字段（仅 other.theme_tags 为空时保留 self），等价 `other.clone()` + 特例。调用方期望增量合并会丢失未在 other 修改的配置。
+- 现状：`merge()` 的 docstring（`config.rs:186-188`）写的是「无条件全量覆盖」（**非**原指控的"层级合并"——原"doc 说层级合并"不成立）。但实现对 theme_tags 有一处保留条件（`config.rs:209-211`：仅当 `other.theme_tags` 非空才覆盖、为空则保留 self），故 docstring 的"无条件"与实现仍有**细微出入**。核心问题有二：①方法名 `merge` 误导调用方期望增量合并（实现近乎 `other.clone()`，会丢失未在 other 修改的配置）；②docstring 未提 theme_tags 例外。注：struct 级注释（`config.rs:10`）的"层级合并策略"指 default→preset→instance 调用链、非字段级合并语义。
 - 更优解：重命名 `override_with()` / `apply_override()`，doc 明确"全量覆盖"，保留 `merge` 为 deprecated alias；若需真正字段级合并，引入 `Option` 包裹的 `ConfigPatch` + serde default（更大工作量）。
 - 验收：
   - [ ] 方法名/文档反映"全量覆盖"语义
@@ -698,7 +700,7 @@
 - 严重度 MEDIUM | 优先级 P1 | effort S | breaking 否 | breaksDeterminism 否
 - 来源：T-05
 - 位置：`tests_task26/debug_isolation_tests.rs`（11-271 行）
-- 现状：四个隔离测试覆盖 rooms/corridors/spawns/topology，**唯独不比较 terrains（tiles.data/door_anchors）**。地形是最复杂阶段，debug 走 `generate_spawns_with_debug`（generator.rs:92-102），若该路径 RNG 消耗与非 debug 不同会影响 spawn；现有 spawn 测试只比数量+位置，不比 rarity/metadata。
+- 现状：现有**五个**隔离测试——四个 `test_debug_toggle_*_identical` 覆盖 rooms/corridors/spawns/topology（行 11/61/108/175）+ `test_debug_toggle_different_seed`（行 236）——**唯独不比较 terrains（tiles.data/door_anchors）**。地形是最复杂阶段，debug 走 `generate_spawns_with_debug`（generator.rs:92-102），若该路径 RNG 消耗与非 debug 不同会影响 spawn；现有 spawn 测试只比数量+位置，不比 rarity/metadata。
 - 更优解：加 `test_debug_toggle_terrains_identical()`（比较 tiles.data/grid_size/connectivity_summary）；spawn 补 `metadata.spawn_tag`、corridor 补 path_points 比较。
 - 验收：
   - [ ] debug on/off 下 terrains tiles.data 逐格一致
@@ -716,8 +718,8 @@
 ### OPT-T-07　边界/非法 config 拒绝测试缺失（NaN density / 空 rarity_weights / 越界 ratio）
 - 严重度 MEDIUM | 优先级 P1 | effort S | breaking 否 | breaksDeterminism 否　|　已跟踪 NEW-22
 - 来源：T-07（与 OPT-L-02 / OPT-L-04 联动）
-- 位置：`config.rs:120-182`（TerrainConfig::validate / ItemSpawnConfig::validate）
-- 现状：无测试验证子校验拒绝：NaN/Inf obstacle_density、越界 min_walkable_ratio、空/全零/负 rarity_weights、count min>max。这些值可经 deserialize 进管线在加权选择处 NaN 传播。
+- 位置：`config.rs:418`（TerrainConfig::validate）/ `config.rs:473`（ItemSpawnConfig::validate）；文档原标的 `config.rs:120-182` 实为 `normalize` 内部
+- 现状：部分子校验**已有**拒绝测试——`test_invalid_obstacle_density`（`config.rs:692`）、`test_invalid_rarity_weights`（`config.rs:711`）。**真正尚缺**：NaN/Inf obstacle_density 专项、负权重组合（总和恰为 1.0 的负值组合可绕过现有校验）、空 rarity_weights 列表专项；越界 min_walkable_ratio / count min>max 亦待补。这些值可经 deserialize 进管线在加权选择处 NaN 传播。
 - 更优解：在 config 测试模块加参数化拒绝测试 `assert!(bad_config.normalize().is_err())`；若 validate 当前不检查则同步补校验（与 OPT-L-02/OPT-L-04 一起）。
 - 验收：
   - [ ] NaN/越界/空/负权重 config 在边界被拒绝（有测试）
@@ -744,8 +746,8 @@
 - 严重度 MEDIUM | 优先级 P2 | effort S | breaking 否 | breaksDeterminism 否　|　已跟踪 NEW-22
 - 来源：T-10
 - 位置：`grammar/selector.rs:89-127`（select）、`:132-174`
-- 现状：有 intra-session test_select_deterministic 但无固化期望索引；无 NaN/0.0/-1.0 base_weight 行为测试；无多规则权重分布 proptest。
-- 更优解：加 `test_select_nan_weight_returns_err`、`test_select_negative_weight_treated_as_zero`、`prop_select_deterministic`（arb rules + 固定 seed 两次一致）。与 OPT-L-05 联动。
+- 现状：有 intra-session `test_select_deterministic` 但无固化期望索引；0.0 权重由 `test_zero_weight_rules_returns_error`（`selector.rs:365`）覆盖、-1.0 由 `test_invalid_module_reference_returns_capability_error`（`selector.rs:433`）覆盖；**真正缺失**的仅 NaN base_weight 专项（无以 `f64::NAN` 验证 `is_finite` 防卫的测试）+ 固化期望索引 + 多规则权重分布 proptest。
+- 更优解：加 `test_select_nan_weight_returns_err`、`prop_select_deterministic`（arb rules + 固定 seed 两次一致），并为 `test_select_deterministic` 固化期望索引。与 OPT-L-05 联动。
 - 验收：
   - [ ] NaN/负权重行为有测试
   - [ ] select 有 proptest 确定性覆盖
