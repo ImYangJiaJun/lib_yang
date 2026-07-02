@@ -198,35 +198,38 @@ fn ensure_organic_connectivity(
     width: u32,
     height: u32,
 ) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     if doorways.len() < 2 {
         return;
     }
 
+    let size = (width * height) as usize;
+
     // 从第一个门口 BFS 找到所有可达区域
+    // OPT-P-03: HashSet 替换为平坦 Vec<bool> 位图
     let start = doorways[0];
-    let mut visited = HashSet::new();
+    let mut visited = vec![false; size];
     let mut queue = VecDeque::new();
     queue.push_back(start);
-    visited.insert(start);
+    visited[(start.y as u32 * width + start.x as u32) as usize] = true;
 
     while let Some(current) = queue.pop_front() {
         for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let nx = current.x + dx;
             let ny = current.y + dy;
-            let neighbor = GridPoint { x: nx, y: ny };
 
-            if visited.contains(&neighbor) {
+            if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                 continue;
             }
-            if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+            let ni = (ny as u32 * width + nx as u32) as usize;
+            if visited[ni] {
                 continue;
             }
             if let Some(tile) = tiles.get(nx, ny).copied() {
                 if super::grid::is_walkable(tile) {
-                    visited.insert(neighbor);
-                    queue.push_back(neighbor);
+                    visited[ni] = true;
+                    queue.push_back(GridPoint { x: nx, y: ny });
                 }
             }
         }
@@ -234,13 +237,14 @@ fn ensure_organic_connectivity(
 
     // 对不可达的门口，打通路径
     // OPT-P-09: 预分配 BFS 缓冲区，跨门口复用
+    // OPT-P-03: HashSet/HashMap 替换为平坦 Vec 位图/扁平 parent 数组
     let mut bfs_queue = VecDeque::new();
-    let mut bfs_visited = HashSet::new();
-    let mut bfs_parent: std::collections::HashMap<GridPoint, GridPoint> =
-        std::collections::HashMap::new();
+    let mut bfs_visited = vec![false; size];
+    let mut bfs_parent: Vec<Option<GridPoint>> = vec![None; size];
 
     for doorway in doorways.iter().skip(1) {
-        if visited.contains(doorway) {
+        let di = (doorway.y as u32 * width + doorway.x as u32) as usize;
+        if visited[di] {
             continue;
         }
 
@@ -259,26 +263,26 @@ fn ensure_organic_connectivity(
         // 更新可达集合
         let mut new_queue = VecDeque::new();
         new_queue.push_back(*doorway);
-        if !visited.contains(doorway) {
-            visited.insert(*doorway);
+        if !visited[di] {
+            visited[di] = true;
         }
 
         while let Some(current) = new_queue.pop_front() {
             for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let nx = current.x + dx;
                 let ny = current.y + dy;
-                let neighbor = GridPoint { x: nx, y: ny };
 
-                if visited.contains(&neighbor) {
+                if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                     continue;
                 }
-                if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+                let ni = (ny as u32 * width + nx as u32) as usize;
+                if visited[ni] {
                     continue;
                 }
                 if let Some(tile) = tiles.get(nx, ny).copied() {
                     if super::grid::is_walkable(tile) {
-                        visited.insert(neighbor);
-                        new_queue.push_back(neighbor);
+                        visited[ni] = true;
+                        new_queue.push_back(GridPoint { x: nx, y: ny });
                     }
                 }
             }
@@ -289,27 +293,30 @@ fn ensure_organic_connectivity(
 /// 从不可达门口向可达区域打通路径
 ///
 /// BFS 缓冲区由调用方预分配并跨门口复用（OPT-P-09）。
+/// OPT-P-03: HashSet/HashMap 替换为平坦 Vec 位图/扁平 parent 数组。
+#[allow(clippy::too_many_arguments)]
 fn carve_path_to_reachable(
     tiles: &mut Grid2D<TileKind>,
     start: GridPoint,
-    reachable: &std::collections::HashSet<GridPoint>,
+    reachable: &[bool],
     width: u32,
     height: u32,
     queue: &mut std::collections::VecDeque<GridPoint>,
-    visited: &mut std::collections::HashSet<GridPoint>,
-    parent: &mut std::collections::HashMap<GridPoint, GridPoint>,
+    visited: &mut [bool],
+    parent: &mut [Option<GridPoint>],
 ) {
     // BFS 搜索最近的可达瓦片
     queue.clear();
-    visited.clear();
-    parent.clear();
+    visited.fill(false);
+    parent.fill(None);
 
     queue.push_back(start);
-    visited.insert(start);
+    visited[(start.y as u32 * width + start.x as u32) as usize] = true;
 
     let mut target = None;
     while let Some(current) = queue.pop_front() {
-        if reachable.contains(&current) && current != start {
+        let ci = (current.y as u32 * width + current.x as u32) as usize;
+        if reachable[ci] && current != start {
             target = Some(current);
             break;
         }
@@ -317,19 +324,18 @@ fn carve_path_to_reachable(
         for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let nx = current.x + dx;
             let ny = current.y + dy;
-            let neighbor = GridPoint { x: nx, y: ny };
 
-            if visited.contains(&neighbor) {
-                continue;
-            }
-            // 不穿越外墙
             if nx <= 0 || ny <= 0 || nx >= width as i32 - 1 || ny >= height as i32 - 1 {
                 continue;
             }
+            let ni = (ny as u32 * width + nx as u32) as usize;
+            if visited[ni] {
+                continue;
+            }
 
-            visited.insert(neighbor);
-            parent.insert(neighbor, current);
-            queue.push_back(neighbor);
+            visited[ni] = true;
+            parent[ni] = Some(current);
+            queue.push_back(GridPoint { x: nx, y: ny });
         }
     }
 
@@ -342,7 +348,8 @@ fn carve_path_to_reachable(
                     tiles.set(current.x, current.y, TileKind::Floor);
                 }
             }
-            if let Some(&prev) = parent.get(&current) {
+            let ci = (current.y as u32 * width + current.x as u32) as usize;
+            if let Some(prev) = parent[ci] {
                 current = prev;
             } else {
                 break;

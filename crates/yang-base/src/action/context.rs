@@ -230,6 +230,9 @@ pub struct ActionContext {
     /// 仅用于可观测性标注（metrics `module` 标签、日志）。模块数量有界，作为 metrics
     /// 标签不构成高基数问题。未经路由直接构造的上下文为 `None`。
     pub module: Option<String>,
+    /// PERF-13: 缓存用户角色的 Arc 副本，避免 table_query() 每次重新 Arc 化。
+    /// 在 `with_user()` 时一次性构建，后续 `table_query()` 仅需 `Arc::clone`（O(1)）。
+    cached_roles: Arc<[String]>,
 }
 
 impl ActionContext {
@@ -242,6 +245,7 @@ impl ActionContext {
             table_config: None,
             request_id: RequestId::generate(),
             module: None,
+            cached_roles: Arc::from(Vec::new()),
         }
     }
 
@@ -271,6 +275,7 @@ impl ActionContext {
             table_config: None,
             request_id: RequestId::generate(),
             module: None,
+            cached_roles: Arc::from(Vec::new()),
         })
     }
 

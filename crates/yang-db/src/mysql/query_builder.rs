@@ -2273,9 +2273,10 @@ impl<'a> QueryBuilder<'a> {
         // 单批次：直接走 pool 执行，免事务开销。
         // 多批次：用单个事务包裹所有 chunk，任一批失败整体回滚（DB-4，比照 update_batch；
         // 此前每 chunk 独立 execute(pool)，第 N 批失败时前 N-1 批已落库无法回滚）。
-        let chunks: Vec<&[T]> = data.chunks(batch_size).collect();
-        if chunks.len() == 1 {
-            let affected = self.insert_chunk(chunks[0]).await?;
+        // PERF-12: 用 div_ceil 计算批次数，避免仅为取 len 而 collect 整个 Vec。
+        let chunk_count = data.len().div_ceil(batch_size);
+        if chunk_count == 1 {
+            let affected = self.insert_chunk(data).await?;
             if self.enable_logging {
                 log::debug!("insert_batch_with_size() 单批完成，影响 {} 行", affected);
             }
@@ -2289,7 +2290,7 @@ impl<'a> QueryBuilder<'a> {
             .map_err(crate::error::DbError::from)?;
         let mut total_affected = 0u64;
 
-        for (batch_index, chunk) in chunks.iter().enumerate() {
+        for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
             // 序列化本批数据
             let json_data_list: Vec<serde_json::Value> = chunk
                 .iter()

@@ -158,12 +158,14 @@ fn connect_doorways_to_maze(
     width: u32,
     height: u32,
 ) {
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::VecDeque;
 
-    // OPT-P-09: 循环外预分配 BFS 缓冲区，每轮 clear 复用
+    let size = (width * height) as usize;
+
+    // OPT-P-03: 循环外预分配平坦位图/扁平 parent 数组，每轮 fill(false)/None 复用
     let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-    let mut parent: HashMap<GridPoint, GridPoint> = HashMap::new();
+    let mut visited = vec![false; size];
+    let mut parent: Vec<Option<GridPoint>> = vec![None; size];
 
     for doorway in doorways {
         // 检查门口是否已经与迷宫连通
@@ -185,11 +187,11 @@ fn connect_doorways_to_maze(
 
         // BFS 找到最近的地板瓦片，沿途打通
         queue.clear();
-        visited.clear();
-        parent.clear();
+        visited.fill(false);
+        parent.fill(None);
 
         queue.push_back(*doorway);
-        visited.insert(*doorway);
+        visited[(doorway.y as u32 * width + doorway.x as u32) as usize] = true;
 
         let mut target = None;
         while let Some(current) = queue.pop_front() {
@@ -205,18 +207,18 @@ fn connect_doorways_to_maze(
             for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let nx = current.x + dx;
                 let ny = current.y + dy;
-                let neighbor = GridPoint { x: nx, y: ny };
 
                 if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                     continue;
                 }
-                if visited.contains(&neighbor) {
+                let ni = (ny as u32 * width + nx as u32) as usize;
+                if visited[ni] {
                     continue;
                 }
 
-                visited.insert(neighbor);
-                parent.insert(neighbor, current);
-                queue.push_back(neighbor);
+                visited[ni] = true;
+                parent[ni] = Some(current);
+                queue.push_back(GridPoint { x: nx, y: ny });
             }
         }
 
@@ -229,7 +231,8 @@ fn connect_doorways_to_maze(
                         tiles.set(current.x, current.y, TileKind::Floor);
                     }
                 }
-                if let Some(&prev) = parent.get(&current) {
+                let ci = (current.y as u32 * width + current.x as u32) as usize;
+                if let Some(prev) = parent[ci] {
                     current = prev;
                 } else {
                     break;
@@ -242,13 +245,14 @@ fn connect_doorways_to_maze(
 /// 强制连通所有门口
 ///
 /// 当迷宫生成后门口之间仍不连通时，直接打通路径
+/// OPT-P-03: HashSet/HashMap 替换为平坦 Vec 位图。
 fn force_connect_doorways(
     tiles: &mut Grid2D<TileKind>,
     doorways: &[GridPoint],
     width: u32,
     height: u32,
 ) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     if doorways.len() < 2 {
         return;
@@ -256,33 +260,34 @@ fn force_connect_doorways(
 
     // 从第一个门口 BFS 找到所有可达的门口
     let start = doorways[0];
-    let mut reachable = HashSet::new();
-    let mut visited = HashSet::new();
+    let size = (width * height) as usize;
+    let mut reachable = vec![false; size];
+    let mut visited = vec![false; size];
     let mut queue = VecDeque::new();
 
     queue.push_back(start);
-    visited.insert(start);
+    visited[(start.y as u32 * width + start.x as u32) as usize] = true;
 
     while let Some(current) = queue.pop_front() {
         if doorways.contains(&current) {
-            reachable.insert(current);
+            reachable[(current.y as u32 * width + current.x as u32) as usize] = true;
         }
 
         for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let nx = current.x + dx;
             let ny = current.y + dy;
-            let neighbor = GridPoint { x: nx, y: ny };
 
-            if visited.contains(&neighbor) {
+            if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                 continue;
             }
-            if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+            let ni = (ny as u32 * width + nx as u32) as usize;
+            if visited[ni] {
                 continue;
             }
             if let Some(tile) = tiles.get(nx, ny).copied() {
                 if super::grid::is_walkable(tile) {
-                    visited.insert(neighbor);
-                    queue.push_back(neighbor);
+                    visited[ni] = true;
+                    queue.push_back(GridPoint { x: nx, y: ny });
                 }
             }
         }
@@ -290,7 +295,8 @@ fn force_connect_doorways(
 
     // 对不可达的门口，打通直线路径到第一个门口
     for doorway in doorways.iter().skip(1) {
-        if reachable.contains(doorway) {
+        let di = (doorway.y as u32 * width + doorway.x as u32) as usize;
+        if reachable[di] {
             continue;
         }
 

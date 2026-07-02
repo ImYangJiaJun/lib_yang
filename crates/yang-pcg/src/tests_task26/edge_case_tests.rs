@@ -258,9 +258,9 @@ fn test_terrain_with_empty_door_anchors() {
 fn test_spawn_empty_rooms() {
     let config = GenerationConfig::default();
     let normalized = config.normalize().expect("配置应有效");
-    let mut rng = StableRng::from_seed(42);
+    let rng = StableRng::from_seed(42);
 
-    let output = spawn::generate_spawns(&[], &[], &normalized, &mut rng).expect("空房间应成功");
+    let output = spawn::generate_spawns(&[], &[], &normalized, &rng).expect("空房间应成功");
 
     assert!(output.item_spawns.is_empty(), "空房间不应有交互物");
     assert!(output.enemy_spawns.is_empty(), "空房间不应有敌人");
@@ -296,9 +296,9 @@ fn test_spawn_respects_min_spacing() {
     )
     .expect("地形生成应成功");
 
-    let mut spawn_rng = StableRng::from_seed(42);
+    let spawn_rng = StableRng::from_seed(42);
     let spawn_output =
-        spawn::generate_spawns(&output.rooms, &terrains, &normalized, &mut spawn_rng)
+        spawn::generate_spawns(&output.rooms, &terrains, &normalized, &spawn_rng)
             .expect("点位生成应成功");
 
     // 验证交互物点位间距

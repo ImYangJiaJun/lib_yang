@@ -77,8 +77,8 @@ impl Plugin for OrderPlugin {
         "1.0.0"
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["user_plugin"]
+    fn dependencies(&self) -> &[&str] {
+        &["user_plugin"]
     }
 
     fn init_sql(&self) -> Vec<String> {

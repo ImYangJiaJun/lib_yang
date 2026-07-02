@@ -65,7 +65,7 @@ impl GlobalDatabase {
     ///
     /// # 错误
     ///
-    /// - `DatabaseConnectionFailed`: 数据库连接失败
+    /// - `DatabaseConnectionFailed`: 数据库连接失败（包装 DbError 保留错误链）
     /// - `DatabaseAlreadyInitialized`: 数据库已经初始化
     ///
     /// # 说明
@@ -89,7 +89,7 @@ impl GlobalDatabase {
         // 使用 yang-db::Database::connect_with_config 创建数据库连接
         let db = Database::connect_with_config(url, config)
             .await
-            .map_err(BaseError::DatabaseConnectionDbError)?;
+            .map_err(BaseError::DatabaseConnectionFailed)?;
 
         // 设置全局数据库实例
         GLOBAL_DB

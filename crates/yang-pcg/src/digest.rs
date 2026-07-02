@@ -152,7 +152,7 @@ impl ConfigDigest {
     /// assert!(digest.matches(&config));
     /// ```
     pub fn matches(&self, config: &GenerationConfig) -> bool {
-        Self::from_config(config).map_or(false, |expected| self.hash == expected.hash)
+        Self::from_config(config).is_ok_and(|expected| self.hash == expected.hash)
     }
 }
 

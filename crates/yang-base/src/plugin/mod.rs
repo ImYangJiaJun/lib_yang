@@ -91,8 +91,8 @@ pub trait Plugin: Send + Sync {
     ///
     /// # 返回
     /// - 依赖插件名称列表，默认为空
-    fn dependencies(&self) -> Vec<&str> {
-        Vec::new()
+    fn dependencies(&self) -> &[&str] {
+        &[]
     }
 
     /// 获取数据库初始化 SQL 脚本
@@ -680,7 +680,7 @@ impl PluginManagerBuilder {
         for plugin in self.plugins.values() {
             let plugin_name = plugin.name().to_string();
             for dep in plugin.dependencies() {
-                if !self.plugins.contains_key(dep) {
+                if !self.plugins.contains_key(*dep) {
                     // 依赖未注册，返回错误
                     return Err(BaseError::PluginDependencyMissing(
                         plugin_name,
@@ -972,8 +972,8 @@ mod tests {
             "plugin_b"
         }
 
-        fn dependencies(&self) -> Vec<&str> {
-            vec!["plugin_a"]
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_a"]
         }
     }
 
@@ -986,8 +986,8 @@ mod tests {
             "plugin_c"
         }
 
-        fn dependencies(&self) -> Vec<&str> {
-            vec!["plugin_b"]
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_b"]
         }
     }
 
@@ -1209,8 +1209,8 @@ mod tests {
             fn name(&self) -> &str {
                 "plugin_b"
             }
-            fn dependencies(&self) -> Vec<&str> {
-                vec!["plugin_a"]
+            fn dependencies(&self) -> &[&str] {
+                &["plugin_a"]
             }
             async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
                 SHUTDOWN_ORDER.lock().unwrap().push("plugin_b".to_string());
@@ -1225,8 +1225,8 @@ mod tests {
             fn name(&self) -> &str {
                 "plugin_c"
             }
-            fn dependencies(&self) -> Vec<&str> {
-                vec!["plugin_b"]
+            fn dependencies(&self) -> &[&str] {
+                &["plugin_b"]
             }
             async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
                 SHUTDOWN_ORDER.lock().unwrap().push("plugin_c".to_string());
@@ -1298,8 +1298,8 @@ mod tests {
             fn name(&self) -> &str {
                 "plugin_x"
             }
-            fn dependencies(&self) -> Vec<&str> {
-                vec!["plugin_y"]
+            fn dependencies(&self) -> &[&str] {
+                &["plugin_y"]
             }
         }
 
@@ -1309,8 +1309,8 @@ mod tests {
             fn name(&self) -> &str {
                 "plugin_y"
             }
-            fn dependencies(&self) -> Vec<&str> {
-                vec!["plugin_x"]
+            fn dependencies(&self) -> &[&str] {
+                &["plugin_x"]
             }
         }
 

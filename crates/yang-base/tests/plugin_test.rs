@@ -40,8 +40,8 @@ impl Plugin for PluginB {
         "plugin_b"
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["plugin_a"]
+    fn dependencies(&self) -> &[&str] {
+        &["plugin_a"]
     }
 }
 
@@ -54,8 +54,8 @@ impl Plugin for PluginC {
         "plugin_c"
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["plugin_b"]
+    fn dependencies(&self) -> &[&str] {
+        &["plugin_b"]
     }
 }
 
@@ -245,8 +245,8 @@ async fn test_complex_dependencies() {
         fn name(&self) -> &str {
             "plugin_d"
         }
-        fn dependencies(&self) -> Vec<&str> {
-            vec!["plugin_a", "plugin_b"]
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_a", "plugin_b"]
         }
     }
 

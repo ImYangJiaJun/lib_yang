@@ -114,7 +114,7 @@ fn arb_generation_mode() -> impl Strategy<Value = GenerationMode> {
 /// - `RuntimeContext` 仅在 RuntimeChunked 模式下提供
 fn arb_test_input() -> impl Strategy<Value = (GenerationConfig, Option<RuntimeContext>)> {
     (arb_generation_config(), arb_generation_mode()).prop_map(|(mut config, mode)| {
-        config.generation_mode = mode.clone();
+        config.generation_mode = mode;
         config.capability_flags = match mode {
             GenerationMode::OfflineFullFloor => CapabilityFlags::default(),
             GenerationMode::RuntimeChunked => CapabilityFlags {
@@ -222,8 +222,7 @@ fn generate_by_mode(
     constraints: Vec<crate::model::request::Constraint>,
     trace_id: Option<String>,
 ) -> crate::error::PcgResult<crate::model::result::GenerationResult> {
-    let mode = config.generation_mode.clone();
-    match mode {
+    match config.generation_mode {
         GenerationMode::HybridPrecompute => {
             generate_hybrid_full(seed, config, constraints, trace_id)
         }

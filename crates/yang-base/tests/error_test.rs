@@ -59,8 +59,8 @@ fn test_plugin_config_invalid_message() {
 
 #[test]
 fn test_database_connection_failed_message() {
-    let err = BaseError::DatabaseConnectionFailed("无法连接到 MySQL".to_string());
-    assert_eq!(format!("{}", err), "数据库连接失败: 无法连接到 MySQL");
+    let err = BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("无法连接到 MySQL".to_string()));
+    assert_eq!(format!("{}", err), "数据库连接失败: 连接错误: 无法连接到 MySQL");
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn test_all_error_messages_contain_chinese() {
         BaseError::PluginDependencyMissing("test".to_string(), "dep".to_string()),
         BaseError::PluginCircularDependency("test".to_string()),
         BaseError::PluginConfigInvalid("test".to_string(), "reason".to_string()),
-        BaseError::DatabaseConnectionFailed("test".to_string()),
+        BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("test".to_string())),
         BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("test".to_string())),
         BaseError::DatabaseInitFailed("test".to_string()),
         BaseError::DatabaseMigrationFailed("v1".to_string(), "reason".to_string()),

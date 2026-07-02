@@ -52,8 +52,8 @@ impl Plugin for TestPlugin2 {
         "1.0.0"
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["test_plugin_1"]
+    fn dependencies(&self) -> &[&str] {
+        &["test_plugin_1"]
     }
 
     fn init_sql(&self) -> Vec<String> {

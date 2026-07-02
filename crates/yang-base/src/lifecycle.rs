@@ -129,8 +129,8 @@ mod tests {
             "plugin_b"
         }
 
-        fn dependencies(&self) -> Vec<&str> {
-            vec!["plugin_a"]
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_a"]
         }
 
         async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -148,8 +148,8 @@ mod tests {
             "plugin_c"
         }
 
-        fn dependencies(&self) -> Vec<&str> {
-            vec!["plugin_b"]
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_b"]
         }
 
         async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {

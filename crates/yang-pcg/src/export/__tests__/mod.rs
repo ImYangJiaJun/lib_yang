@@ -423,10 +423,9 @@ fn test_schema_version_compat() {
         result.metadata.schema_version = good_version.to_string();
         let json = serde_json::to_string(&result).expect("序列化应成功");
 
-        let imported = import_json(&json).expect(&format!(
-            "主版本相同的版本 '{}' 应被接受",
-            good_version
-        ));
+        let imported = import_json(&json).unwrap_or_else(|_| {
+            panic!("主版本相同的版本 '{}' 应被接受", good_version)
+        });
         assert_eq!(imported.metadata.schema_version, good_version);
     }
 

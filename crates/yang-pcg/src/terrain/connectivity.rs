@@ -1,6 +1,6 @@
 // 连通性验证
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use crate::model::geometry::GridPoint;
 use crate::model::terrain::{ConnectivitySummary, Grid2D, TileKind};
@@ -13,11 +13,13 @@ pub fn summarize_connectivity(grid: &Grid2D<TileKind>) -> ConnectivitySummary {
     let total_tile_count = grid.width * grid.height;
     let walkable_tile_count = walkable_points.len() as u32;
 
-    let mut visited = HashSet::new();
+    // OPT-P-03: 平坦 Vec<bool> 位图替代 HashSet
+    let mut visited = vec![false; (grid.width * grid.height) as usize];
     let mut connected_region_count = 0u32;
 
     for start in &walkable_points {
-        if visited.contains(start) {
+        let idx = grid_idx(*start, grid.width);
+        if visited[idx] {
             continue;
         }
         connected_region_count += 1;
@@ -32,15 +34,28 @@ pub fn summarize_connectivity(grid: &Grid2D<TileKind>) -> ConnectivitySummary {
     }
 }
 
-fn flood_fill(start: GridPoint, grid: &Grid2D<TileKind>, visited: &mut HashSet<GridPoint>) {
+/// OPT-P-03: flood_fill 改用平坦 Vec<bool> 位图。
+fn flood_fill(start: GridPoint, grid: &Grid2D<TileKind>, visited: &mut [bool]) {
+    let w = grid.width;
     let mut queue = VecDeque::from([start]);
     while let Some(current) = queue.pop_front() {
-        if !visited.insert(current) {
+        let ci = grid_idx(current, w);
+        if visited[ci] {
             continue;
         }
+        visited[ci] = true;
 
         for neighbor in neighbors(current) {
-            if visited.contains(&neighbor) {
+            // 边界检查：neighbors() 可能产生越界坐标（如 x=-1），必须先过滤
+            if neighbor.x < 0
+                || neighbor.y < 0
+                || neighbor.x as u32 >= grid.width
+                || neighbor.y as u32 >= grid.height
+            {
+                continue;
+            }
+            let ni = grid_idx(neighbor, w);
+            if visited[ni] {
                 continue;
             }
             if grid
@@ -84,6 +99,9 @@ fn neighbors(point: GridPoint) -> [GridPoint; 4] {
 /// 做法：从首个门口 flood，对每个不可达门口，沿其内侧入口到首门口内侧入口的
 /// L 形正交路径把途经的**内部**非门口瓦片凿为 `Floor`，每凿一条重新 flood。
 /// **严格只改内部瓦片**（保护外圈边框，仅门口本格除外），故不破坏边框完整性。
+///
+/// OPT-P-02: 循环外一次 flood，每次 carve 后增量扩充 reachable，避免每门口重启完整 BFS。
+/// OPT-P-03: reachable 用平坦 Vec<bool> 位图。
 pub(crate) fn connect_all_doorways(grid: &mut Grid2D<TileKind>, doorways: &[GridPoint]) {
     if doorways.len() <= 1 {
         return;
@@ -99,22 +117,28 @@ pub(crate) fn connect_all_doorways(grid: &mut Grid2D<TileKind>, doorways: &[Grid
     let target = inward_neighbor(first, w, h);
     carve_floor(grid, target, w, h);
 
+    // OPT-P-02: 循环外做一次 flood，后续增量扩充
+    let mut reachable = vec![false; (grid.width * grid.height) as usize];
+    flood_fill(first, grid, &mut reachable);
+
     for &door in &doorways[1..] {
+        let di = grid_idx(door, grid.width);
         // 当前是否已能从首门口到达 door？已连通则跳过，避免无谓雕刻。
-        if reachable_from(grid, first).contains(&door) {
+        if reachable[di] {
             continue;
         }
         let entry = inward_neighbor(door, w, h);
         carve_floor(grid, entry, w, h);
         carve_orthogonal_interior(grid, entry, target, w, h);
+        // OPT-P-02: carve 后从新雕刻入口增量 flood，扩充可达集
+        flood_fill(entry, grid, &mut reachable);
     }
 }
 
-/// 从 `start` 出发 flood 所有可通行瓦片，返回可达点集合。
-fn reachable_from(grid: &Grid2D<TileKind>, start: GridPoint) -> HashSet<GridPoint> {
-    let mut visited = HashSet::new();
-    flood_fill(start, grid, &mut visited);
-    visited
+/// 将 GridPoint 转换为行优先平坦索引。坐标须在 [0, w) x [0, h) 内。
+#[inline]
+fn grid_idx(p: GridPoint, w: u32) -> usize {
+    (p.y as u32 * w + p.x as u32) as usize
 }
 
 /// 计算门口的内侧入口（与门口正交相邻的内部格）。
