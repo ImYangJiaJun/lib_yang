@@ -4,6 +4,7 @@
 use crate::config::GenerationConfig;
 use crate::error::{PcgError, PcgResult};
 use crate::rng::fnv1a_64;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// 验证配置中所有 f32 字段不含 NaN。
 ///

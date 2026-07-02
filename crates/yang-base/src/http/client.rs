@@ -186,7 +186,50 @@ impl HttpClient {
         })
     }
 
-    /// 初始化全局 HTTP 客户端
+    /// 使用完整配置初始化全局 HTTP 客户端
+    ///
+    /// 允许配置连接池大小、User-Agent、代理等高级选项。
+    /// 重复调用返回 `BaseError::HttpClientAlreadyInitialized`。
+    ///
+    /// # 参数
+    ///
+    /// - `config`: HTTP 客户端配置
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(())`: 初始化成功
+    /// - `Err(BaseError::HttpClientAlreadyInitialized)`: 已初始化（重复调用）
+    /// - `Err(BaseError::HttpClientCreateFailed)`: 客户端创建失败
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// use yang_base::http::HttpClientConfig;
+    ///
+    /// let config = HttpClientConfig {
+    ///     timeout_secs: 60,
+    ///     pool_max_idle_per_host: 20,
+    ///     user_agent: Some("MyApp/1.0".to_string()),
+    ///     ..Default::default()
+    /// };
+    /// HttpClient::init_global_with_config(config)?;
+    /// ```
+    pub fn init_global_with_config(config: HttpClientConfig) -> Result<(), BaseError> {
+        let timeout = config.timeout_secs;
+        let client = Self::with_config(config)?;
+
+        GLOBAL_HTTP_CLIENT
+            .set(client)
+            .map_err(|_| BaseError::HttpClientAlreadyInitialized)?;
+
+        log::info!("全局 HTTP 客户端已初始化，超时时间: {} 秒", timeout);
+        Ok(())
+    }
+
+    /// 初始化全局 HTTP 客户端（仅超时时间）
+    ///
+    /// 使用默认配置，仅覆盖超时时间。如需完整配置（连接池、UA、代理等），
+    /// 请使用 [`init_global_with_config`](Self::init_global_with_config)。
     ///
     /// # 参数
     ///
@@ -204,15 +247,10 @@ impl HttpClient {
     /// HttpClient::init_global(30)?;
     /// ```
     pub fn init_global(timeout_secs: u64) -> Result<(), BaseError> {
-        let client = Self::new(timeout_secs)?;
-
-        // 重复初始化返回结构化错误
-        GLOBAL_HTTP_CLIENT
-            .set(client)
-            .map_err(|_| BaseError::HttpClientAlreadyInitialized)?;
-
-        log::info!("全局 HTTP 客户端已初始化，超时时间: {} 秒", timeout_secs);
-        Ok(())
+        Self::init_global_with_config(HttpClientConfig {
+            timeout_secs,
+            ..Default::default()
+        })
     }
 
     /// 获取全局 HTTP 客户端

@@ -209,7 +209,7 @@ pub fn apply_room_bounds(rooms: &[Room], bounds_map: &HashMap<String, RoomBounds
 mod tests {
     use super::*;
     use crate::config::GenerationConfig;
-    use crate::model::room::{Branch, RoomEdge};
+    use crate::model::room::{Branch, BranchPurpose, RoomEdge};
 
     /// 构造「单父多分支」的密集图：3 条分支都挂在同一关键房上，
     /// 触发同父分支堆叠这一最主要的重叠源。

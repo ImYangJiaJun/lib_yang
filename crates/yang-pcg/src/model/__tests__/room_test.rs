@@ -90,10 +90,10 @@ fn test_branch_creation() {
             "room-007".to_string(),
             "room-008".to_string(),
         ],
-        purpose: "reward".to_string(),
+        purpose: BranchPurpose::Reward,
     };
 
-    assert_eq!(branch.purpose, "reward");
+    assert_eq!(branch.purpose, BranchPurpose::Reward);
     assert_eq!(branch.room_ids.len(), 4);
 }
 
