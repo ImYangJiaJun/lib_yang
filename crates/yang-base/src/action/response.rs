@@ -175,11 +175,12 @@ impl ApiResponse {
 
     /// 从 BaseError 创建失败响应
     ///
-    /// 自动提取错误码和错误消息
+    /// 自动提取错误码和错误消息。接受引用以避免消费 `BaseError` 所有权，
+    /// 调用方可在构建响应的同时保留 error 用于日志记录等后续用途。
     ///
     /// # 参数
     ///
-    /// - `error`: BaseError 实例
+    /// - `error`: BaseError 引用
     ///
     /// # 返回
     ///
@@ -192,13 +193,13 @@ impl ApiResponse {
     /// use yang_base::error::BaseError;
     ///
     /// let error = BaseError::FieldRequired("username".to_string());
-    /// let response = ApiResponse::from_error(error);
+    /// let response = ApiResponse::from_error(&error);
     ///
     /// assert_ne!(response.code, 0);
     /// assert!(response.message.contains("username"));
     /// assert!(response.data.is_none());
     /// ```
-    pub fn from_error(error: BaseError) -> Self {
+    pub fn from_error(error: &BaseError) -> Self {
         Self::fail(error.code(), error.to_string())
     }
 }
@@ -293,11 +294,13 @@ mod tests {
     #[test]
     fn test_from_error() {
         let error = BaseError::FieldRequired("username".to_string());
-        let response = ApiResponse::from_error(error);
+        let response = ApiResponse::from_error(&error);
 
         assert_ne!(response.code, 0);
         assert!(response.message.contains("username"));
         assert!(response.data.is_none());
+        // error 仍可用（未被消费）
+        assert_eq!(error.code(), 600006);
     }
 
     #[test]

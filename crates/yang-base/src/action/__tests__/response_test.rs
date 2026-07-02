@@ -76,7 +76,7 @@ fn test_fail_response_with_various_codes() {
 #[test]
 fn test_from_error_plugin_errors() {
     let error = BaseError::PluginNotFound("test_plugin".to_string());
-    let response = ApiResponse::from_error(error);
+    let response = ApiResponse::from_error(&error);
 
     assert_eq!(response.code, 100002);
     assert!(response.message.contains("test_plugin"));
@@ -86,7 +86,7 @@ fn test_from_error_plugin_errors() {
 #[test]
 fn test_from_error_database_errors() {
     let error = BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("连接超时".to_string()));
-    let response = ApiResponse::from_error(error);
+    let response = ApiResponse::from_error(&error);
 
     assert_eq!(response.code, 200003);
     assert!(response.message.contains("连接超时"));
@@ -95,13 +95,13 @@ fn test_from_error_database_errors() {
 #[test]
 fn test_from_error_field_validation_errors() {
     let error = BaseError::FieldRequired("username".to_string());
-    let response = ApiResponse::from_error(error);
+    let response = ApiResponse::from_error(&error);
 
     assert_eq!(response.code, 600006);
     assert!(response.message.contains("username"));
 
     let error = BaseError::ValidationFailed("email".to_string(), "格式不正确".to_string());
-    let response = ApiResponse::from_error(error);
+    let response = ApiResponse::from_error(&error);
 
     assert_eq!(response.code, 600005);
     assert!(response.message.contains("email"));
@@ -156,7 +156,7 @@ fn test_response_chain_with_error_handling() {
             assert_eq!(response.code, 0);
         }
         Err(e) => {
-            let response = ApiResponse::from_error(e);
+            let response = ApiResponse::from_error(&e);
             assert_ne!(response.code, 0);
         }
     }
@@ -168,7 +168,7 @@ fn test_response_chain_with_error_handling() {
             assert_eq!(response.code, 0);
         }
         Err(e) => {
-            let response = ApiResponse::from_error(e);
+            let response = ApiResponse::from_error(&e);
             assert_eq!(response.code, 600005); // ValidationFailed
             assert!(response.message.contains("ID 必须大于 0"));
         }

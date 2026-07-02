@@ -110,8 +110,23 @@ pub struct Branch {
     pub end_room: RoomId,
     /// 分支房间 ID 列表
     pub room_ids: Vec<RoomId>,
-    /// 分支目的(如 "reward", "shop", "event", "shortcut")
-    pub purpose: String,
+    /// 分支目的
+    pub purpose: BranchPurpose,
+}
+
+/// 分支目的
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum BranchPurpose {
+    /// 奖励分支（终点为宝藏房）
+    Reward,
+    /// 商店分支（终点为商店房）
+    Shop,
+    /// 事件分支（终点为事件房）
+    Event,
+    /// 秘密分支（终点为秘密房）
+    Secret,
 }
 
 /// 门锚点标识符

@@ -222,7 +222,7 @@ mod tests {
                 start_room: "c0".to_string(),
                 end_room: format!("br-{b}-r1"),
                 room_ids: vec![format!("br-{b}-r0"), format!("br-{b}-r1")],
-                purpose: "reward".to_string(),
+                purpose: BranchPurpose::Reward,
             });
         }
         RoomGraph {

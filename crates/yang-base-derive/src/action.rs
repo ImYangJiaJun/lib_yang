@@ -70,15 +70,28 @@ pub fn expand(input: DeriveInput) -> TokenStream {
         })
         .collect();
 
-    quote! {
-        impl #impl_g #struct_name #ty_g #where_clause {
-            /// 框架内部使用，由 #[derive(Action)] 派生。
-            #[doc(hidden)]
+    // API-15: 空权限直接返回 &[]（零分配），避免泛型单态化时每个 T 各生一份空 OnceLock
+    let perms_fn = if perms.is_empty() {
+        quote! {
+            fn __action_permissions_static() -> &'static [::yang_base::action::Permission] {
+                &[]
+            }
+        }
+    } else {
+        quote! {
             fn __action_permissions_static() -> &'static [::yang_base::action::Permission] {
                 static PERMS: ::std::sync::OnceLock<::std::vec::Vec<::yang_base::action::Permission>>
                     = ::std::sync::OnceLock::new();
                 PERMS.get_or_init(|| ::std::vec![ #( #perm_consts ),* ])
             }
+        }
+    };
+
+    quote! {
+        impl #impl_g #struct_name #ty_g #where_clause {
+            /// 框架内部使用，由 #[derive(Action)] 派生。
+            #[doc(hidden)]
+            #perms_fn
 
             /// 框架内部使用，由 #[derive(Action)] 派生。
             #[doc(hidden)]

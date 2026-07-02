@@ -271,6 +271,53 @@ fn test_golden_sample_json_roundtrip() {
         assert_eq!(original.id, reimported.id);
         assert_eq!(original.room_type, reimported.room_type);
     }
+
+    // OPT-T-14: 验证 terrains tiles.data 在 JSON 往返后一致
+    assert_eq!(imported.terrains.len(), result.terrains.len(), "地形数应一致");
+    for (i, (orig_terrain, imp_terrain)) in result
+        .terrains
+        .iter()
+        .zip(imported.terrains.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            orig_terrain.room_id, imp_terrain.room_id,
+            "terrain[{i}] room_id 应一致"
+        );
+        assert_eq!(
+            orig_terrain.grid_size, imp_terrain.grid_size,
+            "terrain[{i}] grid_size 应一致"
+        );
+        assert_eq!(
+            orig_terrain.tiles.width, imp_terrain.tiles.width,
+            "terrain[{i}] tiles.width 应一致"
+        );
+        assert_eq!(
+            orig_terrain.tiles.height, imp_terrain.tiles.height,
+            "terrain[{i}] tiles.height 应一致"
+        );
+        assert_eq!(
+            orig_terrain.tiles.data, imp_terrain.tiles.data,
+            "terrain[{i}] tiles.data 应一致"
+        );
+    }
+
+    // OPT-T-14: 验证 enemy_spawns grid_pos 在 JSON 往返后一致
+    for (i, (orig, imp)) in result
+        .enemy_spawns
+        .iter()
+        .zip(imported.enemy_spawns.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            orig.id, imp.id,
+            "enemy_spawn[{i}] id 应一致"
+        );
+        assert_eq!(
+            orig.grid_pos, imp.grid_pos,
+            "enemy_spawn[{i}] grid_pos 应一致"
+        );
+    }
 }
 
 /// seed=None 稳定性测试

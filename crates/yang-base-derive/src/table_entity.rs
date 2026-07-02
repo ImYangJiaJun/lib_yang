@@ -233,5 +233,11 @@ pub fn expand(input: DeriveInput) -> TokenStream {
                 })
             }
         }
+
+        // API-16: 静态断言 TableConfig 实现 Send + Sync（OnceLock 要求）
+        const _: () = {
+            trait _MustBeSendSync: ::core::marker::Send + ::core::marker::Sync {}
+            impl _MustBeSendSync for ::yang_base::table::TableConfig {}
+        };
     }
 }

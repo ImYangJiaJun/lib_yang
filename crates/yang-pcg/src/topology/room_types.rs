@@ -1,11 +1,16 @@
 // 房间类型分配
 
-use crate::model::room::{Branch, Room, RoomId, RoomType};
+use crate::model::room::{Branch, BranchPurpose, Room, RoomId, RoomType};
 
-const BRANCH_PURPOSES: [&str; 4] = ["reward", "shop", "event", "secret"];
+const BRANCH_PURPOSES: [BranchPurpose; 4] = [
+    BranchPurpose::Reward,
+    BranchPurpose::Shop,
+    BranchPurpose::Event,
+    BranchPurpose::Secret,
+];
 
 /// 获取分支用途。
-pub fn branch_purpose(index: usize) -> &'static str {
+pub fn branch_purpose(index: usize) -> BranchPurpose {
     BRANCH_PURPOSES[index % BRANCH_PURPOSES.len()]
 }
 
@@ -25,13 +30,12 @@ pub fn assign_critical_room_type(index: usize, critical_path_len: usize) -> Room
 }
 
 /// 为分支终点分配房间类型。
-pub fn assign_branch_terminal_room_type(purpose: &str) -> RoomType {
+pub fn assign_branch_terminal_room_type(purpose: BranchPurpose) -> RoomType {
     match purpose {
-        "reward" => RoomType::Treasure,
-        "shop" => RoomType::Shop,
-        "event" => RoomType::Event,
-        "secret" => RoomType::Secret,
-        _ => RoomType::Combat,
+        BranchPurpose::Reward => RoomType::Treasure,
+        BranchPurpose::Shop => RoomType::Shop,
+        BranchPurpose::Event => RoomType::Event,
+        BranchPurpose::Secret => RoomType::Secret,
     }
 }
 
@@ -42,7 +46,7 @@ pub fn apply_branch_room_types(rooms: &mut [Room], branches: &[Branch]) {
             if let Some(room) = rooms.iter_mut().find(|room| room.id == *room_id) {
                 room.branch_id = Some(branch.id.clone());
                 if index + 1 == branch.room_ids.len() {
-                    room.room_type = assign_branch_terminal_room_type(&branch.purpose);
+                    room.room_type = assign_branch_terminal_room_type(branch.purpose);
                 } else if matches!(room.room_type, RoomType::Combat) && index % 2 == 1 {
                     room.room_type = RoomType::Elite;
                 }

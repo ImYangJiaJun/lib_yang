@@ -248,7 +248,13 @@ fn generate_by_mode(
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 确定性属性：相同 seed + config 必须生成相同结果摘要（三模式覆盖）
     #[test]
@@ -305,7 +311,13 @@ proptest! {
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 拓扑连通性属性：任意合法配置下所有房间从 Start 可达（三模式覆盖）
     #[test]
@@ -334,7 +346,13 @@ proptest! {
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 房间边界不重叠属性：任意合法配置下房间 AABB 不重叠（三模式覆盖）
     /// 由 `solve_room_bounds` 的确定性防重叠（分支竖直外推）保证（验证需求 4.7）。
@@ -364,7 +382,13 @@ proptest! {
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 地形连通性属性：任意房间从入口到出口存在通路（三模式覆盖）
     /// 由 `repair_terrain_connectivity` 的强制连通兜底 pass 保证（验证需求 5.4）。
@@ -394,7 +418,13 @@ proptest! {
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 点位最小间距属性：任意配置下点位满足最小间距（三模式覆盖）
     /// 由 spawn 阶段「敌人采样避开已放置交互物」的跨类型间距保证（验证需求 7.4/8.3）。
@@ -436,7 +466,13 @@ proptest! {
 // ============================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+    #![proptest_config({
+        let cases = std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50u32);
+        ProptestConfig::with_cases(cases)
+    })]
 
     /// 约束满足属性：排除区约束在结果中被满足（点位不在排除区内）（三模式覆盖）
     #[test]

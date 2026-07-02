@@ -87,7 +87,7 @@ impl<'a> TopologyGenerator<'a> {
             };
             let parent_room_id = critical_path[parent_critical_index].clone();
             let branch_identifier = branch_id(branch_index);
-            let purpose = branch_purpose(branch_index).to_string();
+            let purpose = branch_purpose(branch_index);
             let mut branch_room_ids = Vec::with_capacity(branch_room_count);
             let mut previous_room_id = parent_room_id.clone();
 
