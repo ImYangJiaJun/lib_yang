@@ -138,15 +138,15 @@ where
     }
 }
 
-/// 压入一个参数并返回其 PostgreSQL 占位符（`$N`，1 基）
+/// 压入一个参数并返回其 PostgreSQL 占位符编号（1 基）
 ///
 /// PostgreSQL 使用编号占位符 `$1`、`$2` ……，编号由参数在最终绑定列表中的
-/// 位置决定。本函数压入 `value` 后，以压入后的 `params.len()` 作为编号，
-/// 保证占位符编号与绑定顺序严格一致。这是与 MySQL 后端（统一使用 `?`）的
-/// 核心方言差异，集中在此处理。
-fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue) -> String {
+/// 位置决定。本函数压入 `value` 后，返回 `params.len()` 作为编号，
+/// 保证占位符编号与绑定顺序严格一致。调用方自行拼接 `$N` 到输出字符串，
+/// 避免每次调用 `format!("${}", len)` 产生短命 String（PERF-9）。
+fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue) -> usize {
     params.push(value);
-    format!("${}", params.len())
+    params.len()
 }
 
 /// 将条件转换为 SQL 字符串和参数列表（借用版本）

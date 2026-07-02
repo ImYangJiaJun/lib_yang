@@ -280,90 +280,116 @@ fn safe_quote_identifier(field: &str) -> String {
     })
 }
 
-pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
+/// 将消费版本的条件直接写入 SQL 字符串，避免 And/Or 分支的中间 Vec 分配
+///
+/// 与 [`write_condition_to_sql`] 不同，本函数消费传入的 `Condition`，
+/// 对堆分配类型直接 push 到 params 中，无需 clone。
+/// And/Or 分支直接写入 `out`，消除了 `Vec<String>` 中间分配（PERF-8）。
+/// In 分支直接逐个 push `?`，消除了 `vec!["?"; count]` 临时 Vec（PERF-7）。
+fn write_condition_to_sql_owned(
+    condition: Condition,
+    out: &mut String,
+    params: &mut Vec<SqlValue>,
+) {
     match condition {
         Condition::Eq(field, value) => {
-            // 直接 push，无需 clone
             params.push(value);
-            format!("{} = ?", safe_quote_identifier(&field))
+            *out += &format!("{} = ?", safe_quote_identifier(&field));
         }
         Condition::Ne(field, value) => {
             params.push(value);
-            format!("{} != ?", safe_quote_identifier(&field))
+            *out += &format!("{} != ?", safe_quote_identifier(&field));
         }
         Condition::Gt(field, value) => {
             params.push(value);
-            format!("{} > ?", safe_quote_identifier(&field))
+            *out += &format!("{} > ?", safe_quote_identifier(&field));
         }
         Condition::Lt(field, value) => {
             params.push(value);
-            format!("{} < ?", safe_quote_identifier(&field))
+            *out += &format!("{} < ?", safe_quote_identifier(&field));
         }
         Condition::Gte(field, value) => {
             params.push(value);
-            format!("{} >= ?", safe_quote_identifier(&field))
+            *out += &format!("{} >= ?", safe_quote_identifier(&field));
         }
         Condition::Lte(field, value) => {
             params.push(value);
-            format!("{} <= ?", safe_quote_identifier(&field))
+            *out += &format!("{} <= ?", safe_quote_identifier(&field));
         }
         Condition::In(field, values) => {
             if values.is_empty() {
-                // IN 空列表总是返回 false
-                return "1 = 0".to_string();
+                out.push_str("1 = 0");
+                return;
             }
             let count = values.len();
-            // 直接 extend，无需逐个 clone
             params.extend(values);
-            let placeholders = vec!["?"; count].join(", ");
-            format!("{} IN ({})", safe_quote_identifier(&field), placeholders)
+            *out += &format!("{} IN (", safe_quote_identifier(&field));
+            for i in 0..count {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('?');
+            }
+            out.push(')');
         }
         Condition::Between(field, start, end) => {
-            // 直接 push 两个值，无需 clone
             params.push(start);
             params.push(end);
-            format!("{} BETWEEN ? AND ?", safe_quote_identifier(&field))
+            *out += &format!("{} BETWEEN ? AND ?", safe_quote_identifier(&field));
         }
         Condition::Like(field, pattern) => {
-            // pattern 是 String，直接消费
             params.push(SqlValue::String(pattern));
-            format!("{} LIKE ?", safe_quote_identifier(&field))
+            *out += &format!("{} LIKE ?", safe_quote_identifier(&field));
         }
-        Condition::IsNull(field) => format!("{} IS NULL", safe_quote_identifier(&field)),
-        Condition::IsNotNull(field) => format!("{} IS NOT NULL", safe_quote_identifier(&field)),
+        Condition::IsNull(field) => {
+            *out += &format!("{} IS NULL", safe_quote_identifier(&field));
+        }
+        Condition::IsNotNull(field) => {
+            *out += &format!("{} IS NOT NULL", safe_quote_identifier(&field));
+        }
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
-                return "1 = 1".to_string();
+                out.push_str("1 = 1");
+                return;
             }
             if conditions.len() == 1 {
-                // 只有一个条件时，直接递归处理，避免多余括号
-                // remove(0) 在 len == 1 时安全，不会 panic
-                return condition_to_sql_owned(conditions.remove(0), params);
+                write_condition_to_sql_owned(conditions.remove(0), out, params);
+                return;
             }
-            // AND 条件需要括号以确保优先级，递归调用自身消费子条件
-            let parts: Vec<String> = conditions
-                .into_iter()
-                .map(|c| condition_to_sql_owned(c, params))
-                .collect();
-            format!("({})", parts.join(" AND "))
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" AND ");
+                }
+                write_condition_to_sql_owned(c, out, params);
+            }
+            out.push(')');
         }
         Condition::Or(mut conditions) => {
             if conditions.is_empty() {
-                return "1 = 0".to_string();
+                out.push_str("1 = 0");
+                return;
             }
             if conditions.len() == 1 {
-                // 只有一个条件时，直接递归处理，避免多余括号
-                // remove(0) 在 len == 1 时安全，不会 panic
-                return condition_to_sql_owned(conditions.remove(0), params);
+                write_condition_to_sql_owned(conditions.remove(0), out, params);
+                return;
             }
-            // OR 条件需要括号，递归调用自身消费子条件
-            let parts: Vec<String> = conditions
-                .into_iter()
-                .map(|c| condition_to_sql_owned(c, params))
-                .collect();
-            format!("({})", parts.join(" OR "))
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" OR ");
+                }
+                write_condition_to_sql_owned(c, out, params);
+            }
+            out.push(')');
         }
     }
+}
+
+pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
+    let mut out = String::new();
+    write_condition_to_sql_owned(condition, &mut out, params);
+    out
 }
 
 #[cfg(test)]
