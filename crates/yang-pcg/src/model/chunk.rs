@@ -5,8 +5,8 @@ use crate::model::geometry::RoomBounds;
 use crate::model::room::RoomId;
 use serde::{Deserialize, Serialize};
 
-/// 分块标识符
-pub type ChunkId = String;
+/// 分块标识符（统一定义在 `model::ChunkId`）
+pub use super::ChunkId;
 
 /// 分块
 #[derive(Debug, Clone, Serialize, Deserialize)]

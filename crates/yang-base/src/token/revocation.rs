@@ -7,7 +7,8 @@
 //!    写入 Redis，TTL 设为 Token 剩余有效期（过期后 key 自动消失，黑名单不会
 //!    无限增长）。校验时在标准签名/过期校验之外，额外查一次该黑名单。
 //! 2. **按用户批量撤销（subject 时间水位线）**：用于改密、强制下线。撤销时把
-//!    “当前时间戳”写入 `token:user:{sub}:min_iat`，TTL 取 Refresh Token 有效期。
+//!    "当前时间戳"写入 `token:user:{hex(sub)}:min_iat`（sub 经 hex 编码，避免特殊
+//!    字符导致 Redis key 歧义），TTL 取 Refresh Token 有效期。
 //!    校验时若该用户存在水位线且 Token 的 `iat` 早于水位线，则视为已撤销——
 //!    一次写入即可让该用户在此之前签发的所有 Token 全部失效。
 //!
@@ -27,12 +28,23 @@ fn blacklist_key(jti: &str) -> String {
     format!("{BLACKLIST_PREFIX}{jti}")
 }
 
-/// 按用户撤销的时间水位线 key 前缀。最终 key 形如 `token:user:{sub}:min_iat`。
+/// 按用户撤销的时间水位线 key 前缀。最终 key 形如 `token:user:{hex(sub)}:min_iat`。
 const SUBJECT_MIN_IAT_PREFIX: &str = "token:user:";
 
-/// 根据 subject 构造“最小签发时间水位线”Redis key。
+/// 将字节切片编码为小写 hex 字符串（无外部依赖）。
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// 根据 subject 构造"最小签发时间水位线"Redis key。
+///
+/// `sub` 经 hex 编码后嵌入 key，避免含 `:` 等特殊字符导致 Redis key 歧义。
 fn subject_min_iat_key(sub: &str) -> String {
-    format!("{SUBJECT_MIN_IAT_PREFIX}{sub}:min_iat")
+    format!("{SUBJECT_MIN_IAT_PREFIX}{}:min_iat", hex_encode(sub.as_bytes()))
 }
 
 /// 判定一个 Token 的签发时间 `iat` 是否被用户水位线 `min_iat` 撤销。
@@ -103,8 +115,8 @@ impl TokenManager {
 
     /// 按用户（subject）批量撤销该用户在此刻之前签发的所有 Token（token-3）。
     ///
-    /// 在 Redis 中将 `token:user:{sub}:min_iat` 写为当前时间戳，作为该用户的
-    /// “最小有效签发时间”水位线。此后 [`TokenManager::verify_token_checked`]
+    /// 在 Redis 中将 `token:user:{hex(sub)}:min_iat` 写为当前时间戳，作为该用户的
+    /// "最小有效签发时间"水位线。此后 [`TokenManager::verify_token_checked`]
     /// 会拒绝任何 `iat` 早于该水位线的 Token，从而让此前签发的全部 Token 一次性失效。
     ///
     /// 适用于**改密、强制下线**等需要让某用户全部会话立即失效的场景。
@@ -130,7 +142,7 @@ impl TokenManager {
         Ok(())
     }
 
-    /// 查询某用户的“最小有效签发时间”水位线（若不存在返回 `None`）。
+    /// 查询某用户的"最小有效签发时间"水位线（若不存在返回 `None`）。
     ///
     /// # 参数
     ///
@@ -225,7 +237,21 @@ mod tests {
 
     #[test]
     fn test_subject_min_iat_key_format() {
-        assert_eq!(subject_min_iat_key("user_42"), "token:user:user_42:min_iat");
+        // sub 经 hex 编码，避免特殊字符导致 key 歧义
+        assert_eq!(subject_min_iat_key("user_42"), "token:user:757365725f3432:min_iat");
+    }
+
+    #[test]
+    fn test_subject_min_iat_key_colon_safe() {
+        // sub 含冒号时 hex 编码后不再产生歧义
+        let key = subject_min_iat_key("user:admin");
+        assert_eq!(key, "token:user:757365723a61646d696e:min_iat");
+        // 确保 key 中不会出现未转义的冒号（除固定分隔符外）
+        let after_prefix = key.strip_prefix("token:user:").unwrap();
+        let (hex_part, rest) = after_prefix.split_once(':').unwrap();
+        assert_eq!(rest, "min_iat");
+        // hex 部分只含 0-9a-f
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     /// NEW-6：同秒签发（iat == min_iat）必须被撤销，杜绝 1 秒旁路窗口。

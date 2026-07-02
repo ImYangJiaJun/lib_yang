@@ -39,7 +39,7 @@ pub enum ValidationScope {
 ///
 /// 数据容器（`LayoutOutput` / `Terrain` / `SpawnOutput` / `GenerationResult`）跨实现共享，
 /// trait 只分叉算法不分叉数据类型——UE 导出、序列化、结果组装因此保持地图种类无关。
-pub trait PipelineBackend {
+pub trait PipelineBackend: Send + Sync {
     /// 布局：`RoomGraph` → 房间边界/门锚/走廊。RNG 已在外层派生为 `"layout"`。
     fn solve_layout(
         &self,

@@ -81,8 +81,8 @@ pub struct RuntimeContext {
     pub caller_tag: Option<String>,
 }
 
-/// 分块标识符
-pub type ChunkId = String;
+/// 分块标识符（统一定义在 `model::ChunkId`）
+pub use super::ChunkId;
 
 /// 约束类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
