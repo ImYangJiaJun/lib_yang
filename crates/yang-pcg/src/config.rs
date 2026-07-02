@@ -819,4 +819,115 @@ mod tests {
         let invalid_range = RangeU16 { min: 10, max: 5 };
         assert!(invalid_range.validate("test").is_err());
     }
+
+    // OPT-T-07: 边界/非法 config 拒绝测试
+
+    #[test]
+    fn test_nan_obstacle_density_rejected() {
+        let mut config = GenerationConfig::default();
+        config.terrain.obstacle_density = f32::NAN;
+        let result = config.normalize();
+        assert!(result.is_err(), "NaN obstacle_density 应被拒绝");
+    }
+
+    #[test]
+    fn test_inf_obstacle_density_rejected() {
+        let mut config = GenerationConfig::default();
+        config.terrain.obstacle_density = f32::INFINITY;
+        let result = config.normalize();
+        assert!(result.is_err(), "Inf obstacle_density 应被拒绝");
+
+        let mut config2 = GenerationConfig::default();
+        config2.terrain.obstacle_density = f32::NEG_INFINITY;
+        let result2 = config2.normalize();
+        assert!(result2.is_err(), "-Inf obstacle_density 应被拒绝");
+    }
+
+    #[test]
+    fn test_negative_rarity_weights_rejected() {
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![-0.1, 0.5, 0.6];
+        let result = config.normalize();
+        assert!(result.is_err(), "负权重应被拒绝");
+    }
+
+    #[test]
+    fn test_empty_rarity_weights_rejected() {
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![];
+        let result = config.normalize();
+        assert!(result.is_err(), "空 rarity_weights 应被拒绝");
+    }
+
+    #[test]
+    fn test_rarity_weights_wrong_length_rejected() {
+        // len = 1
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![1.0];
+        assert!(config.normalize().is_err(), "len=1 应被拒绝");
+
+        // len = 2
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![0.5, 0.5];
+        assert!(config.normalize().is_err(), "len=2 应被拒绝");
+
+        // len = 4
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![0.25, 0.25, 0.25, 0.25];
+        assert!(config.normalize().is_err(), "len=4 应被拒绝");
+    }
+
+    #[test]
+    fn test_room_count_min_exceeds_max_rejected() {
+        let config = GenerationConfig {
+            room_count: RangeU16 { min: 50, max: 30 },
+            ..Default::default()
+        };
+        let result = config.normalize();
+        assert!(result.is_err(), "room_count min>max 应被拒绝");
+    }
+
+    #[test]
+    fn test_room_size_max_exceeds_boundary() {
+        // max_width > 512
+        let mut config = GenerationConfig::default();
+        config.room_size.max_width = 513;
+        assert!(config.normalize().is_err(), "max_width>512 应被拒绝");
+
+        // max_height > 512
+        let mut config = GenerationConfig::default();
+        config.room_size.max_height = 600;
+        assert!(config.normalize().is_err(), "max_height>512 应被拒绝");
+    }
+
+    #[test]
+    fn test_room_count_max_exceeds_boundary() {
+        let config = GenerationConfig {
+            room_count: RangeU16 {
+                min: 10,
+                max: 4097,
+            },
+            ..Default::default()
+        };
+        let result = config.normalize();
+        assert!(result.is_err(), "room_count.max>4096 应被拒绝");
+    }
+
+    #[test]
+    fn test_min_walkable_ratio_out_of_range() {
+        // > 1.0
+        let mut config = GenerationConfig::default();
+        config.terrain.min_walkable_ratio = 1.5;
+        assert!(config.normalize().is_err(), "ratio>1.0 应被拒绝");
+
+        // < 0.0
+        let mut config = GenerationConfig::default();
+        config.terrain.min_walkable_ratio = -0.1;
+        assert!(config.normalize().is_err(), "ratio<0.0 应被拒绝");
+
+        // NaN
+        let mut config = GenerationConfig::default();
+        config.terrain.min_walkable_ratio = f32::NAN;
+        assert!(config.normalize().is_err(), "NaN ratio 应被拒绝");
+    }
 }

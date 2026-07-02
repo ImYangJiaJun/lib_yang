@@ -560,21 +560,52 @@ impl TokenManager {
         // 1. 验证旧 Refresh Token 且确认未被撤销
         let old_claims = self.verify_token_checked(old_refresh).await?;
 
-        // 2. 校验 Token 类型必须为 refresh
+        // 2~4：委托已验证 claims 的版本，避免重复逻辑
+        self.rotate_refresh_token_from_claims(&old_claims, custom_claims)
+            .await
+    }
+
+    /// 基于已验证 claims 轮换 Refresh Token（跳过内部二次验证）。
+    ///
+    /// 当调用方已在外部完成 [`verify_token_checked`] 并持有 [`TokenClaims`] 时，
+    /// 使用本方法可避免重复验证（节省 2 次 Redis RTT：黑名单查询 + 水位线查询）。
+    ///
+    /// 本方法仅执行：
+    /// 1. 校验 `token_type` 必须为 `"refresh"`；
+    /// 2. 原子拉黑旧 Refresh Token（`SET NX EX`）；
+    /// 3. 以原 `sub` 与新自定义声明签发新 Token 对。
+    ///
+    /// # 参数
+    ///
+    /// - `old_claims`: 已通过 [`verify_token_checked`] 验证的旧 Refresh Token 声明
+    /// - `custom_claims`: 新 Access Token 的自定义声明（JSON 格式）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok((access_token, refresh_token))`: 新签发的 Token 对
+    /// - `Err(BaseError::TokenTypeInvalid)`: `old_claims.token_type` 不是 `"refresh"`
+    /// - `Err(BaseError::TokenRevoked)`: 旧 Token 已被撤销（竞态中落败）
+    /// - `Err(BaseError::RedisOperationFailed)`: 原子写入黑名单失败
+    pub async fn rotate_refresh_token_from_claims(
+        &self,
+        old_claims: &TokenClaims,
+        custom_claims: serde_json::Value,
+    ) -> Result<(String, String), BaseError> {
+        // 1. 校验 Token 类型必须为 refresh（防御性检查）
         if old_claims.token_type != "refresh" {
             return Err(BaseError::TokenTypeInvalid(
                 "期望 refresh token".to_string(),
             ));
         }
 
-        // 3. 原子拉黑旧 Refresh Token（SET NX EX），防止并发双重使用
+        // 2. 原子拉黑旧 Refresh Token（SET NX EX），防止并发双重使用
         let now = current_unix_timestamp()?;
         let ttl = old_claims.exp.saturating_sub(now);
         if !TokenManager::try_revoke_once(&old_claims.jti, ttl).await? {
             return Err(BaseError::TokenRevoked);
         }
 
-        // 4. 以原 subject 与新的自定义声明签发新的 Token 对
+        // 3. 以原 subject 与新的自定义声明签发新的 Token 对
         self.generate_token_pair(&old_claims.sub, custom_claims)
     }
 }

@@ -82,7 +82,10 @@ use serde::{Deserialize, Serialize};
 ///     }),
 /// };
 /// ```
+/// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
+/// 请使用 [`TokenClaims::new`] 构造。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TokenClaims {
     /// 签发者（Issuer）
     ///
@@ -142,6 +145,33 @@ pub struct TokenClaims {
     /// ```
     #[serde(flatten)]
     pub custom: serde_json::Value,
+}
+
+impl TokenClaims {
+    /// 构造 `TokenClaims`（`#[non_exhaustive]` 后的唯一公开构造入口）。
+    pub fn new(
+        iss: impl Into<String>,
+        sub: impl Into<String>,
+        aud: impl Into<String>,
+        exp: u64,
+        nbf: u64,
+        iat: u64,
+        jti: impl Into<String>,
+        token_type: impl Into<String>,
+        custom: serde_json::Value,
+    ) -> Self {
+        Self {
+            iss: iss.into(),
+            sub: sub.into(),
+            aud: aud.into(),
+            exp,
+            nbf,
+            iat,
+            jti: jti.into(),
+            token_type: token_type.into(),
+            custom,
+        }
+    }
 }
 
 #[cfg(test)]

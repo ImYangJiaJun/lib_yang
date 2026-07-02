@@ -45,8 +45,7 @@ pub(crate) fn init_room_grid(width: u32, height: u32) -> Grid2D<TileKind> {
 
 /// 使用 TerrainConfig 为单个房间生成地形。
 ///
-/// 为单个房间生成地形，接受 `TerrainConfig`，
-/// 便于作为 `TerrainStrategy` trait 的底层实现使用。
+/// 接受 `TerrainConfig`，便于作为 `TerrainStrategy` trait 的底层实现使用。
 ///
 /// # 参数
 ///

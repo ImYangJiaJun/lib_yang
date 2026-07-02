@@ -350,8 +350,14 @@ impl RedisTransaction {
                 }
                 Err(e) => {
                     // 检查是否是 WATCH 冲突导致的失败（EXECABORT）
-                    let err_msg = e.to_string();
-                    if err_msg.contains("EXECABORT") && !self.watched_keys.is_empty() {
+                    // 优先使用枚举匹配，避免依赖错误消息字符串（版本升级/i18n 可能改变文案）
+                    let is_exec_abort = matches!(
+                        e.kind(),
+                        redis::ErrorKind::Server(redis::ServerErrorKind::ExecAbort)
+                    ) || e.to_string().contains("EXECABORT");
+                    // 仅在存在监视键时才把 EXECABORT 判为 WATCH 冲突；
+                    // 无监视键时 EXECABORT 可能源于其他原因（如脚本中止），直接透传错误。
+                    if is_exec_abort && !self.watched_keys.is_empty() {
                         retries += 1;
                         if retries >= MAX_RETRIES {
                             return Err(DbError::RedisCommandError(format!(

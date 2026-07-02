@@ -20,7 +20,36 @@ pub enum RedisValue {
 }
 
 impl RedisValue {
-    /// 转换为字符串
+    /// 借用字符串切片（零拷贝）
+    ///
+    /// 对 `String` 变体返回 `&str`，无需堆分配。
+    /// `Bytes` 变体不自动解码为 UTF-8，返回 `None`。
+    ///
+    /// # 返回
+    /// - `Some(&str)`: 如果值是字符串类型
+    /// - `None`: 如果值不是字符串类型
+    ///
+    /// # 示例
+    /// ```
+    /// use yang_db::RedisValue;
+    ///
+    /// let value = RedisValue::String("hello".to_string());
+    /// assert_eq!(value.as_str(), Some("hello"));
+    ///
+    /// let nil = RedisValue::Nil;
+    /// assert_eq!(nil.as_str(), None);
+    /// ```
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            RedisValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// 转换为字符串（需要堆分配）
+    ///
+    /// 内部委托 [`as_str`](Self::as_str)，仅在确实需要 `String` 时使用；
+    /// 若只需借用，请优先使用 `as_str()`。
     ///
     /// # 返回
     /// - `Some(String)`: 如果值是字符串类型
@@ -37,10 +66,7 @@ impl RedisValue {
     /// assert_eq!(nil.as_string(), None);
     /// ```
     pub fn as_string(&self) -> Option<String> {
-        match self {
-            RedisValue::String(s) => Some(s.clone()),
-            _ => None,
-        }
+        self.as_str().map(|s| s.to_owned())
     }
 
     /// 转换为整数
@@ -237,6 +263,7 @@ mod tests {
     #[test]
     fn test_redis_value_string() {
         let value = RedisValue::String("hello".to_string());
+        assert_eq!(value.as_str(), Some("hello"));
         assert_eq!(value.as_string(), Some("hello".to_string()));
         assert_eq!(value.as_i64(), None);
     }
@@ -381,6 +408,24 @@ mod tests {
         let debug_str = format!("{:?}", value);
         assert!(debug_str.contains("Int"));
         assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn test_as_str() {
+        // String 变体返回借用
+        let value = RedisValue::String("hello".to_string());
+        assert_eq!(value.as_str(), Some("hello"));
+
+        // Bytes 变体不自动解码，返回 None
+        let value = RedisValue::Bytes(vec![0xFF, 0xFE]);
+        assert_eq!(value.as_str(), None);
+
+        // 其他变体一律 None
+        assert_eq!(RedisValue::Nil.as_str(), None);
+        assert_eq!(RedisValue::Int(1).as_str(), None);
+        assert_eq!(RedisValue::Float(1.0).as_str(), None);
+        assert_eq!(RedisValue::Bool(true).as_str(), None);
+        assert_eq!(RedisValue::Array(vec![]).as_str(), None);
     }
 
     #[test]

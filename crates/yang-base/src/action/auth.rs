@@ -169,7 +169,10 @@ pub trait CredentialVerifier: Send + Sync + 'static {
 ///
 /// 描述一次认证相关操作（登录/刷新/登出）的结果。**绝不携带凭据明文或 Token
 /// 原文**：需要标识 Token 时只放指纹（[`token_fingerprint`]）。
+///
+/// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AuthAuditEvent {
     /// 本次派发的 request_id（十六进制串）
     pub request_id: String,
@@ -372,9 +375,10 @@ impl RefreshClaimsResolver for DefaultRefreshClaims {
 
 /// 刷新 Action：用 Refresh Token 换取新的 Access Token。公开。
 ///
-/// 复用 [`TokenManager::verify_token_checked`](crate::token::TokenManager::verify_token_checked)
-/// 已验证（签名 + 过期 + 黑名单）并返回的声明，直接以其 `sub` 签发新 Access Token，
-/// 不再二次验证，避免重复解码。自定义声明由注入的 [`RefreshClaimsResolver`] 决定，
+/// 仅调用一次 [`TokenManager::verify_token_checked`](crate::token::TokenManager::verify_token_checked)
+/// 完成验证（签名 + 过期 + 黑名单），随后将已验证的 [`TokenClaims`] 直接传给
+/// [`TokenManager::rotate_refresh_token_from_claims`]，跳过内部二次验证，
+/// 节省 2 次 Redis RTT。自定义声明由注入的 [`RefreshClaimsResolver`] 决定，
 /// 默认 [`DefaultRefreshClaims`] 不附加声明，零配置即可使用。
 ///
 /// # 示例
@@ -466,9 +470,9 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
             }
             // 按业务解析器决定新 Token 的自定义声明
             let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
-            // 使用 Token Rotation：撤销旧 Refresh Token 并签发新 Token 对
+            // 使用已验证的 claims 直接轮换，跳过 rotate_refresh_token 内部二次验证
             let (access_token, refresh_token) = manager
-                .rotate_refresh_token(&input.refresh_token, custom_claims)
+                .rotate_refresh_token_from_claims(&claims, custom_claims)
                 .await?;
             Ok::<_, BaseError>((access_token, refresh_token, claims.sub))
         };
@@ -513,6 +517,15 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
 /// 时，攻击者仍可用未失效的 Refresh Token 刷出新的 Access Token。因此调用方应在
 /// `token` 传 Access Token 的同时，于 `refresh_token` 传入 Refresh Token，本 Action
 /// 会将二者一并拉黑。
+///
+/// # 所有权校验（AUTH-4）
+///
+/// 当请求携带 Bearer Token（`Authorization` 头）时，本 Action 会校验该 Bearer Token
+/// 的 `sub` 与待撤销 Token（`input.token`）的 `sub` 一致。不一致时返回
+/// [`BaseError::PermissionDenied`]，防止用户撤销他人的 Token。
+///
+/// 若请求未携带 Bearer Token（匿名调用），则跳过所有权校验——此时无法确认调用者身份，
+/// 撤销操作仍允许执行（向后兼容）。
 #[derive(Action, Default)]
 #[action(
     name = "logout",
@@ -554,8 +567,23 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
         let manager = ctx.tools.token_manager();
 
         let run = async {
-            // 撤销 Access Token
-            manager.revoke_token(&input.token).await?;
+            // AUTH-4：解析待撤销 Token 的 claims（仅校验签名/过期，不查黑名单——
+            // 该 Token 本身就是要被撤销的目标，查黑名单无意义）
+            let target_claims = manager.verify_token(&input.token)?;
+
+            // 若请求携带 Bearer Token，校验其 sub 与待撤销 Token 的 sub 一致
+            if let Some(bearer_token) = ctx.request.token() {
+                // Bearer Token 需完整验证（含黑名单），确保调用者身份有效
+                let caller_claims = manager.verify_token_checked(bearer_token).await?;
+                if caller_claims.sub != target_claims.sub {
+                    return Err(BaseError::PermissionDenied(
+                        "只能撤销自己的 Token".to_string(),
+                    ));
+                }
+            }
+
+            // 用已解析的 claims 直接撤销（避免 revoke_token 内部重复验证）
+            manager.revoke_claims(&target_claims).await?;
             // 若提供 Refresh Token，一并撤销以彻底终止会话
             if let Some(refresh_token) = &input.refresh_token {
                 manager.revoke_token(refresh_token).await?;

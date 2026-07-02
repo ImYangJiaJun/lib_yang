@@ -15,6 +15,9 @@ use serde::Serialize;
 /// - `message`: 响应消息
 /// - `data`: 响应数据（可选）
 ///
+/// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
+/// 请使用 [`ApiResponse::success`] / [`ApiResponse::fail`] / [`ApiResponse::from_error`] 等构造。
+///
 /// # 示例
 ///
 /// ```rust,ignore
@@ -34,6 +37,7 @@ use serde::Serialize;
 /// assert!(response.data.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ApiResponse {
     /// 状态码
     ///

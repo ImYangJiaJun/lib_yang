@@ -109,15 +109,15 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             fn meta_static(&self) -> &'static ::yang_base::action::ActionMeta {
                 static M: ::std::sync::OnceLock<::yang_base::action::ActionMeta>
                     = ::std::sync::OnceLock::new();
-                M.get_or_init(|| ::yang_base::action::ActionMeta {
-                    name: #name,
-                    display_name: #display_name,
-                    description: #description,
-                    permissions: Self::__action_permissions_static(),
-                    is_public: #is_public,
-                    input_schema: Self::__action_input_schema_static(),
-                    output_schema: Self::__action_output_schema_static(),
-                })
+                M.get_or_init(|| ::yang_base::action::ActionMeta::new(
+                    #name,
+                    #display_name,
+                    #description,
+                    Self::__action_permissions_static(),
+                    #is_public,
+                    Self::__action_input_schema_static(),
+                    Self::__action_output_schema_static(),
+                ))
             }
         }
     }

@@ -27,7 +27,11 @@ use super::RequestId;
 static GLOBAL_TOOLS: OnceLock<Arc<GlobalTools>> = OnceLock::new();
 
 /// 用户信息
+///
+/// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
+/// 请使用 [`User::new`] 构造，再通过字段赋值设置可选属性。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct User {
     /// 用户 ID
     pub id: i64,

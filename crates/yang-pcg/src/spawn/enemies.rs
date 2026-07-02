@@ -27,8 +27,7 @@ pub struct EnemySpawnTracked {
 /// 生成单个房间的敌人点位，并与「已占用点」（如先放置的交互物，局部坐标）保持跨类型间距。
 ///
 /// `occupied` 为局部坐标的已占用点集合，`occupied_spacing` 为跨类型间距阈值。
-/// 与 `generate_enemy_spawns_for_room` 行为一致（传空 occupied 时字节等价），
-/// RNG 消耗不受 occupied 影响（仅取决于候选洗牌）。
+/// 传空 occupied 时 RNG 消耗不受影响（仅取决于候选洗牌）。
 pub fn generate_enemy_spawns_for_room_excluding(
     room: &Room,
     terrain: &Terrain,
