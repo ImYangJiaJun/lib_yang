@@ -95,14 +95,14 @@ impl MapGenerator {
 
         // 点位阶段
         let spawn_start = self.debug_enabled.then(Instant::now);
-        let mut spawn_rng = root_rng.derive("spawn");
+        let spawn_rng = root_rng.derive("spawn");
         // 调试模式下使用带跟踪的点位生成，记录候选数和拒绝原因
         let (item_spawns, enemy_spawns, spawn_debug_info) = if self.debug_enabled {
             let spawn_result = backend.generate_spawns_with_debug(
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
-                &mut spawn_rng,
+                &spawn_rng,
             )?;
             let (items, enemies) = constraint::apply_spawn_constraints(
                 spawn_result.output.item_spawns,
@@ -118,7 +118,7 @@ impl MapGenerator {
                 &layout_output.rooms,
                 &terrains,
                 &normalized,
-                &mut spawn_rng,
+                &spawn_rng,
             )?;
             let (items, enemies) = constraint::apply_spawn_constraints(
                 item_spawns,

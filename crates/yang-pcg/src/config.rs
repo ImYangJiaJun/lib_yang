@@ -323,8 +323,15 @@ impl RangeU16 {
         Self { min, max }
     }
 
-    /// 验证范围是否有效
-    pub fn validate(&self, field_name: &str) -> PcgResult<()> {
+    /// 判断范围是否有效（`min <= max`）。
+    ///
+    /// 外部调用方只需检查有效性时用此方法；需要携带字段路径的错误信息请用 [`validate`](Self::validate)。
+    pub const fn is_valid(&self) -> bool {
+        self.min <= self.max
+    }
+
+    /// 验证范围是否有效，无效时返回带字段路径的配置错误。
+    pub(crate) fn validate(&self, field_name: &str) -> PcgResult<()> {
         if self.min > self.max {
             return Err(PcgError::config_with_field(
                 format!("范围非法: min({}) > max({})", self.min, self.max),

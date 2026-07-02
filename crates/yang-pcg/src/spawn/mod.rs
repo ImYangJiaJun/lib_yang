@@ -62,11 +62,13 @@ pub struct SpawnOutputWithDebug {
 }
 
 /// 为所有房间生成交互物和敌人点位。
+///
+/// `rng` 只需 `&StableRng`——每房间通过 `derive` 派生独立子 RNG，父 RNG 无需可变借用。
 pub fn generate_spawns(
     rooms: &[Room],
     terrains: &[Terrain],
     config: &NormalizedConfig,
-    rng: &mut StableRng,
+    rng: &StableRng,
 ) -> PcgResult<SpawnOutput> {
     let mut item_spawns = Vec::new();
     let mut enemy_spawns = Vec::new();
@@ -115,7 +117,7 @@ pub fn generate_spawns_with_debug(
     rooms: &[Room],
     terrains: &[Terrain],
     config: &NormalizedConfig,
-    rng: &mut StableRng,
+    rng: &StableRng,
 ) -> PcgResult<SpawnOutputWithDebug> {
     let mut item_spawns = Vec::new();
     let mut enemy_spawns = Vec::new();

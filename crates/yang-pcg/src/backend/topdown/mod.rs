@@ -53,7 +53,7 @@ impl PipelineBackend for TopDownBackend {
         rooms: &[Room],
         terrains: &[Terrain],
         config: &NormalizedConfig,
-        rng: &mut StableRng,
+        rng: &StableRng,
     ) -> PcgResult<SpawnOutput> {
         spawn::generate_spawns(rooms, terrains, config, rng)
     }
@@ -63,7 +63,7 @@ impl PipelineBackend for TopDownBackend {
         rooms: &[Room],
         terrains: &[Terrain],
         config: &NormalizedConfig,
-        rng: &mut StableRng,
+        rng: &StableRng,
     ) -> PcgResult<SpawnOutputWithDebug> {
         spawn::generate_spawns_with_debug(rooms, terrains, config, rng)
     }

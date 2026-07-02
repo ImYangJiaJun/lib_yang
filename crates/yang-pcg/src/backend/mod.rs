@@ -65,7 +65,7 @@ pub trait PipelineBackend: Send + Sync {
         rooms: &[Room],
         terrains: &[Terrain],
         config: &NormalizedConfig,
-        rng: &mut StableRng,
+        rng: &StableRng,
     ) -> PcgResult<SpawnOutput>;
 
     /// 点位的调试变体（带候选/拒绝跟踪），仅在调试模式下使用。
@@ -74,7 +74,7 @@ pub trait PipelineBackend: Send + Sync {
         rooms: &[Room],
         terrains: &[Terrain],
         config: &NormalizedConfig,
-        rng: &mut StableRng,
+        rng: &StableRng,
     ) -> PcgResult<SpawnOutputWithDebug>;
 
     /// 可达性 + 结构校验，进生产路径。`scope` 决定整层校验集还是分块子集。

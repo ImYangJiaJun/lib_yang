@@ -432,6 +432,21 @@ impl PluginManager {
             }
         }
 
+        // 检测循环依赖：Kahn 算法结束后，未被排序的节点构成环
+        if sorted.len() < plugins.len() {
+            let circular: Vec<String> = plugins
+                .iter()
+                .filter(|p| !sorted.iter().any(|n| n == p.name()))
+                .map(|p| p.name().to_string())
+                .collect();
+            log::error!(
+                "检测到循环依赖，以下插件将无法按依赖顺序加载: {}",
+                circular.join(", ")
+            );
+            // 将循环中的插件追加到排序末尾，保证所有插件都出现在结果中
+            sorted.extend(circular);
+        }
+
         // 重新排序插件列表
         plugins.sort_by_key(|p| {
             sorted

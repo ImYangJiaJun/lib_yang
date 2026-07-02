@@ -162,6 +162,7 @@ impl ModuleRouter {
     /// let router = ModuleRouter::new("user", "用户管理")
     ///     .table_config(table_config);
     /// ```
+    #[deprecated(note = "请用 with_table_config")]
     pub fn table_config(self, config: Arc<TableConfig>) -> Self {
         self.with_table_config(config)
     }
