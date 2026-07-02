@@ -31,6 +31,7 @@ pub struct ActionMeta {
 
 impl ActionMeta {
     /// 构造 `ActionMeta`（`#[non_exhaustive]` 后的唯一公开构造入口）。
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         name: &'static str,
         display_name: &'static str,

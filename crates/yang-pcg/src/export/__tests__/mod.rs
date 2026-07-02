@@ -385,6 +385,72 @@ fn test_current_schema_version_constant() {
     assert!(parts[2].parse::<u32>().is_ok());
 }
 
+#[test]
+fn test_import_json_malformed_version() {
+    // 验证畸形 schema_version 被拒绝：非三段 semver 格式
+    let malformed_versions = vec!["abc", "1.2", "1.2.3.4", ""];
+    for bad_version in malformed_versions {
+        let mut result = create_test_result();
+        result.metadata.schema_version = bad_version.to_string();
+        let json = serde_json::to_string(&result).expect("序列化应成功");
+
+        let err = import_json(&json).expect_err(&format!(
+            "畸形版本 '{}' 应被拒绝",
+            bad_version
+        ));
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("schema_version 格式非法"),
+            "版本 '{}' 的错误信息应包含格式描述: {}",
+            bad_version,
+            err_msg
+        );
+        assert_eq!(
+            err.error_code(),
+            "PCG-CORRUPTED-001",
+            "畸形版本 '{}' 应返回 CorruptedData 错误码",
+            bad_version
+        );
+    }
+}
+
+#[test]
+fn test_schema_version_compat() {
+    // 主版本号相同 → 兼容（无论次版本/修订号）
+    let compatible_versions = vec!["1.0.0", "1.0.99", "1.99.0", "1.2.3"];
+    for good_version in compatible_versions {
+        let mut result = create_test_result();
+        result.metadata.schema_version = good_version.to_string();
+        let json = serde_json::to_string(&result).expect("序列化应成功");
+
+        let imported = import_json(&json).expect(&format!(
+            "主版本相同的版本 '{}' 应被接受",
+            good_version
+        ));
+        assert_eq!(imported.metadata.schema_version, good_version);
+    }
+
+    // 主版本号不同 → 不兼容
+    let incompatible_versions = vec!["0.0.0", "0.9.9", "2.0.0", "99.0.0"];
+    for bad_version in incompatible_versions {
+        let mut result = create_test_result();
+        result.metadata.schema_version = bad_version.to_string();
+        let json = serde_json::to_string(&result).expect("序列化应成功");
+
+        let err = import_json(&json).expect_err(&format!(
+            "主版本不同的版本 '{}' 应被拒绝",
+            bad_version
+        ));
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("schema_version 不兼容"),
+            "版本 '{}' 的错误信息应包含不兼容描述: {}",
+            bad_version,
+            err_msg
+        );
+    }
+}
+
 // ============================================================
 // 导出/导入一致性测试（使用 MapGenerator 生成真实数据）
 // 验证需求: 14.3, 18.5

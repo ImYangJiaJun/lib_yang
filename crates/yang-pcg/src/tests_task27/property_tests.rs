@@ -22,13 +22,13 @@ use crate::validation::{
 /// 生成合法的 GenerationConfig 策略（仅 OfflineFullFloor，用于无模式分发场景）
 ///
 /// 约束范围：
-/// - room_count: 2..=12（保持小规模以加速测试）
+/// - room_count: 2..=50（OPT-T-13: 扩大上限以提升种子空间覆盖）
 /// - critical_path_length: 2..=room_count
 /// - branch_count: 0..=3
 /// - dead_end_count: 0..=2
 fn arb_generation_config() -> impl Strategy<Value = GenerationConfig> {
     // 先生成房间数量范围
-    (2u16..=12u16)
+    (2u16..=50u16)
         .prop_flat_map(|room_count| {
             // 关键路径长度不超过房间数
             let max_path = room_count.min(8);
