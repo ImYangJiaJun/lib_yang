@@ -52,7 +52,6 @@ fn is_watch_conflict(raw: &redis::Value, has_watched_keys: bool) -> bool {
     has_watched_keys && matches!(raw, redis::Value::Nil)
 }
 
-
 impl RedisTransaction {
     /// 创建新的事务
     ///
@@ -250,8 +249,7 @@ impl RedisTransaction {
     /// 返回 self 以支持链式调用
     pub fn zadd(&mut self, key: impl Into<String>, members: &[(f64, String)]) -> &mut Self {
         if !members.is_empty() {
-            let pairs: Vec<(f64, &str)> =
-                members.iter().map(|(s, m)| (*s, m.as_str())).collect();
+            let pairs: Vec<(f64, &str)> = members.iter().map(|(s, m)| (*s, m.as_str())).collect();
             self.pipe.zadd_multiple(key.into(), &pairs);
         }
         self
@@ -340,12 +338,9 @@ impl RedisTransaction {
                             )));
                         }
                         // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
-                        conn = self
-                            .client
-                            .pool()
-                            .get()
-                            .await
-                            .map_err(|e| DbError::RedisPoolError(format!("重试获取连接失败: {}", e)))?;
+                        conn = self.client.pool().get().await.map_err(|e| {
+                            DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
+                        })?;
                         continue;
                     }
                     // 非冲突：解码为调用方期望的类型 T
@@ -365,14 +360,9 @@ impl RedisTransaction {
                             )));
                         }
                         // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
-                        conn = self
-                            .client
-                            .pool()
-                            .get()
-                            .await
-                            .map_err(|e| {
-                                DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
-                            })?;
+                        conn = self.client.pool().get().await.map_err(|e| {
+                            DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
+                        })?;
                         continue;
                     } else {
                         // 其他错误，直接返回

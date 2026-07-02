@@ -50,7 +50,10 @@ impl Transaction {
     ///
     /// ⚠️ 安全警告：此方法接受裸 SQL 字符串，不进行参数化处理。调用方必须确保 SQL
     /// 字符串不包含用户输入，否则存在 SQL 注入风险。请优先使用 [`execute_with_params`]。
-    #[deprecated(since = "0.1.0", note = "使用 execute_with_params 替代，避免 SQL 注入风险")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "使用 execute_with_params 替代，避免 SQL 注入风险"
+    )]
     pub async fn execute(&mut self, sql: &str) -> Result<u64, DbError> {
         if self.enable_logging {
             log::debug!("事务中执行: {}", sql);

@@ -269,20 +269,14 @@ fn test_token_expiration() {
     let result = manager.verify_token(&token);
     assert!(result.is_err(), "Token 应该已过期但验证仍然成功");
 
-    // 验证错误消息包含过期相关的信息
-    if let Err(BaseError::TokenVerifyFailed(ref err)) = result {
-        let msg = err.to_string();
-        let msg_lower = msg.to_lowercase();
-        assert!(
-            msg_lower.contains("expired") || msg_lower.contains("expiredsignature"),
-            "错误消息应该包含过期信息，实际消息: {}",
-            msg
-        );
+    // 验证错误类型为 TokenExpired
+    if let Err(BaseError::TokenExpired) = &result {
+        // TokenExpired 显示"Token 已过期"，符合预期
     }
-    // 断言错误类型为 TokenVerifyFailed
+    // 断言错误类型为 TokenExpired
     assert!(
-        matches!(result, Err(BaseError::TokenVerifyFailed(_))),
-        "期望 TokenVerifyFailed 错误，实际: {:?}",
+        matches!(result, Err(BaseError::TokenExpired)),
+        "期望 TokenExpired 错误，实际: {:?}",
         result
     );
 }

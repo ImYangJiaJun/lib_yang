@@ -1,4 +1,4 @@
-﻿//! 字段验证器
+//! 字段验证器
 //!
 //! 提供灵活的字段值验证机制，支持长度验证、数值范围验证、格式验证和自定义验证。
 
@@ -6,9 +6,9 @@ use crate::error::BaseError;
 #[cfg(feature = "validator")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 #[cfg(feature = "validator")]
 use std::collections::HashMap;
+use std::sync::Arc;
 #[cfg(feature = "validator")]
 use std::sync::{OnceLock, RwLock};
 
@@ -48,8 +48,7 @@ fn email_regex() -> &'static Regex {
 fn phone_regex() -> &'static Regex {
     PHONE_REGEX.get_or_init(|| {
         // E.164 格式：可选的 + 号，第一位非零数字，总长度 2-15 位
-        Regex::new(r"^\+?[1-9]\d{1,14}$")
-            .expect("手机号正则表达式编译失败")
+        Regex::new(r"^\+?[1-9]\d{1,14}$").expect("手机号正则表达式编译失败")
     })
 }
 
@@ -244,7 +243,8 @@ impl Validator {
                     if !phone_regex().is_match(s) {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
-                            "手机号格式无效，请使用 E.164 格式（如 +8613800138000 或 13800138000）".to_string(),
+                            "手机号格式无效，请使用 E.164 格式（如 +8613800138000 或 13800138000）"
+                                .to_string(),
                         ));
                     }
                     Ok(())
@@ -260,7 +260,10 @@ impl Validator {
             #[cfg(not(feature = "validator"))]
             Validator::Phone => {
                 if let Some(s) = value.as_str() {
-                    if !s.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+') {
+                    if !s
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '-' || c == '+')
+                    {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
                             "手机号格式无效，只能包含数字、连字符和加号".to_string(),

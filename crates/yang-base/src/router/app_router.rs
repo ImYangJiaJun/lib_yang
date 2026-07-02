@@ -167,9 +167,10 @@ impl AppRouter {
         context: ActionContext,
     ) -> Result<ApiResponse, BaseError> {
         // 查找目标模块，不存在时返回结构化错误
-        let module_router = self.modules.get(module_name).ok_or_else(|| {
-            BaseError::ActionNotFound(format!("模块不存在: {}", module_name))
-        })?;
+        let module_router = self
+            .modules
+            .get(module_name)
+            .ok_or_else(|| BaseError::ActionNotFound(format!("模块不存在: {}", module_name)))?;
 
         // 委托给模块路由器分发
         module_router.dispatch(action_name, context).await

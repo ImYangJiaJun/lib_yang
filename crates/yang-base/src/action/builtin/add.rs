@@ -31,7 +31,11 @@ pub struct InsertResult {
 
 /// 插入一条记录。Input 是整个实体（用户决定 Pk 字段是否 Option/自增）。
 #[derive(Action)]
-#[action(name = "add", display_name = "新增数据", description = "向表中插入一条记录")]
+#[action(
+    name = "add",
+    display_name = "新增数据",
+    description = "向表中插入一条记录"
+)]
 pub struct AddAction<T: TableEntity> {
     _phantom: PhantomData<T>,
 }

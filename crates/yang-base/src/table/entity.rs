@@ -188,21 +188,49 @@ impl SqlCondition {
     /// 不 panic。
     pub fn into_where_condition(self) -> crate::table::WhereCondition {
         use crate::table::WhereCondition as WC;
-        let SqlCondition { column, op, mut params } = self;
+        let SqlCondition {
+            column,
+            op,
+            mut params,
+        } = self;
         let field = column.to_string();
         // 取第 n 个参数，缺失则用 Null 兜底（保持总量不 panic）
         let take = |params: &mut Vec<serde_json::Value>, i: usize| -> serde_json::Value {
             params.get(i).cloned().unwrap_or(serde_json::Value::Null)
         };
         match op {
-            SqlOp::Eq => WC::Eq { field, value: take(&mut params, 0) },
-            SqlOp::Ne => WC::Ne { field, value: take(&mut params, 0) },
-            SqlOp::Lt => WC::Lt { field, value: take(&mut params, 0) },
-            SqlOp::Lte => WC::Lte { field, value: take(&mut params, 0) },
-            SqlOp::Gt => WC::Gt { field, value: take(&mut params, 0) },
-            SqlOp::Gte => WC::Gte { field, value: take(&mut params, 0) },
-            SqlOp::In => WC::In { field, values: params },
-            SqlOp::NotIn => WC::NotIn { field, values: params },
+            SqlOp::Eq => WC::Eq {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::Ne => WC::Ne {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::Lt => WC::Lt {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::Lte => WC::Lte {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::Gt => WC::Gt {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::Gte => WC::Gte {
+                field,
+                value: take(&mut params, 0),
+            },
+            SqlOp::In => WC::In {
+                field,
+                values: params,
+            },
+            SqlOp::NotIn => WC::NotIn {
+                field,
+                values: params,
+            },
             SqlOp::Between => {
                 let lo = take(&mut params, 0);
                 let hi = take(&mut params, 1);
@@ -226,12 +254,36 @@ impl<V: serde::Serialize> WhereOp<V> {
     /// 把通用 WhereOp 转为 SqlCondition（给定列名）。供派生宏生成的 IntoSqlCondition 调用。
     pub fn to_sql_condition(self, column: &'static str) -> SqlCondition {
         match self {
-            WhereOp::Eq(v) => SqlCondition { column, op: SqlOp::Eq, params: vec![to_v(v)] },
-            WhereOp::Ne(v) => SqlCondition { column, op: SqlOp::Ne, params: vec![to_v(v)] },
-            WhereOp::Lt(v) => SqlCondition { column, op: SqlOp::Lt, params: vec![to_v(v)] },
-            WhereOp::Lte(v) => SqlCondition { column, op: SqlOp::Lte, params: vec![to_v(v)] },
-            WhereOp::Gt(v) => SqlCondition { column, op: SqlOp::Gt, params: vec![to_v(v)] },
-            WhereOp::Gte(v) => SqlCondition { column, op: SqlOp::Gte, params: vec![to_v(v)] },
+            WhereOp::Eq(v) => SqlCondition {
+                column,
+                op: SqlOp::Eq,
+                params: vec![to_v(v)],
+            },
+            WhereOp::Ne(v) => SqlCondition {
+                column,
+                op: SqlOp::Ne,
+                params: vec![to_v(v)],
+            },
+            WhereOp::Lt(v) => SqlCondition {
+                column,
+                op: SqlOp::Lt,
+                params: vec![to_v(v)],
+            },
+            WhereOp::Lte(v) => SqlCondition {
+                column,
+                op: SqlOp::Lte,
+                params: vec![to_v(v)],
+            },
+            WhereOp::Gt(v) => SqlCondition {
+                column,
+                op: SqlOp::Gt,
+                params: vec![to_v(v)],
+            },
+            WhereOp::Gte(v) => SqlCondition {
+                column,
+                op: SqlOp::Gte,
+                params: vec![to_v(v)],
+            },
             WhereOp::In(vs) => SqlCondition {
                 column,
                 op: SqlOp::In,
@@ -247,8 +299,16 @@ impl<V: serde::Serialize> WhereOp<V> {
                 op: SqlOp::Between,
                 params: vec![to_v(a), to_v(b)],
             },
-            WhereOp::IsNull => SqlCondition { column, op: SqlOp::IsNull, params: vec![] },
-            WhereOp::IsNotNull => SqlCondition { column, op: SqlOp::IsNotNull, params: vec![] },
+            WhereOp::IsNull => SqlCondition {
+                column,
+                op: SqlOp::IsNull,
+                params: vec![],
+            },
+            WhereOp::IsNotNull => SqlCondition {
+                column,
+                op: SqlOp::IsNotNull,
+                params: vec![],
+            },
         }
     }
 }

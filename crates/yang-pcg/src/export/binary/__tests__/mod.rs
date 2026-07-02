@@ -87,11 +87,7 @@ fn test_binary_format_reserved_bytes() {
     let bytes = export_binary(&result).expect("导出应成功");
 
     // 保留字段在偏移 8-11
-    assert_eq!(
-        &bytes[8..12],
-        &[0u8; 4],
-        "保留字段应为全零"
-    );
+    assert_eq!(&bytes[8..12], &[0u8; 4], "保留字段应为全零");
 }
 
 #[test]
@@ -138,10 +134,22 @@ fn test_binary_roundtrip_minimal() {
     let imported = import_binary(&bytes).expect("导入应成功");
 
     assert_eq!(imported.metadata.seed, original.metadata.seed);
-    assert_eq!(imported.metadata.config_digest, original.metadata.config_digest);
-    assert_eq!(imported.metadata.schema_version, original.metadata.schema_version);
-    assert_eq!(imported.metadata.algorithm_version, original.metadata.algorithm_version);
-    assert_eq!(imported.metadata.target_engine_version, original.metadata.target_engine_version);
+    assert_eq!(
+        imported.metadata.config_digest,
+        original.metadata.config_digest
+    );
+    assert_eq!(
+        imported.metadata.schema_version,
+        original.metadata.schema_version
+    );
+    assert_eq!(
+        imported.metadata.algorithm_version,
+        original.metadata.algorithm_version
+    );
+    assert_eq!(
+        imported.metadata.target_engine_version,
+        original.metadata.target_engine_version
+    );
     assert_eq!(imported.metadata.trace_id, original.metadata.trace_id);
 }
 
@@ -154,12 +162,18 @@ fn test_binary_roundtrip_full_data() {
 
     // 验证元数据
     assert_eq!(imported.metadata.seed, original.metadata.seed);
-    assert_eq!(imported.metadata.config_digest, original.metadata.config_digest);
+    assert_eq!(
+        imported.metadata.config_digest,
+        original.metadata.config_digest
+    );
 
     // 验证拓扑
     assert_eq!(imported.topology.nodes.len(), original.topology.nodes.len());
     assert_eq!(imported.topology.edges.len(), original.topology.edges.len());
-    assert_eq!(imported.topology.critical_path, original.topology.critical_path);
+    assert_eq!(
+        imported.topology.critical_path,
+        original.topology.critical_path
+    );
 
     // 验证房间
     assert_eq!(imported.rooms.len(), original.rooms.len());
@@ -173,9 +187,18 @@ fn test_binary_roundtrip_full_data() {
 
     // 验证地形
     assert_eq!(imported.terrains.len(), original.terrains.len());
-    for (i, (orig, imp)) in original.terrains.iter().zip(imported.terrains.iter()).enumerate() {
+    for (i, (orig, imp)) in original
+        .terrains
+        .iter()
+        .zip(imported.terrains.iter())
+        .enumerate()
+    {
         assert_eq!(imp.room_id, orig.room_id, "地形 {} 的房间 ID 应一致", i);
-        assert_eq!(imp.tiles.data, orig.tiles.data, "地形 {} 的网格数据应一致", i);
+        assert_eq!(
+            imp.tiles.data, orig.tiles.data,
+            "地形 {} 的网格数据应一致",
+            i
+        );
     }
 
     // 验证点位
@@ -422,10 +445,7 @@ fn test_binary_crc32_valid_on_correct_data() {
     ]);
     let computed_crc = crc32fast::hash(payload);
 
-    assert_eq!(
-        stored_crc, computed_crc,
-        "存储的 CRC32 应与计算值一致"
-    );
+    assert_eq!(stored_crc, computed_crc, "存储的 CRC32 应与计算值一致");
 }
 
 #[test]

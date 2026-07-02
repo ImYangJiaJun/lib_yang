@@ -223,9 +223,18 @@ mod __tests__ {
     fn test_select_deterministic() {
         // 验证需求 13.4：相同种子下结果可复现
         let rules = vec![
-            GrammarRule { name: "rule_a".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "rule_b".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "rule_c".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "rule_a".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "rule_b".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "rule_c".to_string(),
+                base_weight: 1.0,
+            },
         ];
         let context = GrammarContext::default();
 
@@ -242,8 +251,14 @@ mod __tests__ {
     fn test_facing_weight_boost() {
         // 验证需求 13.4：朝向匹配时权重提升
         let rules = vec![
-            GrammarRule { name: "corridor_north".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "corridor_south".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "corridor_north".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "corridor_south".to_string(),
+                base_weight: 1.0,
+            },
         ];
         let context = GrammarContext {
             facing: Some(CardinalDir::North),
@@ -263,15 +278,24 @@ mod __tests__ {
 
         // 朝向匹配的规则应被选中更多次（权重 2.0 vs 1.0，约 66%）
         let ratio = north_count as f64 / 1000.0;
-        assert!(ratio > 0.55, "朝向匹配规则应被更频繁选中，实际比例: {ratio}");
+        assert!(
+            ratio > 0.55,
+            "朝向匹配规则应被更频繁选中，实际比例: {ratio}"
+        );
     }
 
     #[test]
     fn test_theme_weight_boost() {
         // 验证需求 13.4：主题匹配时权重提升
         let rules = vec![
-            GrammarRule { name: "room_dungeon_dark".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "room_forest_light".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "room_dungeon_dark".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "room_forest_light".to_string(),
+                base_weight: 1.0,
+            },
         ];
         let context = GrammarContext {
             theme_tags: vec!["dungeon".to_string()],
@@ -290,15 +314,24 @@ mod __tests__ {
 
         // 主题匹配的规则应被选中更多次（权重 1.5 vs 1.0，约 60%）
         let ratio = dungeon_count as f64 / 1000.0;
-        assert!(ratio > 0.50, "主题匹配规则应被更频繁选中，实际比例: {ratio}");
+        assert!(
+            ratio > 0.50,
+            "主题匹配规则应被更频繁选中，实际比例: {ratio}"
+        );
     }
 
     #[test]
     fn test_corridor_length_weight_boost() {
         // 验证需求 13.4：走廊长度影响权重
         let rules = vec![
-            GrammarRule { name: "corridor_long_variant".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "corridor_short_variant".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "corridor_long_variant".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "corridor_short_variant".to_string(),
+                base_weight: 1.0,
+            },
         ];
 
         // 长走廊上下文
@@ -326,8 +359,14 @@ mod __tests__ {
     fn test_room_type_weight_boost() {
         // 验证需求 13.4：房间类型匹配时权重提升
         let rules = vec![
-            GrammarRule { name: "module_boss_arena".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "module_combat_basic".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "module_boss_arena".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "module_combat_basic".to_string(),
+                base_weight: 1.0,
+            },
         ];
         let context = GrammarContext {
             room_type: Some(RoomType::Boss),
@@ -346,7 +385,10 @@ mod __tests__ {
 
         // Boss 类型匹配的规则应被选中更多次
         let ratio = boss_count as f64 / 1000.0;
-        assert!(ratio > 0.50, "房间类型匹配规则应被更频繁选中，实际比例: {ratio}");
+        assert!(
+            ratio > 0.50,
+            "房间类型匹配规则应被更频繁选中，实际比例: {ratio}"
+        );
     }
 
     #[test]
@@ -365,8 +407,14 @@ mod __tests__ {
     fn test_zero_weight_rules_returns_error() {
         // 验证需求 13.5：所有权重为零时返回错误
         let rules = vec![
-            GrammarRule { name: "rule_a".to_string(), base_weight: 0.0 },
-            GrammarRule { name: "rule_b".to_string(), base_weight: 0.0 },
+            GrammarRule {
+                name: "rule_a".to_string(),
+                base_weight: 0.0,
+            },
+            GrammarRule {
+                name: "rule_b".to_string(),
+                base_weight: 0.0,
+            },
         ];
         let context = GrammarContext::default();
         let mut rng = StableRng::from_seed(42);
@@ -380,8 +428,14 @@ mod __tests__ {
     fn test_combined_context_boost() {
         // 验证需求 13.4：多个上下文因素叠加
         let rules = vec![
-            GrammarRule { name: "corridor_north_long_dungeon".to_string(), base_weight: 1.0 },
-            GrammarRule { name: "corridor_south_short_forest".to_string(), base_weight: 1.0 },
+            GrammarRule {
+                name: "corridor_north_long_dungeon".to_string(),
+                base_weight: 1.0,
+            },
+            GrammarRule {
+                name: "corridor_south_short_forest".to_string(),
+                base_weight: 1.0,
+            },
         ];
         let context = GrammarContext {
             facing: Some(CardinalDir::North),
@@ -404,7 +458,10 @@ mod __tests__ {
         }
 
         let ratio = first_count as f64 / 1000.0;
-        assert!(ratio > 0.75, "多因素叠加规则应被高频选中，实际比例: {ratio}");
+        assert!(
+            ratio > 0.75,
+            "多因素叠加规则应被高频选中，实际比例: {ratio}"
+        );
     }
 
     #[test]
@@ -433,8 +490,14 @@ mod __tests__ {
     fn test_invalid_module_reference_returns_capability_error() {
         // 验证需求 13.5：所有规则权重为零时返回结构化错误
         let rules = vec![
-            GrammarRule { name: "invalid_module".to_string(), base_weight: 0.0 },
-            GrammarRule { name: "broken_ref".to_string(), base_weight: -1.0 },
+            GrammarRule {
+                name: "invalid_module".to_string(),
+                base_weight: 0.0,
+            },
+            GrammarRule {
+                name: "broken_ref".to_string(),
+                base_weight: -1.0,
+            },
         ];
         let context = GrammarContext::default();
         let mut rng = StableRng::from_seed(42);

@@ -414,10 +414,28 @@ impl From<jsonwebtoken::errors::Error> for BaseError {
         use jsonwebtoken::errors::ErrorKind;
         match err.kind() {
             ErrorKind::ExpiredSignature => BaseError::TokenExpired,
-            ErrorKind::InvalidToken | ErrorKind::InvalidSignature => {
-                BaseError::TokenVerifyFailed(err)
-            }
-            _ => BaseError::TokenParseFailed(err),
+            ErrorKind::InvalidToken
+            | ErrorKind::InvalidSignature
+            | ErrorKind::InvalidIssuer
+            | ErrorKind::InvalidAudience
+            | ErrorKind::InvalidSubject
+            | ErrorKind::InvalidAlgorithm
+            | ErrorKind::MissingAlgorithm
+            | ErrorKind::ImmatureSignature
+            | ErrorKind::MissingRequiredClaim(_)
+            | ErrorKind::InvalidClaimFormat(_)
+            | ErrorKind::InvalidEcdsaKey
+            | ErrorKind::InvalidEddsaKey
+            | ErrorKind::InvalidRsaKey(_)
+            | ErrorKind::InvalidKeyFormat
+            | ErrorKind::Signing(_)
+            | ErrorKind::RsaFailedSigning
+            | ErrorKind::InvalidAlgorithmName => BaseError::TokenVerifyFailed(err),
+            // 真正解析/IO 错误 → TokenParseFailed
+            ErrorKind::Base64(_) | ErrorKind::Json(_) | ErrorKind::Utf8(_)
+            | ErrorKind::Provider(_) => BaseError::TokenParseFailed(err),
+            // 防非穷尽: 未显式列出的验证类错误 → TokenVerifyFailed
+            _ => BaseError::TokenVerifyFailed(err),
         }
     }
 }
@@ -427,7 +445,7 @@ impl From<jsonwebtoken::errors::Error> for BaseError {
 /// 用于下游统一适配（弹性重试、错误上报分桶、HTTP status 映射的中间层）。
 /// HTTP status 映射属调用方传输层边界，不在引擎层硬编码。
 ///
-/// `is_client_error()` = `Client` + `Auth`；`is_server_error()` = `Server` +
+/// `is_client_error()` = `Client` + `Auth` + `NotFound`；`is_server_error()` = `Server` +
 /// `Transient` + `Conflict`。详见 [`BaseError::category`] 文档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -647,8 +665,8 @@ impl BaseError {
     /// 映射无关——HTTP 映射属调用方传输层边界。
     ///
     /// `Transient` 在 `is_server_error` 中视为服务端错误（但可重试），
-    /// 在 `is_client_error` 中**不**视为客户端错误。`Auth` 在 `is_client_error`
-    /// 中视为客户端错误（认证/授权失败归调用方过错）。
+    /// 在 `is_client_error` 中**不**视为客户端错误。`Auth` 和 `NotFound` 在
+    /// `is_client_error` 中视为客户端错误（认证/授权失败和资源不存在均归调用方过错）。
     pub fn category(&self) -> ErrorCategory {
         use ErrorCategory as C;
         match self {
@@ -663,8 +681,9 @@ impl BaseError {
             | BaseError::PluginShutdownFailed(_, _) => C::Server,
             // 数据库错误：连接失败/超时/连接池为瞬时（可重试），
             // 已包装的 DbError 同理（底层连接/超时语义已由 From<DbError> 正确分桶）
-            BaseError::DatabaseConnectionFailed(_)
-            | BaseError::DatabaseConnectionDbError(_) => C::Transient,
+            BaseError::DatabaseConnectionFailed(_) | BaseError::DatabaseConnectionDbError(_) => {
+                C::Transient
+            }
             BaseError::MissingWhereClause(_)
             | BaseError::DatabaseMigrationFailed(_, _)
             | BaseError::MigrationFailed(_, _, _) => C::Client,
@@ -676,8 +695,9 @@ impl BaseError {
             | BaseError::DatabaseExecuteFailed(_)
             | BaseError::DatabaseTransactionFailed(_) => C::Server,
             // Redis 错误：连接失败/超时/连接池为瞬时
-            BaseError::RedisConnectionFailed(_)
-            | BaseError::RedisOperationDbError(_) => C::Transient,
+            BaseError::RedisConnectionFailed(_) | BaseError::RedisOperationDbError(_) => {
+                C::Transient
+            }
             BaseError::RedisAlreadyInitialized | BaseError::RedisNotInitialized => C::Server,
             BaseError::RedisOperationFailed(_) => C::Server,
             // HTTP 客户端错误
@@ -694,7 +714,9 @@ impl BaseError {
             | BaseError::TokenGenerateFailed(_)
             | BaseError::TokenTypeInvalid(_)
             | BaseError::TokenParseFailed(_) => C::Client,
-            BaseError::TokenExpired | BaseError::TokenRevoked | BaseError::TokenVerifyFailed(_) => C::Auth,
+            BaseError::TokenExpired | BaseError::TokenRevoked | BaseError::TokenVerifyFailed(_) => {
+                C::Auth
+            }
             // 序列化错误
             BaseError::JsonSerializeFailed(_) | BaseError::JsonDeserializeFailed(_) => C::Client,
             // 字段验证错误
@@ -722,13 +744,16 @@ impl BaseError {
         self.category() == ErrorCategory::Transient
     }
 
-    /// 是否为客户端过错（`Client` 或 `Auth` 类）。
+    /// 是否为客户端过错（`Client`、`Auth` 或 `NotFound` 类）。
     ///
     /// 用于下游统一适配——客户端过错不可重试，调用方应修正请求而非重试。
     /// 注意 `Transient` **不**在此列：虽然瞬时错误也可归「服务端」，但它不是
     /// 调用方过错，且可重试——`is_server_error` 已覆盖该语义。
     pub fn is_client_error(&self) -> bool {
-        matches!(self.category(), ErrorCategory::Client | ErrorCategory::Auth)
+        matches!(
+            self.category(),
+            ErrorCategory::Client | ErrorCategory::Auth | ErrorCategory::NotFound
+        )
     }
 
     /// 是否为服务端/基础设施错误（`Server`、`Transient` 或 `Conflict`）。
@@ -1066,14 +1091,8 @@ mod tests {
             BaseError::Unauthorized("u".into()).category(),
             ErrorCategory::Auth
         );
-        assert_eq!(
-            BaseError::TokenExpired.category(),
-            ErrorCategory::Auth
-        );
-        assert_eq!(
-            BaseError::InvalidPassword.category(),
-            ErrorCategory::Auth
-        );
+        assert_eq!(BaseError::TokenExpired.category(), ErrorCategory::Auth);
+        assert_eq!(BaseError::InvalidPassword.category(), ErrorCategory::Auth);
         // NotFound
         assert_eq!(
             BaseError::RecordNotFound("r".into()).category(),
@@ -1093,10 +1112,7 @@ mod tests {
             BaseError::DatabaseConnectionFailed("c".into()).category(),
             ErrorCategory::Transient
         );
-        assert_eq!(
-            BaseError::HttpTimeout.category(),
-            ErrorCategory::Transient
-        );
+        assert_eq!(BaseError::HttpTimeout.category(), ErrorCategory::Transient);
         // Server
         assert_eq!(
             BaseError::Unknown("u".into()).category(),
@@ -1118,12 +1134,14 @@ mod tests {
         assert!(!BaseError::Unknown("u".into()).is_retryable());
     }
 
-    /// is_client_error = (Client | Auth)
+    /// is_client_error = (Client | Auth | NotFound)
     #[test]
     fn test_is_client_error() {
         assert!(BaseError::ParamInvalid("k".into(), "r".into()).is_client_error());
         assert!(BaseError::Unauthorized("u".into()).is_client_error());
         assert!(BaseError::TokenExpired.is_client_error());
+        assert!(BaseError::RecordNotFound("r".into()).is_client_error());
+        assert!(BaseError::ActionNotFound("a".into()).is_client_error());
         assert!(!BaseError::DatabaseConnectionFailed("c".into()).is_client_error());
         assert!(!BaseError::Unknown("u".into()).is_client_error());
     }

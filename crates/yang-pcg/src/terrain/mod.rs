@@ -51,15 +51,16 @@ pub fn generate_terrains(
         }
 
         // 根据房间属性选择策略并生成地形；策略失败回退默认策略，回退也失败则传播错误
-        let mut terrain = match select_strategy(room).generate(room, door_anchors, terrain_config, rng) {
-            Ok(terrain) => terrain,
-            Err(primary_err) => {
-                let mut fallback_rng = rng.derive(&format!("fallback:{}", room.id));
-                TerrainStrategyKind::DefaultCarve
-                    .generate(room, door_anchors, terrain_config, &mut fallback_rng)
-                    .map_err(|_| primary_err)?
-            }
-        };
+        let mut terrain =
+            match select_strategy(room).generate(room, door_anchors, terrain_config, rng) {
+                Ok(terrain) => terrain,
+                Err(primary_err) => {
+                    let mut fallback_rng = rng.derive(&format!("fallback:{}", room.id));
+                    TerrainStrategyKind::DefaultCarve
+                        .generate(room, door_anchors, terrain_config, &mut fallback_rng)
+                        .map_err(|_| primary_err)?
+                }
+            };
 
         // 连通性兜底：保证所有门口互相可达（生成时保证，而非生成后补救）
         repair_terrain_connectivity(&mut terrain);

@@ -58,7 +58,8 @@ impl TokenManager {
     /// # 返回
     ///
     /// - `Ok(())`: 撤销成功，或 Token 已过期无需撤销
-    /// - `Err(BaseError::TokenVerifyFailed)`: Token 无效（签名/过期/声明不合法）
+    /// - `Err(BaseError::TokenVerifyFailed)`: Token 签名/声明校验失败
+    /// - `Err(BaseError::TokenExpired)`: Token 已过期（无需撤销，返回 `Ok(())`）
     /// - `Err(BaseError::RedisOperationFailed)`: 写黑名单失败
     pub async fn revoke_token(&self, token: &str) -> Result<(), BaseError> {
         let claims = self.verify_token(token)?;
@@ -125,12 +126,7 @@ impl TokenManager {
     pub async fn revoke_by_subject(&self, sub: &str) -> Result<(), BaseError> {
         let now = current_unix_timestamp()?;
         let ttl = self.refresh_token_expiry();
-        GlobalRedis::set(
-            subject_min_iat_key(sub),
-            now.to_string(),
-            Some(ttl as i64),
-        )
-        .await?;
+        GlobalRedis::set(subject_min_iat_key(sub), now.to_string(), Some(ttl as i64)).await?;
         Ok(())
     }
 
@@ -151,6 +147,29 @@ impl TokenManager {
             Some(raw) => Ok(raw.parse::<u64>().ok()),
             None => Ok(None),
         }
+    }
+
+    /// 尝试原子撤销一次（SET key val NX EX ttl）。
+    ///
+    /// 与 `revoke_claims`（无条件 SETEX）不同，本方法仅在黑名单中尚不存在该 jti
+    /// 时执行写入。为轮换流程 [`TokenManager::rotate_refresh_token`] 提供竞态保护：
+    /// 并发请求中仅第一个能成功写入，后续返回 `false`。
+    ///
+    /// # 参数
+    ///
+    /// - `jti`: Token 唯一标识
+    /// - `ttl`: 黑名单过期时间（秒），源自 Token 剩余有效期。为 `0` 时直接返回
+    ///   `false`，避免向 Redis 发送 `EX 0`（非法参数）
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(true)`: 成功将 jti 写入黑名单（本次是第一个到达的）
+    /// - `Ok(false)`: jti 已在黑名单中（竞态中落败），或 ttl 为 0（Token 已过期）
+    pub(crate) async fn try_revoke_once(jti: &str, ttl: u64) -> Result<bool, BaseError> {
+        if ttl == 0 {
+            return Ok(false);
+        }
+        GlobalRedis::set_nx_ex(blacklist_key(jti), "1", ttl as i64).await
     }
 
     /// 验证 Token，并额外检查黑名单。

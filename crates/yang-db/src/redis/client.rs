@@ -337,6 +337,36 @@ impl RedisClient {
         Ok(result.as_i64() == Some(1))
     }
 
+    /// SET NX EX - 仅当键不存在时设置值并指定过期时间（原子操作）
+    ///
+    /// 组合 NX（不存在时设置）与 EX（过期时间秒）选项。
+    /// 比 `setnx` 后跟 `expire` 更安全，两阶段之间有竞态窗口。
+    ///
+    /// # 参数
+    /// - `key`: 键名
+    /// - `value`: 值
+    /// - `ttl`: 过期时间（秒），必须为正数
+    ///
+    /// # 返回
+    /// - `Ok(true)`: 设置成功（键之前不存在）
+    /// - `Ok(false)`: 键已存在，未设置
+    pub async fn set_nx_ex(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+        ttl: i64,
+    ) -> Result<bool> {
+        let mut cmd = redis::cmd("SET");
+        cmd.arg(key.into())
+            .arg(value.into())
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl);
+        let result = self.execute(&cmd).await?;
+        // SET NX EX 成功返回 OK（redis::Value::Okay），键已存在返回 nil
+        Ok(!result.is_nil())
+    }
+
     /// GETSET - 设置新值并返回旧值
     ///
     /// # 返回

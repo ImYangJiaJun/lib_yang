@@ -411,8 +411,7 @@ impl RequestBuilder {
             }
             Err(e) => {
                 // 编码失败时累积错误
-                self.header_errors
-                    .push(format!("表单数据编码失败: {}", e));
+                self.header_errors.push(format!("表单数据编码失败: {}", e));
             }
         }
         self

@@ -27,57 +27,71 @@ use crate::validation::{
 /// - dead_end_count: 0..=2
 fn arb_generation_config() -> impl Strategy<Value = GenerationConfig> {
     // 先生成房间数量范围
-    (2u16..=12u16).prop_flat_map(|room_count| {
-        // 关键路径长度不超过房间数
-        let max_path = room_count.min(8);
-        let path_len = 2u16..=max_path;
-        // 分支数量
-        let branch = 0u16..=3u16;
-        // 死路数量
-        let dead_end = 0u16..=2u16;
+    (2u16..=12u16)
+        .prop_flat_map(|room_count| {
+            // 关键路径长度不超过房间数
+            let max_path = room_count.min(8);
+            let path_len = 2u16..=max_path;
+            // 分支数量
+            let branch = 0u16..=3u16;
+            // 死路数量
+            let dead_end = 0u16..=2u16;
 
-        (Just(room_count), path_len, branch, dead_end)
-    }).prop_map(|(room_count, path_len, branch_max, dead_end_max)| {
-        GenerationConfig {
-            room_count: RangeU16 { min: room_count, max: room_count },
-            critical_path_length: RangeU16 { min: path_len, max: path_len },
-            branch_count: RangeU16 { min: 0, max: branch_max },
-            dead_end_count: RangeU16 { min: 0, max: dead_end_max },
-            room_size: RoomSizeConfig {
-                min_width: 8,
-                max_width: 12,
-                min_height: 8,
-                max_height: 12,
+            (Just(room_count), path_len, branch, dead_end)
+        })
+        .prop_map(
+            |(room_count, path_len, branch_max, dead_end_max)| GenerationConfig {
+                room_count: RangeU16 {
+                    min: room_count,
+                    max: room_count,
+                },
+                critical_path_length: RangeU16 {
+                    min: path_len,
+                    max: path_len,
+                },
+                branch_count: RangeU16 {
+                    min: 0,
+                    max: branch_max,
+                },
+                dead_end_count: RangeU16 {
+                    min: 0,
+                    max: dead_end_max,
+                },
+                room_size: RoomSizeConfig {
+                    min_width: 8,
+                    max_width: 12,
+                    min_height: 8,
+                    max_height: 12,
+                },
+                corridor: CorridorConfig {
+                    width: 2,
+                    max_turns: 3,
+                    connection_strategy: ConnectionStrategy::Orthogonal,
+                },
+                terrain: TerrainConfig {
+                    obstacle_density: 0.15,
+                    min_walkable_ratio: 0.6,
+                },
+                item_spawns: ItemSpawnConfig {
+                    count_per_room: RangeU16 { min: 1, max: 2 },
+                    min_spacing: 2,
+                    rarity_weights: vec![0.6, 0.3, 0.1],
+                },
+                enemy_spawns: EnemySpawnConfig {
+                    count_per_room: RangeU16 { min: 1, max: 3 },
+                    min_spacing: 3,
+                    min_distance_from_entrance: 4,
+                    base_difficulty_budget: 100,
+                },
+                chunking: ChunkingConfig {
+                    chunk_size: 32,
+                    enabled: false,
+                },
+                theme_tags: vec!["default".to_string()],
+                generation_mode: GenerationMode::OfflineFullFloor,
+                capability_flags: CapabilityFlags::default(),
             },
-            corridor: CorridorConfig {
-                width: 2,
-                max_turns: 3,
-                connection_strategy: ConnectionStrategy::Orthogonal,
-            },
-            terrain: TerrainConfig {
-                obstacle_density: 0.15,
-                min_walkable_ratio: 0.6,
-            },
-            item_spawns: ItemSpawnConfig {
-                count_per_room: RangeU16 { min: 1, max: 2 },
-                min_spacing: 2,
-                rarity_weights: vec![0.6, 0.3, 0.1],
-            },
-            enemy_spawns: EnemySpawnConfig {
-                count_per_room: RangeU16 { min: 1, max: 3 },
-                min_spacing: 3,
-                min_distance_from_entrance: 4,
-                base_difficulty_budget: 100,
-            },
-            chunking: ChunkingConfig {
-                chunk_size: 32,
-                enabled: false,
-            },
-            theme_tags: vec!["default".to_string()],
-            generation_mode: GenerationMode::OfflineFullFloor,
-            capability_flags: CapabilityFlags::default(),
-        }
-    })
+        )
 }
 
 /// 生成任意 u64 种子的策略

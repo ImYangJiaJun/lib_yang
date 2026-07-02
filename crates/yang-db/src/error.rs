@@ -217,10 +217,7 @@ impl From<redis::RedisError> for DbError {
         use redis::ErrorKind;
         if err.is_timeout() {
             DbError::RedisTimeoutError(format!("超时错误: {}", err))
-        } else if err.is_connection_dropped()
-            || err.is_io_error()
-            || err.is_connection_refusal()
-        {
+        } else if err.is_connection_dropped() || err.is_io_error() || err.is_connection_refusal() {
             DbError::RedisConnectionError(format!("连接错误: {}", err))
         } else if matches!(err.kind(), ErrorKind::UnexpectedReturnType) {
             DbError::RedisTypeConversionError(format!("类型错误: {}", err))
@@ -436,10 +433,19 @@ mod tests {
     fn test_db_error_category_coverage() {
         use super::DbErrorCategory as C;
         // Transient：连接/超时/连接池
-        assert_eq!(DbError::ConnectionError("c".into()).category(), C::Transient);
-        assert_eq!(DbError::RedisConnectionError("c".into()).category(), C::Transient);
+        assert_eq!(
+            DbError::ConnectionError("c".into()).category(),
+            C::Transient
+        );
+        assert_eq!(
+            DbError::RedisConnectionError("c".into()).category(),
+            C::Transient
+        );
         assert_eq!(DbError::RedisPoolError("p".into()).category(), C::Transient);
-        assert_eq!(DbError::RedisTimeoutError("t".into()).category(), C::Transient);
+        assert_eq!(
+            DbError::RedisTimeoutError("t".into()).category(),
+            C::Transient
+        );
         // Conflict：约束冲突
         assert_eq!(DbError::ConstraintError("c".into()).category(), C::Conflict);
         // NotFound：表不存在
@@ -448,11 +454,26 @@ mod tests {
         assert_eq!(DbError::SqlSyntaxError("s".into()).category(), C::Client);
         assert_eq!(DbError::MissingWhereClause.category(), C::Client);
         assert_eq!(DbError::MissingGroupByClause.category(), C::Client);
-        assert_eq!(DbError::UnsupportedOperator("o".into()).category(), C::Client);
-        assert_eq!(DbError::TypeConversionError("t".into()).category(), C::Client);
-        assert_eq!(DbError::SerializationError("s".into()).category(), C::Client);
-        assert_eq!(DbError::DeserializationError("d".into()).category(), C::Client);
-        assert_eq!(DbError::RedisTypeConversionError("t".into()).category(), C::Client);
+        assert_eq!(
+            DbError::UnsupportedOperator("o".into()).category(),
+            C::Client
+        );
+        assert_eq!(
+            DbError::TypeConversionError("t".into()).category(),
+            C::Client
+        );
+        assert_eq!(
+            DbError::SerializationError("s".into()).category(),
+            C::Client
+        );
+        assert_eq!(
+            DbError::DeserializationError("d".into()).category(),
+            C::Client
+        );
+        assert_eq!(
+            DbError::RedisTypeConversionError("t".into()).category(),
+            C::Client
+        );
         // Server：查询错误/事务错误/Redis命令错误/未知
         assert_eq!(DbError::QueryError("q".into()).category(), C::Server);
         assert_eq!(DbError::TransactionError("t".into()).category(), C::Server);

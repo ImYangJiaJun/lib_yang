@@ -22,7 +22,11 @@ use yang_base_derive::Action;
 ///
 /// [`Permission`]: crate::action::Permission
 #[derive(Action)]
-#[action(name = "del", display_name = "删除数据", description = "按主键删除记录")]
+#[action(
+    name = "del",
+    display_name = "删除数据",
+    description = "按主键删除记录"
+)]
 pub struct DelAction<T: TableEntity> {
     _phantom: PhantomData<T>,
 }

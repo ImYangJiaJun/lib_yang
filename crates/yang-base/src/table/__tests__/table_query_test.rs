@@ -1,4 +1,4 @@
-﻿//! TableQuery 单元测试
+//! TableQuery 单元测试
 //!
 //! 测试查询构建器的功能，包括：
 //! - 查询构建方法的链式调用
@@ -55,7 +55,11 @@ fn create_test_table_config() -> Arc<TableConfig> {
 #[test]
 fn test_table_query_new() {
     let table_config = create_test_table_config();
-    let query = TableQuery::new(table_config.clone(), Arc::from(vec!["user".to_string()]), None);
+    let query = TableQuery::new(
+        table_config.clone(),
+        Arc::from(vec!["user".to_string()]),
+        None,
+    );
 
     assert_eq!(query.get_table_config().table_name, "users");
     assert_eq!(query.get_user_roles(), &["user"]);
@@ -554,8 +558,8 @@ fn test_build_update_sql_basic() {
     assert!(matches!(result, Err(BaseError::MissingWhereClause(op)) if op == "UPDATE"));
 
     // 显式放行全表后应成功生成无 WHERE 的 UPDATE
-    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None)
-        .allow_full_table();
+    let query =
+        TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None).allow_full_table();
     let (sql, params) = query.build_update_sql(&data).unwrap();
 
     // 检查 SQL 语句包含 UPDATE 和 SET
@@ -890,7 +894,10 @@ fn test_new_where_methods_build_sql() {
         TableConfig::new("users")
             .field(FieldConfig::new("id", FieldType::BigInt))
             .field(FieldConfig::new("age", FieldType::Integer))
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 })),
+            .field(FieldConfig::new(
+                "name",
+                FieldType::String { max_length: 50 },
+            )),
     );
     let q = crate::table::TableQuery::new_without_pool(config)
         .where_lt("age", serde_json::json!(18))
@@ -1010,7 +1017,10 @@ fn test_select_falls_back_to_default_order() {
     let config = Arc::new(
         TableConfig::new("users")
             .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
+            .field(FieldConfig::new(
+                "name",
+                FieldType::String { max_length: 50 },
+            ))
             .default_order(vec![
                 ("name".to_string(), SortOrder::Asc),
                 ("id".to_string(), SortOrder::Desc),
@@ -1041,8 +1051,14 @@ fn test_where_or_renders_parenthesized_or() {
         .where_eq("name", json!("alice"))
         .unwrap()
         .where_or(vec![
-            WhereCondition::Eq { field: "email".into(), value: json!("a@x.com") },
-            WhereCondition::Gt { field: "id".into(), value: json!(100) },
+            WhereCondition::Eq {
+                field: "email".into(),
+                value: json!("a@x.com"),
+            },
+            WhereCondition::Gt {
+                field: "id".into(),
+                value: json!(100),
+            },
         ])
         .unwrap();
 
@@ -1065,11 +1081,20 @@ fn test_nested_or_and_groups() {
     // (name = 'a' OR (email = 'b' AND id >= 5))
     let query = query
         .where_or(vec![
-            WhereCondition::Eq { field: "name".into(), value: json!("a") },
+            WhereCondition::Eq {
+                field: "name".into(),
+                value: json!("a"),
+            },
             WhereCondition::And {
                 conditions: vec![
-                    WhereCondition::Eq { field: "email".into(), value: json!("b") },
-                    WhereCondition::Gte { field: "id".into(), value: json!(5) },
+                    WhereCondition::Eq {
+                        field: "email".into(),
+                        value: json!("b"),
+                    },
+                    WhereCondition::Gte {
+                        field: "id".into(),
+                        value: json!(5),
+                    },
                 ],
             },
         ])
@@ -1089,8 +1114,8 @@ fn test_nested_or_and_groups() {
 fn test_empty_groups_rejected() {
     let config = create_test_table_config();
 
-    let r_or = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None)
-        .where_or(vec![]);
+    let r_or =
+        TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None).where_or(vec![]);
     assert!(
         matches!(r_or, Err(BaseError::ParamInvalid(_, _))),
         "空 OR 组应被拒绝"
@@ -1161,8 +1186,14 @@ fn test_where_or_permission_denied_in_group() {
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
 
     let result = query.where_or(vec![
-        WhereCondition::Eq { field: "name".into(), value: json!("ok") },
-        WhereCondition::Gt { field: "salary".into(), value: json!(1000) },
+        WhereCondition::Eq {
+            field: "name".into(),
+            value: json!("ok"),
+        },
+        WhereCondition::Gt {
+            field: "salary".into(),
+            value: json!(1000),
+        },
     ]);
 
     assert!(
@@ -1196,8 +1227,14 @@ fn test_where_or_admin_can_filter_restricted() {
 
     let query = query
         .where_or(vec![
-            WhereCondition::Gt { field: "salary".into(), value: json!(1000) },
-            WhereCondition::Eq { field: "name".into(), value: json!("boss") },
+            WhereCondition::Gt {
+                field: "salary".into(),
+                value: json!(1000),
+            },
+            WhereCondition::Eq {
+                field: "name".into(),
+                value: json!("boss"),
+            },
         ])
         .expect("admin 应可筛选 salary");
 
@@ -1213,9 +1250,14 @@ fn test_where_tree_depth_limit() {
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
 
     // 构造深度 > 32 的嵌套 And 链
-    let mut node = WhereCondition::Eq { field: "id".into(), value: json!(1) };
+    let mut node = WhereCondition::Eq {
+        field: "id".into(),
+        value: json!(1),
+    };
     for _ in 0..40 {
-        node = WhereCondition::And { conditions: vec![node] };
+        node = WhereCondition::And {
+            conditions: vec![node],
+        };
     }
 
     let result = query.where_tree(node);

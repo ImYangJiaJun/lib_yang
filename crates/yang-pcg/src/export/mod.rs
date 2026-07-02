@@ -38,13 +38,8 @@ pub const CURRENT_SCHEMA_VERSION: &str = "1.0.0";
 /// println!("{}", json);
 /// ```
 pub fn export_json(result: &GenerationResult) -> PcgResult<String> {
-    serde_json::to_string_pretty(result).map_err(|e| {
-        PcgError::export_err(
-            format!("JSON 序列化失败: {}", e),
-            "json",
-            e,
-        )
-    })
+    serde_json::to_string_pretty(result)
+        .map_err(|e| PcgError::export_err(format!("JSON 序列化失败: {}", e), "json", e))
 }
 
 /// 将生成结果导出为紧凑的 JSON 字符串
@@ -71,13 +66,8 @@ pub fn export_json(result: &GenerationResult) -> PcgResult<String> {
 /// std::fs::write("output.json", &json)?;
 /// ```
 pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
-    serde_json::to_string(result).map_err(|e| {
-        PcgError::export_err(
-            format!("JSON 序列化失败: {}", e),
-            "json",
-            e,
-        )
-    })
+    serde_json::to_string(result)
+        .map_err(|e| PcgError::export_err(format!("JSON 序列化失败: {}", e), "json", e))
 }
 
 /// 从 JSON 字符串重建生成结果
@@ -110,13 +100,8 @@ pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
 /// ```
 pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
     // 反序列化 JSON 字符串
-    let result: GenerationResult = serde_json::from_str(json).map_err(|e| {
-        PcgError::export_err(
-            format!("JSON 反序列化失败: {}", e),
-            "json",
-            e,
-        )
-    })?;
+    let result: GenerationResult = serde_json::from_str(json)
+        .map_err(|e| PcgError::export_err(format!("JSON 反序列化失败: {}", e), "json", e))?;
 
     // 校验 schema_version 兼容性（主版本号必须一致）
     let imported_major = extract_major_version(&result.metadata.schema_version);
@@ -143,7 +128,10 @@ pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
 ///
 /// 支持 semver 格式（如 "1.0.0"、"2.1.3"），返回第一个点号前的数字。
 fn extract_major_version(version: &str) -> Option<u32> {
-    version.split('.').next().and_then(|s| s.parse::<u32>().ok())
+    version
+        .split('.')
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
 }
 
 #[cfg(test)]

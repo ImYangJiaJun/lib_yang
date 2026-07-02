@@ -142,18 +142,14 @@ impl HttpClient {
 
         // 设置代理
         if let Some(proxy_url) = cfg.proxy_url {
-            let proxy = reqwest::Proxy::all(&proxy_url)
-                .map_err(BaseError::HttpClientCreateFailed)?;
+            let proxy =
+                reqwest::Proxy::all(&proxy_url).map_err(BaseError::HttpClientCreateFailed)?;
             builder = builder.proxy(proxy);
         }
 
-        let client = builder
-            .build()
-            .map_err(BaseError::HttpClientCreateFailed)?;
+        let client = builder.build().map_err(BaseError::HttpClientCreateFailed)?;
 
-        let circuit_breaker = cfg
-            .circuit_breaker
-            .map(crate::http::CircuitBreaker::new);
+        let circuit_breaker = cfg.circuit_breaker.map(crate::http::CircuitBreaker::new);
 
         Ok(Self {
             client,
@@ -262,10 +258,7 @@ impl HttpClient {
     /// 获取默认 Token
     fn get_default_token(&self) -> Option<String> {
         // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续读取
-        let default_token = self
-            .default_token
-            .read()
-            .unwrap_or_else(|p| p.into_inner());
+        let default_token = self.default_token.read().unwrap_or_else(|p| p.into_inner());
         default_token.clone()
     }
 

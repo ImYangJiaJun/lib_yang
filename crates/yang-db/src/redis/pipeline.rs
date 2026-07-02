@@ -219,8 +219,7 @@ impl RedisPipeline {
     pub fn zadd(&mut self, key: impl Into<String>, members: &[(f64, String)]) -> &mut Self {
         if !members.is_empty() {
             // redis-rs zadd_multiple 接受 &[(score, member)]，一次性打包为单条命令
-            let pairs: Vec<(f64, &str)> =
-                members.iter().map(|(s, m)| (*s, m.as_str())).collect();
+            let pairs: Vec<(f64, &str)> = members.iter().map(|(s, m)| (*s, m.as_str())).collect();
             self.pipe.zadd_multiple(key.into(), &pairs);
         }
         self

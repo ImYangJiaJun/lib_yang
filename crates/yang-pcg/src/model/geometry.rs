@@ -114,7 +114,11 @@ pub struct Transform3 {
 
 impl Transform3 {
     pub fn new(position: WorldPoint, rotation: (f32, f32, f32), scale: (f32, f32, f32)) -> Self {
-        Self { position, rotation, scale }
+        Self {
+            position,
+            rotation,
+            scale,
+        }
     }
 }
 

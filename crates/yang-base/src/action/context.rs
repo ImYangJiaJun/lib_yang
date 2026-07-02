@@ -308,9 +308,8 @@ impl ActionContext {
     ///
     /// - `BaseError::ParamInvalid("body", ...)`: 反序列化失败（缺字段/类型错/未知字段等）
     pub fn extract_input<I: DeserializeOwned>(&self) -> Result<I, BaseError> {
-        serde_json::from_value(self.request.body.clone()).map_err(|e| {
-            BaseError::ParamInvalid("body".to_string(), e.to_string())
-        })
+        serde_json::from_value(self.request.body.clone())
+            .map_err(|e| BaseError::ParamInvalid("body".to_string(), e.to_string()))
     }
 
     /// 获取请求体参数（可选，严格模式）
@@ -375,14 +374,16 @@ impl ActionContext {
             .get(key)
             .ok_or_else(|| BaseError::ParamMissing(key.to_string()))?;
 
-        // 将字符串包装为 JSON 字符串后反序列化，支持数字、布尔等类型
-        let json_val = serde_json::Value::String(raw.clone());
-        serde_json::from_value(json_val).map_err(|_| {
-            BaseError::ParamInvalid(
-                key.to_string(),
-                format!("路径参数 '{}' 无法转换为目标类型，原始值: {}", key, raw),
-            )
-        })
+        // 先尝试将原始字符串直接反序列化为目标类型（支持数字、布尔等 JSON 字面量）。
+        // 若失败，则包裹为 JSON 字符串再尝试（数字形式的值如 "123" 在 String 目标下仍应可用）。
+        serde_json::from_str::<T>(raw)
+            .or_else(|_| serde_json::from_value(serde_json::Value::String(raw.clone())))
+            .map_err(|_| {
+                BaseError::ParamInvalid(
+                    key.to_string(),
+                    format!("路径参数 '{}' 无法转换为目标类型，原始值: {}", key, raw),
+                )
+            })
     }
 
     /// 创建表查询构建器

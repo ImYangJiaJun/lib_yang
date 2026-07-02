@@ -1,4 +1,4 @@
-﻿//! TableQuery CRUD 操作集成测试
+//! TableQuery CRUD 操作集成测试
 //!
 //! 测试 TableQuery 的完整 CRUD 操作流程，包括：
 //! - 完整的 CRUD 流程（INSERT、SELECT、UPDATE、DELETE）
@@ -933,6 +933,3 @@ async fn test_paginate_query_with_conditions() {
         assert_eq!(user.status, "active", "所有记录的 status 应该等于 active");
     }
 }
-
-
-

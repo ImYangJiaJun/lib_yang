@@ -680,12 +680,7 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_between(
-        mut self,
-        field: &str,
-        lo: Value,
-        hi: Value,
-    ) -> Result<Self, BaseError> {
+    pub fn where_between(mut self, field: &str, lo: Value, hi: Value) -> Result<Self, BaseError> {
         self.validate_filter_field(field)?;
         self.query_params
             .where_conditions
@@ -1640,10 +1635,7 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚，连接不可用
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    pub async fn select_in_tx<T>(
-        self,
-        tx: &mut yang_db::Transaction,
-    ) -> Result<Vec<T>, BaseError>
+    pub async fn select_in_tx<T>(self, tx: &mut yang_db::Transaction) -> Result<Vec<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
@@ -1676,7 +1668,10 @@ impl TableQuery {
     /// # 错误
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
-    fn build_select_sql(&self, hard_limit: Option<usize>) -> Result<(String, Vec<SqlParam>), BaseError> {
+    fn build_select_sql(
+        &self,
+        hard_limit: Option<usize>,
+    ) -> Result<(String, Vec<SqlParam>), BaseError> {
         let mut sql = String::from("SELECT ");
         let mut params = Vec::new();
 
@@ -2083,7 +2078,10 @@ impl TableQuery {
         // 2. 填充默认值（缺失或为 null 且配置了 default_value）
         for (field_name, field_config) in &self.table_config.fields {
             if let Some(default) = &field_config.default_value {
-                let missing = prepared.get(field_name).map(|v| v.is_null()).unwrap_or(true);
+                let missing = prepared
+                    .get(field_name)
+                    .map(|v| v.is_null())
+                    .unwrap_or(true);
                 if missing {
                     prepared.insert(field_name.clone(), default.clone());
                 }
@@ -2532,23 +2530,34 @@ impl TableQuery {
     /// # }
     /// ```
     pub async fn delete(self) -> Result<u64, BaseError> {
-        // 1. 检查数据库连接池是否存在
+        // 1. 检查是否配置了软删除字段
+        if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
+            // 软删除：走 build_update_sql_impl 跳过 validate_update_data_impl
+            // 的用户写权限检查，与 updated_at 自动写入语义对称。
+            let now = chrono::Utc::now().timestamp();
+            let mut data = std::collections::HashMap::new();
+            data.insert(soft_delete_field.clone(), Value::Number(now.into()));
+            let (sql, params) = self.build_update_sql_impl(&data)?;
+            let pool = self
+                .pool
+                .as_ref()
+                .ok_or(BaseError::DatabaseNotInitialized)?;
+            let result = Self::timed(
+                self.slow_threshold,
+                self.request_id,
+                &self.table_config.table_name,
+                "delete",
+                Self::run_execute(pool.as_ref(), &sql, &params),
+            )
+            .await?;
+            return Ok(result.rows_affected());
+        }
+
+        // 2. 物理删除：检查连接池
         let pool = self
             .pool
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 检查是否配置了软删除字段
-        if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
-            // 软删除：执行 UPDATE 设置删除标记
-            // 使用当前时间戳作为删除标记
-            let now = chrono::Utc::now().timestamp();
-            let mut data = std::collections::HashMap::new();
-            data.insert(soft_delete_field.clone(), Value::Number(now.into()));
-
-            // 调用 update 方法执行软删除
-            return self.update(data).await;
-        }
 
         // 3. 物理删除：构建 DELETE SQL 语句
         let (sql, params) = self.build_delete_sql()?;
@@ -2576,12 +2585,27 @@ impl TableQuery {
     /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚
     /// - 其余同 [`TableQuery::delete`]
     pub async fn delete_in_tx(self, tx: &mut yang_db::Transaction) -> Result<u64, BaseError> {
-        // 软删除：转为事务内 UPDATE，保持与连接池路径一致的语义
+        // 软删除：走 build_update_sql_impl 跳过 validate_update_data_impl
+        // 的用户写权限检查，与 updated_at 自动写入语义对称。
         if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
             let now = chrono::Utc::now().timestamp();
             let mut data = std::collections::HashMap::new();
             data.insert(soft_delete_field.clone(), Value::Number(now.into()));
-            return self.update_in_tx(tx, data).await;
+            let (sql, params) = self.build_update_sql_impl(&data)?;
+            let executor = tx.executor().ok_or_else(|| {
+                BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
+                    "事务已提交或回滚".to_string(),
+                ))
+            })?;
+            let result = Self::timed(
+                self.slow_threshold,
+                self.request_id,
+                &self.table_config.table_name,
+                "delete_in_tx",
+                Self::run_execute(executor, &sql, &params),
+            )
+            .await?;
+            return Ok(result.rows_affected());
         }
 
         let (sql, params) = self.build_delete_sql()?;
@@ -2826,17 +2850,15 @@ impl SqlParam {
                 } else if let Some(f) = n.as_f64() {
                     Ok(SqlParam::Float(f))
                 } else {
-                    Err(BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(format!(
-                        "不支持的数字类型: {}",
-                        n
-                    ))))
+                    Err(BaseError::DatabaseQueryFailed(
+                        yang_db::DbError::QueryError(format!("不支持的数字类型: {}", n)),
+                    ))
                 }
             }
             Value::String(s) => Ok(SqlParam::String(s.clone())),
-            _ => Err(BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(format!(
-                "不支持的值类型: {:?}",
-                value
-            )))),
+            _ => Err(BaseError::DatabaseQueryFailed(
+                yang_db::DbError::QueryError(format!("不支持的值类型: {:?}", value)),
+            )),
         }
     }
 }

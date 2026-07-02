@@ -245,12 +245,7 @@ pub fn fill_chunk_details(
                 let mut fallback_rng =
                     root_rng.derive(&format!("terrain:fallback:{}:{}", chunk_id, room.id));
                 let mut t = TerrainStrategyKind::DefaultCarve
-                    .generate(
-                        room,
-                        &chunk_anchors,
-                        terrain_config,
-                        &mut fallback_rng,
-                    )
+                    .generate(room, &chunk_anchors, terrain_config, &mut fallback_rng)
                     .map_err(|_| primary_err)?;
                 terrain::repair_terrain_connectivity(&mut t);
                 terrains.push(t);

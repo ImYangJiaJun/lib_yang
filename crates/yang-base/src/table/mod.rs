@@ -43,8 +43,8 @@
 //! assert!(email_validator.validate("email", &json!("user@example.com")).is_ok());
 //! ```
 
-mod entity;
 mod dynamic_row;
+mod entity;
 mod field_config;
 mod field_type;
 mod query_params;
@@ -56,12 +56,11 @@ mod validator;
 mod __tests__;
 
 pub use dynamic_row::DynamicRow;
-pub use entity::{
-    AsColumnName, Filter, IntoSqlCondition, SqlCondition, SqlOp,
-    WhereOp, StringWhereOp,
-};
 #[cfg(feature = "mysql")]
 pub use entity::TableEntity;
+pub use entity::{
+    AsColumnName, Filter, IntoSqlCondition, SqlCondition, SqlOp, StringWhereOp, WhereOp,
+};
 pub use field_config::{FieldConfig, FieldPermissions, RelationConfig, RelationType};
 pub use field_type::FieldType;
 pub use query_params::{PaginatedResult, QueryParams, WhereCondition};

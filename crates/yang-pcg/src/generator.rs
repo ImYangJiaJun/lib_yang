@@ -4,7 +4,7 @@
 use crate::backend::{select_backend, ValidationScope};
 use crate::debug::{elapsed_ms, stage_stat, stage_stat_timed, DebugBundle, DebugChannels};
 use crate::digest::ConfigDigest;
-use crate::error::PcgResult;
+use crate::error::{PcgError, PcgResult};
 use crate::export::CURRENT_SCHEMA_VERSION;
 use crate::model::request::GenerationRequest;
 use crate::model::result::{GenerationResult, ResultMetadata};
@@ -46,6 +46,13 @@ impl MapGenerator {
         // 如果是 RuntimeChunked 模式，委托给分块生成逻辑
         if request.config.generation_mode == crate::config::GenerationMode::RuntimeChunked {
             return self.generate_chunk(request);
+        }
+
+        // HybridPrecompute 模式必须通过 generate_topology_only() + fill_chunk_details() 两阶段调用
+        if request.config.generation_mode == crate::config::GenerationMode::HybridPrecompute {
+            return Err(PcgError::config(
+                "HybridPrecompute须经generate_topology_only()+fill_chunk_details()两阶段调用",
+            ));
         }
 
         let normalized = validate_request(&request)?;
@@ -228,6 +235,12 @@ impl MapGenerator {
     /// # 返回
     /// - `Ok(GenerationResult)`: 仅包含请求分块内容的生成结果
     pub fn generate_chunk(&self, request: GenerationRequest) -> PcgResult<GenerationResult> {
+        // 模式守卫: generate_chunk() 仅适用于 RuntimeChunked 模式
+        if request.config.generation_mode != crate::config::GenerationMode::RuntimeChunked {
+            return Err(PcgError::config(
+                "generate_chunk()仅适用于RuntimeChunked模式",
+            ));
+        }
         chunked::generate_chunk(request)
     }
 

@@ -23,12 +23,7 @@ pub(crate) fn current_unix_timestamp() -> Result<u64, BaseError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .map_err(|e| {
-            BaseError::ConfigError(format!(
-                "系统时钟异常，早于 UNIX_EPOCH: {}",
-                e
-            ))
-        })
+        .map_err(|e| BaseError::ConfigError(format!("系统时钟异常，早于 UNIX_EPOCH: {}", e)))
 }
 
 /// 构建 Token 验证规则（[`Validation`]）。
@@ -279,8 +274,7 @@ impl TokenManager {
         let mut header = Header::new(self.algorithm);
         header.typ = Some("JWT".to_string());
 
-        encode(&header, &claims, &self.encoding_key)
-            .map_err(BaseError::TokenGenerateFailed)
+        encode(&header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 生成 Refresh Token
@@ -318,8 +312,7 @@ impl TokenManager {
         let mut header = Header::new(self.algorithm);
         header.typ = Some("JWT".to_string());
 
-        encode(&header, &claims, &self.encoding_key)
-            .map_err(BaseError::TokenGenerateFailed)
+        encode(&header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 生成 Token 对（Access Token + Refresh Token）
@@ -372,7 +365,13 @@ impl TokenManager {
     /// # 返回
     ///
     /// - `Ok(TokenClaims)`: Token 声明
-    /// - `Err(BaseError)`: 验证失败
+    /// - `Err(BaseError::TokenExpired)`: Token 已过期
+    /// - `Err(BaseError::TokenVerifyFailed)`: 签名或声明校验失败
+    /// - `Err(BaseError::TokenParseFailed)`: Token 解析失败
+    ///
+    /// 错误分类由 [`From<jsonwebtoken::errors::Error>`] 自动分流：
+    /// `ExpiredSignature` → `TokenExpired`，`InvalidToken`/`InvalidSignature` → `TokenVerifyFailed`，
+    /// 其他 → `TokenParseFailed`。
     ///
     /// # 示例
     ///
@@ -384,8 +383,7 @@ impl TokenManager {
     pub fn verify_token(&self, token: &str) -> Result<TokenClaims, BaseError> {
         // 复用构造时缓存的 Validation（token-10），避免每次验证重复分配
         // 算法白名单、签发者/受众集合与必需声明集合。
-        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &self.validation)
-            .map_err(BaseError::TokenVerifyFailed)?;
+        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &self.validation)?;
 
         Ok(token_data.claims)
     }
@@ -431,7 +429,10 @@ impl TokenManager {
     /// let claims = manager.parse_token_unsafe(&token)?;
     /// println!("Token 内容: {:?}", claims);
     /// ```
-    #[deprecated(since = "0.1.0", note = "此方法跳过所有 JWT 安全验证（签名/过期/签发者），仅可用于调试日志和单元测试。鉴权路径必须使用 verify_token 或 verify_token_checked。")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "此方法跳过所有 JWT 安全验证（签名/过期/签发者），仅可用于调试日志和单元测试。鉴权路径必须使用 verify_token 或 verify_token_checked。"
+    )]
     pub fn parse_token_unsafe(&self, token: &str) -> Result<TokenClaims, BaseError> {
         // 使用 dangerous::insecure_decode 进行不安全解析
         // 注意：此方法不验证签名、过期时间等，仅用于调试
@@ -519,14 +520,18 @@ impl TokenManager {
 
     /// 轮换 Refresh Token（刷新令牌轮换 / Refresh Token Rotation，token-1）。
     ///
-    /// 每次刷新都签发全新的 Token 对，并立刻把旧 Refresh Token 拉黑，
+    /// 每次刷新都签发全新的 Token 对，并立刻把旧 Refresh Token 原子拉黑，
     /// 使其无法再次使用。这能限制刷新令牌泄露的影响面：一旦旧令牌被重放，
     /// 因已进入黑名单而验证失败。
+    ///
+    /// 注：原子拉黑使用 [`SET key val NX EX ttl`]，竞态安全——
+    /// 并发请求中仅第一个能成功写入黑名单，后续返回 [`BaseError::TokenRevoked`]。
     ///
     /// 执行流程：
     /// 1. [`TokenManager::verify_token_checked`] 验证旧 Refresh Token 且确认未被撤销；
     /// 2. 校验其 `token_type` 必须为 `"refresh"`；
-    /// 3. [`TokenManager::revoke_claims`] 将旧 Refresh Token 写入黑名单；
+    /// 3. [`TokenManager::try_revoke_once`] 原子写入黑名单（SET NX EX）；
+    ///    若返回 false（竞态中落败）则返回 [`BaseError::TokenRevoked`]；
     /// 4. [`TokenManager::generate_token_pair`] 以原 `sub` 与新的自定义声明签发新 Token 对。
     ///
     /// # 参数
@@ -537,15 +542,16 @@ impl TokenManager {
     /// # 返回
     ///
     /// - `Ok((access_token, refresh_token))`: 新签发的 Token 对
-    /// - `Err(BaseError::TokenVerifyFailed)`: 旧 Token 签名/过期/声明校验失败
-    /// - `Err(BaseError::TokenRevoked)`: 旧 Token 已被撤销
+    /// - `Err(BaseError::TokenVerifyFailed)`: 旧 Token 签名/声明校验失败
+    /// - `Err(BaseError::TokenExpired)`: 旧 Token 已过期
+    /// - `Err(BaseError::TokenRevoked)`: 旧 Token 已被撤销（含竞态中落败）
     /// - `Err(BaseError::TokenTypeInvalid)`: 传入的不是 Refresh Token
-    /// - `Err(BaseError::RedisOperationFailed)`: 黑名单读写失败
+    /// - `Err(BaseError::RedisOperationFailed)`: 原子写入黑名单失败
     ///
     /// # 依赖
     ///
     /// 本方法依赖基于 Redis 的 Token 黑名单（见 [`TokenManager::verify_token_checked`]
-    /// 与 [`TokenManager::revoke_claims`]），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
+    /// 与 [`TokenManager::try_revoke_once`]），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
     pub async fn rotate_refresh_token(
         &self,
         old_refresh: &str,
@@ -561,8 +567,12 @@ impl TokenManager {
             ));
         }
 
-        // 3. 拉黑旧 Refresh Token，防止其被重复使用
-        self.revoke_claims(&old_claims).await?;
+        // 3. 原子拉黑旧 Refresh Token（SET NX EX），防止并发双重使用
+        let now = current_unix_timestamp()?;
+        let ttl = old_claims.exp.saturating_sub(now);
+        if !TokenManager::try_revoke_once(&old_claims.jti, ttl).await? {
+            return Err(BaseError::TokenRevoked);
+        }
 
         // 4. 以原 subject 与新的自定义声明签发新的 Token 对
         self.generate_token_pair(&old_claims.sub, custom_claims)

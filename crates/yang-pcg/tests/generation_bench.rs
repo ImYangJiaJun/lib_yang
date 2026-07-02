@@ -130,10 +130,7 @@ impl BenchSummary {
     fn print_report(&self) {
         println!();
         println!("============================================================");
-        println!(
-            "  基准: {} (目标房间数: {})",
-            self.name, self.target_rooms
-        );
+        println!("  基准: {} (目标房间数: {})", self.name, self.target_rooms);
         println!("============================================================");
         println!("  迭代次数: {}", self.iterations);
         println!("  ---");
@@ -177,9 +174,7 @@ fn run_benchmark(name: &str, config: GenerationConfig, iterations: usize) -> Ben
             .with_trace_id(format!("bench-{}-iter-{}", name, i));
 
         let start = Instant::now();
-        let result = generator
-            .generate(request)
-            .expect("基准测试生成不应失败");
+        let result = generator.generate(request).expect("基准测试生成不应失败");
         let total_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         // 从 DebugBundle 提取阶段耗时
@@ -318,7 +313,10 @@ fn bench_all_sizes_comparison() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║          yang-pcg 地图生成性能基准测试报告              ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  迭代次数: {:2}                                          ║", ITERATIONS);
+    println!(
+        "║  迭代次数: {:2}                                          ║",
+        ITERATIONS
+    );
     println!("║  模式: OfflineFullFloor + Debug                        ║");
     println!("╚══════════════════════════════════════════════════════════╝");
 

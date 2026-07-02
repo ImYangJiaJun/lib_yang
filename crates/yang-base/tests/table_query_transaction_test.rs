@@ -181,7 +181,12 @@ macro_rules! setup_test_env {
 }
 
 /// 构建用户插入数据
-fn user_data(name: &str, email: &str, age: i64, status: &str) -> HashMap<String, serde_json::Value> {
+fn user_data(
+    name: &str,
+    email: &str,
+    age: i64,
+    status: &str,
+) -> HashMap<String, serde_json::Value> {
     let mut data = HashMap::new();
     data.insert("name".to_string(), serde_json::json!(name));
     data.insert("email".to_string(), serde_json::json!(email));
@@ -213,7 +218,10 @@ async fn test_transaction_rollback_discards_all_inserts() {
     let mut tx = db.transaction().await.unwrap();
 
     admin_query(&config, &pool)
-        .insert_in_tx(&mut tx, user_data("张三", "zhangsan@example.com", 25, "active"))
+        .insert_in_tx(
+            &mut tx,
+            user_data("张三", "zhangsan@example.com", 25, "active"),
+        )
         .await
         .unwrap();
     admin_query(&config, &pool)
@@ -241,7 +249,10 @@ async fn test_transaction_drop_without_commit_rolls_back() {
     {
         let mut tx = db.transaction().await.unwrap();
         admin_query(&config, &pool)
-            .insert_in_tx(&mut tx, user_data("王五", "wangwu@example.com", 28, "active"))
+            .insert_in_tx(
+                &mut tx,
+                user_data("王五", "wangwu@example.com", 28, "active"),
+            )
             .await
             .unwrap();
         // tx 在此作用域结束被 drop，未 commit
@@ -265,7 +276,10 @@ async fn test_transaction_commit_persists_all_inserts() {
     let mut tx = db.transaction().await.unwrap();
 
     admin_query(&config, &pool)
-        .insert_in_tx(&mut tx, user_data("张三", "zhangsan@example.com", 25, "active"))
+        .insert_in_tx(
+            &mut tx,
+            user_data("张三", "zhangsan@example.com", 25, "active"),
+        )
         .await
         .unwrap();
     admin_query(&config, &pool)
@@ -296,7 +310,10 @@ async fn test_transaction_read_sees_uncommitted_write() {
     let mut tx = db.transaction().await.unwrap();
 
     let (_affected, new_id) = admin_query(&config, &pool)
-        .insert_returning_id_in_tx(&mut tx, user_data("赵六", "zhaoliu@example.com", 40, "active"))
+        .insert_returning_id_in_tx(
+            &mut tx,
+            user_data("赵六", "zhaoliu@example.com", 40, "active"),
+        )
         .await
         .unwrap();
     assert!(new_id > 0, "应返回自增主键");
@@ -336,7 +353,10 @@ async fn test_transaction_multi_step_atomic_on_failure() {
 
     // 第一步：成功插入
     admin_query(&config, &pool)
-        .insert_in_tx(&mut tx, user_data("钱七", "qianqi@example.com", 33, "active"))
+        .insert_in_tx(
+            &mut tx,
+            user_data("钱七", "qianqi@example.com", 33, "active"),
+        )
         .await
         .unwrap();
 

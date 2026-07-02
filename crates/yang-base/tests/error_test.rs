@@ -65,8 +65,7 @@ fn test_database_connection_failed_message() {
 
 #[test]
 fn test_database_query_failed_message() {
-    let err =
-        BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("查询超时".to_string()));
+    let err = BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("查询超时".to_string()));
     assert_eq!(format!("{}", err), "数据库查询失败: 查询错误: 查询超时");
 }
 
@@ -93,10 +92,7 @@ fn test_database_transaction_failed_message() {
     let err = BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
         "事务回滚失败".to_string(),
     ));
-    assert_eq!(
-        format!("{}", err),
-        "数据库事务失败: 事务错误: 事务回滚失败"
-    );
+    assert_eq!(format!("{}", err), "数据库事务失败: 事务错误: 事务回滚失败");
 }
 
 #[test]
@@ -387,9 +383,8 @@ fn test_database_error_source_chain() {
 fn test_token_error_source_chain() {
     use std::error::Error;
 
-    let jwt_err = jsonwebtoken::errors::Error::from(
-        jsonwebtoken::errors::ErrorKind::InvalidSignature,
-    );
+    let jwt_err =
+        jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidSignature);
     let base_err = BaseError::TokenVerifyFailed(jwt_err);
 
     // BaseError.source() 应返回 Some，指向 jsonwebtoken::errors::Error

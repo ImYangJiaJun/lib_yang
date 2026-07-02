@@ -43,9 +43,9 @@ pub fn carve_room_terrain_with_config(
 ) -> PcgResult<Terrain> {
     use crate::error::PcgError;
 
-    let bounds = room.bounds.ok_or_else(|| {
-        PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
-    })?;
+    let bounds = room
+        .bounds
+        .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
     let width = bounds.width();
     let height = bounds.height();
     if width == 0 || height == 0 {
@@ -150,17 +150,19 @@ fn place_obstacles_with_config(
         return;
     }
 
-    let candidate_budget = ((grid.width * grid.height) as f32
-        * config.obstacle_density)
-        .round() as usize;
+    let candidate_budget =
+        ((grid.width * grid.height) as f32 * config.obstacle_density).round() as usize;
     let target_obstacle_count = candidate_budget.min(4);
+    let max_attempts = target_obstacle_count.saturating_mul(10).max(40);
     let mut placed = 0usize;
+    let mut attempts = 0usize;
     let max_x = grid.width as i32 - 2;
     let max_y = grid.height as i32 - 2;
 
-    while placed < target_obstacle_count && max_x > 1 && max_y > 1 {
+    while placed < target_obstacle_count && attempts < max_attempts && max_x > 1 && max_y > 1 {
         let x = rng.random_range(1, max_x);
         let y = rng.random_range(1, max_y);
+        attempts += 1;
         if grid.get(x, y).copied() == Some(TileKind::Floor) {
             grid.set(x, y, TileKind::Obstacle);
             placed += 1;

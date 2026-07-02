@@ -87,6 +87,33 @@ impl GenerationConfig {
             ));
         }
 
+        // OPT-R-02: 房间数量上界保护，防止 OOM
+        if self.room_count.max > 4096 {
+            return Err(PcgError::config_with_field(
+                format!("房间数量最大值({})超过上限 4096", self.room_count.max),
+                "room_count.max",
+            ));
+        }
+
+        // OPT-R-02: 组合 OOM 防护 — room_count.max × max_width × max_height 乘积约束
+        let total_cells = (self.room_count.max as u64)
+            * (self.room_size.max_width as u64)
+            * (self.room_size.max_height as u64);
+        const MAX_TOTAL_CELLS: u64 = 64_000_000; // ~64 MB 原始瓦片数据
+        if total_cells > MAX_TOTAL_CELLS {
+            return Err(PcgError::config_with_field(
+                format!(
+                    "总瓦片数({} = room_count.max({})×max_width({})×max_height({}))超过上限({})",
+                    total_cells,
+                    self.room_count.max,
+                    self.room_size.max_width,
+                    self.room_size.max_height,
+                    MAX_TOTAL_CELLS,
+                ),
+                "room_count / room_size 组合",
+            ));
+        }
+
         // 验证关键路径长度范围
         if self.critical_path_length.min > self.critical_path_length.max {
             return Err(PcgError::config_with_field(
@@ -331,6 +358,17 @@ impl RoomSizeConfig {
             ));
         }
 
+        // OPT-R-02: 房间尺寸上界保护，防止 OOM
+        if self.max_width > 512 || self.max_height > 512 {
+            return Err(PcgError::config_with_field(
+                format!(
+                    "房间最大尺寸({}x{})超过上限 512x512",
+                    self.max_width, self.max_height
+                ),
+                "room_size",
+            ));
+        }
+
         Ok(())
     }
 }
@@ -374,9 +412,7 @@ impl CorridorConfig {
         }
 
         if self.max_turns == 0 || self.max_turns > 20 {
-            return Err(PcgError::config(
-                "max_turns 必须在 1..=20 范围内",
-            ));
+            return Err(PcgError::config("max_turns 必须在 1..=20 范围内"));
         }
 
         Ok(())
@@ -476,6 +512,12 @@ impl ItemSpawnConfig {
         if self.min_spacing < 1 {
             return Err(PcgError::config_with_field(
                 "交互物最小间距不能小于 1",
+                "item_spawns.min_spacing",
+            ));
+        }
+        if self.min_spacing > 128 {
+            return Err(PcgError::config_with_field(
+                "交互物最小间距不能超过 128",
                 "item_spawns.min_spacing",
             ));
         }

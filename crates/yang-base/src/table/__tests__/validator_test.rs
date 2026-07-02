@@ -261,7 +261,9 @@ fn test_phone_success() {
 
     // 正常情况（严格 E.164 模式）
     assert!(validator.validate("phone", &json!("13800138000")).is_ok());
-    assert!(validator.validate("phone", &json!("+8613800138000")).is_ok());
+    assert!(validator
+        .validate("phone", &json!("+8613800138000"))
+        .is_ok());
     assert!(validator.validate("phone", &json!("1234567890")).is_ok());
 }
 

@@ -104,10 +104,7 @@ pub fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
 
     // 检查是否所有房间都被访问到
     let all_room_ids: HashSet<&str> = graph.nodes.iter().map(|r| r.id.as_str()).collect();
-    let unreachable: Vec<&str> = all_room_ids
-        .difference(&visited)
-        .copied()
-        .collect();
+    let unreachable: Vec<&str> = all_room_ids.difference(&visited).copied().collect();
 
     if unreachable.is_empty() {
         Ok(())
@@ -224,10 +221,8 @@ pub fn validate_terrain_connectivity(terrains: &[Terrain]) -> PcgResult<()> {
         let reachable = bfs_walkable(&terrain.tiles, start);
 
         // 检查所有门口是否都在可达集合中
-        let unreachable_doors: Vec<&GridPoint> = doorways
-            .iter()
-            .filter(|p| !reachable.contains(p))
-            .collect();
+        let unreachable_doors: Vec<&GridPoint> =
+            doorways.iter().filter(|p| !reachable.contains(p)).collect();
 
         if !unreachable_doors.is_empty() {
             return Err(Box::new(PcgError::Terrain {
@@ -273,10 +268,22 @@ fn bfs_walkable(grid: &Grid2D<TileKind>, start: GridPoint) -> HashSet<GridPoint>
     while let Some(current) = queue.pop_front() {
         // 四方向邻居
         let neighbors = [
-            GridPoint { x: current.x + 1, y: current.y },
-            GridPoint { x: current.x - 1, y: current.y },
-            GridPoint { x: current.x, y: current.y + 1 },
-            GridPoint { x: current.x, y: current.y - 1 },
+            GridPoint {
+                x: current.x + 1,
+                y: current.y,
+            },
+            GridPoint {
+                x: current.x - 1,
+                y: current.y,
+            },
+            GridPoint {
+                x: current.x,
+                y: current.y + 1,
+            },
+            GridPoint {
+                x: current.x,
+                y: current.y - 1,
+            },
         ];
 
         for neighbor in neighbors {
@@ -298,7 +305,10 @@ fn bfs_walkable(grid: &Grid2D<TileKind>, start: GridPoint) -> HashSet<GridPoint>
 
 /// 判断瓦片是否可通行（Floor、Doorway、Reserved）
 fn is_tile_walkable(tile: TileKind) -> bool {
-    matches!(tile, TileKind::Floor | TileKind::Doorway | TileKind::Reserved)
+    matches!(
+        tile,
+        TileKind::Floor | TileKind::Doorway | TileKind::Reserved
+    )
 }
 
 /// 默认最小间距（曼哈顿距离，单位：格）
@@ -341,10 +351,7 @@ fn manhattan_distance(a: GridPoint, b: GridPoint) -> i32 {
 
 /// 判断点位是否在排除区内
 fn is_point_in_exclusion_zone(point: GridPoint, zone: &ExclusionZoneConstraint) -> bool {
-    point.x >= zone.min.x
-        && point.x < zone.max.x
-        && point.y >= zone.min.y
-        && point.y < zone.max.y
+    point.x >= zone.min.x && point.x < zone.max.x && point.y >= zone.min.y && point.y < zone.max.y
 }
 
 /// 验证点位间距和禁布规则
@@ -650,7 +657,12 @@ pub fn run_full_validation(
     };
 
     // 5. 汇总统计
-    let items = [&reachability, &no_overlap, &terrain_connectivity, &spawn_spacing];
+    let items = [
+        &reachability,
+        &no_overlap,
+        &terrain_connectivity,
+        &spawn_spacing,
+    ];
     let passed_count = items.iter().filter(|item| item.passed).count();
     let failed_count = items.len() - passed_count;
     let all_passed = failed_count == 0;
@@ -819,9 +831,7 @@ mod tests {
                 make_room("room-1", RoomType::Combat),
                 make_room("room-2", RoomType::Boss),
             ],
-            edges: vec![
-                make_edge("edge-0", "room-0", "room-1"),
-            ],
+            edges: vec![make_edge("edge-0", "room-0", "room-1")],
             critical_path: vec![],
             branches: vec![],
         };
@@ -830,7 +840,10 @@ mod tests {
         assert_eq!(err.error_code(), "PCG-TOPOLOGY-001");
         let msg = format!("{}", err);
         assert!(msg.contains("room-2"), "错误信息应包含不可达房间 ID");
-        assert!(msg.contains("1 个不可达房间"), "错误信息应包含不可达房间数量");
+        assert!(
+            msg.contains("1 个不可达房间"),
+            "错误信息应包含不可达房间数量"
+        );
     }
 
     #[test]
@@ -841,9 +854,7 @@ mod tests {
                 make_room("room-0", RoomType::Combat),
                 make_room("room-1", RoomType::Boss),
             ],
-            edges: vec![
-                make_edge("edge-0", "room-0", "room-1"),
-            ],
+            edges: vec![make_edge("edge-0", "room-0", "room-1")],
             critical_path: vec![],
             branches: vec![],
         };
@@ -858,9 +869,7 @@ mod tests {
     fn test_reachability_single_start_room() {
         // 验证需求: 3.2 - 只有一个 Start 房间且无边时应通过
         let graph = RoomGraph {
-            nodes: vec![
-                make_room("room-0", RoomType::Start),
-            ],
+            nodes: vec![make_room("room-0", RoomType::Start)],
             edges: vec![],
             critical_path: vec![],
             branches: vec![],
@@ -1057,8 +1066,8 @@ mod tests {
 
     // ========== validate_terrain_connectivity 测试 ==========
 
-    use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
     use crate::model::geometry::GridSize;
+    use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 
     /// 辅助函数：创建一个地形对象
     fn make_terrain(room_id: &str, width: u32, height: u32, tiles: Vec<TileKind>) -> Terrain {
@@ -1089,9 +1098,21 @@ mod tests {
         // W W W W W  (墙)
         // 实际上第一行全部可通行，两个门口连通
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor, TileKind::Floor, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-0", 5, 3, tiles);
 
@@ -1108,9 +1129,21 @@ mod tests {
         // W W W W W
         // 中间墙体将两个门口隔断
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Wall, TileKind::Floor, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Floor,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-1", 5, 3, tiles);
 
@@ -1125,9 +1158,15 @@ mod tests {
     fn test_terrain_connectivity_single_door() {
         // 验证需求: 5.4 - 只有一个门口时无需验证，直接通过
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-2", 3, 3, tiles);
 
@@ -1139,9 +1178,15 @@ mod tests {
     fn test_terrain_connectivity_no_doors() {
         // 验证需求: 5.4 - 没有门口时无需验证，直接通过
         let tiles = vec![
-            TileKind::Floor, TileKind::Floor, TileKind::Floor,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-3", 3, 3, tiles);
 
@@ -1161,17 +1206,29 @@ mod tests {
         // 验证需求: 5.4 - 多个地形中有一个不连通应返回错误
         // 第一个地形连通
         let tiles_ok = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain_ok = make_terrain("room-ok", 3, 3, tiles_ok);
 
         // 第二个地形不连通
         let tiles_bad = vec![
-            TileKind::Doorway, TileKind::Wall, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain_bad = make_terrain("room-bad", 3, 3, tiles_bad);
 
@@ -1185,9 +1242,7 @@ mod tests {
     fn test_terrain_connectivity_doors_connected_via_reserved() {
         // 验证需求: 5.4 - 门口通过 Reserved 瓦片连通也应通过
         // 3x1 网格：D R D
-        let tiles = vec![
-            TileKind::Doorway, TileKind::Reserved, TileKind::Doorway,
-        ];
+        let tiles = vec![TileKind::Doorway, TileKind::Reserved, TileKind::Doorway];
         let terrain = make_terrain("room-4", 3, 1, tiles);
 
         let result = validate_terrain_connectivity(&[terrain]);
@@ -1203,9 +1258,21 @@ mod tests {
         // D F F W W
         // 左上角门口和左下角门口不连通（因为第二行全是墙），右上角门口也不可达
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor, TileKind::Wall, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-5", 5, 3, tiles);
 
@@ -1217,8 +1284,8 @@ mod tests {
 
     // ========== validate_spawn_spacing 测试 ==========
 
-    use crate::model::spawn::{SpawnKind, SpawnMetadata, SpawnPoint};
     use crate::model::request::{Constraint, ExclusionZoneConstraint};
+    use crate::model::spawn::{SpawnKind, SpawnMetadata, SpawnPoint};
 
     /// 辅助函数：创建一个点位
     fn make_spawn(id: &str, room_id: &str, x: i32, y: i32, kind: SpawnKind) -> SpawnPoint {
@@ -1301,12 +1368,8 @@ mod tests {
     #[test]
     fn test_spawn_spacing_exclusion_zone_violation() {
         // 验证需求: 8.3 - 点位在排除区内应返回错误
-        let spawns = vec![
-            make_spawn("s1", "room-0", 3, 3, SpawnKind::Enemy),
-        ];
-        let constraints = vec![
-            make_exclusion_zone("boss-area", 0, 0, 5, 5),
-        ];
+        let spawns = vec![make_spawn("s1", "room-0", 3, 3, SpawnKind::Enemy)];
+        let constraints = vec![make_exclusion_zone("boss-area", 0, 0, 5, 5)];
 
         let err = validate_spawn_spacing(&spawns, &constraints, Some(2)).unwrap_err();
         assert_eq!(err.error_code(), "PCG-SPAWN-001");
@@ -1319,12 +1382,8 @@ mod tests {
     fn test_spawn_spacing_exclusion_zone_boundary() {
         // 验证需求: 8.3 - 排除区边界外的点位应通过
         // 排除区 [0,0) ~ [5,5)，点位在 (5,5) 刚好在边界外
-        let spawns = vec![
-            make_spawn("s1", "room-0", 5, 5, SpawnKind::Item),
-        ];
-        let constraints = vec![
-            make_exclusion_zone("zone-a", 0, 0, 5, 5),
-        ];
+        let spawns = vec![make_spawn("s1", "room-0", 5, 5, SpawnKind::Item)];
+        let constraints = vec![make_exclusion_zone("zone-a", 0, 0, 5, 5)];
 
         let result = validate_spawn_spacing(&spawns, &constraints, Some(2));
         assert!(result.is_ok(), "排除区边界外的点位应通过验证");
@@ -1371,9 +1430,7 @@ mod tests {
             make_spawn("s2", "room-0", 1, 0, SpawnKind::Item),
             make_spawn("s3", "room-0", 3, 3, SpawnKind::Enemy),
         ];
-        let constraints = vec![
-            make_exclusion_zone("danger-zone", 2, 2, 5, 5),
-        ];
+        let constraints = vec![make_exclusion_zone("danger-zone", 2, 2, 5, 5)];
 
         let err = validate_spawn_spacing(&spawns, &constraints, Some(2)).unwrap_err();
         assert_eq!(err.error_code(), "PCG-SPAWN-001");
@@ -1385,21 +1442,20 @@ mod tests {
     #[test]
     fn test_spawn_spacing_non_spawn_exclusion_zone_ignored() {
         // 验证需求: 8.3 - exclude_spawns 为 false 的排除区不影响点位
-        let spawns = vec![
-            make_spawn("s1", "room-0", 3, 3, SpawnKind::Item),
-        ];
-        let constraints = vec![
-            Constraint::ExclusionZone(ExclusionZoneConstraint {
-                label: "room-only-zone".to_string(),
-                min: GridPoint { x: 0, y: 0 },
-                max: GridPoint { x: 5, y: 5 },
-                exclude_rooms: true,
-                exclude_spawns: false,
-            }),
-        ];
+        let spawns = vec![make_spawn("s1", "room-0", 3, 3, SpawnKind::Item)];
+        let constraints = vec![Constraint::ExclusionZone(ExclusionZoneConstraint {
+            label: "room-only-zone".to_string(),
+            min: GridPoint { x: 0, y: 0 },
+            max: GridPoint { x: 5, y: 5 },
+            exclude_rooms: true,
+            exclude_spawns: false,
+        })];
 
         let result = validate_spawn_spacing(&spawns, &constraints, Some(2));
-        assert!(result.is_ok(), "exclude_spawns 为 false 的排除区不应影响点位验证");
+        assert!(
+            result.is_ok(),
+            "exclude_spawns 为 false 的排除区不应影响点位验证"
+        );
     }
 
     #[test]
@@ -1426,10 +1482,10 @@ mod tests {
     /// 辅助函数：创建一个最小合法的 GenerationResult 用于验证报告测试
     fn make_valid_generation_result() -> GenerationResult {
         use crate::model::geometry::{CardinalDir, GridPoint, GridSize, RoomBounds};
+        use crate::model::result::ResultMetadata;
         use crate::model::room::{
             Corridor, CorridorPath, DoorAnchor, Room, RoomEdge, RoomGraph, RoomType,
         };
-        use crate::model::result::ResultMetadata;
         use crate::model::spawn::{SpawnKind, SpawnMetadata, SpawnPoint};
         use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 
@@ -1478,15 +1534,34 @@ mod tests {
 
         // 创建连通的地形（两个门口通过地板连接）
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor, TileKind::Floor, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
         ];
         let terrains = vec![
             Terrain {
                 room_id: "room-0".to_string(),
-                grid_size: GridSize { width: 5, height: 3 },
-                tiles: Grid2D { width: 5, height: 3, data: tiles.clone() },
+                grid_size: GridSize {
+                    width: 5,
+                    height: 3,
+                },
+                tiles: Grid2D {
+                    width: 5,
+                    height: 3,
+                    data: tiles.clone(),
+                },
                 reserved_zones: vec![],
                 connectivity_summary: ConnectivitySummary {
                     all_doors_connected: true,
@@ -1497,8 +1572,15 @@ mod tests {
             },
             Terrain {
                 room_id: "room-1".to_string(),
-                grid_size: GridSize { width: 5, height: 3 },
-                tiles: Grid2D { width: 5, height: 3, data: tiles },
+                grid_size: GridSize {
+                    width: 5,
+                    height: 3,
+                },
+                tiles: Grid2D {
+                    width: 5,
+                    height: 3,
+                    data: tiles,
+                },
                 reserved_zones: vec![],
                 connectivity_summary: ConnectivitySummary {
                     all_doors_connected: true,
@@ -1638,7 +1720,9 @@ mod tests {
             template_ref: None,
             grammar_token: None,
         });
-        result.rooms.push(result.topology.nodes.last().unwrap().clone());
+        result
+            .rooms
+            .push(result.topology.nodes.last().unwrap().clone());
 
         let report = run_full_validation(&result, &[], None);
 
@@ -1676,8 +1760,7 @@ mod tests {
         assert!(json.contains("reachability"));
         assert!(json.contains("all_passed"));
 
-        let deserialized: ValidationReport =
-            serde_json::from_str(&json).expect("反序列化应成功");
+        let deserialized: ValidationReport = serde_json::from_str(&json).expect("反序列化应成功");
         assert_eq!(deserialized.all_passed, report.all_passed);
         assert_eq!(deserialized.passed_count, report.passed_count);
         assert_eq!(deserialized.failed_count, report.failed_count);
@@ -1776,9 +1859,7 @@ mod tests {
     #[test]
     fn test_spawn_spacing_single_spawn() {
         // 验证需求: 7.4 - 单个点位无需比较间距，应通过
-        let spawns = vec![
-            make_spawn("s1", "room-0", 0, 0, SpawnKind::Item),
-        ];
+        let spawns = vec![make_spawn("s1", "room-0", 0, 0, SpawnKind::Item)];
 
         let result = validate_spawn_spacing(&spawns, &[], Some(100));
         assert!(result.is_ok(), "单个点位应通过间距验证");
@@ -1820,9 +1901,27 @@ mod tests {
         // W W W W W F W
         // 右侧门口需要绕行才能到达
         let tiles = vec![
-            TileKind::Doorway, TileKind::Floor, TileKind::Floor, TileKind::Floor, TileKind::Floor, TileKind::Floor, TileKind::Doorway,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Floor, TileKind::Wall,
-            TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Wall, TileKind::Floor, TileKind::Wall,
+            TileKind::Doorway,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Floor,
+            TileKind::Doorway,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Wall,
+            TileKind::Floor,
+            TileKind::Wall,
         ];
         let terrain = make_terrain("room-large", 7, 3, tiles);
 
@@ -1850,7 +1949,9 @@ mod tests {
             template_ref: None,
             grammar_token: None,
         });
-        result.rooms.push(result.topology.nodes.last().unwrap().clone());
+        result
+            .rooms
+            .push(result.topology.nodes.last().unwrap().clone());
 
         // 2. 制造重叠（边界不重叠失败）
         result.rooms[0].bounds = Some(RoomBounds {
@@ -1866,7 +1967,8 @@ mod tests {
         assert!(!report.no_overlap.passed, "边界不重叠验证应失败");
         assert!(report.failed_count >= 2, "至少应有 2 项失败");
         assert_eq!(
-            report.passed_count + report.failed_count, 4,
+            report.passed_count + report.failed_count,
+            4,
             "通过数 + 失败数应等于总验证项数"
         );
     }

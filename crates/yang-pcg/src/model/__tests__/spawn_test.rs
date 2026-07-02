@@ -7,11 +7,13 @@ use crate::model::spawn::*;
 #[test]
 fn test_spawn_kind_variants() {
     // 测试点位类型枚举
-    let kinds = [SpawnKind::Item,
+    let kinds = [
+        SpawnKind::Item,
         SpawnKind::Enemy,
         SpawnKind::Boss,
         SpawnKind::Reward,
-        SpawnKind::Interaction];
+        SpawnKind::Interaction,
+    ];
 
     assert_eq!(kinds.len(), 5);
     assert_eq!(kinds[0], SpawnKind::Item);

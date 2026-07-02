@@ -375,10 +375,7 @@ fn test_generation_result_full_json_roundtrip() {
         debug_channels: Some(DebugChannels {
             critical_path_nodes: vec!["room-0".to_string(), "room-1".to_string()],
             door_anchor_positions: vec![GridPoint { x: 10, y: 5 }],
-            corridor_centerlines: vec![vec![
-                GridPoint { x: 10, y: 5 },
-                GridPoint { x: 20, y: 5 },
-            ]],
+            corridor_centerlines: vec![vec![GridPoint { x: 10, y: 5 }, GridPoint { x: 20, y: 5 }]],
             rejected_rooms: vec!["room-rejected".to_string()],
             spawn_debug: Some(SpawnDebugInfo {
                 candidate_count: 20,
@@ -413,8 +410,8 @@ fn test_generation_result_full_json_roundtrip() {
     };
 
     // 序列化为 JSON
-    let json = serde_json::to_string_pretty(&result)
-        .expect("完整 GenerationResult 应可序列化为 JSON");
+    let json =
+        serde_json::to_string_pretty(&result).expect("完整 GenerationResult 应可序列化为 JSON");
 
     // 验证 JSON 包含关键字段
     assert!(json.contains("room-0"));
@@ -435,10 +432,7 @@ fn test_generation_result_full_json_roundtrip() {
 
     // 验证元数据
     assert_eq!(restored.metadata.seed, 42);
-    assert_eq!(
-        restored.metadata.config_digest,
-        "full-test-digest-abc123"
-    );
+    assert_eq!(restored.metadata.config_digest, "full-test-digest-abc123");
     assert_eq!(restored.metadata.schema_version, "1.0.0");
     assert_eq!(restored.metadata.algorithm_version, "0.2.0");
     assert_eq!(
@@ -479,10 +473,7 @@ fn test_generation_result_full_json_roundtrip() {
     assert_eq!(restored.terrains[0].tiles.width, 5);
     assert_eq!(restored.terrains[0].tiles.height, 3);
     assert_eq!(restored.terrains[0].tiles.data.len(), 15);
-    assert_eq!(
-        restored.terrains[0].tiles.get(0, 0),
-        Some(&TileKind::Floor)
-    );
+    assert_eq!(restored.terrains[0].tiles.get(0, 0), Some(&TileKind::Floor));
 
     // 验证保留区（含 ReservedZoneBounds 枚举的三种变体）
     assert_eq!(restored.terrains[0].reserved_zones.len(), 3);
@@ -508,9 +499,15 @@ fn test_generation_result_full_json_roundtrip() {
     }
 
     // 验证连通性摘要
-    assert!(restored.terrains[0].connectivity_summary.all_doors_connected);
+    assert!(
+        restored.terrains[0]
+            .connectivity_summary
+            .all_doors_connected
+    );
     assert_eq!(
-        restored.terrains[0].connectivity_summary.walkable_tile_count,
+        restored.terrains[0]
+            .connectivity_summary
+            .walkable_tile_count,
         12
     );
 
@@ -535,10 +532,7 @@ fn test_generation_result_full_json_roundtrip() {
     assert_eq!(restored.chunks[0].id, "chunk-0");
     assert_eq!(restored.chunks[0].room_ids.len(), 2);
     assert_eq!(
-        restored.chunks[0]
-            .streaming_metadata
-            .data_layer
-            .as_deref(),
+        restored.chunks[0].streaming_metadata.data_layer.as_deref(),
         Some("DL_Dungeon_01")
     );
     assert_eq!(

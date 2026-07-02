@@ -244,23 +244,26 @@ impl PluginManager {
         let name = plugin.name().to_string();
         let plugin = Arc::new(plugin);
 
-        // 检查插件是否已注册
+        // 第一阶段：读锁检查（快速路径，避免持写锁跨 await）
         {
             let plugins = self.plugins.read().await;
             if plugins.contains_key(&name) {
                 return Err(BaseError::PluginAlreadyRegistered(name));
             }
-        }
+        } // 尽早释放读锁
 
-        // 调用注册回调
+        // 调用注册回调（不持任何锁）
         plugin
             .on_register()
             .await
             .map_err(|e| BaseError::PluginRegisterFailed(name.clone(), e.to_string()))?;
 
-        // 注册插件
+        // 第二阶段：写锁 + 二次校验（防止 TOCTOU 竞态）
         {
             let mut plugins = self.plugins.write().await;
+            if plugins.contains_key(&name) {
+                return Err(BaseError::PluginAlreadyRegistered(name));
+            }
             plugins.insert(name.clone(), plugin);
         }
 
@@ -865,10 +868,7 @@ impl PluginRegistry {
 
             for dep in plugin.dependencies() {
                 // dep -> name 的边：dep 是 name 的依赖，dep 先执行
-                graph
-                    .entry(dep.to_string())
-                    .or_default()
-                    .push(name.clone());
+                graph.entry(dep.to_string()).or_default().push(name.clone());
                 *in_degree.entry(name.clone()).or_insert(0) += 1;
             }
         }
@@ -1005,7 +1005,10 @@ mod tests {
         assert_eq!(plugin_c.unwrap().name(), "plugin_c");
 
         // 验证不存在的插件返回 None
-        assert!(registry.get("nonexistent").is_none(), "不存在的插件应返回 None");
+        assert!(
+            registry.get("nonexistent").is_none(),
+            "不存在的插件应返回 None"
+        );
     }
 
     /// 验证需求: P4 - get_all() 返回缓存结果，多次调用结果一致
@@ -1023,13 +1026,20 @@ mod tests {
         let all_second = registry.get_all();
 
         // 验证两次调用返回相同数量的插件
-        assert_eq!(all_first.len(), all_second.len(), "多次调用 get_all() 应返回相同数量的插件");
+        assert_eq!(
+            all_first.len(),
+            all_second.len(),
+            "多次调用 get_all() 应返回相同数量的插件"
+        );
         assert_eq!(all_first.len(), 3, "应有 3 个插件");
 
         // 验证两次调用返回相同的插件名称（顺序一致）
         let names_first: Vec<&str> = all_first.iter().map(|p| p.name()).collect();
         let names_second: Vec<&str> = all_second.iter().map(|p| p.name()).collect();
-        assert_eq!(names_first, names_second, "多次调用 get_all() 应返回相同顺序的插件");
+        assert_eq!(
+            names_first, names_second,
+            "多次调用 get_all() 应返回相同顺序的插件"
+        );
     }
 
     /// 验证需求: P4 - get_all() 返回的插件按拓扑顺序排列（依赖先于被依赖者）
@@ -1049,7 +1059,10 @@ mod tests {
         let pos_b = all_plugins.iter().position(|p| p.name() == "plugin_b");
         let pos_c = all_plugins.iter().position(|p| p.name() == "plugin_c");
 
-        assert!(pos_a.is_some() && pos_b.is_some() && pos_c.is_some(), "所有插件应在排序结果中");
+        assert!(
+            pos_a.is_some() && pos_b.is_some() && pos_c.is_some(),
+            "所有插件应在排序结果中"
+        );
 
         // 验证拓扑顺序：plugin_a 在 plugin_b 之前，plugin_b 在 plugin_c 之前
         assert!(
@@ -1104,7 +1117,10 @@ mod tests {
         let registry = builder.build().expect("构建注册表应成功");
 
         // 验证 registry 包含注册的插件
-        assert!(registry.get("plugin_a").is_some(), "registry 应包含已注册的插件");
+        assert!(
+            registry.get("plugin_a").is_some(),
+            "registry 应包含已注册的插件"
+        );
         assert_eq!(registry.get_all().len(), 1, "registry 应有 1 个插件");
     }
 
@@ -1145,7 +1161,10 @@ mod tests {
 
         // 空构建器构建的 registry 应为空
         assert_eq!(registry.get_all().len(), 0, "空构建器应生成空 registry");
-        assert!(registry.get("any").is_none(), "空 registry 不应包含任何插件");
+        assert!(
+            registry.get("any").is_none(),
+            "空 registry 不应包含任何插件"
+        );
     }
 
     /// 验证需求: 20.1, 20.2, 20.3 - build() 检查依赖完整性
@@ -1153,7 +1172,10 @@ mod tests {
     async fn test_build_detects_missing_dependency() {
         let mut builder = PluginManagerBuilder::new();
         // 只注册 plugin_b，但 plugin_b 依赖 plugin_a（未注册）
-        builder.register(PluginB).await.expect("注册 plugin_b 应成功");
+        builder
+            .register(PluginB)
+            .await
+            .expect("注册 plugin_b 应成功");
 
         let result = builder.build();
         assert!(
@@ -1195,8 +1217,14 @@ mod tests {
         }
 
         let mut builder = PluginManagerBuilder::new();
-        builder.register(PluginX).await.expect("注册 plugin_x 应成功");
-        builder.register(PluginY).await.expect("注册 plugin_y 应成功");
+        builder
+            .register(PluginX)
+            .await
+            .expect("注册 plugin_x 应成功");
+        builder
+            .register(PluginY)
+            .await
+            .expect("注册 plugin_y 应成功");
 
         let result = builder.build();
         assert!(
@@ -1361,14 +1389,38 @@ mod tests {
 
         // 并发注册 8 个不同名插件
         let (r0, r1, r2, r3, r4, r5, r6, r7) = tokio::join!(
-            { let m = Arc::clone(&m); async move { m.register(P0).await } },
-            { let m = Arc::clone(&m); async move { m.register(P1).await } },
-            { let m = Arc::clone(&m); async move { m.register(P2).await } },
-            { let m = Arc::clone(&m); async move { m.register(P3).await } },
-            { let m = Arc::clone(&m); async move { m.register(P4).await } },
-            { let m = Arc::clone(&m); async move { m.register(P5).await } },
-            { let m = Arc::clone(&m); async move { m.register(P6).await } },
-            { let m = Arc::clone(&m); async move { m.register(P7).await } },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P0).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P1).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P2).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P3).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P4).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P5).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P6).await }
+            },
+            {
+                let m = Arc::clone(&m);
+                async move { m.register(P7).await }
+            },
         );
         for r in [r0, r1, r2, r3, r4, r5, r6, r7] {
             r.expect("不同名插件注册应全部成功");

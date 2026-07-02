@@ -106,7 +106,10 @@ fn test_golden_sample_seed_42() {
 
     // 验证元数据稳定性
     assert_eq!(result.metadata.seed, 42);
-    assert_eq!(result.metadata.config_digest, result2.metadata.config_digest);
+    assert_eq!(
+        result.metadata.config_digest,
+        result2.metadata.config_digest
+    );
     assert_eq!(
         result.metadata.schema_version,
         result2.metadata.schema_version

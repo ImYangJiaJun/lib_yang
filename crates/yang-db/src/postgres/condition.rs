@@ -223,12 +223,21 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
                 .into_iter()
                 .map(|v| push_placeholder(params, v))
                 .collect();
-            format!("{} IN ({})", safe_quote_identifier(&field), placeholders.join(", "))
+            format!(
+                "{} IN ({})",
+                safe_quote_identifier(&field),
+                placeholders.join(", ")
+            )
         }
         Condition::Between(field, start, end) => {
             let ph_start = push_placeholder(params, start);
             let ph_end = push_placeholder(params, end);
-            format!("{} BETWEEN {} AND {}", safe_quote_identifier(&field), ph_start, ph_end)
+            format!(
+                "{} BETWEEN {} AND {}",
+                safe_quote_identifier(&field),
+                ph_start,
+                ph_end
+            )
         }
         Condition::Like(field, pattern) => {
             let ph = push_placeholder(params, SqlValue::String(pattern));

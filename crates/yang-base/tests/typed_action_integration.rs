@@ -166,7 +166,10 @@ async fn full_crud_cycle() {
         }),
         tools.clone(),
     );
-    let r = router.dispatch("select", ctx).await.expect("select OR 应成功");
+    let r = router
+        .dispatch("select", ctx)
+        .await
+        .expect("select OR 应成功");
     let data = r.data.unwrap();
     assert_eq!(
         data["items"].as_array().unwrap().len(),

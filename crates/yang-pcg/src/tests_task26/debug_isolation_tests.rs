@@ -96,10 +96,7 @@ fn test_debug_toggle_corridors_identical() {
         assert_eq!(corr_off.id, corr_on.id, "走廊 ID 应一致");
         assert_eq!(corr_off.from_room, corr_on.from_room, "走廊起点应一致");
         assert_eq!(corr_off.to_room, corr_on.to_room, "走廊终点应一致");
-        assert_eq!(
-            corr_off.width_tiles, corr_on.width_tiles,
-            "走廊宽度应一致"
-        );
+        assert_eq!(corr_off.width_tiles, corr_on.width_tiles, "走廊宽度应一致");
     }
 }
 
@@ -146,7 +143,11 @@ fn test_debug_toggle_spawns_identical() {
     );
 
     // 验证交互物点位位置和类型一致
-    for (spawn_off, spawn_on) in result_off.item_spawns.iter().zip(result_on.item_spawns.iter()) {
+    for (spawn_off, spawn_on) in result_off
+        .item_spawns
+        .iter()
+        .zip(result_on.item_spawns.iter())
+    {
         assert_eq!(spawn_off.room_id, spawn_on.room_id, "交互物房间 ID 应一致");
         assert_eq!(
             spawn_off.grid_pos, spawn_on.grid_pos,
@@ -162,10 +163,7 @@ fn test_debug_toggle_spawns_identical() {
         .zip(result_on.enemy_spawns.iter())
     {
         assert_eq!(spawn_off.room_id, spawn_on.room_id, "敌人房间 ID 应一致");
-        assert_eq!(
-            spawn_off.grid_pos, spawn_on.grid_pos,
-            "敌人网格位置应一致"
-        );
+        assert_eq!(spawn_off.grid_pos, spawn_on.grid_pos, "敌人网格位置应一致");
         assert_eq!(spawn_off.kind, spawn_on.kind, "敌人类型应一致");
     }
 }
@@ -207,8 +205,7 @@ fn test_debug_toggle_topology_identical() {
 
     // 验证关键路径一致
     assert_eq!(
-        result_off.topology.critical_path,
-        result_on.topology.critical_path,
+        result_off.topology.critical_path, result_on.topology.critical_path,
         "关键路径应一致"
     );
 

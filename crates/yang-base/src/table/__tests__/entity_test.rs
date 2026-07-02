@@ -5,7 +5,11 @@ use crate::table::entity::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(
-    Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow,
+    Debug,
+    Deserialize,
+    Serialize,
+    schemars::JsonSchema,
+    sqlx::FromRow,
     yang_base_derive::TableEntity,
 )]
 #[table(name = "test_users")]
@@ -75,5 +79,9 @@ fn test_derived_table_config() {
     assert!(cfg.fields.contains_key("id"), "应包含 id 字段");
     assert!(cfg.fields.contains_key("username"), "应包含 username 字段");
     // unique 字段应该在 unique_indexes 中
-    assert_eq!(cfg.unique_indexes.len(), 1, "username 标记 unique，应有 1 个唯一索引");
+    assert_eq!(
+        cfg.unique_indexes.len(),
+        1,
+        "username 标记 unique，应有 1 个唯一索引"
+    );
 }

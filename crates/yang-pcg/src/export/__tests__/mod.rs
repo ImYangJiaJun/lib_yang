@@ -182,8 +182,7 @@ fn test_export_json_compact_roundtrip() {
     let result = create_test_result();
     let json = export_json_compact(&result).expect("导出应成功");
 
-    let restored: GenerationResult =
-        serde_json::from_str(&json).expect("应可从紧凑 JSON 反序列化");
+    let restored: GenerationResult = serde_json::from_str(&json).expect("应可从紧凑 JSON 反序列化");
 
     assert_eq!(restored.metadata.seed, result.metadata.seed);
     assert_eq!(
@@ -213,8 +212,7 @@ fn test_export_json_with_debug_bundle() {
     let json = export_json(&result).expect("带调试信息的导出应成功");
     assert!(json.contains("\"debug\""));
 
-    let restored: GenerationResult =
-        serde_json::from_str(&json).expect("应可反序列化");
+    let restored: GenerationResult = serde_json::from_str(&json).expect("应可反序列化");
     assert!(restored.debug.is_some());
 }
 
@@ -225,8 +223,7 @@ fn test_export_json_valid_json_structure() {
     let json = export_json(&result).expect("导出应成功");
 
     // 尝试解析为通用 JSON Value 验证结构合法性
-    let value: serde_json::Value =
-        serde_json::from_str(&json).expect("导出结果应为合法 JSON");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("导出结果应为合法 JSON");
 
     // 验证顶层结构包含 metadata 字段
     assert!(value.get("metadata").is_some());
@@ -254,10 +251,22 @@ fn test_import_json_success() {
     let imported = import_json(&json).expect("导入应成功");
 
     assert_eq!(imported.metadata.seed, original.metadata.seed);
-    assert_eq!(imported.metadata.config_digest, original.metadata.config_digest);
-    assert_eq!(imported.metadata.schema_version, original.metadata.schema_version);
-    assert_eq!(imported.metadata.algorithm_version, original.metadata.algorithm_version);
-    assert_eq!(imported.metadata.target_engine_version, original.metadata.target_engine_version);
+    assert_eq!(
+        imported.metadata.config_digest,
+        original.metadata.config_digest
+    );
+    assert_eq!(
+        imported.metadata.schema_version,
+        original.metadata.schema_version
+    );
+    assert_eq!(
+        imported.metadata.algorithm_version,
+        original.metadata.algorithm_version
+    );
+    assert_eq!(
+        imported.metadata.target_engine_version,
+        original.metadata.target_engine_version
+    );
     assert_eq!(imported.metadata.trace_id, original.metadata.trace_id);
     assert_eq!(imported.rooms.len(), original.rooms.len());
     assert_eq!(imported.corridors.len(), original.corridors.len());
@@ -284,8 +293,16 @@ fn test_import_json_schema_version_mismatch() {
 
     let err = import_json(&json).expect_err("应返回版本不兼容错误");
     let err_msg = format!("{}", err);
-    assert!(err_msg.contains("schema_version 不兼容"), "错误信息应包含不兼容描述: {}", err_msg);
-    assert!(err_msg.contains("2.0.0"), "错误信息应包含导入版本号: {}", err_msg);
+    assert!(
+        err_msg.contains("schema_version 不兼容"),
+        "错误信息应包含不兼容描述: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("2.0.0"),
+        "错误信息应包含导入版本号: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -306,7 +323,11 @@ fn test_import_json_invalid_json() {
 
     let err = import_json(invalid_json).expect_err("无效 JSON 应返回错误");
     let err_msg = format!("{}", err);
-    assert!(err_msg.contains("JSON 反序列化失败"), "错误信息应包含反序列化失败: {}", err_msg);
+    assert!(
+        err_msg.contains("JSON 反序列化失败"),
+        "错误信息应包含反序列化失败: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -314,7 +335,11 @@ fn test_import_json_empty_string() {
     // 验证空字符串返回错误
     let err = import_json("").expect_err("空字符串应返回错误");
     let err_msg = format!("{}", err);
-    assert!(err_msg.contains("JSON 反序列化失败"), "错误信息应包含反序列化失败: {}", err_msg);
+    assert!(
+        err_msg.contains("JSON 反序列化失败"),
+        "错误信息应包含反序列化失败: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -324,7 +349,11 @@ fn test_import_json_missing_fields() {
 
     let err = import_json(incomplete_json).expect_err("缺少字段应返回错误");
     let err_msg = format!("{}", err);
-    assert!(err_msg.contains("JSON 反序列化失败"), "错误信息应包含反序列化失败: {}", err_msg);
+    assert!(
+        err_msg.contains("JSON 反序列化失败"),
+        "错误信息应包含反序列化失败: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -397,10 +426,22 @@ fn test_consistency_metadata_roundtrip() {
 
     // 验证所有元数据字段
     assert_eq!(imported.metadata.seed, original.metadata.seed);
-    assert_eq!(imported.metadata.config_digest, original.metadata.config_digest);
-    assert_eq!(imported.metadata.schema_version, original.metadata.schema_version);
-    assert_eq!(imported.metadata.algorithm_version, original.metadata.algorithm_version);
-    assert_eq!(imported.metadata.target_engine_version, original.metadata.target_engine_version);
+    assert_eq!(
+        imported.metadata.config_digest,
+        original.metadata.config_digest
+    );
+    assert_eq!(
+        imported.metadata.schema_version,
+        original.metadata.schema_version
+    );
+    assert_eq!(
+        imported.metadata.algorithm_version,
+        original.metadata.algorithm_version
+    );
+    assert_eq!(
+        imported.metadata.target_engine_version,
+        original.metadata.target_engine_version
+    );
     assert_eq!(imported.metadata.trace_id, original.metadata.trace_id);
 }
 
@@ -425,8 +466,7 @@ fn test_consistency_topology_roundtrip() {
     );
     // 验证关键路径一致
     assert_eq!(
-        imported.topology.critical_path,
-        original.topology.critical_path,
+        imported.topology.critical_path, original.topology.critical_path,
         "关键路径应一致"
     );
     // 验证分支数量一致
@@ -468,7 +508,11 @@ fn test_consistency_topology_roundtrip() {
         .zip(imported.topology.edges.iter())
         .enumerate()
     {
-        assert_eq!(imp_edge.from_room, orig_edge.from_room, "边 {} 的源应一致", i);
+        assert_eq!(
+            imp_edge.from_room, orig_edge.from_room,
+            "边 {} 的源应一致",
+            i
+        );
         assert_eq!(imp_edge.to_room, orig_edge.to_room, "边 {} 的目标应一致", i);
     }
 }
@@ -480,11 +524,7 @@ fn test_consistency_rooms_roundtrip() {
     let json = export_json(&original).expect("导出应成功");
     let imported = import_json(&json).expect("导入应成功");
 
-    assert_eq!(
-        imported.rooms.len(),
-        original.rooms.len(),
-        "房间数量应一致"
-    );
+    assert_eq!(imported.rooms.len(), original.rooms.len(), "房间数量应一致");
     for (i, (orig, imp)) in original.rooms.iter().zip(imported.rooms.iter()).enumerate() {
         assert_eq!(imp.id, orig.id, "房间 {} 的 ID 应一致", i);
         assert_eq!(imp.room_type, orig.room_type, "房间 {} 的类型应一致", i);
@@ -499,11 +539,7 @@ fn test_consistency_rooms_roundtrip() {
             "房间 {} 的主题标签应一致",
             i
         );
-        assert_eq!(
-            imp.branch_id, orig.branch_id,
-            "房间 {} 的分支 ID 应一致",
-            i
-        );
+        assert_eq!(imp.branch_id, orig.branch_id, "房间 {} 的分支 ID 应一致", i);
     }
 }
 
@@ -526,16 +562,8 @@ fn test_consistency_corridors_roundtrip() {
         .enumerate()
     {
         assert_eq!(imp.id, orig.id, "走廊 {} 的 ID 应一致", i);
-        assert_eq!(
-            imp.from_room, orig.from_room,
-            "走廊 {} 的源房间应一致",
-            i
-        );
-        assert_eq!(
-            imp.to_room, orig.to_room,
-            "走廊 {} 的目标房间应一致",
-            i
-        );
+        assert_eq!(imp.from_room, orig.from_room, "走廊 {} 的源房间应一致", i);
+        assert_eq!(imp.to_room, orig.to_room, "走廊 {} 的目标房间应一致", i);
         assert_eq!(imp.width_tiles, orig.width_tiles, "走廊 {} 的宽度应一致", i);
     }
 }
@@ -559,11 +587,7 @@ fn test_consistency_terrains_roundtrip() {
         .enumerate()
     {
         assert_eq!(imp.room_id, orig.room_id, "地形 {} 的房间 ID 应一致", i);
-        assert_eq!(
-            imp.grid_size, orig.grid_size,
-            "地形 {} 的网格尺寸应一致",
-            i
-        );
+        assert_eq!(imp.grid_size, orig.grid_size, "地形 {} 的网格尺寸应一致", i);
         // 验证网格数据完全一致
         assert_eq!(
             imp.tiles.width, orig.tiles.width,
@@ -653,11 +677,7 @@ fn test_consistency_spawns_roundtrip() {
         .enumerate()
     {
         assert_eq!(imp.id, orig.id, "敌人点位 {} 的 ID 应一致", i);
-        assert_eq!(
-            imp.room_id, orig.room_id,
-            "敌人点位 {} 的房间 ID 应一致",
-            i
-        );
+        assert_eq!(imp.room_id, orig.room_id, "敌人点位 {} 的房间 ID 应一致", i);
         assert_eq!(imp.kind, orig.kind, "敌人点位 {} 的类型应一致", i);
         assert_eq!(
             imp.grid_pos, orig.grid_pos,
@@ -686,25 +706,19 @@ fn test_consistency_chunks_roundtrip() {
         .enumerate()
     {
         assert_eq!(imp.id, orig.id, "分块 {} 的 ID 应一致", i);
-        assert_eq!(
-            imp.room_ids, orig.room_ids,
-            "分块 {} 的房间列表应一致",
-            i
-        );
+        assert_eq!(imp.room_ids, orig.room_ids, "分块 {} 的房间列表应一致", i);
         assert_eq!(
             imp.dependencies, orig.dependencies,
             "分块 {} 的依赖列表应一致",
             i
         );
         assert_eq!(
-            imp.streaming_metadata.data_layer,
-            orig.streaming_metadata.data_layer,
+            imp.streaming_metadata.data_layer, orig.streaming_metadata.data_layer,
             "分块 {} 的 data_layer 应一致",
             i
         );
         assert_eq!(
-            imp.streaming_metadata.streaming_priority,
-            orig.streaming_metadata.streaming_priority,
+            imp.streaming_metadata.streaming_priority, orig.streaming_metadata.streaming_priority,
             "分块 {} 的 streaming_priority 应一致",
             i
         );
@@ -723,7 +737,10 @@ fn test_consistency_pretty_and_compact_produce_same_result() {
     let imported_compact = import_json(&json_compact).expect("从 compact JSON 导入应成功");
 
     // 元数据一致
-    assert_eq!(imported_pretty.metadata.seed, imported_compact.metadata.seed);
+    assert_eq!(
+        imported_pretty.metadata.seed,
+        imported_compact.metadata.seed
+    );
     assert_eq!(
         imported_pretty.metadata.config_digest,
         imported_compact.metadata.config_digest
@@ -743,7 +760,11 @@ fn test_consistency_pretty_and_compact_produce_same_result() {
     );
     // 房间一致
     assert_eq!(imported_pretty.rooms.len(), imported_compact.rooms.len());
-    for (p, c) in imported_pretty.rooms.iter().zip(imported_compact.rooms.iter()) {
+    for (p, c) in imported_pretty
+        .rooms
+        .iter()
+        .zip(imported_compact.rooms.iter())
+    {
         assert_eq!(p.id, c.id);
         assert_eq!(p.room_type, c.room_type);
     }
@@ -859,39 +880,18 @@ fn test_consistency_generated_data_is_non_trivial() {
     let result = generate_full_result();
 
     // 验证生成的数据确实包含有意义的内容
-    assert!(
-        !result.rooms.is_empty(),
-        "生成结果应包含房间"
-    );
-    assert!(
-        !result.corridors.is_empty(),
-        "生成结果应包含走廊"
-    );
-    assert!(
-        !result.terrains.is_empty(),
-        "生成结果应包含地形"
-    );
-    assert!(
-        !result.chunks.is_empty(),
-        "生成结果应包含分块"
-    );
-    assert!(
-        !result.topology.nodes.is_empty(),
-        "生成结果应包含拓扑节点"
-    );
-    assert!(
-        !result.topology.edges.is_empty(),
-        "生成结果应包含拓扑边"
-    );
+    assert!(!result.rooms.is_empty(), "生成结果应包含房间");
+    assert!(!result.corridors.is_empty(), "生成结果应包含走廊");
+    assert!(!result.terrains.is_empty(), "生成结果应包含地形");
+    assert!(!result.chunks.is_empty(), "生成结果应包含分块");
+    assert!(!result.topology.nodes.is_empty(), "生成结果应包含拓扑节点");
+    assert!(!result.topology.edges.is_empty(), "生成结果应包含拓扑边");
     assert!(
         !result.topology.critical_path.is_empty(),
         "生成结果应包含关键路径"
     );
     // 验证地形网格数据非空
     for terrain in &result.terrains {
-        assert!(
-            !terrain.tiles.data.is_empty(),
-            "地形网格数据不应为空"
-        );
+        assert!(!terrain.tiles.data.is_empty(), "地形网格数据不应为空");
     }
 }

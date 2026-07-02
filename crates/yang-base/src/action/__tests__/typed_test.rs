@@ -32,14 +32,8 @@ impl TypedHandler for EchoAction {
     type Input = EchoInput;
     type Output = EchoOutput;
 
-    async fn handle(
-        &self,
-        _ctx: ActionContext,
-        input: EchoInput,
-    ) -> Result<EchoOutput, BaseError> {
-        Ok(EchoOutput {
-            echoed: input.msg,
-        })
+    async fn handle(&self, _ctx: ActionContext, input: EchoInput) -> Result<EchoOutput, BaseError> {
+        Ok(EchoOutput { echoed: input.msg })
     }
 }
 

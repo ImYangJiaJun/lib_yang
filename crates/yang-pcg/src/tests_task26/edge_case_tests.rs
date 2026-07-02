@@ -35,10 +35,7 @@ fn test_topology_min_room_count() {
         graph.nodes[0].room_type,
         crate::model::room::RoomType::Start
     );
-    assert_eq!(
-        graph.nodes[1].room_type,
-        crate::model::room::RoomType::Boss
-    );
+    assert_eq!(graph.nodes[1].room_type, crate::model::room::RoomType::Boss);
     assert_eq!(graph.edges.len(), 1, "2 间房应有 1 条边");
     assert!(graph.branches.is_empty(), "无分支");
 }
@@ -155,18 +152,12 @@ fn test_layout_large_topology_valid_bounds() {
 
     // 验证所有房间都有有效边界
     for room in &output.rooms {
-        let bounds = room.bounds.unwrap_or_else(|| panic!("房间 {} 应有边界", room.id));
+        let bounds = room
+            .bounds
+            .unwrap_or_else(|| panic!("房间 {} 应有边界", room.id));
         // 边界应有正向尺寸
-        assert!(
-            bounds.max.x > bounds.min.x,
-            "房间 {} 宽度应为正",
-            room.id
-        );
-        assert!(
-            bounds.max.y > bounds.min.y,
-            "房间 {} 高度应为正",
-            room.id
-        );
+        assert!(bounds.max.x > bounds.min.x, "房间 {} 宽度应为正", room.id);
+        assert!(bounds.max.y > bounds.min.y, "房间 {} 高度应为正", room.id);
     }
 
     // 验证关键路径上的房间不重叠（关键路径使用线性布局，不应重叠）

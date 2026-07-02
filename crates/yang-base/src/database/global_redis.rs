@@ -227,6 +227,38 @@ impl GlobalRedis {
         }
     }
 
+    /// 仅当键不存在时设置值并指定过期时间（原子 SET NX EX）。
+    ///
+    /// 委托 [`RedisClient::set_nx_ex`]，是原子性的"不存在则写入+设过期时间"操作。
+    /// 适用于分布式锁、去重、以及需要竞态保护的场景（如 Refresh Token 轮换）。
+    ///
+    /// # 参数
+    ///
+    /// - `key`: 键名
+    /// - `value`: 值
+    /// - `ttl`: 过期时间（秒），必须为正数
+    ///
+    /// # 返回
+    ///
+    /// - `Ok(true)`: 设置成功（键之前不存在，本调用是首次写入）
+    /// - `Ok(false)`: 键已存在，未设置
+    /// - `Err(BaseError)`: 操作失败
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
+    /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
+    pub async fn set_nx_ex(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        ttl: i64,
+    ) -> Result<bool, BaseError> {
+        Self::client()?
+            .set_nx_ex(key, value, ttl)
+            .await
+            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+    }
+
     /// 获取字符串值
     ///
     /// # 参数
@@ -460,7 +492,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn hdel(key: impl Into<String>, fields: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn hdel(
+        key: impl Into<String>,
+        fields: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let fields_vec: Vec<String> = fields.iter().map(|f| f.as_ref().to_string()).collect();
         Self::client()?
@@ -557,7 +592,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn lpush(key: impl Into<String>, values: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn lpush(
+        key: impl Into<String>,
+        values: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let values_vec: Vec<String> = values.iter().map(|v| v.as_ref().to_string()).collect();
         Self::client()?
@@ -582,7 +620,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn rpush(key: impl Into<String>, values: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn rpush(
+        key: impl Into<String>,
+        values: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let values_vec: Vec<String> = values.iter().map(|v| v.as_ref().to_string()).collect();
         Self::client()?
@@ -705,7 +746,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn sadd(key: impl Into<String>, members: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn sadd(
+        key: impl Into<String>,
+        members: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let members_vec: Vec<String> = members.iter().map(|m| m.as_ref().to_string()).collect();
         Self::client()?
@@ -730,7 +774,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn srem(key: impl Into<String>, members: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn srem(
+        key: impl Into<String>,
+        members: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let members_vec: Vec<String> = members.iter().map(|m| m.as_ref().to_string()).collect();
         Self::client()?
@@ -850,7 +897,10 @@ impl GlobalRedis {
     ///
     /// - `BaseError::RedisNotInitialized`: Redis 未初始化，需要先调用 `init` 方法
     /// - `BaseError::RedisOperationFailed`: Redis 命令执行失败
-    pub async fn zrem(key: impl Into<String>, members: &[impl AsRef<str>]) -> Result<i64, BaseError> {
+    pub async fn zrem(
+        key: impl Into<String>,
+        members: &[impl AsRef<str>],
+    ) -> Result<i64, BaseError> {
         // 将 &[impl AsRef<str>] 转换为 Vec<String> 以调用 yang-db
         let members_vec: Vec<String> = members.iter().map(|m| m.as_ref().to_string()).collect();
         Self::client()?

@@ -39,9 +39,9 @@ impl TerrainStrategy for OpenArenaStrategy {
         config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room.bounds.ok_or_else(|| {
-            PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
-        })?;
+        let bounds = room
+            .bounds
+            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
         let width = bounds.width();
         let height = bounds.height();
         if width == 0 || height == 0 {
@@ -64,10 +64,8 @@ impl TerrainStrategy for OpenArenaStrategy {
         }
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> = anchors
-            .iter()
-            .filter(|a| a.room_id == room.id)
-            .collect();
+        let room_anchors: Vec<&DoorAnchor> =
+            anchors.iter().filter(|a| a.room_id == room.id).collect();
         for anchor in &room_anchors {
             let local = to_local(bounds.min, anchor.grid_pos);
             tiles.set(local.x, local.y, TileKind::Doorway);
@@ -76,8 +74,8 @@ impl TerrainStrategy for OpenArenaStrategy {
         // 在边缘区域稀疏放置障碍物
         // 边缘区域定义为距离墙体 1-2 格的区域
         let edge_margin = 2i32;
-        let obstacle_budget = ((width * height) as f32 * config.obstacle_density * 0.3)
-            .round() as usize;
+        let obstacle_budget =
+            ((width * height) as f32 * config.obstacle_density * 0.3).round() as usize;
         let mut placed = 0usize;
         let max_attempts = obstacle_budget * 10;
         let mut attempts = 0usize;
@@ -98,7 +96,8 @@ impl TerrainStrategy for OpenArenaStrategy {
                 .min(dist_to_bottom);
 
             // 只在距离墙体 1~edge_margin 格的位置放置
-            if min_dist >= 1 && min_dist <= edge_margin
+            if min_dist >= 1
+                && min_dist <= edge_margin
                 && tiles.get(x, y).copied() == Some(TileKind::Floor)
             {
                 tiles.set(x, y, TileKind::Obstacle);
@@ -180,7 +179,8 @@ fn ensure_doorway_connectivity(
     for x in 1..tiles.width as i32 - 1 {
         for dy in -1..=1i32 {
             let y = cy + dy;
-            if y > 0 && y < tiles.height as i32 - 1
+            if y > 0
+                && y < tiles.height as i32 - 1
                 && tiles.get(x, y).copied() == Some(TileKind::Obstacle)
             {
                 tiles.set(x, y, TileKind::Floor);
@@ -192,7 +192,8 @@ fn ensure_doorway_connectivity(
     for y in 1..tiles.height as i32 - 1 {
         for dx in -1..=1i32 {
             let x = cx + dx;
-            if x > 0 && x < tiles.width as i32 - 1
+            if x > 0
+                && x < tiles.width as i32 - 1
                 && tiles.get(x, y).copied() == Some(TileKind::Obstacle)
             {
                 tiles.set(x, y, TileKind::Floor);

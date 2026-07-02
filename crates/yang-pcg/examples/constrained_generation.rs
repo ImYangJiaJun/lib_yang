@@ -25,19 +25,16 @@ fn main() {
     println!("锚点约束: 指定 Boss 房间锚定到 (50, 50)");
 
     // 2. 创建排除区约束：禁止在指定区域放置房间和点位
-    let exclusion = Constraint::ExclusionZone(
-        ExclusionZoneConstraint::new(
-            "forbidden_zone",
-            yang_pcg::model::geometry::GridPoint::new(0, 0),
-            yang_pcg::model::geometry::GridPoint::new(10, 10),
-        ),
-    );
+    let exclusion = Constraint::ExclusionZone(ExclusionZoneConstraint::new(
+        "forbidden_zone",
+        yang_pcg::model::geometry::GridPoint::new(0, 0),
+        yang_pcg::model::geometry::GridPoint::new(10, 10),
+    ));
     println!("排除区约束: 禁止在 (0,0)-(10,10) 区域放置房间和点位");
 
     // 3. 创建模板引用约束：为 Treasure 房间指定模板
     let template = Constraint::Template(
-        TemplateConstraint::new("treasure_vault_01")
-            .with_room_type(RoomType::Treasure),
+        TemplateConstraint::new("treasure_vault_01").with_room_type(RoomType::Treasure),
     );
     println!("模板约束: 为 Treasure 房间指定模板 'treasure_vault_01'");
 
@@ -66,7 +63,10 @@ fn main() {
         if room.room_type == RoomType::Boss {
             println!("  Boss 房间 ID: {}", room.id);
             if let Some(bounds) = room.bounds {
-                println!("  边界: ({},{}) - ({},{})", bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y);
+                println!(
+                    "  边界: ({},{}) - ({},{})",
+                    bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
+                );
             }
         }
     }

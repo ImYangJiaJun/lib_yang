@@ -35,7 +35,10 @@ pub fn rust_type_to_field_type(ty: &Type, max_length: usize) -> TokenStream {
 pub fn is_string_type(ty: &Type) -> bool {
     let (inner, _) = unwrap_option(ty);
     if let Type::Path(TypePath { path, .. }) = inner {
-        path.segments.last().map(|s| s.ident == "String").unwrap_or(false)
+        path.segments
+            .last()
+            .map(|s| s.ident == "String")
+            .unwrap_or(false)
     } else {
         false
     }

@@ -121,10 +121,7 @@ fn default_terrain_config() -> TerrainConfig {
 }
 
 /// 验证地形连通性：所有门口瓦片通过可通行瓦片互相连通
-fn assert_doorway_connectivity(
-    terrain: &crate::model::terrain::Terrain,
-    strategy_name: &str,
-) {
+fn assert_doorway_connectivity(terrain: &crate::model::terrain::Terrain, strategy_name: &str) {
     use std::collections::{HashSet, VecDeque};
 
     // 收集所有门口位置
@@ -200,10 +197,7 @@ fn assert_walkable_area(
 }
 
 /// 验证外墙边框完整（除门口外，边界瓦片应为 Wall）
-fn assert_border_integrity(
-    terrain: &crate::model::terrain::Terrain,
-    strategy_name: &str,
-) {
+fn assert_border_integrity(terrain: &crate::model::terrain::Terrain, strategy_name: &str) {
     let w = terrain.grid_size.width as i32;
     let h = terrain.grid_size.height as i32;
 
@@ -313,7 +307,13 @@ fn test_open_arena_doorways_marked() {
         .generate(&room, &anchors, &config, &mut rng)
         .expect("OpenArenaStrategy 生成失败");
 
-    assert_doorways_marked(&terrain, &anchors, &room.id, GridPoint { x: 0, y: 0 }, "open_arena");
+    assert_doorways_marked(
+        &terrain,
+        &anchors,
+        &room.id,
+        GridPoint { x: 0, y: 0 },
+        "open_arena",
+    );
 }
 
 // ============================================================
@@ -377,7 +377,13 @@ fn test_pillar_doorways_marked() {
         .generate(&room, &anchors, &config, &mut rng)
         .expect("PillarStrategy 生成失败");
 
-    assert_doorways_marked(&terrain, &anchors, &room.id, GridPoint { x: 0, y: 0 }, "pillar");
+    assert_doorways_marked(
+        &terrain,
+        &anchors,
+        &room.id,
+        GridPoint { x: 0, y: 0 },
+        "pillar",
+    );
 }
 
 // ============================================================
@@ -443,7 +449,13 @@ fn test_maze_doorways_marked() {
         .generate(&room, &anchors, &config, &mut rng)
         .expect("MazeStrategy 生成失败");
 
-    assert_doorways_marked(&terrain, &anchors, &room.id, GridPoint { x: 0, y: 0 }, "maze");
+    assert_doorways_marked(
+        &terrain,
+        &anchors,
+        &room.id,
+        GridPoint { x: 0, y: 0 },
+        "maze",
+    );
 }
 
 // ============================================================
@@ -511,7 +523,13 @@ fn test_organic_doorways_marked() {
         .generate(&room, &anchors, &config, &mut rng)
         .expect("OrganicStrategy 生成失败");
 
-    assert_doorways_marked(&terrain, &anchors, &room.id, GridPoint { x: 0, y: 0 }, "organic");
+    assert_doorways_marked(
+        &terrain,
+        &anchors,
+        &room.id,
+        GridPoint { x: 0, y: 0 },
+        "organic",
+    );
 }
 
 // ============================================================
@@ -680,8 +698,7 @@ fn test_connectivity_summary_consistency() {
         }
     }
     assert_eq!(
-        terrain.connectivity_summary.walkable_tile_count,
-        actual_walkable,
+        terrain.connectivity_summary.walkable_tile_count, actual_walkable,
         "连通性摘要中的可通行瓦片数与实际不一致"
     );
 }

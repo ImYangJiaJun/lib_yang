@@ -93,8 +93,8 @@ pub fn select_spaced_points_tracked_excluding(
 
     let mut selected = Vec::with_capacity(desired_count.min(shuffled.len()));
     let mut rejections = Vec::new();
-    let min_distance_sq = i32::from(min_spacing).pow(2);
-    let occupied_distance_sq = i32::from(occupied_spacing).pow(2);
+    let min_distance_sq = i64::from(min_spacing) * i64::from(min_spacing);
+    let occupied_distance_sq = i64::from(occupied_spacing) * i64::from(occupied_spacing);
 
     for point in shuffled {
         if selected.len() == desired_count {
@@ -125,8 +125,8 @@ pub fn select_spaced_points_tracked_excluding(
     }
 }
 
-fn distance_sq(a: GridPoint, b: GridPoint) -> i32 {
-    let dx = a.x - b.x;
-    let dy = a.y - b.y;
+fn distance_sq(a: GridPoint, b: GridPoint) -> i64 {
+    let dx = i64::from(a.x) - i64::from(b.x);
+    let dy = i64::from(a.y) - i64::from(b.y);
     dx * dx + dy * dy
 }

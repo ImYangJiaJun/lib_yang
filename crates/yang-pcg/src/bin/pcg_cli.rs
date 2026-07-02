@@ -225,7 +225,8 @@ fn load_config(path: Option<&str>) -> Result<GenerationConfig, String> {
     match path {
         None => Ok(GenerationConfig::default()),
         Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("读取 {path} 失败: {e}"))?;
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("读取 {path} 失败: {e}"))?;
             serde_json::from_str::<GenerationConfig>(&text)
                 .map_err(|e| format!("解析 {path} 失败: {e}"))
         }

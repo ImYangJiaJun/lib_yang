@@ -65,13 +65,8 @@ pub fn export_binary(result: &GenerationResult) -> PcgResult<Vec<u8>> {
     // bincode 不支持 skip_serializing_if 等 serde 属性，
     // 因此使用 JSON 字节作为 body，保证完全兼容性。
     // 二进制格式的价值在于结构化头部和 CRC32 校验和。
-    let body = serde_json::to_vec(result).map_err(|e| {
-        PcgError::export_err(
-            format!("二进制序列化失败: {}", e),
-            "binary",
-            e,
-        )
-    })?;
+    let body = serde_json::to_vec(result)
+        .map_err(|e| PcgError::export_err(format!("二进制序列化失败: {}", e), "binary", e))?;
 
     let body_len = body.len();
 
@@ -198,7 +193,9 @@ pub fn import_binary(data: &[u8]) -> PcgResult<GenerationResult> {
         return Err(PcgError::corrupted_data_with_type(
             format!(
                 "数据长度不匹配: 头部声明 body 长度 {}，期望总长度 {}，实际总长度 {}",
-                body_len, expected_total, data.len()
+                body_len,
+                expected_total,
+                data.len()
             ),
             "binary",
         ));
@@ -226,13 +223,8 @@ pub fn import_binary(data: &[u8]) -> PcgResult<GenerationResult> {
 
     // 反序列化 Body（从紧凑 JSON 字节解码）
     let body = &data[HEADER_SIZE..HEADER_SIZE + body_len];
-    let result: GenerationResult = serde_json::from_slice(body).map_err(|e| {
-        PcgError::export_err(
-            format!("二进制反序列化失败: {}", e),
-            "binary",
-            e,
-        )
-    })?;
+    let result: GenerationResult = serde_json::from_slice(body)
+        .map_err(|e| PcgError::export_err(format!("二进制反序列化失败: {}", e), "binary", e))?;
 
     Ok(result)
 }
@@ -251,19 +243,11 @@ fn parse_schema_version(version: &str) -> PcgResult<(u16, u16)> {
     }
 
     let major = parts[0].parse::<u16>().map_err(|_| {
-        PcgError::export_with_format(
-            format!("无法解析主版本号: '{}'", parts[0]),
-            "binary",
-            None,
-        )
+        PcgError::export_with_format(format!("无法解析主版本号: '{}'", parts[0]), "binary", None)
     })?;
 
     let minor = parts[1].parse::<u16>().map_err(|_| {
-        PcgError::export_with_format(
-            format!("无法解析次版本号: '{}'", parts[1]),
-            "binary",
-            None,
-        )
+        PcgError::export_with_format(format!("无法解析次版本号: '{}'", parts[1]), "binary", None)
     })?;
 
     Ok((major, minor))

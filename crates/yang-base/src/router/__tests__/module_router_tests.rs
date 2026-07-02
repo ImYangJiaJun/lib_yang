@@ -17,7 +17,12 @@ use std::sync::Arc;
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(
-    Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow, yang_base_derive::TableEntity,
+    Debug,
+    Deserialize,
+    Serialize,
+    schemars::JsonSchema,
+    sqlx::FromRow,
+    yang_base_derive::TableEntity,
 )]
 #[table(name = "test_users", display_name = "测试用户表")]
 pub struct TestUser {
@@ -203,11 +208,7 @@ struct ShortCircuitMiddleware {
 
 #[async_trait]
 impl Middleware for ShortCircuitMiddleware {
-    async fn handle(
-        &self,
-        _ctx: ActionContext,
-        _next: Next<'_>,
-    ) -> Result<ApiResponse, BaseError> {
+    async fn handle(&self, _ctx: ActionContext, _next: Next<'_>) -> Result<ApiResponse, BaseError> {
         Ok(ApiResponse::success_value(
             json!({ "from": self.payload }),
             "ok",
@@ -223,11 +224,7 @@ struct OrderRecordingMiddleware {
 
 #[async_trait]
 impl Middleware for OrderRecordingMiddleware {
-    async fn handle(
-        &self,
-        ctx: ActionContext,
-        next: Next<'_>,
-    ) -> Result<ApiResponse, BaseError> {
+    async fn handle(&self, ctx: ActionContext, next: Next<'_>) -> Result<ApiResponse, BaseError> {
         self.log.lock().unwrap().push(self.id);
         let result = next.run(ctx).await;
         // 离开时记录负向标记（id + 1000）以区分进入/离开
@@ -278,4 +275,3 @@ async fn test_middleware_onion_order() {
     let recorded = log.lock().unwrap().clone();
     assert_eq!(recorded, vec![1, 2, 1002, 1001]);
 }
-

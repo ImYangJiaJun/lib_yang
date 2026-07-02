@@ -19,7 +19,11 @@ pub struct GetByPk<PK> {
 
 /// 按主键获取单条记录。
 #[derive(Action)]
-#[action(name = "get", display_name = "获取数据", description = "根据主键获取单条记录")]
+#[action(
+    name = "get",
+    display_name = "获取数据",
+    description = "根据主键获取单条记录"
+)]
 pub struct GetAction<T: TableEntity> {
     _phantom: PhantomData<T>,
 }

@@ -55,11 +55,7 @@ pub trait Middleware: Send + Sync + 'static {
     ///
     /// - `ctx`: 动作上下文（所有权转移，需在调用 `next.run` 时传递下去）
     /// - `next`: 调用链的剩余部分
-    async fn handle(
-        &self,
-        ctx: ActionContext,
-        next: Next<'_>,
-    ) -> Result<ApiResponse, BaseError>;
+    async fn handle(&self, ctx: ActionContext, next: Next<'_>) -> Result<ApiResponse, BaseError>;
 }
 
 /// 调用链中"剩余部分"的句柄。

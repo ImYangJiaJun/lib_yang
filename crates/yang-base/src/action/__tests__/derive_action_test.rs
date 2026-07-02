@@ -89,7 +89,11 @@ fn test_derive_action_default_values() {
 
     let a = MinimalAction;
     assert_eq!(a.name(), "minimal");
-    assert_eq!(a.display_name(), "minimal", "display_name 缺失时应回退到 name");
+    assert_eq!(
+        a.display_name(),
+        "minimal",
+        "display_name 缺失时应回退到 name"
+    );
     assert_eq!(a.description(), "");
     assert!(!a.is_public(), "默认非公开");
     assert!(a.permissions().is_empty());

@@ -45,9 +45,9 @@ impl TerrainStrategy for OrganicStrategy {
         config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room.bounds.ok_or_else(|| {
-            PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
-        })?;
+        let bounds = room
+            .bounds
+            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
         let width = bounds.width();
         let height = bounds.height();
         if width == 0 || height == 0 {
@@ -58,10 +58,8 @@ impl TerrainStrategy for OrganicStrategy {
         }
 
         // 标记门口位置
-        let room_anchors: Vec<&DoorAnchor> = anchors
-            .iter()
-            .filter(|a| a.room_id == room.id)
-            .collect();
+        let room_anchors: Vec<&DoorAnchor> =
+            anchors.iter().filter(|a| a.room_id == room.id).collect();
         let doorway_locals: Vec<GridPoint> = room_anchors
             .iter()
             .map(|a| to_local(bounds.min, a.grid_pos))
@@ -94,7 +92,10 @@ impl TerrainStrategy for OrganicStrategy {
             for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let nx = pos.x + dx;
                 let ny = pos.y + dy;
-                if nx > 0 && nx < width as i32 - 1 && ny > 0 && ny < height as i32 - 1
+                if nx > 0
+                    && nx < width as i32 - 1
+                    && ny > 0
+                    && ny < height as i32 - 1
                     && tiles.get(nx, ny).copied() == Some(TileKind::Wall)
                 {
                     tiles.set(nx, ny, TileKind::Floor);
@@ -162,12 +163,7 @@ fn initialize_random_grid(
 ///
 /// `src` 为当前代网格（只读），`dst` 为下一代网格（写入目标）。
 /// 调用方通过 swap 交替双缓冲来复用在两个网格之间。
-fn apply_ca_step_into(
-    src: &Grid2D<TileKind>,
-    dst: &mut Grid2D<TileKind>,
-    width: u32,
-    height: u32,
-) {
+fn apply_ca_step_into(src: &Grid2D<TileKind>, dst: &mut Grid2D<TileKind>, width: u32, height: u32) {
     for y in 0..height as i32 {
         for x in 0..width as i32 {
             // 边框始终为墙

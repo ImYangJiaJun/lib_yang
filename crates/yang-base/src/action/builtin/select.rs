@@ -38,7 +38,10 @@ impl<'de, T: TableEntity> Deserialize<'de> for OrderByItem<T> {
             direction: SortOrder,
         }
         let raw = Raw::<T::Field>::deserialize(d)?;
-        Ok(OrderByItem { field: raw.field, direction: raw.direction })
+        Ok(OrderByItem {
+            field: raw.field,
+            direction: raw.direction,
+        })
     }
 }
 
@@ -100,7 +103,11 @@ pub struct SelectResult<T> {
 
 /// 分页 + 多条件 AND 查询。
 #[derive(Action)]
-#[action(name = "select", display_name = "查询列表", description = "分页 + 多条件 AND 查询")]
+#[action(
+    name = "select",
+    display_name = "查询列表",
+    description = "分页 + 多条件 AND 查询"
+)]
 pub struct SelectAction<T: TableEntity> {
     _phantom: PhantomData<T>,
 }

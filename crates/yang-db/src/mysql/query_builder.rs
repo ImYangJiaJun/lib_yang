@@ -295,8 +295,7 @@ impl SqlGenerator {
             self.append(&sql);
         } else {
             let combined = Condition::And(conditions.to_vec());
-            let sql =
-                crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
+            let sql = crate::mysql::condition::condition_to_sql_owned(combined, &mut self.params);
             self.append(&sql);
         }
         Ok(())
@@ -412,8 +411,10 @@ impl SqlGenerator {
 
         // 构建 INSERT 语句头部（表名与列名经 quote_identifier 校验+转义；DB-1。
         // 注意 fields 仍为原始 JSON 键，用于后续 obj.get 查值；列头单独 quote。）
-        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
-            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> = fields
+            .iter()
+            .map(|f| super::identifier::quote_identifier(f))
+            .collect();
         let quoted_fields = quoted_fields?;
         self.append("INSERT INTO ");
         self.append(&super::identifier::quote_identifier(table)?);
@@ -613,7 +614,8 @@ impl SqlGenerator {
         // 原始值保留用于 record.get 查值。）
         let quoted_id = super::identifier::quote_identifier(id_field)?;
         self.sql.push_str("UPDATE ");
-        self.sql.push_str(&super::identifier::quote_identifier(table)?);
+        self.sql
+            .push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" SET ");
 
         // 为每个字段生成 CASE WHEN 子句，直接追加到 self.sql
@@ -625,7 +627,8 @@ impl SqlGenerator {
             }
 
             // 写入 "字段名 = CASE "（列名 quote）
-            self.sql.push_str(&super::identifier::quote_identifier(field)?);
+            self.sql
+                .push_str(&super::identifier::quote_identifier(field)?);
             self.sql.push_str(" = CASE ");
 
             // 为每条记录生成 WHEN id=? THEN ? 子句，直接追加，替代 format! 收集再 join 的模式
@@ -699,13 +702,16 @@ impl SqlGenerator {
         let fields: Vec<String> = obj.keys().cloned().collect();
         let placeholders: Vec<&str> = fields.iter().map(|_| "?").collect();
         // 列名 quote（DB-1）；fields 保留原始键用于 obj.get 查值。
-        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
-            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> = fields
+            .iter()
+            .map(|f| super::identifier::quote_identifier(f))
+            .collect();
         let quoted_fields = quoted_fields?;
 
         // 统一用 push_str 风格拼接，避免 format! 的额外分配
         self.sql.push_str("INSERT INTO ");
-        self.sql.push_str(&super::identifier::quote_identifier(table)?);
+        self.sql
+            .push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" (");
         self.sql.push_str(&quoted_fields.join(", "));
         self.sql.push_str(") VALUES (");

@@ -74,8 +74,7 @@ mod tests {
 
     #[test]
     fn builder_sets_threshold() {
-        let cfg =
-            ObservabilityConfig::new().with_slow_query_threshold(Duration::from_millis(500));
+        let cfg = ObservabilityConfig::new().with_slow_query_threshold(Duration::from_millis(500));
         assert_eq!(cfg.slow_query_threshold, Some(Duration::from_millis(500)));
     }
 

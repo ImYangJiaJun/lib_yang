@@ -436,8 +436,10 @@ impl SqlGenerator {
         }
 
         // 表名与列头 quote（DB-1）；fields 保留原始键用于 obj.get 查值。
-        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
-            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> = fields
+            .iter()
+            .map(|f| super::identifier::quote_identifier(f))
+            .collect();
         let quoted_fields = quoted_fields?;
         self.append("INSERT INTO ");
         self.append(&super::identifier::quote_identifier(table)?);
@@ -513,7 +515,8 @@ impl SqlGenerator {
                 self.sql.push_str(", ");
             }
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
-            self.sql.push_str(&super::identifier::quote_identifier(key)?);
+            self.sql
+                .push_str(&super::identifier::quote_identifier(key)?);
             self.sql.push_str(" = ");
             match sql_value {
                 SqlValue::Null => self.sql.push_str("NULL"),
@@ -610,7 +613,8 @@ impl SqlGenerator {
         // 表名 quote（DB-1）；id_field/列名在各发射点 quote，原始值保留用于 record.get。
         let quoted_id = super::identifier::quote_identifier(id_field)?;
         self.sql.push_str("UPDATE ");
-        self.sql.push_str(&super::identifier::quote_identifier(table)?);
+        self.sql
+            .push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" SET ");
 
         // 为每个字段生成 CASE WHEN 子句
@@ -618,7 +622,8 @@ impl SqlGenerator {
             if field_idx > 0 {
                 self.sql.push_str(", ");
             }
-            self.sql.push_str(&super::identifier::quote_identifier(field)?);
+            self.sql
+                .push_str(&super::identifier::quote_identifier(field)?);
             self.sql.push_str(" = CASE ");
 
             for record in records {
@@ -707,12 +712,15 @@ impl SqlGenerator {
 
         let fields: Vec<String> = obj.keys().cloned().collect();
         // 列名/表名 quote（DB-1）；fields 保留原始键用于 obj.get 查值与冲突列比较。
-        let quoted_fields: Result<Vec<String>, crate::error::DbError> =
-            fields.iter().map(|f| super::identifier::quote_identifier(f)).collect();
+        let quoted_fields: Result<Vec<String>, crate::error::DbError> = fields
+            .iter()
+            .map(|f| super::identifier::quote_identifier(f))
+            .collect();
         let quoted_fields = quoted_fields?;
 
         self.sql.push_str("INSERT INTO ");
-        self.sql.push_str(&super::identifier::quote_identifier(table)?);
+        self.sql
+            .push_str(&super::identifier::quote_identifier(table)?);
         self.sql.push_str(" (");
         self.sql.push_str(&quoted_fields.join(", "));
         self.sql.push_str(") VALUES (");
@@ -1982,7 +1990,10 @@ mod tests {
         g.build_insert("users", &data, &empty_types()).unwrap();
         let sql = g.get_sql();
         // serde_json 默认按 key 字母序：age 在前、name 在后
-        assert_eq!(sql, "INSERT INTO \"users\" (\"age\", \"name\") VALUES ($1, $2)");
+        assert_eq!(
+            sql,
+            "INSERT INTO \"users\" (\"age\", \"name\") VALUES ($1, $2)"
+        );
         // INSERT 本身不含 RETURNING（由 insert() 方法在外部追加）
         assert!(!sql.contains("RETURNING"));
         assert_eq!(g.get_params().len(), 2);
@@ -2011,7 +2022,10 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：age=$1, name=$2；WHERE 接续为 $3
-        assert_eq!(sql, "UPDATE \"users\" SET \"age\" = $1, \"name\" = $2 WHERE \"id\" = $3");
+        assert_eq!(
+            sql,
+            "UPDATE \"users\" SET \"age\" = $1, \"name\" = $2 WHERE \"id\" = $3"
+        );
         assert_eq!(g.get_params().len(), 3);
     }
 
@@ -2026,7 +2040,10 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序：description 内联 NULL（不占编号），name=$1，WHERE 接续 $2
-        assert_eq!(sql, "UPDATE \"users\" SET \"description\" = NULL, \"name\" = $1 WHERE \"id\" = $2");
+        assert_eq!(
+            sql,
+            "UPDATE \"users\" SET \"description\" = NULL, \"name\" = $1 WHERE \"id\" = $2"
+        );
         // NULL 不压参数：仅 name + WHERE id 两个参数
         assert_eq!(g.get_params().len(), 2);
     }
@@ -2056,7 +2073,9 @@ mod tests {
             .unwrap();
         let sql = g.get_sql();
         // 字母序字段：email($1), id($2), name($3)
-        assert!(sql.starts_with("INSERT INTO \"users\" (\"email\", \"id\", \"name\") VALUES ($1, $2, $3)"));
+        assert!(sql.starts_with(
+            "INSERT INTO \"users\" (\"email\", \"id\", \"name\") VALUES ($1, $2, $3)"
+        ));
         assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
         // 冲突列 id 不参与更新，其余列用 EXCLUDED.col
         assert!(sql.contains("\"name\" = EXCLUDED.\"name\""));

@@ -38,9 +38,9 @@ impl TerrainStrategy for MazeStrategy {
         _config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room.bounds.ok_or_else(|| {
-            PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
-        })?;
+        let bounds = room
+            .bounds
+            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
         let width = bounds.width();
         let height = bounds.height();
         if width == 0 || height == 0 {
@@ -54,10 +54,8 @@ impl TerrainStrategy for MazeStrategy {
         let mut tiles = Grid2D::new(width, height, TileKind::Wall);
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> = anchors
-            .iter()
-            .filter(|a| a.room_id == room.id)
-            .collect();
+        let room_anchors: Vec<&DoorAnchor> =
+            anchors.iter().filter(|a| a.room_id == room.id).collect();
         let doorway_locals: Vec<GridPoint> = room_anchors
             .iter()
             .map(|a| to_local(bounds.min, a.grid_pos))
@@ -325,7 +323,10 @@ fn carve_orthogonal_path(
     let x_step = if to.x > from.x { 1 } else { -1 };
     let mut x = from.x;
     while x != to.x {
-        if x > 0 && x < width as i32 - 1 && from.y > 0 && from.y < height as i32 - 1
+        if x > 0
+            && x < width as i32 - 1
+            && from.y > 0
+            && from.y < height as i32 - 1
             && tiles.get(x, from.y).copied() == Some(TileKind::Wall)
         {
             tiles.set(x, from.y, TileKind::Floor);
@@ -337,7 +338,10 @@ fn carve_orthogonal_path(
     let y_step = if to.y > from.y { 1 } else { -1 };
     let mut y = from.y;
     while y != to.y {
-        if to.x > 0 && to.x < width as i32 - 1 && y > 0 && y < height as i32 - 1
+        if to.x > 0
+            && to.x < width as i32 - 1
+            && y > 0
+            && y < height as i32 - 1
             && tiles.get(to.x, y).copied() == Some(TileKind::Wall)
         {
             tiles.set(to.x, y, TileKind::Floor);

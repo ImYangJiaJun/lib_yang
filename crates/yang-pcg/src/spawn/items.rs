@@ -140,7 +140,8 @@ fn adjusted_item_count_range(room_type: RoomType, base: RangeU16) -> RangeU16 {
 }
 
 fn candidate_points(terrain: &Terrain) -> Vec<GridPoint> {
-    let mut points = Vec::with_capacity((terrain.grid_size.width * terrain.grid_size.height) as usize);
+    let mut points =
+        Vec::with_capacity((terrain.grid_size.width * terrain.grid_size.height) as usize);
     for y in 1..terrain.grid_size.height.saturating_sub(1) as i32 {
         for x in 1..terrain.grid_size.width.saturating_sub(1) as i32 {
             if matches!(

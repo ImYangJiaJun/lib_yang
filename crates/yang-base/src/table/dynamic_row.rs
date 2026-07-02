@@ -198,7 +198,9 @@ fn decode_mysql_column(
     if type_name == "DATE" {
         let val: chrono::NaiveDate = row.try_get(ordinal)?;
         // 转换为 ISO 8601 格式字符串
-        return Ok(serde_json::Value::String(val.format("%Y-%m-%d").to_string()));
+        return Ok(serde_json::Value::String(
+            val.format("%Y-%m-%d").to_string(),
+        ));
     }
 
     if type_name == "DATETIME" || type_name == "TIMESTAMP" {
@@ -211,7 +213,9 @@ fn decode_mysql_column(
 
     if type_name == "TIME" {
         let val: chrono::NaiveTime = row.try_get(ordinal)?;
-        return Ok(serde_json::Value::String(val.format("%H:%M:%S").to_string()));
+        return Ok(serde_json::Value::String(
+            val.format("%H:%M:%S").to_string(),
+        ));
     }
 
     // 二进制类型：BLOB、BINARY、VARBINARY、LONGBLOB、MEDIUMBLOB、TINYBLOB

@@ -7,12 +7,14 @@ use crate::model::terrain::*;
 #[test]
 fn test_tile_kind_variants() {
     // 测试瓦片类型枚举
-    let kinds = [TileKind::Empty,
+    let kinds = [
+        TileKind::Empty,
         TileKind::Floor,
         TileKind::Wall,
         TileKind::Obstacle,
         TileKind::Reserved,
-        TileKind::Doorway];
+        TileKind::Doorway,
+    ];
 
     assert_eq!(kinds.len(), 6);
     assert_eq!(kinds[1], TileKind::Floor);

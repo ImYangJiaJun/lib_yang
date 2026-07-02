@@ -1030,7 +1030,9 @@ mod tests {
         assert!(field_type
             .validate("content", &serde_json::json!("a".repeat(100_000)))
             .is_ok());
-        assert!(field_type.validate("content", &serde_json::json!("")).is_ok());
+        assert!(field_type
+            .validate("content", &serde_json::json!(""))
+            .is_ok());
     }
 
     #[test]
@@ -1058,7 +1060,9 @@ mod tests {
         };
 
         // FK 值类型由目标表约束决定，此处不强校验：各类型都应通过
-        assert!(field_type.validate("user_id", &serde_json::json!(1)).is_ok());
+        assert!(field_type
+            .validate("user_id", &serde_json::json!(1))
+            .is_ok());
         assert!(field_type
             .validate("user_id", &serde_json::json!("uuid-string"))
             .is_ok());

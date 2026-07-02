@@ -345,11 +345,15 @@ fn test_global_tools_singleton() {
 
     // 步骤 3：初始化后获取必定成功
     let tools = GlobalTools::get();
-    assert!(tools.is_ok(), "初始化后获取应成功，实际错误: {:?}", tools.err());
+    assert!(
+        tools.is_ok(),
+        "初始化后获取应成功，实际错误: {:?}",
+        tools.err()
+    );
 
     // 步骤 4：重复初始化必定返回 ConfigError("已初始化")
-    let err2 = GlobalTools::init(create_test_token_manager())
-        .expect_err("已初始化后重复初始化应返回错误");
+    let err2 =
+        GlobalTools::init(create_test_token_manager()).expect_err("已初始化后重复初始化应返回错误");
     assert!(
         matches!(err2, crate::error::BaseError::ConfigError(_)),
         "重复初始化应返回 ConfigError，实际: {:?}",
@@ -377,7 +381,11 @@ fn test_action_context_new_with_global_tools() {
     // 使用全局单例创建上下文
     let request = Request::new(serde_json::json!({ "name": "test" }));
     let result = ActionContext::new_with_global_tools(request);
-    assert!(result.is_ok(), "全局单例已初始化时应成功创建上下文，实际错误: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "全局单例已初始化时应成功创建上下文，实际错误: {:?}",
+        result.err()
+    );
 
     let context = result.unwrap();
     // 验证上下文创建成功

@@ -70,7 +70,10 @@ fn open_rejects_until_cooldown_then_half_opens() {
     b.on_failure_at("h", t0); // 打开于 t0
     assert!(!b.allow_at("h", t0 + Duration::from_secs(5)), "冷却内拒绝");
     // 冷却结束 → 放行一次探测（转 HalfOpen）
-    assert!(b.allow_at("h", t0 + Duration::from_secs(10)), "冷却后放行探测");
+    assert!(
+        b.allow_at("h", t0 + Duration::from_secs(10)),
+        "冷却后放行探测"
+    );
 }
 
 #[test]
@@ -82,7 +85,7 @@ fn half_open_success_closes() {
     b.on_success("h"); // 1/2
     assert!(b.allow("h"), "HalfOpen 期间继续放行");
     b.on_success("h"); // 2/2 → Closed
-    // Closed 后即便不推进时钟也应放行
+                       // Closed 后即便不推进时钟也应放行
     assert!(b.allow("h"));
 }
 
@@ -92,11 +95,17 @@ fn half_open_failure_reopens() {
     let t0 = Instant::now();
     b.on_failure_at("h", t0);
     assert!(b.allow_at("h", t0 + Duration::from_secs(10))); // → HalfOpen
-    // 探测失败 → 重新打开，冷却起点刷新为 t1
+                                                            // 探测失败 → 重新打开，冷却起点刷新为 t1
     let t1 = t0 + Duration::from_secs(11);
     b.on_failure_at("h", t1);
-    assert!(!b.allow_at("h", t1 + Duration::from_secs(5)), "重开后冷却内拒绝");
-    assert!(b.allow_at("h", t1 + Duration::from_secs(10)), "新冷却结束后再放行");
+    assert!(
+        !b.allow_at("h", t1 + Duration::from_secs(5)),
+        "重开后冷却内拒绝"
+    );
+    assert!(
+        b.allow_at("h", t1 + Duration::from_secs(10)),
+        "新冷却结束后再放行"
+    );
 }
 
 #[test]

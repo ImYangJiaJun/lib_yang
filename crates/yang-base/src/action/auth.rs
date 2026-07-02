@@ -351,11 +351,8 @@ pub trait RefreshClaimsResolver: Send + Sync + 'static {
     ///
     /// - `Ok(Value)`: 写入新 Access Token 的自定义声明（`Value::Null` 表示无）
     /// - `Err(BaseError)`: 解析失败（如用户已禁用）
-    async fn resolve(
-        &self,
-        ctx: &ActionContext,
-        sub: &str,
-    ) -> Result<serde_json::Value, BaseError>;
+    async fn resolve(&self, ctx: &ActionContext, sub: &str)
+        -> Result<serde_json::Value, BaseError>;
 }
 
 /// 默认刷新声明解析器：不附加任何自定义声明（零配置可用）。
@@ -410,7 +407,10 @@ impl RefreshClaimsResolver for DefaultRefreshClaims {
     description = "用 Refresh Token 换取新的 Access Token",
     public
 )]
-pub struct RefreshAction<R: RefreshClaimsResolver = DefaultRefreshClaims, A: AuthAuditHook = TracingAuditHook> {
+pub struct RefreshAction<
+    R: RefreshClaimsResolver = DefaultRefreshClaims,
+    A: AuthAuditHook = TracingAuditHook,
+> {
     resolver: R,
     audit: A,
 }
@@ -460,7 +460,9 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
             // 先验证旧 Token 以获取 subject（供业务解析器确定新声明）
             let claims = manager.verify_token_checked(&input.refresh_token).await?;
             if claims.token_type != "refresh" {
-                return Err(BaseError::TokenTypeInvalid("期望 refresh token".to_string()));
+                return Err(BaseError::TokenTypeInvalid(
+                    "期望 refresh token".to_string(),
+                ));
             }
             // 按业务解析器决定新 Token 的自定义声明
             let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
@@ -670,7 +672,12 @@ where
             .verify_token_checked(&token)
             .await?;
 
-        // 3. 注入当前用户后继续调用链
+        // 3. 校验 token_type 必须为 "access"
+        if claims.token_type != "access" {
+            return Err(BaseError::TokenTypeInvalid("期望 access token".into()));
+        }
+
+        // 4. 注入当前用户后继续调用链
         ctx.user = Some((self.build_user)(&claims));
         next.run(ctx).await
     }

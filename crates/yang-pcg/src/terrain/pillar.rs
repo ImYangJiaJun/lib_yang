@@ -39,9 +39,9 @@ impl TerrainStrategy for PillarStrategy {
         config: &TerrainConfig,
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
-        let bounds = room.bounds.ok_or_else(|| {
-            PcgError::terrain(format!("房间 {} 没有边界信息", room.id))
-        })?;
+        let bounds = room
+            .bounds
+            .ok_or_else(|| PcgError::terrain(format!("房间 {} 没有边界信息", room.id)))?;
         let width = bounds.width();
         let height = bounds.height();
         if width == 0 || height == 0 {
@@ -64,10 +64,8 @@ impl TerrainStrategy for PillarStrategy {
         }
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> = anchors
-            .iter()
-            .filter(|a| a.room_id == room.id)
-            .collect();
+        let room_anchors: Vec<&DoorAnchor> =
+            anchors.iter().filter(|a| a.room_id == room.id).collect();
         for anchor in &room_anchors {
             let local = to_local(bounds.min, anchor.grid_pos);
             tiles.set(local.x, local.y, TileKind::Doorway);
@@ -140,14 +138,7 @@ fn calculate_pillar_spacing(width: u32, height: u32, density: f32) -> u32 {
 /// 在指定位置放置柱子
 ///
 /// 检查目标位置是否可以放置柱子（不覆盖门口、不超出边界）
-fn place_pillar(
-    tiles: &mut Grid2D<TileKind>,
-    x: i32,
-    y: i32,
-    size: i32,
-    width: u32,
-    height: u32,
-) {
+fn place_pillar(tiles: &mut Grid2D<TileKind>, x: i32, y: i32, size: i32, width: u32, height: u32) {
     for dy in 0..size {
         for dx in 0..size {
             let px = x + dx;

@@ -43,8 +43,7 @@ pub fn select_strategy(room: &Room) -> TerrainStrategyKind {
     }
 
     // 规则 2：Combat/Elite 且带有 "pillar" 标签使用柱状策略
-    if matches!(room.room_type, RoomType::Combat | RoomType::Elite)
-        && has_theme_tag(room, "pillar")
+    if matches!(room.room_type, RoomType::Combat | RoomType::Elite) && has_theme_tag(room, "pillar")
     {
         return TerrainStrategyKind::Pillar;
     }
@@ -87,9 +86,7 @@ impl TerrainStrategyKind {
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
         match self {
-            Self::DefaultCarve => {
-                DefaultCarveStrategy.generate(room, anchors, config, rng)
-            }
+            Self::DefaultCarve => DefaultCarveStrategy.generate(room, anchors, config, rng),
             Self::OpenArena => OpenArenaStrategy.generate(room, anchors, config, rng),
             Self::Maze => MazeStrategy.generate(room, anchors, config, rng),
             Self::Organic => OrganicStrategy.generate(room, anchors, config, rng),

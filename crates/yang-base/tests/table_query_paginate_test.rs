@@ -146,7 +146,11 @@ async fn test_paginate_basic() {
     // 创建表配置和查询
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：第 1 页，每页 10 条
     let result: PaginatedResult<TestUser> = query.page(1, 10).unwrap().paginate().await.unwrap();
@@ -184,7 +188,11 @@ async fn test_paginate_second_page() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：第 2 页，每页 10 条
     let result: PaginatedResult<TestUser> = query.page(2, 10).unwrap().paginate().await.unwrap();
@@ -222,7 +230,11 @@ async fn test_paginate_last_page() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：第 5 页（最后一页），每页 10 条
     let result: PaginatedResult<TestUser> = query.page(5, 10).unwrap().paginate().await.unwrap();
@@ -274,7 +286,11 @@ async fn test_paginate_empty_result() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询
     let result: PaginatedResult<TestUser> = query.page(1, 10).unwrap().paginate().await.unwrap();
@@ -312,7 +328,11 @@ async fn test_paginate_with_where_condition() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：age = 25
     let result: PaginatedResult<TestUser> = query
@@ -359,7 +379,11 @@ async fn test_paginate_with_order_by() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：按 id 降序排列
     let result: PaginatedResult<TestUser> = query
@@ -411,7 +435,11 @@ async fn test_paginate_with_field_selection() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：选择所有字段
     let result: PaginatedResult<TestUser> = query
@@ -457,7 +485,11 @@ async fn test_paginate_with_default_params() {
 
     let table_config = create_test_table_config();
 
-    let query = TableQuery::new(table_config, vec!["user".to_string()].into(), Some(Arc::new(pool)));
+    let query = TableQuery::new(
+        table_config,
+        vec!["user".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
 
     // 执行分页查询：不设置分页参数，使用默认值
     let result: PaginatedResult<TestUser> = query.paginate().await.unwrap();

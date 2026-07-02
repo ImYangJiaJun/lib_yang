@@ -294,13 +294,11 @@ fn test_form_url_encoding_special_chars() {
     let client = HttpClient::new(30).unwrap();
 
     // 包含特殊字符的表单数据
-    let builder = client
-        .post("https://api.example.com/form")
-        .form(vec![
-            ("name", "Alice & Bob"),
-            ("email", "alice+bob@example.com"),
-            ("message", "Hello World!"),
-        ]);
+    let builder = client.post("https://api.example.com/form").form(vec![
+        ("name", "Alice & Bob"),
+        ("email", "alice+bob@example.com"),
+        ("message", "Hello World!"),
+    ]);
 
     // 构建成功，无错误累积
     drop(builder);

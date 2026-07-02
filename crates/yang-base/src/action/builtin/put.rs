@@ -29,7 +29,11 @@ pub struct PutInput<T: TableEntity> {
 
 /// 按主键更新记录。
 #[derive(Action)]
-#[action(name = "put", display_name = "更新数据", description = "按主键更新指定字段")]
+#[action(
+    name = "put",
+    display_name = "更新数据",
+    description = "按主键更新指定字段"
+)]
 pub struct PutAction<T: TableEntity> {
     _phantom: PhantomData<T>,
 }

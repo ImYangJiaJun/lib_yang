@@ -238,4 +238,3 @@ async fn test_retry_exhausts_on_connection_error() {
         .await;
     assert!(result.is_err(), "连接失败重试耗尽后应返回 Err");
 }
-

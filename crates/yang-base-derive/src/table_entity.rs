@@ -89,9 +89,15 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     // 用 position 的结果直接驱动「缺少主键」校验，避免独立的 unwrap
     let pk_idx = match field_opts.iter().position(|(_, o)| o.primary_key) {
         Some(i) => i,
-        None => abort!(input, "TableEntity 必须有一个字段标注 #[entity(primary_key)]"),
+        None => abort!(
+            input,
+            "TableEntity 必须有一个字段标注 #[entity(primary_key)]"
+        ),
     };
-    let pk_column = field_opts[pk_idx].1.column.clone()
+    let pk_column = field_opts[pk_idx]
+        .1
+        .column
+        .clone()
         .unwrap_or_else(|| field_opts[pk_idx].0.clone());
     let pk_type = field_opts[pk_idx].1.ty.clone();
 
@@ -100,56 +106,76 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     let _soft_delete = opts.soft_delete; // 暂时保留供后续扩展
 
     // 每个字段的 (变体名, 列名, 类型, 是否 String)
-    let field_variants: Vec<(syn::Ident, String, syn::Type, bool)> = field_opts.iter().map(|(n, o)| {
-        let column = o.column.clone().unwrap_or_else(|| n.clone());
-        let variant = format_ident!("{}", pascal_case(n));
-        (variant, column, o.ty.clone(), is_string_type(&o.ty))
-    }).collect();
+    let field_variants: Vec<(syn::Ident, String, syn::Type, bool)> = field_opts
+        .iter()
+        .map(|(n, o)| {
+            let column = o.column.clone().unwrap_or_else(|| n.clone());
+            let variant = format_ident!("{}", pascal_case(n));
+            (variant, column, o.ty.clone(), is_string_type(&o.ty))
+        })
+        .collect();
 
     let field_enum_name = format_ident!("{}Field", struct_name);
     let where_enum_name = format_ident!("{}Where", struct_name);
 
-    let field_variant_idents: Vec<_> = field_variants.iter().map(|(v, _, _, _)| v.clone()).collect();
-    let field_columns: Vec<_> = field_variants.iter().map(|(_, c, _, _)| c.clone()).collect();
+    let field_variant_idents: Vec<_> = field_variants
+        .iter()
+        .map(|(v, _, _, _)| v.clone())
+        .collect();
+    let field_columns: Vec<_> = field_variants
+        .iter()
+        .map(|(_, c, _, _)| c.clone())
+        .collect();
 
     // WhereCond 枚举变体定义
-    let where_variants: Vec<TokenStream> = field_variants.iter().map(|(v, _, ty, is_str)| {
-        let inner_ty = unwrap_option(ty).0.clone();
-        if *is_str {
-            quote! { #v(::yang_base::table::StringWhereOp) }
-        } else {
-            quote! { #v(::yang_base::table::WhereOp<#inner_ty>) }
-        }
-    }).collect();
+    let where_variants: Vec<TokenStream> = field_variants
+        .iter()
+        .map(|(v, _, ty, is_str)| {
+            let inner_ty = unwrap_option(ty).0.clone();
+            if *is_str {
+                quote! { #v(::yang_base::table::StringWhereOp) }
+            } else {
+                quote! { #v(::yang_base::table::WhereOp<#inner_ty>) }
+            }
+        })
+        .collect();
 
     // WhereCond match 分支
-    let where_match_arms: Vec<TokenStream> = field_variants.iter().map(|(v, column, _, _)| {
-        let col_lit = column.as_str();
-        quote! { Self::#v(op) => op.to_sql_condition(#col_lit) }
-    }).collect();
+    let where_match_arms: Vec<TokenStream> = field_variants
+        .iter()
+        .map(|(v, column, _, _)| {
+            let col_lit = column.as_str();
+            quote! { Self::#v(op) => op.to_sql_condition(#col_lit) }
+        })
+        .collect();
 
     // TableConfig 字段构造
-    let config_fields: Vec<TokenStream> = field_opts.iter().map(|(n, o)| {
-        let column = o.column.clone().unwrap_or_else(|| n.clone());
-        let ft = rust_type_to_field_type(&o.ty, o.max_length.unwrap_or(255));
-        let (_inner, is_option) = unwrap_option(&o.ty);
-        let required = o.required.unwrap_or(!is_option);
-        quote! {
-            config = config.field(
-                ::yang_base::table::FieldConfig::new(#column, #ft).required(#required)
-            );
-        }
-    }).collect();
+    let config_fields: Vec<TokenStream> = field_opts
+        .iter()
+        .map(|(n, o)| {
+            let column = o.column.clone().unwrap_or_else(|| n.clone());
+            let ft = rust_type_to_field_type(&o.ty, o.max_length.unwrap_or(255));
+            let (_inner, is_option) = unwrap_option(&o.ty);
+            let required = o.required.unwrap_or(!is_option);
+            quote! {
+                config = config.field(
+                    ::yang_base::table::FieldConfig::new(#column, #ft).required(#required)
+                );
+            }
+        })
+        .collect();
 
     // 唯一索引构造（使用现有的 unique_index(Vec<String>) 方法）
-    let unique_indexes: Vec<TokenStream> = field_opts.iter()
+    let unique_indexes: Vec<TokenStream> = field_opts
+        .iter()
         .filter(|(_, o)| o.unique)
         .map(|(n, o)| {
             let column = o.column.clone().unwrap_or_else(|| n.clone());
             quote! {
                 config = config.unique_index(vec![#column.to_string()]);
             }
-        }).collect();
+        })
+        .collect();
 
     quote! {
         // ===== Field 枚举 =====
