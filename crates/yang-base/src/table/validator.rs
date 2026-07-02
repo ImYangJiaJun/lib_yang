@@ -71,7 +71,19 @@ pub enum Validator {
     Phone,
     /// 手机号格式验证（宽松模式，向后兼容）
     PhoneLoose,
-    /// URL 格式验证
+    /// URL 格式验证（仅校验协议前缀）
+    ///
+    /// **安全警告：** 此验证器仅检查字符串是否以 `http://` 或 `https://` 开头，
+    /// 不解析主机名、不校验端口、不过滤内网/保留地址，**不提供 SSRF 防护**。
+    ///
+    /// 以下输入均能通过本验证器：
+    /// - `http://169.254.169.254/latest/meta-data/` （云元数据端点）
+    /// - `http://127.0.0.1:6379/` （本机 Redis）
+    /// - `http://[::1]:8080/` （IPv6 loopback）
+    /// - `http://localhost/` （本机服务）
+    ///
+    /// 若用于构造出站 HTTP 请求，必须在调用侧额外实施 SSRF 防护
+    /// （如校验解析后的 IP 不属于保留/内网段）。
     Url,
     /// 正则表达式验证
     Regex(String),
@@ -296,7 +308,7 @@ impl Validator {
                 }
             }
 
-            // URL 格式验证
+            // URL 格式验证：仅校验 http:// / https:// 前缀，不解析 host，无 SSRF 防护
             Validator::Url => {
                 if let Some(s) = value.as_str() {
                     if !s.starts_with("http://") && !s.starts_with("https://") {

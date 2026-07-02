@@ -148,6 +148,16 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
         let where_tree: Option<WhereCondition> =
             input.where_clause.map(Filter::into_where_condition);
 
+        // 字段读权限强制：始终走整实体 select，先确认当前用户对全部字段可读，
+        // 否则返回 FieldPermissionDenied（匿名访问以空角色用户判定）。
+        // 【LOGIC-3】鉴权必须在 COUNT 之前，避免未登录用户绕过权限获取总数。
+        let user = ctx
+            .user
+            .as_ref()
+            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+        let mut q = ctx.table_query()?;
+        q.ensure_fields_readable(user)?;
+
         let total = if input.count_total {
             match &where_tree {
                 Some(tree) => Some(count_with_tree(&ctx, tree.clone()).await?),
@@ -156,15 +166,6 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
         } else {
             None
         };
-
-        // 字段读权限强制：始终走整实体 select，先确认当前用户对全部字段可读，
-        // 否则返回 FieldPermissionDenied（匿名访问以空角色用户判定）。
-        let user = ctx
-            .user
-            .as_ref()
-            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
-        let mut q = ctx.table_query()?;
-        q.ensure_fields_readable(user)?;
         // 整棵 where 树一次性递归校验 + 并入（含字段存在性/筛选权限/嵌套深度）
         if let Some(tree) = where_tree {
             q = q.where_tree(tree)?;

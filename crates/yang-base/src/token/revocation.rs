@@ -212,16 +212,32 @@ impl TokenManager {
     /// - `Err(BaseError::RedisOperationFailed)`: 黑名单查询失败
     pub async fn verify_token_checked(&self, token: &str) -> Result<TokenClaims, BaseError> {
         let claims = self.verify_token(token)?;
-        // 第一层：单 Token 黑名单（登出）
-        if self.is_revoked(&claims.jti).await? {
+
+        // PERF-2: 将两次 Redis 读（EXISTS + GET）合并为一条 pipeline，2 RTT → 1 RTT。
+        // 对已黑名单 token 会失去短路（不再提前返回），但撤销场景罕见，可接受。
+        let mut pipeline = GlobalRedis::client()?.pipeline();
+        pipeline
+            .exists(blacklist_key(&claims.jti))
+            .get(subject_min_iat_key(&claims.sub));
+        let results = pipeline.execute().await?;
+
+        // results[0]: EXISTS → Int(0) 或 Int(1)
+        let revoked_count = results[0].as_i64().unwrap_or(0);
+        if revoked_count > 0 {
             return Err(BaseError::TokenRevoked);
         }
-        // 第二层：按用户水位线（改密、强制下线）。Token 在水位线当秒或之前签发即视为已撤销。
-        if let Some(min_iat) = self.subject_min_iat(&claims.sub).await? {
-            if iat_revoked_by_watermark(claims.iat, min_iat) {
-                return Err(BaseError::TokenRevoked);
+
+        // results[1]: GET → Nil（无水位线）或 String（水位线时间戳）
+        if let Some(raw) = results[1].as_str() {
+            if let Ok(min_iat) = raw.parse::<u64>() {
+                if iat_revoked_by_watermark(claims.iat, min_iat) {
+                    return Err(BaseError::TokenRevoked);
+                }
+            } else {
+                tracing::warn!(sub = %claims.sub, raw, "水位线解析失败，视为无水位线");
             }
         }
+
         Ok(claims)
     }
 }

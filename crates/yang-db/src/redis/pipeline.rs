@@ -104,6 +104,20 @@ impl RedisPipeline {
         self
     }
 
+    /// 添加 EXISTS 命令（单键）
+    ///
+    /// 检查单个键是否存在，结果为 `Int(0)` 或 `Int(1)`。
+    ///
+    /// # 参数
+    /// - `key`: 键
+    ///
+    /// # 返回
+    /// 返回 self 以支持链式调用
+    pub fn exists(&mut self, key: impl Into<String>) -> &mut Self {
+        self.pipe.exists(key.into());
+        self
+    }
+
     /// 添加 DEL 命令
     ///
     /// # 参数

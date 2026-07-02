@@ -21,7 +21,7 @@ pub fn select_spaced_points(
     min_spacing: u16,
     rng: &mut StableRng,
 ) -> Vec<GridPoint> {
-    select_spaced_points_tracked(candidates, desired_count, min_spacing, rng).selected
+    select_spaced_points_inner(candidates, desired_count, min_spacing, &[], 0, rng)
 }
 
 /// 从候选点中选出满足最小间距、且与「已占用点」保持跨类型间距的若干点。
@@ -40,7 +40,7 @@ pub fn select_spaced_points_excluding(
     occupied_spacing: u16,
     rng: &mut StableRng,
 ) -> Vec<GridPoint> {
-    select_spaced_points_tracked_excluding(
+    select_spaced_points_inner(
         candidates,
         desired_count,
         min_spacing,
@@ -48,7 +48,6 @@ pub fn select_spaced_points_excluding(
         occupied_spacing,
         rng,
     )
-    .selected
 }
 
 /// 从候选点中选出满足最小间距的若干点，同时记录被拒绝的点位和原因。
@@ -66,7 +65,7 @@ pub fn select_spaced_points_tracked(
     rng: &mut StableRng,
 ) -> SamplingResult {
     // 委托给带占用集合的实现，传空 occupied 即与原行为字节一致（RNG 仅消耗于洗牌）。
-    select_spaced_points_tracked_excluding(candidates, desired_count, min_spacing, &[], 0, rng)
+    select_spaced_points_tracked_inner(candidates, desired_count, min_spacing, &[], 0, rng)
 }
 
 /// `select_spaced_points_tracked` 的跨类型间距版本。
