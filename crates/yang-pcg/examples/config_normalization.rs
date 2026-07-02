@@ -10,7 +10,7 @@ fn main() -> PcgResult<()> {
     println!("1. 默认配置:");
     let default_config = GenerationConfig::default();
     let _normalized = default_config.normalize()?;
-    let digest = ConfigDigest::from_config(&default_config);
+    let digest = ConfigDigest::from_config(&default_config)?;
     println!(
         "   房间数量: {}-{}",
         default_config.room_count.min, default_config.room_count.max
@@ -26,7 +26,7 @@ fn main() -> PcgResult<()> {
     custom_config.terrain.obstacle_density = 0.3;
 
     let _custom_normalized = custom_config.normalize()?;
-    let custom_digest = ConfigDigest::from_config(&custom_config);
+    let custom_digest = ConfigDigest::from_config(&custom_config)?;
     println!(
         "   房间数量: {}-{}",
         custom_config.room_count.min, custom_config.room_count.max
@@ -39,14 +39,12 @@ fn main() -> PcgResult<()> {
     // 3. 配置覆盖
     println!("3. 配置覆盖:");
     let base_config = GenerationConfig::default();
-    let override_config = GenerationConfig {
-        room_count: RangeU16::new(20, 30),
-        theme_tags: vec!["forest".to_string()],
-        ..Default::default()
-    };
+    let mut override_config = GenerationConfig::default();
+    override_config.room_count = RangeU16::new(20, 30);
+    override_config.theme_tags = vec!["forest".to_string()];
 
     let overridden_config = base_config.override_with(override_config);
-    let merged_digest = ConfigDigest::from_config(&overridden_config);
+    let merged_digest = ConfigDigest::from_config(&overridden_config)?;
     println!(
         "   覆盖后房间数量: {}-{}",
         overridden_config.room_count.min, overridden_config.room_count.max
@@ -70,8 +68,8 @@ fn main() -> PcgResult<()> {
     println!("5. 摘要稳定性验证:");
     let config1 = GenerationConfig::default();
     let config2 = GenerationConfig::default();
-    let digest1 = ConfigDigest::from_config(&config1);
-    let digest2 = ConfigDigest::from_config(&config2);
+    let digest1 = ConfigDigest::from_config(&config1)?;
+    let digest2 = ConfigDigest::from_config(&config2)?;
     println!("   相同配置生成相同摘要: {}", digest1 == digest2);
     println!("   摘要1: {}", digest1);
     println!("   摘要2: {}", digest2);
@@ -82,8 +80,8 @@ fn main() -> PcgResult<()> {
     let config_a = GenerationConfig::default();
     let mut config_b = GenerationConfig::default();
     config_b.room_count = RangeU16::new(15, 25);
-    let digest_a = ConfigDigest::from_config(&config_a);
-    let digest_b = ConfigDigest::from_config(&config_b);
+    let digest_a = ConfigDigest::from_config(&config_a)?;
+    let digest_b = ConfigDigest::from_config(&config_b)?;
     println!("   不同配置生成不同摘要: {}", digest_a != digest_b);
     println!("   摘要A: {}", digest_a);
     println!("   摘要B: {}", digest_b);
@@ -102,7 +100,7 @@ fn main() -> PcgResult<()> {
     // 8. 配置反序列化
     println!("8. 配置反序列化:");
     let deserialized: GenerationConfig = serde_json::from_str(&json).unwrap();
-    let deserialized_digest = ConfigDigest::from_config(&deserialized);
+    let deserialized_digest = ConfigDigest::from_config(&deserialized)?;
     println!("   反序列化成功");
     println!("   摘要匹配: {}", digest.matches(&deserialized));
     println!("   反序列化摘要: {}", deserialized_digest);
