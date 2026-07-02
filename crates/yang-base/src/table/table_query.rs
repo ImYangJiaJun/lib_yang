@@ -2719,7 +2719,7 @@ impl TableQuery {
     /// 设计为关联函数（不借用 `&self`），以便在消费 `self` 的终端方法里，与
     /// 借用 `self.pool`/`sql`/`params` 的执行 future 共存而不冲突借用检查。
     /// SQL 文本**默认不记**（防泄漏 + 防高基数）。`op` 为静态操作名。
-    async fn timed<F, R>(
+    pub(crate) async fn timed<F, R>(
         threshold: Option<std::time::Duration>,
         request_id: Option<crate::action::RequestId>,
         table: &str,

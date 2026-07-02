@@ -325,7 +325,7 @@ pub struct SpacingViolation {
     /// 所属房间 ID
     pub room_id: String,
     /// 实际距离
-    pub actual_distance: i32,
+    pub actual_distance: i64,
     /// 要求的最小间距
     pub required_spacing: i32,
 }
@@ -345,8 +345,8 @@ pub struct ExclusionViolation {
 }
 
 /// 计算两点之间的曼哈顿距离
-fn manhattan_distance(a: GridPoint, b: GridPoint) -> i32 {
-    (a.x - b.x).abs() + (a.y - b.y).abs()
+fn manhattan_distance(a: GridPoint, b: GridPoint) -> i64 {
+    (a.x as i64 - b.x as i64).abs() + (a.y as i64 - b.y as i64).abs()
 }
 
 /// 判断点位是否在排除区内
@@ -395,7 +395,7 @@ pub fn validate_spawn_spacing(
         for i in 0..points.len() {
             for j in (i + 1)..points.len() {
                 let dist = manhattan_distance(points[i].grid_pos, points[j].grid_pos);
-                if dist < spacing {
+                if dist < spacing as i64 {
                     spacing_violations.push(SpacingViolation {
                         spawn_a_id: points[i].id.clone(),
                         spawn_b_id: points[j].id.clone(),
@@ -502,7 +502,7 @@ pub fn validate_result(result: &GenerationResult) -> PcgResult<()> {
         ));
     }
 
-    if !result.topology.edges.is_empty() && result.corridors.len() != result.topology.edges.len() {
+    if result.corridors.len() != result.topology.edges.len() {
         return Err(PcgError::layout(
             "生成结果中的 corridors 数量与 topology.edges 数量不一致",
         ));

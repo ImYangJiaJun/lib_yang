@@ -94,3 +94,165 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
         None => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::Plugin;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    /// 测试用插件：在 on_shutdown 时将名称记录到共享 Vec
+    struct ShutdownRecorder {
+        name: String,
+        order: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Plugin for ShutdownRecorder {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            self.order.lock().unwrap().push(self.name.clone());
+            Ok(())
+        }
+    }
+
+    /// 测试用插件：依赖 plugin_a，记录 shutdown 顺序
+    struct PluginB(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl Plugin for PluginB {
+        fn name(&self) -> &str {
+            "plugin_b"
+        }
+
+        fn dependencies(&self) -> Vec<&str> {
+            vec!["plugin_a"]
+        }
+
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            self.0.lock().unwrap().push("plugin_b".to_string());
+            Ok(())
+        }
+    }
+
+    /// 测试用插件：依赖 plugin_b，记录 shutdown 顺序
+    struct PluginC(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl Plugin for PluginC {
+        fn name(&self) -> &str {
+            "plugin_c"
+        }
+
+        fn dependencies(&self) -> Vec<&str> {
+            vec!["plugin_b"]
+        }
+
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            self.0.lock().unwrap().push("plugin_c".to_string());
+            Ok(())
+        }
+    }
+
+    /// 测试用插件：on_shutdown 故意返回错误
+    struct ShutdownFailer;
+
+    #[async_trait]
+    impl Plugin for ShutdownFailer {
+        fn name(&self) -> &str {
+            "shutdown_failer"
+        }
+
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            Err("intentional shutdown failure".into())
+        }
+    }
+
+    // ==================== TEST-5：graceful_shutdown 完全无测试 ====================
+
+    /// 验证需求: TEST-5 — plugins=None 时应直接返回 Ok
+    #[tokio::test]
+    async fn test_graceful_shutdown_no_plugins() {
+        let result = graceful_shutdown(None).await;
+        assert!(
+            result.is_ok(),
+            "plugins=None 时 graceful_shutdown 应返回 Ok"
+        );
+    }
+
+    /// 验证需求: TEST-5 — 插件 on_shutdown 返回 Err 时 graceful_shutdown 应返回 Err
+    #[tokio::test]
+    async fn test_graceful_shutdown_plugin_error() {
+        let manager = PluginManager::new();
+        manager.register(ShutdownFailer).await.unwrap();
+
+        let result = graceful_shutdown(Some(&manager)).await;
+        assert!(
+            result.is_err(),
+            "插件 shutdown 失败时 graceful_shutdown 应返回 Err"
+        );
+
+        if let Err(e) = result {
+            match e {
+                BaseError::PluginShutdownFailed(name, reason) => {
+                    assert_eq!(name, "shutdown_failer", "错误应指向 shutdown_failer");
+                    assert_eq!(
+                        reason, "intentional shutdown failure",
+                        "错误原因应透传插件的失败信息"
+                    );
+                }
+                other => panic!("期望 PluginShutdownFailed，得到: {:?}", other),
+            }
+        }
+    }
+
+    /// 验证需求: TEST-5 — 共享 Vec 记录器验证 shutdown 顺序为逆拓扑序
+    #[tokio::test]
+    async fn test_graceful_shutdown_order() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let manager = PluginManager::new();
+
+        // 注册三个插件，依赖链：A（无依赖）← B（依赖 A）← C（依赖 B）
+        // 拓扑序：A, B, C；应逆序 shutdown 即 C, B, A
+        manager
+            .register(ShutdownRecorder {
+                name: "plugin_a".to_string(),
+                order: Arc::clone(&order),
+            })
+            .await
+            .unwrap();
+
+        manager
+            .register(PluginB(Arc::clone(&order)))
+            .await
+            .unwrap();
+
+        manager
+            .register(PluginC(Arc::clone(&order)))
+            .await
+            .unwrap();
+
+        let result = graceful_shutdown(Some(&manager)).await;
+        assert!(
+            result.is_ok(),
+            "全部插件 shutdown 成功时应返回 Ok"
+        );
+
+        let recorded = order.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 3, "应有 3 个插件被 shutdown");
+        assert_eq!(
+            recorded[0], "plugin_c",
+            "第一个关闭的应是 plugin_c（最内层依赖，逆拓扑序首位）"
+        );
+        assert_eq!(recorded[1], "plugin_b", "第二个关闭的应是 plugin_b");
+        assert_eq!(
+            recorded[2], "plugin_a",
+            "第三个关闭的应是 plugin_a（无依赖，应最后关闭）"
+        );
+    }
+}

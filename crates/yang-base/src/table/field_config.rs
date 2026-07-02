@@ -50,6 +50,7 @@ use std::collections::HashSet;
 ///     });
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FieldConfig {
     /// 字段名
     ///

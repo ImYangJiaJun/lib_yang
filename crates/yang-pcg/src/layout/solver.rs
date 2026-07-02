@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::config::NormalizedConfig;
+use crate::error::{PcgError, PcgResult};
 use crate::model::geometry::{GridPoint, RoomBounds};
 use crate::model::room::{Room, RoomGraph};
 use crate::rng::StableRng;
@@ -26,11 +27,12 @@ pub fn solve_room_bounds(
     graph: &RoomGraph,
     config: &NormalizedConfig,
     rng: &mut StableRng,
-) -> HashMap<String, RoomBounds> {
+) -> PcgResult<HashMap<String, RoomBounds>> {
     let mut bounds_map = HashMap::with_capacity(graph.nodes.len());
     // 已放置边界累加集：防重叠检测的依据（关键路径 + 先前分支）。
     let mut placed: Vec<RoomBounds> = Vec::with_capacity(graph.nodes.len());
-    let mut critical_cursor_x = 0i32;
+    // 用 i64 累加防止关键路径上大量房间导致 i32 溢出（OPT-R-06）。
+    let mut critical_cursor_x = 0i64;
     let row_spacing =
         i32::from(config.config.room_size.max_height + config.config.corridor.width + 8);
 
@@ -49,17 +51,31 @@ pub fn solve_room_bounds(
                 config.config.room_size.max_height,
             ),
         ));
+
+        let min_x: i32 = critical_cursor_x.try_into().map_err(|_| {
+            PcgError::layout(format!(
+                "关键路径布局溢出: critical_cursor_x({}) 超出 i32 范围 (房间: {})",
+                critical_cursor_x, room_id
+            ))
+        })?;
+        let max_x: i32 = (critical_cursor_x + i64::from(width)).try_into().map_err(|_| {
+            PcgError::layout(format!(
+                "关键路径布局溢出: cursor({}) + width({}) 超出 i32 范围 (房间: {})",
+                critical_cursor_x, width, room_id
+            ))
+        })?;
+
         let bounds = RoomBounds {
             min: GridPoint {
-                x: critical_cursor_x,
+                x: min_x,
                 y: -height / 2,
             },
             max: GridPoint {
-                x: critical_cursor_x + width,
+                x: max_x,
                 y: -height / 2 + height,
             },
         };
-        critical_cursor_x = bounds.max.x + i32::from(config.config.corridor.width) + 6;
+        critical_cursor_x = i64::from(max_x) + i64::from(config.config.corridor.width) + 6;
         placed.push(bounds);
         bounds_map.insert(room_id.clone(), bounds);
     }
@@ -68,10 +84,12 @@ pub fn solve_room_bounds(
         let parent_bounds = bounds_map
             .get(&branch.start_room)
             .copied()
-            .unwrap_or(RoomBounds {
-                min: GridPoint { x: 0, y: 0 },
-                max: GridPoint { x: 12, y: 12 },
-            });
+            .ok_or_else(|| {
+                PcgError::layout(format!(
+                    "分支父房间 '{}' 不在 bounds_map 中",
+                    branch.start_room
+                ))
+            })?;
         let vertical_direction = if branch_index % 2 == 0 { 1 } else { -1 };
         let base_y = if vertical_direction > 0 {
             parent_bounds.max.y + row_spacing
@@ -121,7 +139,7 @@ pub fn solve_room_bounds(
         }
     }
 
-    bounds_map
+    Ok(bounds_map)
 }
 
 /// 把候选边界沿竖直方向确定性外推，直至不与任何已放置边界过近。
@@ -240,7 +258,8 @@ mod tests {
         let graph = dense_same_parent_graph();
         for seed in 0u64..32 {
             let mut rng = StableRng::from_seed(seed);
-            let bounds_map = solve_room_bounds(&graph, &normalized, &mut rng);
+            let bounds_map = solve_room_bounds(&graph, &normalized, &mut rng)
+                .expect("布局求解应成功");
             assert_eq!(bounds_map.len(), 2 + 3 * 2, "应放置全部关键+分支房间");
             assert_no_pairwise_overlap(&bounds_map);
         }
@@ -255,8 +274,10 @@ mod tests {
         let graph = dense_same_parent_graph();
         let mut rng1 = StableRng::from_seed(99);
         let mut rng2 = StableRng::from_seed(99);
-        let a = solve_room_bounds(&graph, &normalized, &mut rng1);
-        let b = solve_room_bounds(&graph, &normalized, &mut rng2);
+        let a = solve_room_bounds(&graph, &normalized, &mut rng1)
+            .expect("布局求解应成功");
+        let b = solve_room_bounds(&graph, &normalized, &mut rng2)
+            .expect("布局求解应成功");
         assert_eq!(a, b, "同 seed 布局应完全一致");
     }
 }

@@ -1306,3 +1306,80 @@ fn test_filter_json_roundtrip_to_where_condition() {
         other => panic!("应降解为 Or 组，实际: {:?}", other),
     }
 }
+
+/// 验证慢查询 warn 分支触发时正确输出表名与操作名（TEST-1）。
+///
+/// `TableQuery::timed` 在超过阈值时发出 `tracing::warn!`，含 `table` /
+/// `op` / `elapsed_ms` 字段。此前该 warn 分支从未被任何测试覆盖。
+#[cfg(feature = "mysql")]
+#[tokio::test]
+async fn test_slow_query_warn_fires() {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    // 自定义 MakeWriter：将 tracing fmt 输出捕获到内存缓冲区
+    struct BufWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+    impl Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.buf.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.buf.lock().unwrap().flush()
+        }
+    }
+    struct BufMakeWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufMakeWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            BufWriter {
+                buf: self.buf.clone(),
+            }
+        }
+    }
+
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let make_writer = BufMakeWriter {
+        buf: buf.clone(),
+    };
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(make_writer)
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // 零阈值 + 立即返回的 future，确保 `timed` 走 warn 分支
+    let result = TableQuery::timed(
+        Some(Duration::from_secs(0)),
+        None,
+        "test_table_name",
+        "test_operation",
+        async { 42 },
+    )
+    .await;
+
+    assert_eq!(result, 42, "返回值应透传");
+
+    let output = String::from_utf8(buf.lock().unwrap().clone())
+        .expect("输出不是合法 UTF-8");
+    assert!(
+        output.contains("慢查询"),
+        "warn 应包含中文消息 '慢查询'，输出: {:?}",
+        output
+    );
+    assert!(
+        output.contains("test_table_name"),
+        "warn 应包含表名，输出: {:?}",
+        output
+    );
+    assert!(
+        output.contains("test_operation"),
+        "warn 应包含操作名，输出: {:?}",
+        output
+    );
+}

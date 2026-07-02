@@ -22,6 +22,10 @@ use sqlx::mysql::MySqlPool;
 /// // 自定义配置：#[non_exhaustive] 结构体跨 crate 不能用字面量，
 /// // 用 default() + 链式 setter 或字段赋值构造
 /// let config = DatabaseConfig::default()
+///     .with_max_connections(20)
+///     .with_connect_timeout(5)
+///     .with_idle_timeout(300)
+///     .with_enable_logging(true)
 ///     .with_min_connections(2)
 ///     .with_max_lifetime(Some(1800))
 ///     .with_test_before_acquire(true);
@@ -63,6 +67,30 @@ impl Default for DatabaseConfig {
 }
 
 impl DatabaseConfig {
+    /// 设置最大连接数（链式）。
+    pub fn with_max_connections(mut self, n: u32) -> Self {
+        self.max_connections = n;
+        self
+    }
+
+    /// 设置连接超时时间（秒）（链式）。
+    pub fn with_connect_timeout(mut self, secs: u64) -> Self {
+        self.connect_timeout = secs;
+        self
+    }
+
+    /// 设置空闲连接超时时间（秒）（链式）。
+    pub fn with_idle_timeout(mut self, secs: u64) -> Self {
+        self.idle_timeout = secs;
+        self
+    }
+
+    /// 设置是否启用日志（链式）。
+    pub fn with_enable_logging(mut self, enabled: bool) -> Self {
+        self.enable_logging = enabled;
+        self
+    }
+
     /// 设置最小（保活）连接数（链式）。
     pub fn with_min_connections(mut self, n: u32) -> Self {
         self.min_connections = n;

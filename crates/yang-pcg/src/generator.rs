@@ -57,11 +57,12 @@ impl MapGenerator {
 
         let normalized = validate_request(&request)?;
         // seed 缺省时从配置派生确定性种子（而非系统时间），保证「相同 config 必产同图」。
-        let seed = request
-            .seed
-            .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
+        let seed = match request.seed {
+            Some(s) => s,
+            None => ConfigDigest::seed_from_config(&normalized.config)?,
+        };
         let root_rng = StableRng::from_seed(seed);
-        let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
+        let config_digest = ConfigDigest::from_config(&normalized.config)?.into_string();
 
         constraint::validate_constraints(&request.constraints)?;
 
@@ -334,7 +335,7 @@ mod tests {
     fn test_generate_returns_non_empty_result() {
         let generator = MapGenerator::new();
         let config = GenerationConfig::default();
-        let expected_digest = ConfigDigest::from_config(&config).into_string();
+        let expected_digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化").into_string();
 
         let result = generator
             .generate(GenerationRequest {

@@ -79,11 +79,12 @@ pub struct ChunkDetailResult {
 /// - `Err(PcgError)`: 配置或拓扑生成错误
 pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyResult> {
     let normalized = validate_request(&request)?;
-    let seed = request
-        .seed
-        .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
+    let seed = match request.seed {
+        Some(s) => s,
+        None => ConfigDigest::seed_from_config(&normalized.config)?,
+    };
     let root_rng = StableRng::from_seed(seed);
-    let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
+    let config_digest = ConfigDigest::from_config(&normalized.config)?.into_string();
 
     constraint::validate_constraints(&request.constraints)?;
 
@@ -286,11 +287,12 @@ pub fn fill_chunk_details(
 /// - `Err(PcgError)`: 配置或生成错误
 pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult> {
     let normalized = validate_request(&request)?;
-    let seed = request
-        .seed
-        .unwrap_or_else(|| ConfigDigest::seed_from_config(&normalized.config));
+    let seed = match request.seed {
+        Some(s) => s,
+        None => ConfigDigest::seed_from_config(&normalized.config)?,
+    };
     let root_rng = StableRng::from_seed(seed);
-    let config_digest = ConfigDigest::from_config(&normalized.config).into_string();
+    let config_digest = ConfigDigest::from_config(&normalized.config)?.into_string();
 
     // 获取请求的分块 ID 列表
     let requested_chunks: Vec<ChunkId> = request

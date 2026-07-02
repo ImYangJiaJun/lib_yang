@@ -102,3 +102,6 @@ testcontainers = "0.27.3"
 env_logger = "0.11.10"
 trybuild = { workspace = true }
 insta = { workspace = true }
+
+# 测试 tracing 输出（Test-1：慢查询 warn 分支断言）
+tracing-subscriber = "0.3"

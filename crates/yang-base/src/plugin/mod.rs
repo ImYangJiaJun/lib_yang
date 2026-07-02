@@ -1153,6 +1153,80 @@ mod tests {
         assert!(result.is_ok(), "shutdown() 应成功执行");
     }
 
+    /// 验证需求: 9.9/TEST-6 - shutdown() 按逆拓扑顺序关闭（依赖者先关）
+    ///
+    /// 插件依赖关系: PluginA ← PluginB ← PluginC
+    /// 拓扑排序结果: [plugin_a, plugin_b, plugin_c]（依赖在前）
+    /// 关闭顺序应为逆序: [plugin_c, plugin_b, plugin_a]（依赖者先关）
+    #[tokio::test]
+    async fn test_shutdown_calls_in_reverse_topological_order() {
+        use std::sync::Mutex;
+
+        static SHUTDOWN_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        SHUTDOWN_ORDER.lock().unwrap().clear();
+
+        /// 无依赖插件 A
+        struct PluginA;
+        #[async_trait]
+        impl Plugin for PluginA {
+            fn name(&self) -> &str {
+                "plugin_a"
+            }
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+                SHUTDOWN_ORDER.lock().unwrap().push("plugin_a".to_string());
+                Ok(())
+            }
+        }
+
+        /// 依赖 plugin_a 的插件 B
+        struct PluginB;
+        #[async_trait]
+        impl Plugin for PluginB {
+            fn name(&self) -> &str {
+                "plugin_b"
+            }
+            fn dependencies(&self) -> Vec<&str> {
+                vec!["plugin_a"]
+            }
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+                SHUTDOWN_ORDER.lock().unwrap().push("plugin_b".to_string());
+                Ok(())
+            }
+        }
+
+        /// 依赖 plugin_b 的插件 C（最顶层依赖者）
+        struct PluginC;
+        #[async_trait]
+        impl Plugin for PluginC {
+            fn name(&self) -> &str {
+                "plugin_c"
+            }
+            fn dependencies(&self) -> Vec<&str> {
+                vec!["plugin_b"]
+            }
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+                SHUTDOWN_ORDER.lock().unwrap().push("plugin_c".to_string());
+                Ok(())
+            }
+        }
+
+        let mut builder = PluginManagerBuilder::new();
+        builder.register(PluginA).await.unwrap();
+        builder.register(PluginB).await.unwrap();
+        builder.register(PluginC).await.unwrap();
+
+        let registry = builder.build().expect("构建注册表应成功");
+        let result = registry.shutdown().await;
+        assert!(result.is_ok(), "shutdown() 应成功执行");
+
+        let order = SHUTDOWN_ORDER.lock().unwrap().clone();
+        assert_eq!(
+            order,
+            vec!["plugin_c", "plugin_b", "plugin_a"],
+            "shutdown 应按逆拓扑顺序关闭：C (依赖B) → B (依赖A) → A"
+        );
+    }
+
     /// 验证需求: 9.1/9.2 - PluginManagerBuilder::new() 创建空构建器
     #[tokio::test]
     async fn test_builder_new_creates_empty_builder() {

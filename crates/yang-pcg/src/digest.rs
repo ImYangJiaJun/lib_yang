@@ -2,7 +2,36 @@
 // 用于生成配置的稳定哈希，用于缓存和回归验证
 
 use crate::config::GenerationConfig;
+use crate::error::{PcgError, PcgResult};
 use crate::rng::fnv1a_64;
+
+/// 验证配置中所有 f32 字段不含 NaN。
+///
+/// serde_json 将 f32::NAN 序列化为 `null`（JSON 不支持 NaN），
+/// 这会导致两个问题：(1) 序列化后的 JSON 丢失原始值信息；
+/// (2) 不同 NaN 位的 NaN 值产生相同摘要，违反摘要唯一性契约。
+/// 本函数在序列化前做显式校验，提供清晰的错误信息。
+fn validate_no_nan(config: &GenerationConfig) -> PcgResult<()> {
+    if config.terrain.obstacle_density.is_nan() {
+        return Err(PcgError::config_with_field(
+            "obstacle_density 不能为 NaN",
+            "terrain.obstacle_density",
+        ));
+    }
+    if config.terrain.min_walkable_ratio.is_nan() {
+        return Err(PcgError::config_with_field(
+            "min_walkable_ratio 不能为 NaN",
+            "terrain.min_walkable_ratio",
+        ));
+    }
+    if config.item_spawns.rarity_weights.iter().any(|w| w.is_nan()) {
+        return Err(PcgError::config_with_field(
+            "rarity_weights 不能包含 NaN",
+            "item_spawns.rarity_weights",
+        ));
+    }
+    Ok(())
+}
 
 /// 配置摘要
 ///
@@ -25,6 +54,11 @@ pub struct ConfigDigest {
 impl ConfigDigest {
     /// 从配置生成摘要
     ///
+    /// # 错误
+    ///
+    /// - 当配置包含 NaN 的 `f32` 字段时返回 `PcgError::Config`
+    /// - 当配置序列化失败时返回 `PcgError::Config`
+    ///
     /// # 示例
     ///
     /// ```rust
@@ -32,18 +66,18 @@ impl ConfigDigest {
     /// use yang_pcg::digest::ConfigDigest;
     ///
     /// let config = GenerationConfig::default();
-    /// let digest = ConfigDigest::from_config(&config);
+    /// let digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
     /// println!("配置摘要: {}", digest.as_str());
     /// ```
-    pub fn from_config(config: &GenerationConfig) -> Self {
-        // 使用 serde_json 序列化配置以确保稳定性
-        // 这样可以避免 Rust 默认 Hash 实现的不稳定性
-        let json = serde_json::to_string(config).expect("GenerationConfig 必须可序列化");
+    pub fn from_config(config: &GenerationConfig) -> PcgResult<Self> {
+        validate_no_nan(config)?;
+        let json = serde_json::to_string(config)
+            .map_err(|e| PcgError::config(format!("GenerationConfig 序列化失败: {}", e)))?;
         let hash_value = fnv1a_64(json.as_bytes());
 
-        Self {
+        Ok(Self {
             hash: format!("{:016x}", hash_value),
-        }
+        })
     }
 
     /// 从配置派生确定性种子（u64）。
@@ -51,6 +85,11 @@ impl ConfigDigest {
     /// 当生成请求未显式提供 `seed` 时，用本方法从配置派生一个**确定性**的兜底种子，
     /// 保证「相同 config + 不提供 seed」始终产出相同地图——符合确定性库的契约。
     /// 与 [`from_config`](Self::from_config) 使用相同的稳定哈希逻辑。
+    ///
+    /// # 错误
+    ///
+    /// - 当配置包含 NaN 的 `f32` 字段时返回 `PcgError::Config`
+    /// - 当配置序列化失败时返回 `PcgError::Config`
     ///
     /// # 示例
     ///
@@ -61,13 +100,15 @@ impl ConfigDigest {
     /// let config = GenerationConfig::default();
     /// // 同一 config 多次派生得到相同种子
     /// assert_eq!(
-    ///     ConfigDigest::seed_from_config(&config),
-    ///     ConfigDigest::seed_from_config(&config)
+    ///     ConfigDigest::seed_from_config(&config).unwrap(),
+    ///     ConfigDigest::seed_from_config(&config).unwrap()
     /// );
     /// ```
-    pub fn seed_from_config(config: &GenerationConfig) -> u64 {
-        let json = serde_json::to_string(config).expect("GenerationConfig 必须可序列化");
-        fnv1a_64(json.as_bytes())
+    pub fn seed_from_config(config: &GenerationConfig) -> PcgResult<u64> {
+        validate_no_nan(config)?;
+        let json = serde_json::to_string(config)
+            .map_err(|e| PcgError::config(format!("GenerationConfig 序列化失败: {}", e)))?;
+        Ok(fnv1a_64(json.as_bytes()))
     }
 
     /// 从字符串创建摘要
@@ -101,8 +142,7 @@ impl ConfigDigest {
     /// assert!(digest.matches(&config));
     /// ```
     pub fn matches(&self, config: &GenerationConfig) -> bool {
-        let expected = Self::from_config(config);
-        self.hash == expected.hash
+        Self::from_config(config).map_or(false, |expected| self.hash == expected.hash)
     }
 }
 
@@ -114,7 +154,7 @@ impl std::fmt::Display for ConfigDigest {
 
 impl From<&GenerationConfig> for ConfigDigest {
     fn from(config: &GenerationConfig) -> Self {
-        Self::from_config(config)
+        Self::from_config(config).expect("默认配置生成摘要不应失败")
     }
 }
 
@@ -138,7 +178,7 @@ mod tests {
     #[test]
     fn test_digest_from_config() {
         let config = GenerationConfig::default();
-        let digest = ConfigDigest::from_config(&config);
+        let digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
 
         // 摘要应该是 16 个十六进制字符
         assert_eq!(digest.as_str().len(), 16);
@@ -150,8 +190,8 @@ mod tests {
         let config = GenerationConfig::default();
 
         // 多次生成摘要应该得到相同结果
-        let digest1 = ConfigDigest::from_config(&config);
-        let digest2 = ConfigDigest::from_config(&config);
+        let digest1 = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
+        let digest2 = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
 
         assert_eq!(digest1, digest2);
         assert_eq!(digest1.as_str(), digest2.as_str());
@@ -165,8 +205,8 @@ mod tests {
             ..Default::default()
         };
 
-        let digest1 = ConfigDigest::from_config(&config1);
-        let digest2 = ConfigDigest::from_config(&config2);
+        let digest1 = ConfigDigest::from_config(&config1).expect("配置应可序列化");
+        let digest2 = ConfigDigest::from_config(&config2).expect("配置应可序列化");
 
         // 不同配置应该生成不同摘要
         assert_ne!(digest1, digest2);
@@ -176,7 +216,7 @@ mod tests {
     #[test]
     fn test_digest_matches() {
         let config = GenerationConfig::default();
-        let digest = ConfigDigest::from_config(&config);
+        let digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
 
         assert!(digest.matches(&config));
 
@@ -199,7 +239,7 @@ mod tests {
     #[test]
     fn test_digest_display() {
         let config = GenerationConfig::default();
-        let digest = ConfigDigest::from_config(&config);
+        let digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
 
         let display_str = format!("{}", digest);
         assert_eq!(display_str, digest.as_str());
@@ -228,8 +268,8 @@ mod tests {
         let mut config2 = GenerationConfig::default();
         config2.terrain.obstacle_density = 0.3;
 
-        let digest1 = ConfigDigest::from_config(&config1);
-        let digest2 = ConfigDigest::from_config(&config2);
+        let digest1 = ConfigDigest::from_config(&config1).expect("配置应可序列化");
+        let digest2 = ConfigDigest::from_config(&config2).expect("配置应可序列化");
 
         // 嵌套字段的变化也应该影响摘要
         assert_ne!(digest1, digest2);
@@ -243,8 +283,8 @@ mod tests {
             ..Default::default()
         };
 
-        let digest1 = ConfigDigest::from_config(&config1);
-        let digest2 = ConfigDigest::from_config(&config2);
+        let digest1 = ConfigDigest::from_config(&config1).expect("配置应可序列化");
+        let digest2 = ConfigDigest::from_config(&config2).expect("配置应可序列化");
 
         // 主题标签的变化也应该影响摘要
         assert_ne!(digest1, digest2);
@@ -253,7 +293,7 @@ mod tests {
     #[test]
     fn test_digest_into_string() {
         let config = GenerationConfig::default();
-        let digest = ConfigDigest::from_config(&config);
+        let digest = ConfigDigest::from_config(&config).expect("默认配置应可序列化");
         let hash_str = digest.as_str().to_string();
 
         let owned_str = digest.into_string();

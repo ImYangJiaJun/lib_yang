@@ -221,12 +221,30 @@ fn next_value(raw: &[String], i: &mut usize, key: &str) -> Result<String, String
 }
 
 /// 加载配置：给定路径则从 JSON 文件读取，否则用默认配置。
+///
+/// # 安全
+///
+/// 路径穿越防护：将用户提供的路径 canonicalize 后校验是否仍在当前工作目录范围内。
 fn load_config(path: Option<&str>) -> Result<GenerationConfig, String> {
     match path {
         None => Ok(GenerationConfig::default()),
         Some(path) => {
-            let text =
-                std::fs::read_to_string(path).map_err(|e| format!("读取 {path} 失败: {e}"))?;
+            let user_path = std::path::Path::new(path);
+            let canonical = user_path
+                .canonicalize()
+                .map_err(|e| format!("路径 {path} 无法解析: {e}"))?;
+            let allowed_base = std::env::current_dir()
+                .map_err(|e| format!("获取当前工作目录失败: {e}"))?
+                .canonicalize()
+                .map_err(|e| format!("规范化工作目录失败: {e}"))?;
+            if !canonical.starts_with(&allowed_base) {
+                return Err(format!(
+                    "路径 {path} 超出允许范围（允许目录: {}）",
+                    allowed_base.display()
+                ));
+            }
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("读取 {path} 失败: {e}"))?;
             serde_json::from_str::<GenerationConfig>(&text)
                 .map_err(|e| format!("解析 {path} 失败: {e}"))
         }

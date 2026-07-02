@@ -522,9 +522,25 @@ impl ItemSpawnConfig {
             ));
         }
 
+        // OPT-L-04: 长度必须为 3（普通、稀有、史诗），与 sample_rarity_tier 硬编码一致
+        if self.rarity_weights.len() != 3 {
+            return Err(PcgError::config_with_field(
+                "稀有度权重必须恰好有 3 个值（普通、稀有、史诗）",
+                "item_spawns.rarity_weights",
+            ));
+        }
+
         // 拒绝 NaN 权重
         if self.rarity_weights.iter().any(|w| w.is_nan()) {
             return Err(PcgError::config("权重不能为 NaN"));
+        }
+
+        // OPT-L-02: 拒绝负权重
+        if self.rarity_weights.iter().any(|&w| w < 0.0) {
+            return Err(PcgError::config_with_field(
+                "稀有度权重不能为负数",
+                "item_spawns.rarity_weights",
+            ));
         }
 
         // 验证稀有度权重总和
@@ -750,9 +766,18 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_rarity_weights() {
+    fn test_invalid_rarity_weights_sum() {
         let mut config = GenerationConfig::default();
         config.item_spawns.rarity_weights = vec![0.5, 0.3, 0.1]; // 总和不为 1.0
+
+        let result = config.normalize();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_rarity_weights_len() {
+        let mut config = GenerationConfig::default();
+        config.item_spawns.rarity_weights = vec![0.6, 0.3, 0.05, 0.05]; // 4 个值
 
         let result = config.normalize();
         assert!(result.is_err());

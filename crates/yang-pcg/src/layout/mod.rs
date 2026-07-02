@@ -25,7 +25,7 @@ pub fn solve_layout(
     config: &NormalizedConfig,
     rng: &mut StableRng,
 ) -> PcgResult<LayoutOutput> {
-    let bounds_map = solver::solve_room_bounds(graph, config, rng);
+    let bounds_map = solver::solve_room_bounds(graph, config, rng)?;
     let rooms = solver::apply_room_bounds(&graph.nodes, &bounds_map);
     let door_anchors =
         doors::generate_door_anchors(&rooms, &graph.edges, config.config.corridor.width);

@@ -489,6 +489,11 @@ impl StableRng {
             return None;
         }
 
+        // OPT-L-02: 拒绝负权重
+        if weights.iter().any(|&w| w < 0.0) {
+            return None;
+        }
+
         let total_weight: f64 = weights.iter().sum();
         if !total_weight.is_finite() || total_weight <= 0.0 {
             return None;

@@ -37,6 +37,7 @@ use std::collections::HashMap;
 ///     .timestamps(true, true, true);
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TableConfig {
     /// 表名
     ///
@@ -503,6 +504,7 @@ impl TableConfig {
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct IndexConfig {
     /// 索引名称
     ///
@@ -542,6 +544,7 @@ pub enum SortOrder {
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TimestampFields {
     /// 创建时间字段名
     ///

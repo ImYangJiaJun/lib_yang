@@ -107,6 +107,13 @@ impl WeightedRuleSelector {
 
         let total_weight: f64 = adjusted_weights.iter().sum();
         if !total_weight.is_finite() || total_weight <= 0.0 {
+            // 区分 NaN base_weight 与正常全零
+            if rules.iter().any(|r| r.base_weight.is_nan()) {
+                return Err(PcgError::capability_unavailable(
+                    "Grammar 规则中存在 NaN base_weight，无法进行选择",
+                    "grammar",
+                ));
+            }
             return Err(PcgError::capability_unavailable(
                 "所有 Grammar 规则的调整后权重为零",
                 "grammar",
@@ -131,7 +138,7 @@ impl WeightedRuleSelector {
     /// 根据上下文信息对基础权重进行乘法调整。
     fn compute_adjusted_weight(&self, rule: &GrammarRule, context: &GrammarContext) -> f64 {
         let mut weight = rule.base_weight;
-        if weight <= 0.0 {
+        if !weight.is_finite() || weight <= 0.0 {
             return 0.0;
         }
 

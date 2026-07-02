@@ -72,10 +72,9 @@ impl TerrainStrategy for MazeStrategy {
         // 确保门口连接到迷宫网络
         connect_doorways_to_maze(&mut tiles, &doorway_locals, width, height);
 
-        let connectivity_summary = summarize_connectivity(&tiles);
-
-        // 如果连通性不满足，额外打通路径
-        if !connectivity_summary.all_doors_connected && doorway_locals.len() >= 2 {
+        // 如果门口数量 >= 2，额外确保连通
+        // (force_connect_doorways 在已连通时是空操作)
+        if doorway_locals.len() >= 2 {
             force_connect_doorways(&mut tiles, &doorway_locals, width, height);
         }
 

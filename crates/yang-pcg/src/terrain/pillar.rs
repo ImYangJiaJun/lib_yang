@@ -5,10 +5,9 @@ use crate::config::TerrainConfig;
 use crate::error::{PcgError, PcgResult};
 use crate::model::geometry::GridSize;
 use crate::model::room::{DoorAnchor, Room};
-use crate::model::terrain::{Grid2D, Terrain, TileKind};
+use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
-use super::connectivity::summarize_connectivity;
 use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
@@ -109,14 +108,18 @@ impl TerrainStrategy for PillarStrategy {
             y += spacing as i32;
         }
 
-        let connectivity_summary = summarize_connectivity(&tiles);
-
         Ok(Terrain {
             room_id: room.id.clone(),
             grid_size: GridSize { width, height },
             tiles,
             reserved_zones: Vec::new(),
-            connectivity_summary,
+            // 该字段在下游 repair_terrain_connectivity() 中会被覆写，此处只需占位
+            connectivity_summary: ConnectivitySummary {
+                all_doors_connected: false,
+                walkable_tile_count: 0,
+                total_tile_count: 0,
+                connected_region_count: 0,
+            },
         })
     }
 }
