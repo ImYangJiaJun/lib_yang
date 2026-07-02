@@ -6,7 +6,26 @@ use crate::model::result::GenerationResult;
 
 use super::key::CacheKey;
 
-/// 简单的内存结果缓存。
+/// 简单的内存结果缓存（调用方自管工具类）。
+///
+/// `ResultCache` 与 `MapGenerator` 完全解耦：`generate()` 不会自动读写缓存。
+/// 调用方在需要"同 seed + config 跳过重复生成"的场景下自行管理缓存的
+/// 插入（`insert`）与查询（`get` / `contains`）。
+///
+/// # 典型用法
+///
+/// ```rust,ignore
+/// use yang_pcg::cache::{CacheKey, ResultCache};
+///
+/// let mut cache = ResultCache::new();
+/// let key = CacheKey::for_full_floor(&result);
+/// if let Some(cached) = cache.get(&key) {
+///     // 命中缓存，直接使用
+/// } else {
+///     // 未命中，调用 generator.generate(request) 后插入缓存
+///     cache.insert(key, result);
+/// }
+/// ```
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct ResultCache {
