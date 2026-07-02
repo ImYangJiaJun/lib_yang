@@ -144,7 +144,14 @@ impl TokenManager {
     pub async fn subject_min_iat(&self, sub: &str) -> Result<Option<u64>, BaseError> {
         match GlobalRedis::get(subject_min_iat_key(sub)).await? {
             // 解析失败视为无水位线，避免因脏数据误杀合法 Token
-            Some(raw) => Ok(raw.parse::<u64>().ok()),
+            Some(raw) => {
+                if let Ok(ts) = raw.parse::<u64>() {
+                    Ok(Some(ts))
+                } else {
+                    tracing::warn!(sub, raw, "水位线解析失败，视为无水位线");
+                    Ok(None)
+                }
+            }
             None => Ok(None),
         }
     }

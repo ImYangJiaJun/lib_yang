@@ -160,6 +160,14 @@ impl TokenManager {
         access_token_expiry: u64,
         refresh_token_expiry: u64,
     ) -> Self {
+        // AUTH-8: 白名单拦截非对称算法，避免构造后首次签发才失败
+        matches!(
+            algorithm,
+            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
+        )
+        .then_some(())
+        .expect("new_symmetric 仅支持 HMAC 算法 (HS256/HS384/HS512)，请使用 new_asymmetric 处理非对称算法");
+
         let mut jwt_header = Header::new(algorithm);
         jwt_header.typ = Some("JWT".to_string());
 

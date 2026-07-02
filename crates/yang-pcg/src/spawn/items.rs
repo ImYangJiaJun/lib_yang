@@ -116,18 +116,19 @@ fn build_spawn_points(
                 kind: SpawnKind::Item,
                 grid_pos: gp,
                 world_transform: Some(grid_point_to_transform(gp)),
-            metadata: SpawnMetadata {
-                spawn_tag: item_spawn_tag(room.room_type).to_string(),
-                rarity_tier: Some(sample_rarity_tier(
-                    &config.config.item_spawns.rarity_weights,
-                    rng,
-                )),
-                enemy_pool_tag: None,
-                encounter_id: None,
-                wave_id: None,
-                difficulty: Some(room.difficulty),
-                seed: rng.seed(),
-            },
+                metadata: SpawnMetadata {
+                    spawn_tag: item_spawn_tag(room.room_type).to_string(),
+                    rarity_tier: Some(sample_rarity_tier(
+                        &config.config.item_spawns.rarity_weights,
+                        rng,
+                    )),
+                    enemy_pool_tag: None,
+                    encounter_id: None,
+                    wave_id: None,
+                    difficulty: Some(room.difficulty),
+                    seed: rng.seed(),
+                },
+            }
         })
         .collect()
 }

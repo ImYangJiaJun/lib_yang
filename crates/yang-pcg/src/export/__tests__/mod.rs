@@ -303,6 +303,12 @@ fn test_import_json_schema_version_mismatch() {
         "错误信息应包含导入版本号: {}",
         err_msg
     );
+    // 验证错误码为 CorruptedData 而非 Export
+    assert_eq!(
+        err.error_code(),
+        "PCG-CORRUPTED-001",
+        "版本不兼容应返回 CorruptedData 错误码"
+    );
 }
 
 #[test]

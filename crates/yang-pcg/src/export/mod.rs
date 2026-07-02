@@ -108,7 +108,7 @@ pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
     let current_major = extract_major_version(CURRENT_SCHEMA_VERSION);
 
     if imported_major != current_major {
-        return Err(PcgError::export_with_format(
+        return Err(PcgError::corrupted_data_with_version(
             format!(
                 "schema_version 不兼容: 导入版本为 '{}'（主版本 {})，当前版本为 '{}'（主版本 {})",
                 result.metadata.schema_version,
@@ -117,7 +117,8 @@ pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
                 current_major.unwrap_or(0),
             ),
             "json",
-            None,
+            CURRENT_SCHEMA_VERSION,
+            &result.metadata.schema_version,
         ));
     }
 
