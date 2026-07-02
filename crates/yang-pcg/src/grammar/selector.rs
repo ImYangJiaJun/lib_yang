@@ -522,4 +522,98 @@ mod __tests__ {
         let err = result.unwrap_err();
         assert_eq!(err.error_code(), "PCG-CAPABILITY-001");
     }
+
+    #[test]
+    fn test_select_nan_weight_returns_err() {
+        // 验证需求 13.5：所有规则均为 NaN base_weight 时返回专属错误
+        // compute_adjusted_weight 会将 NaN 转为 0.0，因此必须所有规则都是 NaN
+        // 才能使 total_weight 为 0.0（<= 0）并进入 NaN 分支检测
+        let rules = vec![
+            GrammarRule {
+                name: "rule_nan_a".to_string(),
+                base_weight: f64::NAN,
+            },
+            GrammarRule {
+                name: "rule_nan_b".to_string(),
+                base_weight: f64::NAN,
+            },
+        ];
+        let context = GrammarContext::default();
+        let mut rng = StableRng::from_seed(42);
+        let selector = WeightedRuleSelector;
+
+        let result = selector.select(&rules, &context, &mut rng);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.error_code(), "PCG-CAPABILITY-001");
+        if let PcgError::CapabilityUnavailable { capability, .. } = err.as_ref() {
+            assert_eq!(capability, "grammar");
+        } else {
+            panic!("应返回 CapabilityUnavailable 错误");
+        }
+    }
+
+    #[test]
+    fn test_select_negative_weight_returns_err() {
+        // 验证需求 13.5：所有规则负权重返回 CapabilityUnavailable 错误
+        let rules = vec![
+            GrammarRule {
+                name: "rule_neg_a".to_string(),
+                base_weight: -1.0,
+            },
+            GrammarRule {
+                name: "rule_neg_b".to_string(),
+                base_weight: -5.0,
+            },
+        ];
+        let context = GrammarContext::default();
+        let mut rng = StableRng::from_seed(42);
+        let selector = WeightedRuleSelector;
+
+        let result = selector.select(&rules, &context, &mut rng);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.error_code(), "PCG-CAPABILITY-001");
+    }
+
+    #[test]
+    fn test_select_deterministic_with_fixed_seed() {
+        // 验证需求 13.4：固定 seed 两次 select 结果完全一致
+        let rules = vec![
+            GrammarRule {
+                name: "corridor_north".to_string(),
+                base_weight: 2.0,
+            },
+            GrammarRule {
+                name: "corridor_south".to_string(),
+                base_weight: 3.0,
+            },
+            GrammarRule {
+                name: "corridor_east".to_string(),
+                base_weight: 1.5,
+            },
+        ];
+        let context = GrammarContext {
+            facing: Some(CardinalDir::North),
+            corridor_length: Some(8),
+            ..Default::default()
+        };
+        let selector = WeightedRuleSelector;
+
+        // 第一轮：连续调用 5 次
+        let mut rng1 = StableRng::from_seed(99999);
+        let results1: Vec<usize> = (0..5)
+            .map(|_| selector.select(&rules, &context, &mut rng1).unwrap())
+            .collect();
+
+        // 第二轮：同 seed 再来 5 次
+        let mut rng2 = StableRng::from_seed(99999);
+        let results2: Vec<usize> = (0..5)
+            .map(|_| selector.select(&rules, &context, &mut rng2).unwrap())
+            .collect();
+
+        assert_eq!(results1, results2, "相同 seed 的多次选择序列应完全一致");
+    }
 }
