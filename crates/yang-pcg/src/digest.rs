@@ -162,6 +162,19 @@ impl std::fmt::Display for ConfigDigest {
     }
 }
 
+impl Serialize for ConfigDigest {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.hash)
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfigDigest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let hash = String::deserialize(deserializer)?;
+        Ok(Self::from_string(hash))
+    }
+}
+
 impl From<&GenerationConfig> for ConfigDigest {
     fn from(config: &GenerationConfig) -> Self {
         Self::from_config(config).expect("默认配置生成摘要不应失败")

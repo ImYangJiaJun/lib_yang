@@ -205,7 +205,7 @@ fn test_generation_result_full_json_roundtrip() {
             start_room: "room-0".to_string(),
             end_room: "room-1".to_string(),
             room_ids: vec!["room-1".to_string()],
-            purpose: crate::model::room::BranchPurpose::Reward,
+            purpose: BranchPurpose::Reward,
         }],
     };
 
@@ -445,7 +445,7 @@ fn test_generation_result_full_json_roundtrip() {
     assert_eq!(restored.topology.edges.len(), 1);
     assert_eq!(restored.topology.critical_path.len(), 2);
     assert_eq!(restored.topology.branches.len(), 1);
-    assert_eq!(restored.topology.branches[0].purpose, crate::model::room::BranchPurpose::Reward);
+    assert_eq!(restored.topology.branches[0].purpose, BranchPurpose::Reward);
 
     // 验证房间
     assert_eq!(restored.rooms.len(), 2);

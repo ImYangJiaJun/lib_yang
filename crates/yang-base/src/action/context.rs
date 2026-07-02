@@ -14,7 +14,7 @@ use crate::table::{TableConfig, TableQuery};
 use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;

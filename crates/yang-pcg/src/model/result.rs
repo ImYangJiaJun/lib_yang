@@ -2,6 +2,7 @@
 // 定义地图生成的输出结果
 
 use crate::debug::DebugBundle;
+use crate::digest::ConfigDigest;
 use crate::model::chunk::Chunk;
 use crate::model::room::{Corridor, DoorAnchor, Room, RoomGraph};
 use crate::model::spawn::SpawnPoint;
@@ -50,4 +51,14 @@ pub struct ResultMetadata {
     pub target_engine_version: Option<String>,
     /// 追踪标识(可选)
     pub trace_id: Option<String>,
+}
+
+impl ResultMetadata {
+    /// 返回类型化的配置摘要
+    ///
+    /// 将内部存储的 `String` 转换为 [`ConfigDigest`]，可直接调用
+    /// [`ConfigDigest::matches`] 等类型安全方法。
+    pub fn config_digest_typed(&self) -> ConfigDigest {
+        ConfigDigest::from_string(self.config_digest.clone())
+    }
 }

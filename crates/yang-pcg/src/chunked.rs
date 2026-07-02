@@ -35,8 +35,8 @@ pub struct TopologyResult {
     pub seed: u64,
     /// 配置摘要
     pub config_digest: String,
-    /// 归一化配置
-    pub normalized: NormalizedConfig,
+    /// 归一化配置（crate 内部访问；外部通过 [`config()`](Self::config) 获取）
+    pub(crate) normalized: NormalizedConfig,
     /// 拓扑图
     pub topology: RoomGraph,
     /// 布局输出（房间边界、门锚点、走廊）
