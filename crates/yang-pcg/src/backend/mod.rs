@@ -88,11 +88,80 @@ pub(crate) trait PipelineBackend: Send + Sync {
     ) -> PcgResult<()>;
 }
 
+/// 管线后端的静态派发枚举。
+///
+/// 新增 backend 时在此添加变体并在 `select_backend` 中按配置分派，
+/// 编排代码（generator / chunked）无需改动。
+pub(crate) enum Backend {
+    TopDown(topdown::TopDownBackend),
+}
+
+impl PipelineBackend for Backend {
+    fn solve_layout(
+        &self,
+        graph: &RoomGraph,
+        config: &NormalizedConfig,
+        rng: &mut StableRng,
+    ) -> PcgResult<LayoutOutput> {
+        match self {
+            Self::TopDown(b) => b.solve_layout(graph, config, rng),
+        }
+    }
+
+    fn generate_terrains(
+        &self,
+        rooms: &[Room],
+        door_anchors: &[DoorAnchor],
+        config: &NormalizedConfig,
+        rng: &mut StableRng,
+    ) -> PcgResult<Vec<Terrain>> {
+        match self {
+            Self::TopDown(b) => b.generate_terrains(rooms, door_anchors, config, rng),
+        }
+    }
+
+    fn generate_spawns(
+        &self,
+        rooms: &[Room],
+        terrains: &[Terrain],
+        config: &NormalizedConfig,
+        rng: &StableRng,
+    ) -> PcgResult<SpawnOutput> {
+        match self {
+            Self::TopDown(b) => b.generate_spawns(rooms, terrains, config, rng),
+        }
+    }
+
+    fn generate_spawns_with_debug(
+        &self,
+        rooms: &[Room],
+        terrains: &[Terrain],
+        config: &NormalizedConfig,
+        rng: &StableRng,
+    ) -> PcgResult<SpawnOutputWithDebug> {
+        match self {
+            Self::TopDown(b) => b.generate_spawns_with_debug(rooms, terrains, config, rng),
+        }
+    }
+
+    fn validate(
+        &self,
+        result: &GenerationResult,
+        config: &NormalizedConfig,
+        constraints: &[Constraint],
+        scope: ValidationScope,
+    ) -> PcgResult<()> {
+        match self {
+            Self::TopDown(b) => b.validate(result, config, constraints, scope),
+        }
+    }
+}
+
 /// 按配置选择 backend。
 ///
-/// 本迭代尚未引入 `MapKind`，故无条件返回 `TopDownBackend`；
+/// 本迭代尚未引入 `MapKind`，故无条件返回 `Backend::TopDown`；
 /// 下一迭代在此处按 `config.map_kind` 增加 `SidePlatformerBackend` 分支即可，
 /// 编排代码（generator / chunked）无需改动。
-pub(crate) fn select_backend(_config: &NormalizedConfig) -> Box<dyn PipelineBackend> {
-    Box::new(topdown::TopDownBackend)
+pub(crate) fn select_backend(_config: &NormalizedConfig) -> Backend {
+    Backend::TopDown(topdown::TopDownBackend)
 }

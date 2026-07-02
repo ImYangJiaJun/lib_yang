@@ -1,7 +1,7 @@
 // 核心生成器模块
 // 负责编排整个地图生成流程
 
-use crate::backend::{select_backend, ValidationScope};
+use crate::backend::{select_backend, PipelineBackend, ValidationScope};
 use crate::debug::{elapsed_ms, stage_stat, stage_stat_timed, DebugBundle, DebugChannels};
 use crate::digest::ConfigDigest;
 use crate::error::{PcgError, PcgResult};

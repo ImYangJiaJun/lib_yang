@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::backend::{select_backend, ValidationScope};
+use crate::backend::{select_backend, PipelineBackend, ValidationScope};
 use crate::config::NormalizedConfig;
 use crate::constraint;
 use crate::digest::ConfigDigest;
