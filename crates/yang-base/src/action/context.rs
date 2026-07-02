@@ -338,7 +338,7 @@ impl ActionContext {
     /// - `Err(BaseError::ParamInvalid)`: 参数存在但类型不匹配
     #[deprecated(note = "H-1 重构期间停用，将在 Task 6/7 后移除；请改用 extract_input")]
     #[allow(dead_code)]
-    pub fn param_optional_strict<T: DeserializeOwned>(
+    pub(crate) fn param_optional_strict<T: DeserializeOwned>(
         &self,
         key: &str,
     ) -> Result<Option<T>, BaseError> {

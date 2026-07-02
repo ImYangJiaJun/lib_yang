@@ -26,7 +26,7 @@ action/
 | Task | Location | Notes |
 |------|----------|-------|
 | Define custom action | `typed.rs` | 实现 `TypedHandler::handle`，声明关联类型 `Input`/`Output`；加 `#[derive(Action)]` 获得元信息 |
-| Extract params | `context.rs` | `param`, `param_optional`, `param_optional_strict`, `path_param`, `query_param`, `param_or` |
+| Extract params | `context.rs` | `param`, `param_optional`, `path_param`, `query_param`, `param_or`；（deprecated）`param_optional_strict` 仅 `pub(crate)` |
 | Current user/roles | `context.rs` | `User`, `has_permission`, `has_role`, `user_roles_slice` |
 | Global tools | `context.rs` | `GlobalTools` OnceLock singleton; optional `TokenManager` with `token` feature |
 | Request wrapper | `request.rs` | chain `header`, `query`, `path_param`; `token()` handles Bearer token |
@@ -99,7 +99,7 @@ pub trait DynAction: Send + Sync + 'static {
 
 ## CONVENTIONS
 - Keep action metadata Chinese-facing: display names/descriptions are user-visible.
-- Prefer `context.param_optional_strict` when type mismatch should be an error; `param_optional` silently returns `None` and logs a warning.
+- Prefer `context.extract_input`（强类型输入结构体）；`param_optional_strict` 已 deprecated 且降为 `pub(crate)`，仅保留给遗留测试。
 - Use `ApiResponse::success` for serializable Rust types and `success_value` only when data is already a `serde_json::Value`.
 - Initialize `GlobalTools` once before `ActionContext::new_with_global_tools`; repeated init returns `BaseError::ConfigError`.
 - Table-backed actions require `ActionContext::with_table_config` or `context.table_query()` fails with `TableConfigNotSet`.

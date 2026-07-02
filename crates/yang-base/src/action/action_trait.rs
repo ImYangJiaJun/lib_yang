@@ -112,3 +112,24 @@ impl Permission {
         &self.name
     }
 }
+
+impl std::fmt::Display for Permission {
+    /// 输出权限名称，等同于 [`Permission::name()`]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl From<&'static str> for Permission {
+    /// 从静态字符串创建权限（零拷贝，等同于 [`Permission::from_static`]）
+    fn from(value: &'static str) -> Self {
+        Self::from_static(value)
+    }
+}
+
+impl From<String> for Permission {
+    /// 从动态字符串创建权限（等同于 [`Permission::new`]）
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}

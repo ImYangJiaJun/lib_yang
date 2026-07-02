@@ -104,7 +104,8 @@ pub fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
 
     // 检查是否所有房间都被访问到
     let all_room_ids: HashSet<&str> = graph.nodes.iter().map(|r| r.id.as_str()).collect();
-    let unreachable: Vec<&str> = all_room_ids.difference(&visited).copied().collect();
+    let mut unreachable: Vec<&str> = all_room_ids.difference(&visited).copied().collect();
+    unreachable.sort();
 
     if unreachable.is_empty() {
         Ok(())

@@ -112,6 +112,13 @@ pub struct TokenManager {
     /// 在构造时由 [`build_validation`] 生成，[`TokenManager::verify_token`]
     /// 直接复用，避免每次验证重复分配算法白名单与声明集合（token-10 优化）。
     validation: Validation,
+
+    /// 预构建的 JWT Header
+    ///
+    /// 在构造时一次性设置 `typ: "JWT"` 与对应算法，生成 Token 时直接
+    /// 传引用，避免每次 `generate_*` 都重新分配 Header 与 `"JWT"` String
+    /// （PERF-11 优化）。
+    jwt_header: Header,
 }
 
 impl TokenManager {
@@ -153,6 +160,9 @@ impl TokenManager {
         access_token_expiry: u64,
         refresh_token_expiry: u64,
     ) -> Self {
+        let mut jwt_header = Header::new(algorithm);
+        jwt_header.typ = Some("JWT".to_string());
+
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),
@@ -162,6 +172,7 @@ impl TokenManager {
             audience,
             access_token_expiry,
             refresh_token_expiry,
+            jwt_header,
         }
     }
 
@@ -216,6 +227,9 @@ impl TokenManager {
         let decoding_key = DecodingKey::from_rsa_pem(public_key.as_bytes())
             .map_err(|e| BaseError::TokenKeyInvalid(format!("公钥无效: {}", e)))?;
 
+        let mut jwt_header = Header::new(algorithm);
+        jwt_header.typ = Some("JWT".to_string());
+
         Ok(Self {
             encoding_key,
             decoding_key,
@@ -225,6 +239,7 @@ impl TokenManager {
             audience,
             access_token_expiry,
             refresh_token_expiry,
+            jwt_header,
         })
     }
 
@@ -256,25 +271,8 @@ impl TokenManager {
         subject: &str,
         custom_claims: serde_json::Value,
     ) -> Result<String, BaseError> {
-        // 使用辅助函数获取时间戳，避免时钟异常时 panic
         let now = current_unix_timestamp()?;
-
-        let claims = TokenClaims {
-            iss: self.issuer.clone(),
-            sub: subject.to_string(),
-            aud: self.audience.clone(),
-            exp: now + self.access_token_expiry,
-            nbf: now,
-            iat: now,
-            jti: uuid::Uuid::new_v4().to_string(),
-            token_type: crate::token::TokenType::Access,
-            custom: custom_claims,
-        };
-
-        let mut header = Header::new(self.algorithm);
-        header.typ = Some("JWT".to_string());
-
-        encode(&header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
+        self.generate_access_token_at(subject, custom_claims, now)
     }
 
     /// 生成 Refresh Token
