@@ -12,7 +12,8 @@
 //!
 //! | 变量 | 含义 | 默认 |
 //! |------|------|------|
-//! | `YANG_DATABASE_URL` | MySQL 连接串 | 无（缺失则 `database_url` 为 `None`） |
+//! | `YANG_MYSQL_URL` | MySQL 连接串 | 无（缺失则 `mysql_url` 为 `None`） |
+//! | `YANG_DATABASE_URL` | MySQL 连接串（deprecated，请改用 `YANG_MYSQL_URL`） | 同上 |
 //! | `YANG_REDIS_URL` | Redis 连接串 | 无 |
 //! | `YANG_DB_MAX_CONNECTIONS` | 最大连接数 | 由 `DatabaseConfig::default` 决定 |
 //! | `YANG_DB_MIN_CONNECTIONS` | 最小（保活）连接数 | 同上 |
@@ -29,8 +30,8 @@ use std::env;
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct EngineConfig {
-    /// MySQL 连接串（`YANG_DATABASE_URL`，缺失为 `None`）。
-    pub database_url: Option<String>,
+    /// MySQL 连接串（`YANG_MYSQL_URL`，兼容 deprecated `YANG_DATABASE_URL`，缺失为 `None`）。
+    pub mysql_url: Option<String>,
     /// Redis 连接串（`YANG_REDIS_URL`，缺失为 `None`）。
     pub redis_url: Option<String>,
     /// 数据库连接池配置（由 `YANG_DB_*` 覆盖 `DatabaseConfig::default`）。
@@ -80,12 +81,26 @@ impl EngineConfig {
     ///
     /// 缺失的变量回退到默认值；存在但解析失败返回 [`BaseError::ConfigError`]。
     pub fn from_env() -> Result<Self, BaseError> {
-        let database_url = match env::var("YANG_DATABASE_URL") {
+        // 优先 YANG_MYSQL_URL；兼容 deprecated YANG_DATABASE_URL
+        let mysql_url = match env::var("YANG_MYSQL_URL") {
             Ok(v) => Some(v),
-            Err(env::VarError::NotPresent) => None,
+            Err(env::VarError::NotPresent) => match env::var("YANG_DATABASE_URL") {
+                Ok(v) => {
+                    eprintln!(
+                        "[yang-base] 环境变量 YANG_DATABASE_URL 已 deprecated，请改用 YANG_MYSQL_URL"
+                    );
+                    Some(v)
+                }
+                Err(env::VarError::NotPresent) => None,
+                Err(env::VarError::NotUnicode(_)) => {
+                    return Err(BaseError::ConfigError(
+                        "环境变量 YANG_DATABASE_URL 含非法 UTF-8".to_string(),
+                    ))
+                }
+            },
             Err(env::VarError::NotUnicode(_)) => {
                 return Err(BaseError::ConfigError(
-                    "环境变量 YANG_DATABASE_URL 含非法 UTF-8".to_string(),
+                    "环境变量 YANG_MYSQL_URL 含非法 UTF-8".to_string(),
                 ))
             }
         };
@@ -128,7 +143,7 @@ impl EngineConfig {
         };
 
         Ok(Self {
-            database_url,
+            mysql_url,
             redis_url,
             #[cfg(feature = "mysql")]
             database,

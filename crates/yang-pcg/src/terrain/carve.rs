@@ -9,6 +9,26 @@ use crate::rng::StableRng;
 
 use super::grid::to_local;
 
+/// 过滤属于指定房间的门锚点，转换为局部坐标，标记为 `Doorway`。
+///
+/// 返回标记后的局部坐标列表，供后续连通性修复使用。
+pub(crate) fn mark_doorways(
+    tiles: &mut Grid2D<TileKind>,
+    anchors: &[DoorAnchor],
+    room_id: &str,
+    origin: GridPoint,
+) -> Vec<GridPoint> {
+    let doorway_locals: Vec<GridPoint> = anchors
+        .iter()
+        .filter(|a| a.room_id == room_id)
+        .map(|a| to_local(origin, a.grid_pos))
+        .collect();
+    for pos in &doorway_locals {
+        tiles.set(pos.x, pos.y, TileKind::Doorway);
+    }
+    doorway_locals
+}
+
 /// 从房间中提取边界信息并校验尺寸。
 ///
 /// 返回 `(bounds, width, height)`，房间无边界或尺寸为零时返回错误。
@@ -66,14 +86,7 @@ pub fn carve_room_terrain_with_config(
     let (bounds, width, height) = extract_room_bounds(room)?;
     let mut tiles = init_room_grid(width, height);
 
-    let room_anchors: Vec<&DoorAnchor> = door_anchors
-        .iter()
-        .filter(|anchor| anchor.room_id == room.id)
-        .collect();
-    for anchor in room_anchors {
-        let local = to_local(bounds.min, anchor.grid_pos);
-        tiles.set(local.x, local.y, TileKind::Doorway);
-    }
+    mark_doorways(&mut tiles, door_anchors, &room.id, bounds.min);
 
     let reserved_zones = build_reserved_zones(room, width, height);
     mark_reserved_zones(&mut tiles, &reserved_zones);

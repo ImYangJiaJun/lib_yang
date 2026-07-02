@@ -43,12 +43,7 @@ impl TerrainStrategy for OpenArenaStrategy {
         let mut tiles = init_room_grid(width, height);
 
         // 标记门口瓦片
-        let room_anchors: Vec<&DoorAnchor> =
-            anchors.iter().filter(|a| a.room_id == room.id).collect();
-        for anchor in &room_anchors {
-            let local = to_local(bounds.min, anchor.grid_pos);
-            tiles.set(local.x, local.y, TileKind::Doorway);
-        }
+        let doorway_locals = super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
 
         // 在边缘区域稀疏放置障碍物
         // 边缘区域定义为距离墙体 1-2 格的区域
@@ -85,7 +80,7 @@ impl TerrainStrategy for OpenArenaStrategy {
         }
 
         // 确保门口之间连通（通过 BFS 验证，如果不连通则移除阻塞障碍物）
-        ensure_doorway_connectivity(&mut tiles, &room_anchors, bounds.min);
+        ensure_doorway_connectivity(&mut tiles, &doorway_locals);
 
         Ok(Terrain {
             room_id: room.id.clone(),
@@ -108,20 +103,13 @@ impl TerrainStrategy for OpenArenaStrategy {
 /// 如果门口之间不连通，逐步移除障碍物直到连通
 fn ensure_doorway_connectivity(
     tiles: &mut Grid2D<TileKind>,
-    anchors: &[&DoorAnchor],
-    origin: crate::model::geometry::GridPoint,
+    doorways: &[crate::model::geometry::GridPoint],
 ) {
     use std::collections::{HashSet, VecDeque};
 
-    if anchors.len() < 2 {
+    if doorways.len() < 2 {
         return;
     }
-
-    // 获取所有门口的局部坐标
-    let doorways: Vec<crate::model::geometry::GridPoint> = anchors
-        .iter()
-        .map(|a| to_local(origin, a.grid_pos))
-        .collect();
 
     // 从第一个门口开始 BFS，检查是否能到达所有其他门口
     let start = doorways[0];

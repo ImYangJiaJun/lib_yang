@@ -50,6 +50,7 @@ use tracing::Instrument;
 /// - `table_config`: 表配置（可选）
 /// - `actions`: Action 注册表
 /// - `default_permissions`: 默认权限要求
+#[must_use = "builder 返回新实例，忽略将丢失配置"]
 pub struct ModuleRouter {
     /// 模块名称
     module_name: String,
