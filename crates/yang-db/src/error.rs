@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_error_display_chinese() {
-        // 测试所有错误类型的中文消息
+        // 测试所有 19 个错误变体的中文消息
         let errors = vec![
             DbError::ConnectionError("测试".to_string()),
             DbError::QueryError("测试".to_string()),
@@ -266,6 +266,14 @@ mod tests {
             DbError::TransactionError("测试".to_string()),
             DbError::TableNotFound("测试".to_string()),
             DbError::MissingWhereClause,
+            DbError::RedisConnectionError("测试".to_string()),
+            DbError::RedisCommandError("测试".to_string()),
+            DbError::RedisPoolError("测试".to_string()),
+            DbError::RedisTypeConversionError("测试".to_string()),
+            DbError::RedisTimeoutError("测试".to_string()),
+            DbError::MissingGroupByClause,
+            DbError::UnsupportedOperator("测试".to_string()),
+            DbError::InvalidArgument("测试".to_string()),
             DbError::Unknown("测试".to_string()),
         ];
 
@@ -428,7 +436,7 @@ mod tests {
         assert!(has_chinese, "错误消息应该包含中文: {}", msg);
     }
 
-    /// DB-7：category() 覆盖全部 18 个变体
+    /// DB-7：category() 覆盖全部 19 个变体
     #[test]
     fn test_db_error_category_coverage() {
         use super::DbErrorCategory as C;
@@ -450,12 +458,16 @@ mod tests {
         assert_eq!(DbError::ConstraintError("c".into()).category(), C::Conflict);
         // NotFound：表不存在
         assert_eq!(DbError::TableNotFound("t".into()).category(), C::NotFound);
-        // Client：语法/缺子句/不支持操作符/类型转换/(反)序列化/Redis类型转换
+        // Client：语法/缺子句/不支持操作符/参数非法/类型转换/(反)序列化/Redis类型转换
         assert_eq!(DbError::SqlSyntaxError("s".into()).category(), C::Client);
         assert_eq!(DbError::MissingWhereClause.category(), C::Client);
         assert_eq!(DbError::MissingGroupByClause.category(), C::Client);
         assert_eq!(
             DbError::UnsupportedOperator("o".into()).category(),
+            C::Client
+        );
+        assert_eq!(
+            DbError::InvalidArgument("a".into()).category(),
             C::Client
         );
         assert_eq!(
@@ -491,7 +503,7 @@ mod tests {
         assert!(!DbError::ConstraintError("c".into()).is_retryable());
     }
 
-    /// DB-7：code() 唯一性（除 Unknown 外均为独立码段）
+    /// DB-7：code() 唯一性（19 个变体均为独立码段）
     #[test]
     fn test_db_error_code_unique() {
         let codes: Vec<u32> = vec![
@@ -512,12 +524,13 @@ mod tests {
             DbError::RedisTimeoutError("".into()).code(),
             DbError::MissingGroupByClause.code(),
             DbError::UnsupportedOperator("".into()).code(),
+            DbError::InvalidArgument("".into()).code(),
             DbError::Unknown("".into()).code(),
         ];
         let mut sorted = codes.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(codes.len(), sorted.len(), "18 个变体的 code 应全部唯一");
+        assert_eq!(codes.len(), sorted.len(), "19 个变体的 code 应全部唯一");
         // 所有码在 8xxxxx 段
         for &c in &codes {
             assert!(c >= 800000 && c < 900000, "code {} 不在 8xxxxx 段", c);

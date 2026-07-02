@@ -292,25 +292,8 @@ impl TokenManager {
     /// let refresh_token = manager.generate_refresh_token("user_123")?;
     /// ```
     pub fn generate_refresh_token(&self, subject: &str) -> Result<String, BaseError> {
-        // 使用辅助函数获取时间戳，避免时钟异常时 panic
         let now = current_unix_timestamp()?;
-
-        let claims = TokenClaims {
-            iss: self.issuer.clone(),
-            sub: subject.to_string(),
-            aud: self.audience.clone(),
-            exp: now + self.refresh_token_expiry,
-            nbf: now,
-            iat: now,
-            jti: uuid::Uuid::new_v4().to_string(),
-            token_type: crate::token::TokenType::Refresh,
-            custom: serde_json::Value::Null,
-        };
-
-        let mut header = Header::new(self.algorithm);
-        header.typ = Some("JWT".to_string());
-
-        encode(&header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
+        self.generate_refresh_token_at(subject, now)
     }
 
     /// 生成 Token 对（Access Token + Refresh Token）
@@ -338,10 +321,73 @@ impl TokenManager {
         subject: &str,
         custom_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
-        let access_token = self.generate_access_token(subject, custom_claims)?;
-        let refresh_token = self.generate_refresh_token(subject)?;
+        let now = current_unix_timestamp()?;
+        self.generate_token_pair_at(subject, custom_claims, now)
+    }
+
+    /// 使用预取时间戳生成 Token 对（内部方法，PERF-10 优化）。
+    ///
+    /// 与 [`generate_token_pair`] 功能相同，但接受外部传入的 `now` 时间戳，
+    /// 避免 access/refresh 各调一次 `current_unix_timestamp()` 系统调用。
+    ///
+    /// 供 [`rotate_refresh_token_from_claims`] 等已持有时间戳的调用方使用。
+    pub(crate) fn generate_token_pair_at(
+        &self,
+        subject: &str,
+        custom_claims: serde_json::Value,
+        now: u64,
+    ) -> Result<(String, String), BaseError> {
+        let access_token = self.generate_access_token_at(subject, custom_claims, now)?;
+        let refresh_token = self.generate_refresh_token_at(subject, now)?;
 
         Ok((access_token, refresh_token))
+    }
+
+    /// 使用预取时间戳生成 Access Token（内部方法，PERF-10 优化）。
+    ///
+    /// 与 [`generate_access_token`] 功能相同，但接受外部传入的 `now` 时间戳。
+    fn generate_access_token_at(
+        &self,
+        subject: &str,
+        custom_claims: serde_json::Value,
+        now: u64,
+    ) -> Result<String, BaseError> {
+        let claims = TokenClaims {
+            iss: self.issuer.clone(),
+            sub: subject.to_string(),
+            aud: self.audience.clone(),
+            exp: now + self.access_token_expiry,
+            nbf: now,
+            iat: now,
+            jti: uuid::Uuid::new_v4().to_string(),
+            token_type: crate::token::TokenType::Access,
+            custom: custom_claims,
+        };
+
+        encode(&self.jwt_header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
+    }
+
+    /// 使用预取时间戳生成 Refresh Token（内部方法，PERF-10 优化）。
+    ///
+    /// 与 [`generate_refresh_token`] 功能相同，但接受外部传入的 `now` 时间戳。
+    fn generate_refresh_token_at(
+        &self,
+        subject: &str,
+        now: u64,
+    ) -> Result<String, BaseError> {
+        let claims = TokenClaims {
+            iss: self.issuer.clone(),
+            sub: subject.to_string(),
+            aud: self.audience.clone(),
+            exp: now + self.refresh_token_expiry,
+            nbf: now,
+            iat: now,
+            jti: uuid::Uuid::new_v4().to_string(),
+            token_type: crate::token::TokenType::Refresh,
+            custom: serde_json::Value::Null,
+        };
+
+        encode(&self.jwt_header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 返回 Refresh Token 的有效期（秒）。
@@ -604,7 +650,8 @@ impl TokenManager {
         }
 
         // 3. 以原 subject 与新的自定义声明签发新的 Token 对
-        self.generate_token_pair(&old_claims.sub, custom_claims)
+        //    复用已有的 now 时间戳，避免重复系统调用（PERF-10）
+        self.generate_token_pair_at(&old_claims.sub, custom_claims, now)
     }
 }
 

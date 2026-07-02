@@ -168,7 +168,12 @@ fn connect_doorways_to_maze(
     width: u32,
     height: u32,
 ) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    // OPT-P-09: 循环外预分配 BFS 缓冲区，每轮 clear 复用
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+    let mut parent: HashMap<GridPoint, GridPoint> = HashMap::new();
 
     for doorway in doorways {
         // 检查门口是否已经与迷宫连通
@@ -189,10 +194,9 @@ fn connect_doorways_to_maze(
         }
 
         // BFS 找到最近的地板瓦片，沿途打通
-        let mut queue = VecDeque::new();
-        let mut visited = HashSet::new();
-        let mut parent: std::collections::HashMap<GridPoint, GridPoint> =
-            std::collections::HashMap::new();
+        queue.clear();
+        visited.clear();
+        parent.clear();
 
         queue.push_back(*doorway);
         visited.insert(*doorway);

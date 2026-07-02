@@ -8,7 +8,7 @@ use crate::model::room::{DoorAnchor, Room};
 use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
-use super::carve::extract_room_bounds;
+use super::carve::{extract_room_bounds, init_room_grid};
 use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
@@ -125,7 +125,8 @@ fn initialize_random_grid(
     density: f32,
     rng: &mut StableRng,
 ) -> Grid2D<TileKind> {
-    let mut tiles = Grid2D::new(width, height, TileKind::Floor);
+    // OPT-P-13: 使用 init_room_grid 单遍初始化（Wall 边框 + Floor 内部）
+    let mut tiles = init_room_grid(width, height);
 
     // 初始填充概率（密度越高，初始墙体越多）
     let fill_probability = (density * 0.8 + 0.2) as f64;
@@ -133,15 +134,6 @@ fn initialize_random_grid(
     for y in 1..height as i32 - 1 {
         for x in 1..width as i32 - 1 {
             if rng.gen_bool_with_probability(fill_probability) {
-                tiles.set(x, y, TileKind::Wall);
-            }
-        }
-    }
-
-    // 边框始终为墙
-    for y in 0..height as i32 {
-        for x in 0..width as i32 {
-            if x == 0 || y == 0 || x == width as i32 - 1 || y == height as i32 - 1 {
                 tiles.set(x, y, TileKind::Wall);
             }
         }
@@ -241,13 +233,28 @@ fn ensure_organic_connectivity(
     }
 
     // 对不可达的门口，打通路径
+    // OPT-P-09: 预分配 BFS 缓冲区，跨门口复用
+    let mut bfs_queue = VecDeque::new();
+    let mut bfs_visited = HashSet::new();
+    let mut bfs_parent: std::collections::HashMap<GridPoint, GridPoint> =
+        std::collections::HashMap::new();
+
     for doorway in doorways.iter().skip(1) {
         if visited.contains(doorway) {
             continue;
         }
 
         // 使用 A* 风格的路径打通（优先选择已有地板的方向）
-        carve_path_to_reachable(tiles, *doorway, &visited, width, height);
+        carve_path_to_reachable(
+            tiles,
+            *doorway,
+            &visited,
+            width,
+            height,
+            &mut bfs_queue,
+            &mut bfs_visited,
+            &mut bfs_parent,
+        );
 
         // 更新可达集合
         let mut new_queue = VecDeque::new();
@@ -280,19 +287,22 @@ fn ensure_organic_connectivity(
 }
 
 /// 从不可达门口向可达区域打通路径
+///
+/// BFS 缓冲区由调用方预分配并跨门口复用（OPT-P-09）。
 fn carve_path_to_reachable(
     tiles: &mut Grid2D<TileKind>,
     start: GridPoint,
     reachable: &std::collections::HashSet<GridPoint>,
     width: u32,
     height: u32,
+    queue: &mut std::collections::VecDeque<GridPoint>,
+    visited: &mut std::collections::HashSet<GridPoint>,
+    parent: &mut std::collections::HashMap<GridPoint, GridPoint>,
 ) {
-    use std::collections::{HashMap, HashSet, VecDeque};
-
     // BFS 搜索最近的可达瓦片
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-    let mut parent: HashMap<GridPoint, GridPoint> = HashMap::new();
+    queue.clear();
+    visited.clear();
+    parent.clear();
 
     queue.push_back(start);
     visited.insert(start);
