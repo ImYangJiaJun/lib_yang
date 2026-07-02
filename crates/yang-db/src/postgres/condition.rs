@@ -175,109 +175,120 @@ fn safe_quote_identifier(field: &str) -> String {
     })
 }
 
-/// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
+/// 将消费版本的条件直接写入 SQL 字符串，避免 And/Or 分支的中间 Vec 分配
 ///
-/// 与 MySQL 后端不同，本函数生成 PostgreSQL 风格的编号占位符 `$N`，
-/// 编号由 `params` 当前长度推导（见 [`push_placeholder`]）。这意味着调用方
-/// 在生成 WHERE 之前若已压入参数（如 UPDATE 的 SET 子句），编号会自动接续。
-///
-/// # 参数
-/// - `condition`: 要消费的条件（owned）
-/// - `params`: 用于收集参数的可变向量
-///
-/// # 返回
-/// - SQL 字符串片段
-pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
+/// 与 [`condition_to_sql`] 的借用版本不同，本函数消费传入的 `Condition`，
+/// 对堆分配类型直接 push 到 params 中，无需 clone。
+/// And/Or 分支直接写入 `out`，消除了 `Vec<String>` 中间分配（PERF-8）。
+/// In 分支直接逐个生成 `$N` 占位符，消除了 `Vec<String>` 中间收集（PERF-8）。
+fn write_condition_to_sql_owned(
+    condition: Condition,
+    out: &mut String,
+    params: &mut Vec<SqlValue>,
+) {
     match condition {
         Condition::Eq(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} = {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} = ${}", safe_quote_identifier(&field), idx);
         }
         Condition::Ne(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} != {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} != ${}", safe_quote_identifier(&field), idx);
         }
         Condition::Gt(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} > {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} > ${}", safe_quote_identifier(&field), idx);
         }
         Condition::Lt(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} < {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} < ${}", safe_quote_identifier(&field), idx);
         }
         Condition::Gte(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} >= {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} >= ${}", safe_quote_identifier(&field), idx);
         }
         Condition::Lte(field, value) => {
-            let ph = push_placeholder(params, value);
-            format!("{} <= {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, value);
+            *out += &format!("{} <= ${}", safe_quote_identifier(&field), idx);
         }
         Condition::In(field, values) => {
             if values.is_empty() {
-                // IN 空列表总是返回 false
-                return "1 = 0".to_string();
+                out.push_str("1 = 0");
+                return;
             }
-            // 逐个压入并生成对应编号占位符，保证编号连续且与绑定顺序一致
-            let placeholders: Vec<String> = values
-                .into_iter()
-                .map(|v| push_placeholder(params, v))
-                .collect();
-            format!(
-                "{} IN ({})",
-                safe_quote_identifier(&field),
-                placeholders.join(", ")
-            )
+            *out += &format!("{} IN (", safe_quote_identifier(&field));
+            for (i, v) in values.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let idx = push_placeholder(params, v);
+                *out += &format!("${}", idx);
+            }
+            out.push(')');
         }
         Condition::Between(field, start, end) => {
-            let ph_start = push_placeholder(params, start);
-            let ph_end = push_placeholder(params, end);
-            format!(
-                "{} BETWEEN {} AND {}",
+            let idx_start = push_placeholder(params, start);
+            let idx_end = push_placeholder(params, end);
+            *out += &format!(
+                "{} BETWEEN ${} AND ${}",
                 safe_quote_identifier(&field),
-                ph_start,
-                ph_end
-            )
+                idx_start,
+                idx_end
+            );
         }
         Condition::Like(field, pattern) => {
-            let ph = push_placeholder(params, SqlValue::String(pattern));
-            format!("{} LIKE {}", safe_quote_identifier(&field), ph)
+            let idx = push_placeholder(params, SqlValue::String(pattern));
+            *out += &format!("{} LIKE ${}", safe_quote_identifier(&field), idx);
         }
-        Condition::IsNull(field) => format!("{} IS NULL", safe_quote_identifier(&field)),
-        Condition::IsNotNull(field) => format!("{} IS NOT NULL", safe_quote_identifier(&field)),
+        Condition::IsNull(field) => {
+            *out += &format!("{} IS NULL", safe_quote_identifier(&field));
+        }
+        Condition::IsNotNull(field) => {
+            *out += &format!("{} IS NOT NULL", safe_quote_identifier(&field));
+        }
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
-                return "1 = 1".to_string();
+                out.push_str("1 = 1");
+                return;
             }
             if conditions.len() == 1 {
-                // 只有一个条件时，直接递归处理，避免多余括号
-                // remove(0) 在 len == 1 时安全，不会 panic
-                return condition_to_sql_owned(conditions.remove(0), params);
+                write_condition_to_sql_owned(conditions.remove(0), out, params);
+                return;
             }
-            // AND 条件需要括号以确保优先级，递归调用自身消费子条件
-            let parts: Vec<String> = conditions
-                .into_iter()
-                .map(|c| condition_to_sql_owned(c, params))
-                .collect();
-            format!("({})", parts.join(" AND "))
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" AND ");
+                }
+                write_condition_to_sql_owned(c, out, params);
+            }
+            out.push(')');
         }
         Condition::Or(mut conditions) => {
             if conditions.is_empty() {
-                return "1 = 0".to_string();
+                out.push_str("1 = 0");
+                return;
             }
             if conditions.len() == 1 {
-                // 只有一个条件时，直接递归处理，避免多余括号
-                // remove(0) 在 len == 1 时安全，不会 panic
-                return condition_to_sql_owned(conditions.remove(0), params);
+                write_condition_to_sql_owned(conditions.remove(0), out, params);
+                return;
             }
-            // OR 条件需要括号，递归调用自身消费子条件
-            let parts: Vec<String> = conditions
-                .into_iter()
-                .map(|c| condition_to_sql_owned(c, params))
-                .collect();
-            format!("({})", parts.join(" OR "))
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" OR ");
+                }
+                write_condition_to_sql_owned(c, out, params);
+            }
+            out.push(')');
         }
     }
+}
+
+pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
+    let mut out = String::new();
+    write_condition_to_sql_owned(condition, &mut out, params);
+    out
 }
 
 #[cfg(test)]
