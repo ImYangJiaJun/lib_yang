@@ -122,12 +122,14 @@ fn default_terrain_config() -> TerrainConfig {
 
 /// 验证地形连通性：所有门口瓦片通过可通行瓦片互相连通
 fn assert_doorway_connectivity(terrain: &crate::model::terrain::Terrain, strategy_name: &str) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     // 收集所有门口位置
+    let w = terrain.grid_size.width;
+    let h = terrain.grid_size.height;
     let mut doorways = Vec::new();
-    for y in 0..terrain.grid_size.height as i32 {
-        for x in 0..terrain.grid_size.width as i32 {
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
             if terrain.tiles.get(x, y).copied() == Some(TileKind::Doorway) {
                 doorways.push(GridPoint { x, y });
             }
@@ -139,25 +141,30 @@ fn assert_doorway_connectivity(terrain: &crate::model::terrain::Terrain, strateg
         return;
     }
 
+    // OPT-P-03: 平坦 Vec<bool> 位图替代 HashSet
     // 从第一个门口 BFS，验证所有门口可达
+    let size = (w * h) as usize;
     let start = doorways[0];
-    let mut visited = HashSet::new();
+    let mut visited = vec![false; size];
     let mut queue = VecDeque::new();
     queue.push_back(start);
-    visited.insert(start);
+    visited[(start.y as u32 * w + start.x as u32) as usize] = true;
 
     while let Some(current) = queue.pop_front() {
         for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let nx = current.x + dx;
             let ny = current.y + dy;
-            let neighbor = GridPoint { x: nx, y: ny };
-            if visited.contains(&neighbor) {
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
+            let ni = (ny as u32 * w + nx as u32) as usize;
+            if visited[ni] {
                 continue;
             }
             if let Some(tile) = terrain.tiles.get(nx, ny).copied() {
                 if is_walkable(tile) {
-                    visited.insert(neighbor);
-                    queue.push_back(neighbor);
+                    visited[ni] = true;
+                    queue.push_back(GridPoint { x: nx, y: ny });
                 }
             }
         }
@@ -165,7 +172,7 @@ fn assert_doorway_connectivity(terrain: &crate::model::terrain::Terrain, strateg
 
     for (i, doorway) in doorways.iter().enumerate() {
         assert!(
-            visited.contains(doorway),
+            visited[(doorway.y as u32 * w + doorway.x as u32) as usize],
             "[{}] 门口 {} (位置 {:?}) 不可达，从门口 0 ({:?}) 出发无法到达",
             strategy_name,
             i,

@@ -104,38 +104,46 @@ fn ensure_doorway_connectivity(
     tiles: &mut Grid2D<TileKind>,
     doorways: &[crate::model::geometry::GridPoint],
 ) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     if doorways.len() < 2 {
         return;
     }
 
+    let w = tiles.width;
+    let h = tiles.height;
+    let size = (w * h) as usize;
+
+    // OPT-P-03: 平坦 Vec<bool> 位图替代 HashSet
     // 从第一个门口开始 BFS，检查是否能到达所有其他门口
     let start = doorways[0];
-    let mut visited = HashSet::new();
+    let mut visited = vec![false; size];
     let mut queue = VecDeque::new();
     queue.push_back(start);
-    visited.insert(start);
+    visited[(start.y as u32 * w + start.x as u32) as usize] = true;
 
     while let Some(current) = queue.pop_front() {
         for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let nx = current.x + dx;
             let ny = current.y + dy;
-            let neighbor = crate::model::geometry::GridPoint { x: nx, y: ny };
-            if visited.contains(&neighbor) {
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
+            let ni = (ny as u32 * w + nx as u32) as usize;
+            if visited[ni] {
                 continue;
             }
             if let Some(tile) = tiles.get(nx, ny).copied() {
                 if super::grid::is_walkable(tile) {
-                    visited.insert(neighbor);
-                    queue.push_back(neighbor);
+                    visited[ni] = true;
+                    queue.push_back(crate::model::geometry::GridPoint { x: nx, y: ny });
                 }
             }
         }
     }
 
     // 检查是否所有门口都可达
-    let all_reachable = doorways.iter().all(|d| visited.contains(d));
+    let all_reachable = doorways.iter().all(|d| visited[(d.y as u32 * w + d.x as u32) as usize]);
     if all_reachable {
         return;
     }
