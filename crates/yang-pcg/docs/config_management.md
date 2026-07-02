@@ -95,7 +95,7 @@ let base_config = GenerationConfig::default();
 let mut override_config = GenerationConfig::default();
 override_config.room_count = RangeU16 { min: 20, max: 30 };
 
-let merged = base_config.merge(&override_config);
+let merged = base_config.override_with(override_config);
 ```
 
 ### 5. 配置摘要

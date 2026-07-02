@@ -859,7 +859,7 @@ mod tests {
             ..Default::default()
         };
 
-        let merged = base.merge(&override_config);
+        let merged = base.override_with(override_config);
 
         assert_eq!(merged.room_count.min, 15);
         assert_eq!(merged.room_count.max, 25);
