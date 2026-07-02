@@ -73,8 +73,17 @@ pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
 /// 从 JSON 字符串重建生成结果
 ///
 /// 将 JSON 字符串反序列化为 `GenerationResult`，并进行基本完整性校验：
-/// - 检查 `schema_version` 的主版本号是否与当前版本兼容
-/// - 主版本号不一致时返回错误
+/// - 检查 `schema_version` 的主版本号是否与当前版本兼容（不兼容则返回错误）
+/// - 检查 `algorithm_version` 的主版本号是否与当前 crate 版本一致（不一致则发出警告）
+///
+/// # 版本兼容矩阵
+///
+/// | 字段 | 主版本匹配 | 次/修订版本不同 | 行为 |
+/// |---|---|---|---|
+/// | `schema_version` | 通过 | 通过 | 正常导入 |
+/// | `schema_version` | **不匹配** | — | **返回错误**（硬不兼容） |
+/// | `algorithm_version` | 通过 | 通过 | 正常导入，无警告 |
+/// | `algorithm_version` | **不匹配** | — | 正常导入，**返回警告**（输出可能不同但结构兼容） |
 ///
 /// # 参数
 ///
@@ -82,7 +91,8 @@ pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
 ///
 /// # 返回值
 ///
-/// 成功时返回重建的 `GenerationResult`，失败时返回导出错误。
+/// 成功时返回 `(GenerationResult, Vec<String>)`，其中第二个元素为警告列表（可能为空）。
+/// 失败时返回导出错误。
 ///
 /// # 错误情况
 ///
@@ -95,10 +105,13 @@ pub fn export_json_compact(result: &GenerationResult) -> PcgResult<String> {
 /// use yang_pcg::export::import_json;
 ///
 /// let json = std::fs::read_to_string("output.json")?;
-/// let result = import_json(&json)?;
+/// let (result, warnings) = import_json(&json)?;
+/// for w in &warnings {
+///     eprintln!("警告: {}", w);
+/// }
 /// println!("种子: {}", result.metadata.seed);
 /// ```
-pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
+pub fn import_json(json: &str) -> PcgResult<(GenerationResult, Vec<String>)> {
     // 反序列化 JSON 字符串
     let result: GenerationResult = serde_json::from_str(json)
         .map_err(|e| PcgError::export_err(format!("JSON 反序列化失败: {}", e), "json", e))?;
@@ -135,7 +148,25 @@ pub fn import_json(json: &str) -> PcgResult<GenerationResult> {
         ));
     }
 
-    Ok(result)
+    // 校验 algorithm_version 兼容性（主版本号不一致时发出警告，但不阻止导入）
+    let mut warnings = Vec::new();
+    if is_valid_semver(&result.metadata.algorithm_version) {
+        let alg_imported_major = extract_major_version(&result.metadata.algorithm_version);
+        let alg_current_major = extract_major_version(env!("CARGO_PKG_VERSION"));
+
+        if alg_imported_major != alg_current_major {
+            warnings.push(format!(
+                "algorithm_version 主版本不一致: 导入版本为 '{}'（主版本 {}），当前版本为 '{}'（主版本 {}）。\
+                 生成结果的结构兼容，但算法行为可能不同",
+                result.metadata.algorithm_version,
+                alg_imported_major.unwrap_or(0),
+                env!("CARGO_PKG_VERSION"),
+                alg_current_major.unwrap_or(0),
+            ));
+        }
+    }
+
+    Ok((result, warnings))
 }
 
 /// 从版本字符串中提取主版本号

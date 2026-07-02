@@ -111,6 +111,23 @@ pub(crate) fn fnv1a_64(data: &[u8]) -> u64 {
     hash
 }
 
+/// FNV-1a 64-bit hash over two concatenated slices — no heap allocation.
+/// 等价于 `fnv1a_64(&[a, b].concat())` 但不分配临时 Vec。
+pub(crate) fn fnv1a_64_chain(a: &[u8], b: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in a {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    for &byte in b {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// 稳定的随机数生成器接口
 ///
 /// 提供确定性的随机数生成能力，支持从根种子派生子随机流。
@@ -223,11 +240,8 @@ impl StableRng {
     /// let mut room_1_rng = topology_rng.derive("room:1");
     /// ```
     pub fn derive(&self, label: &str) -> Self {
-        // 使用当前种子和标签计算新种子（FNV-1a，跨版本稳定）
-        let mut bytes = self.seed.to_le_bytes().to_vec();
-        bytes.extend_from_slice(label.as_bytes());
-        let derived = fnv1a_64(&bytes);
-
+        // OPT-P-01: 使用 fnv1a_64_chain 避免 Vec 堆分配
+        let derived = fnv1a_64_chain(&self.seed.to_le_bytes(), label.as_bytes());
         Self::from_seed(derived)
     }
 
@@ -844,5 +858,23 @@ mod tests {
             0xc2c2a6698173ab15,
             "derive(\"layout\").seed() 漂移"
         );
+    }
+
+    /// OPT-P-01: 验证 fnv1a_64_chain 与 fnv1a_64(concat) 等价
+    #[test]
+    fn test_fnv1a_64_chain_equivalence() {
+        let a = 42u64.to_le_bytes();
+        let b = b"topology";
+        let mut concat = Vec::new();
+        concat.extend_from_slice(&a);
+        concat.extend_from_slice(b);
+        assert_eq!(fnv1a_64_chain(&a, b), fnv1a_64(&concat), "chain 与 concat 不一致");
+
+        // 空 a
+        assert_eq!(fnv1a_64_chain(&[], b), fnv1a_64(b));
+        // 空 b
+        assert_eq!(fnv1a_64_chain(&a, &[]), fnv1a_64(&a));
+        // 双空
+        assert_eq!(fnv1a_64_chain(&[], &[]), fnv1a_64(&[]));
     }
 }

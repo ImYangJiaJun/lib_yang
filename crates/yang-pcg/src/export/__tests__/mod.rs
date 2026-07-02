@@ -248,7 +248,8 @@ fn test_import_json_success() {
     let original = create_test_result();
     let json = export_json(&original).expect("导出应成功");
 
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, warnings) = import_json(&json).expect("导入应成功");
+    assert!(warnings.is_empty(), "版本匹配时不应有警告");
 
     assert_eq!(imported.metadata.seed, original.metadata.seed);
     assert_eq!(
@@ -278,7 +279,8 @@ fn test_import_json_compact_success() {
     let original = create_test_result();
     let json = export_json_compact(&original).expect("导出应成功");
 
-    let imported = import_json(&json).expect("从紧凑 JSON 导入应成功");
+    let (imported, warnings) = import_json(&json).expect("从紧凑 JSON 导入应成功");
+    assert!(warnings.is_empty(), "版本匹配时不应有警告");
 
     assert_eq!(imported.metadata.seed, 42);
     assert_eq!(imported.metadata.schema_version, "1.0.0");
@@ -318,7 +320,8 @@ fn test_import_json_schema_version_minor_difference_ok() {
     result.metadata.schema_version = "1.2.3".to_string();
     let json = serde_json::to_string(&result).expect("序列化应成功");
 
-    let imported = import_json(&json).expect("次版本号不同应允许导入");
+    let (imported, warnings) = import_json(&json).expect("次版本号不同应允许导入");
+    assert!(warnings.is_empty(), "版本匹配时不应有警告");
     assert_eq!(imported.metadata.schema_version, "1.2.3");
 }
 
@@ -369,7 +372,7 @@ fn test_import_json_with_debug_bundle() {
     result.debug = Some(DebugBundle::default());
     let json = export_json(&result).expect("导出应成功");
 
-    let imported = import_json(&json).expect("带调试信息的导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("带调试信息的导入应成功");
     assert!(imported.debug.is_some());
 }
 
@@ -423,7 +426,7 @@ fn test_schema_version_compat() {
         result.metadata.schema_version = good_version.to_string();
         let json = serde_json::to_string(&result).expect("序列化应成功");
 
-        let imported = import_json(&json).unwrap_or_else(|_| {
+        let (imported, _warnings) = import_json(&json).unwrap_or_else(|_| {
             panic!("主版本相同的版本 '{}' 应被接受", good_version)
         });
         assert_eq!(imported.metadata.schema_version, good_version);
@@ -448,6 +451,95 @@ fn test_schema_version_compat() {
             err_msg
         );
     }
+}
+
+// ============================================================
+// algorithm_version 检查测试（OPT-S-10）
+// 验证需求: import 仅校验 schema 主版本，不检查 algorithm_version
+// ============================================================
+
+#[test]
+fn test_import_algorithm_version_mismatch_produces_warning() {
+    // 验证 algorithm_version 主版本不一致时返回警告而非错误
+    let mut result = create_test_result();
+    // 当前 crate 版本是 0.1.0，用主版本 9 模拟不匹配
+    result.metadata.algorithm_version = "9.0.0".to_string();
+    let json = serde_json::to_string(&result).expect("序列化应成功");
+
+    let (imported, warnings) = import_json(&json).expect("algorithm_version 不匹配不应阻止导入");
+    assert_eq!(imported.metadata.algorithm_version, "9.0.0");
+    assert_eq!(warnings.len(), 1, "应有一条 algorithm_version 警告");
+    assert!(
+        warnings[0].contains("algorithm_version 主版本不一致"),
+        "警告应描述 algorithm_version 不一致: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("9.0.0"),
+        "警告应包含导入版本号: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn test_import_algorithm_version_major_match_no_warning() {
+    // 验证 algorithm_version 主版本一致时无警告
+    let mut result = create_test_result();
+    // 当前 crate 版本是 0.1.0，同主版本不同次版本
+    result.metadata.algorithm_version = "0.99.0".to_string();
+    let json = serde_json::to_string(&result).expect("序列化应成功");
+
+    let (imported, warnings) = import_json(&json).expect("导入应成功");
+    assert_eq!(imported.metadata.algorithm_version, "0.99.0");
+    assert!(warnings.is_empty(), "主版本匹配时不应有警告");
+}
+
+#[test]
+fn test_import_algorithm_version_exact_match_no_warning() {
+    // 验证 algorithm_version 完全匹配时无警告
+    let result = create_test_result();
+    // 用当前 crate 版本覆盖 algorithm_version
+    let mut result = result;
+    result.metadata.algorithm_version = env!("CARGO_PKG_VERSION").to_string();
+    let json = serde_json::to_string(&result).expect("序列化应成功");
+
+    let (imported, warnings) = import_json(&json).expect("导入应成功");
+    assert_eq!(imported.metadata.algorithm_version, env!("CARGO_PKG_VERSION"));
+    assert!(warnings.is_empty(), "完全匹配时不应有警告");
+}
+
+#[test]
+fn test_import_algorithm_version_invalid_format_no_warning() {
+    // 验证 algorithm_version 格式非法时静默跳过（不产生警告）
+    let mut result = create_test_result();
+    result.metadata.algorithm_version = "invalid-version".to_string();
+    let json = serde_json::to_string(&result).expect("序列化应成功");
+
+    let (imported, warnings) = import_json(&json).expect("非法 algorithm_version 不应阻止导入");
+    assert_eq!(imported.metadata.algorithm_version, "invalid-version");
+    assert!(
+        warnings.is_empty(),
+        "非法格式应静默跳过，不产生警告"
+    );
+}
+
+#[test]
+fn test_import_schema_and_algorithm_both_mismatch() {
+    // 验证 schema_version 和 algorithm_version 同时不匹配时，
+    // schema_version 报错（硬错误），algorithm_version 警告不触发
+    let mut result = create_test_result();
+    result.metadata.schema_version = "2.0.0".to_string();
+    result.metadata.algorithm_version = "9.0.0".to_string();
+    let json = serde_json::to_string(&result).expect("序列化应成功");
+
+    // schema_version 不兼容应直接返回错误
+    let err = import_json(&json).expect_err("schema_version 不兼容应返回错误");
+    let err_msg = format!("{}", err);
+    assert!(
+        err_msg.contains("schema_version 不兼容"),
+        "错误信息应包含 schema_version 不兼容: {}",
+        err_msg
+    );
 }
 
 // ============================================================
@@ -493,7 +585,7 @@ fn test_consistency_metadata_roundtrip() {
     // 验证 serialize → deserialize 后元数据语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     // 验证所有元数据字段
     assert_eq!(imported.metadata.seed, original.metadata.seed);
@@ -521,7 +613,7 @@ fn test_consistency_topology_roundtrip() {
     // 验证 serialize → deserialize 后拓扑结构语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     // 验证节点数量一致
     assert_eq!(
@@ -593,7 +685,7 @@ fn test_consistency_rooms_roundtrip() {
     // 验证 serialize → deserialize 后房间列表语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     assert_eq!(imported.rooms.len(), original.rooms.len(), "房间数量应一致");
     for (i, (orig, imp)) in original.rooms.iter().zip(imported.rooms.iter()).enumerate() {
@@ -619,7 +711,7 @@ fn test_consistency_corridors_roundtrip() {
     // 验证 serialize → deserialize 后走廊列表语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     assert_eq!(
         imported.corridors.len(),
@@ -644,7 +736,7 @@ fn test_consistency_terrains_roundtrip() {
     // 验证 serialize → deserialize 后地形数据语义一致（包含网格数据）
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     assert_eq!(
         imported.terrains.len(),
@@ -702,7 +794,7 @@ fn test_consistency_spawns_roundtrip() {
     // 验证 serialize → deserialize 后点位数据语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     // 验证交互物点位
     assert_eq!(
@@ -763,7 +855,7 @@ fn test_consistency_chunks_roundtrip() {
     // 验证 serialize → deserialize 后分块数据语义一致
     let original = generate_full_result();
     let json = export_json(&original).expect("导出应成功");
-    let imported = import_json(&json).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("导入应成功");
 
     assert_eq!(
         imported.chunks.len(),
@@ -804,8 +896,8 @@ fn test_consistency_pretty_and_compact_produce_same_result() {
     let json_pretty = export_json(&original).expect("pretty 导出应成功");
     let json_compact = export_json_compact(&original).expect("compact 导出应成功");
 
-    let imported_pretty = import_json(&json_pretty).expect("从 pretty JSON 导入应成功");
-    let imported_compact = import_json(&json_compact).expect("从 compact JSON 导入应成功");
+    let (imported_pretty, _warnings_p) = import_json(&json_pretty).expect("从 pretty JSON 导入应成功");
+    let (imported_compact, _warnings_c) = import_json(&json_compact).expect("从 compact JSON 导入应成功");
 
     // 元数据一致
     assert_eq!(
@@ -877,7 +969,7 @@ fn test_consistency_reexport_idempotency() {
     // 第一次导出
     let json_first = export_json(&original).expect("第一次导出应成功");
     // 导入
-    let imported = import_json(&json_first).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json_first).expect("导入应成功");
     // 第二次导出
     let json_second = export_json(&imported).expect("重新导出应成功");
 
@@ -894,7 +986,7 @@ fn test_consistency_compact_reexport_idempotency() {
     let original = generate_full_result();
 
     let json_first = export_json_compact(&original).expect("第一次紧凑导出应成功");
-    let imported = import_json(&json_first).expect("导入应成功");
+    let (imported, _warnings) = import_json(&json_first).expect("导入应成功");
     let json_second = export_json_compact(&imported).expect("重新紧凑导出应成功");
 
     assert_eq!(
@@ -910,7 +1002,7 @@ fn test_consistency_with_debug_data_roundtrip() {
     assert!(original.debug.is_some(), "调试模式应产生 DebugBundle");
 
     let json = export_json(&original).expect("带调试信息的导出应成功");
-    let imported = import_json(&json).expect("带调试信息的导入应成功");
+    let (imported, _warnings) = import_json(&json).expect("带调试信息的导入应成功");
 
     // 验证调试信息存在
     assert!(imported.debug.is_some(), "导入后应保留调试信息");

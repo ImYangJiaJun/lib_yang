@@ -253,7 +253,7 @@ fn test_golden_sample_json_roundtrip() {
     let json = crate::export::export_json(&result).expect("JSON 导出应成功");
 
     // 从 JSON 导入
-    let imported = crate::export::import_json(&json).expect("JSON 导入应成功");
+    let (imported, _warnings) = crate::export::import_json(&json).expect("JSON 导入应成功");
 
     // 验证关键字段一致
     assert_eq!(imported.metadata.seed, result.metadata.seed);
