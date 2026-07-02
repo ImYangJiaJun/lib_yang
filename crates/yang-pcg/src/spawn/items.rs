@@ -108,12 +108,14 @@ fn build_spawn_points(
     points
         .iter()
         .enumerate()
-        .map(|(index, &local_point)| SpawnPoint {
-            id: format!("item-{}-{index:03}", room.id),
-            room_id: room.id.clone(),
-            kind: SpawnKind::Item,
-            grid_pos: world_grid_point(room, local_point),
-            world_transform: Some(grid_point_to_transform(world_grid_point(room, local_point))),
+        .map(|(index, &local_point)| {
+            let gp = world_grid_point(room, local_point);
+            SpawnPoint {
+                id: format!("item-{}-{index:03}", room.id),
+                room_id: room.id.clone(),
+                kind: SpawnKind::Item,
+                grid_pos: gp,
+                world_transform: Some(grid_point_to_transform(gp)),
             metadata: SpawnMetadata {
                 spawn_tag: item_spawn_tag(room.room_type).to_string(),
                 rarity_tier: Some(sample_rarity_tier(

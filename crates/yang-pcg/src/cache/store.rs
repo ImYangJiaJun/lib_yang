@@ -10,7 +10,7 @@ use super::key::CacheKey;
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct ResultCache {
-    entries: HashMap<String, GenerationResult>,
+    entries: HashMap<CacheKey, GenerationResult>,
 }
 
 impl ResultCache {
@@ -19,15 +19,15 @@ impl ResultCache {
     }
 
     pub fn insert(&mut self, key: CacheKey, result: GenerationResult) {
-        self.entries.insert(key.as_string(), result);
+        self.entries.insert(key, result);
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<&GenerationResult> {
-        self.entries.get(&key.as_string())
+        self.entries.get(key)
     }
 
     pub fn contains(&self, key: &CacheKey) -> bool {
-        self.entries.contains_key(&key.as_string())
+        self.entries.contains_key(key)
     }
 }
 
