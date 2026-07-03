@@ -7,12 +7,8 @@
 //! 完整字段值断言需自定义 `tracing::Subscriber` + `Visit` 实现。
 //! 参见 docs/yang-base-db-optimization-guide.md TEST-2 修正方案。
 
-use tracing_subscriber::util::SubscriberInitExt;
-
 fn try_init_subscriber() {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
 /// 验证 dispatch span 创建和 request_id record 不 panic

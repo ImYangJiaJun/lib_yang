@@ -453,7 +453,11 @@ impl ModuleRouter {
 
             // 检查默认权限
             if !self.default_permissions.is_empty()
-                && !self.check_permissions(user, &self.default_permissions, self.default_permission_mode)
+                && !self.check_permissions(
+                    user,
+                    &self.default_permissions,
+                    self.default_permission_mode,
+                )
             {
                 span.record("granted", false);
                 return Err(BaseError::PermissionDenied(format!(
@@ -476,8 +480,7 @@ impl ModuleRouter {
                     .iter()
                     .any(|p| user.has_permission(p.name())),
             };
-            if !meta.permissions.is_empty() && !action_perm_ok
-            {
+            if !meta.permissions.is_empty() && !action_perm_ok {
                 span.record("granted", false);
                 let permission_names: Vec<&str> =
                     meta.permissions.iter().map(|p| p.name()).collect();

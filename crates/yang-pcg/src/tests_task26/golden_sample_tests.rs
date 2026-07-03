@@ -2,9 +2,7 @@
 // 使用固定种子生成结果，验证关键字段的哈希值稳定
 // 需求映射：18.2
 
-use crate::config::{
-    CapabilityFlags, ChunkingConfig, GenerationConfig, GenerationMode,
-};
+use crate::config::{CapabilityFlags, ChunkingConfig, GenerationConfig, GenerationMode};
 use crate::digest::ConfigDigest;
 use crate::generator::MapGenerator;
 use crate::model::request::{GenerationRequest, RuntimeContext};
@@ -118,10 +116,22 @@ fn test_golden_sample_seed_42() {
     let item_spawn_hash = hash_spawns(&result.item_spawns);
     let enemy_spawn_hash = hash_spawns(&result.enemy_spawns);
 
-    assert_eq!(room_hash, GOLDEN_SEED42_ROOM_HASH, "房间哈希与黄金常量不一致——算法可能已变更");
-    assert_eq!(corridor_hash, GOLDEN_SEED42_CORRIDOR_HASH, "走廊哈希与黄金常量不一致");
-    assert_eq!(item_spawn_hash, GOLDEN_SEED42_ITEM_HASH, "交互物哈希与黄金常量不一致");
-    assert_eq!(enemy_spawn_hash, GOLDEN_SEED42_ENEMY_HASH, "敌人哈希与黄金常量不一致");
+    assert_eq!(
+        room_hash, GOLDEN_SEED42_ROOM_HASH,
+        "房间哈希与黄金常量不一致——算法可能已变更"
+    );
+    assert_eq!(
+        corridor_hash, GOLDEN_SEED42_CORRIDOR_HASH,
+        "走廊哈希与黄金常量不一致"
+    );
+    assert_eq!(
+        item_spawn_hash, GOLDEN_SEED42_ITEM_HASH,
+        "交互物哈希与黄金常量不一致"
+    );
+    assert_eq!(
+        enemy_spawn_hash, GOLDEN_SEED42_ENEMY_HASH,
+        "敌人哈希与黄金常量不一致"
+    );
 
     let room_count = result.rooms.len();
     let corridor_count = result.corridors.len();
@@ -189,10 +199,22 @@ fn test_golden_sample_seed_12345() {
         .expect("黄金样本生成应成功");
 
     // 临时打印哈希值用于固化常量
-    println!("SEED12345_ROOM_HASH=0x{:016x}", hash_room_ids(&result.rooms));
-    println!("SEED12345_CORRIDOR_HASH=0x{:016x}", hash_corridor_ids(&result.corridors));
-    println!("SEED12345_ITEM_HASH=0x{:016x}", hash_spawns(&result.item_spawns));
-    println!("SEED12345_ENEMY_HASH=0x{:016x}", hash_spawns(&result.enemy_spawns));
+    println!(
+        "SEED12345_ROOM_HASH=0x{:016x}",
+        hash_room_ids(&result.rooms)
+    );
+    println!(
+        "SEED12345_CORRIDOR_HASH=0x{:016x}",
+        hash_corridor_ids(&result.corridors)
+    );
+    println!(
+        "SEED12345_ITEM_HASH=0x{:016x}",
+        hash_spawns(&result.item_spawns)
+    );
+    println!(
+        "SEED12345_ENEMY_HASH=0x{:016x}",
+        hash_spawns(&result.enemy_spawns)
+    );
 
     // 验证确定性：连续生成 3 次，结果应完全一致
     for i in 0..3 {
@@ -273,7 +295,11 @@ fn test_golden_sample_json_roundtrip() {
     }
 
     // OPT-T-14: 验证 terrains tiles.data 在 JSON 往返后一致
-    assert_eq!(imported.terrains.len(), result.terrains.len(), "地形数应一致");
+    assert_eq!(
+        imported.terrains.len(),
+        result.terrains.len(),
+        "地形数应一致"
+    );
     for (i, (orig_terrain, imp_terrain)) in result
         .terrains
         .iter()
@@ -309,10 +335,7 @@ fn test_golden_sample_json_roundtrip() {
         .zip(imported.enemy_spawns.iter())
         .enumerate()
     {
-        assert_eq!(
-            orig.id, imp.id,
-            "enemy_spawn[{i}] id 应一致"
-        );
+        assert_eq!(orig.id, imp.id, "enemy_spawn[{i}] id 应一致");
         assert_eq!(
             orig.grid_pos, imp.grid_pos,
             "enemy_spawn[{i}] grid_pos 应一致"
@@ -399,12 +422,14 @@ fn test_golden_seed_none_stability() {
             i + 2
         );
         assert_eq!(
-            first.metadata.seed, repeat.metadata.seed,
+            first.metadata.seed,
+            repeat.metadata.seed,
             "第 {} 次元数据种子应一致",
             i + 2
         );
         assert_eq!(
-            first.metadata.config_digest, repeat.metadata.config_digest,
+            first.metadata.config_digest,
+            repeat.metadata.config_digest,
             "第 {} 次配置摘要应一致",
             i + 2
         );
@@ -418,8 +443,7 @@ fn test_golden_seed_none_stability() {
 #[test]
 fn test_seed_none_equals_seed_from_config() {
     let config = GenerationConfig::default();
-    let expected_seed = ConfigDigest::seed_from_config(&config)
-        .expect("默认配置派生种子不应失败");
+    let expected_seed = ConfigDigest::seed_from_config(&config).expect("默认配置派生种子不应失败");
 
     let generator = MapGenerator::new();
     let result = generator
@@ -477,7 +501,11 @@ fn test_golden_runtime_chunked_seed_42() {
         .expect("RuntimeChunked 第二次生成应成功");
 
     // 确定性验证：两次生成结果完全一致
-    assert_eq!(result1.rooms.len(), result2.rooms.len(), "RuntimeChunked 房间数应一致");
+    assert_eq!(
+        result1.rooms.len(),
+        result2.rooms.len(),
+        "RuntimeChunked 房间数应一致"
+    );
     assert_eq!(
         hash_room_ids(&result1.rooms),
         hash_room_ids(&result2.rooms),

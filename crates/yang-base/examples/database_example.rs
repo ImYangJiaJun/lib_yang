@@ -12,6 +12,10 @@
 //!
 //! 此示例需要可用的 MySQL 数据库连接
 
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use yang_base::database::GlobalDatabase;
 use yang_db::DatabaseConfig;
 

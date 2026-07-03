@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 use yang_db::RedisClient;
 
 /// 测试基础事务执行

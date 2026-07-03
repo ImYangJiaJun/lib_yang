@@ -1,7 +1,9 @@
+#![allow(deprecated)]
 // 数据库连接集成测试
 // 使用测试数据库：mysql://root:111111@localhost:3306/test
-
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 use yang_db::{Database, DatabaseConfig};
 

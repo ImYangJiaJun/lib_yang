@@ -1,3 +1,7 @@
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(dead_code)]
+#![allow(unused_results)]
 use yang_db::RedisClient;
 
 /// 测试 GETRANGE 命令

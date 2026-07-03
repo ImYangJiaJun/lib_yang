@@ -802,11 +802,19 @@ mod tests {
 
         // OPT-D-02: 验证 seed 与 inner 同源（均来自 fnv1a_64）
         let expected_seed = fnv1a_64(&seed_bytes);
-        assert_eq!(rng.seed(), expected_seed, "seed 字段应等于 fnv1a_64(seed_bytes)");
+        assert_eq!(
+            rng.seed(),
+            expected_seed,
+            "seed 字段应等于 fnv1a_64(seed_bytes)"
+        );
 
         // 验证与 from_seed(fnv1a_64(bytes)) 产生相同序列
         let rng_from_seed = StableRng::from_seed(expected_seed);
-        assert_eq!(rng.seed(), rng_from_seed.seed(), "from_seed_bytes 应等价于 from_seed(fnv1a_64(bytes))");
+        assert_eq!(
+            rng.seed(),
+            rng_from_seed.seed(),
+            "from_seed_bytes 应等价于 from_seed(fnv1a_64(bytes))"
+        );
 
         // 验证确定性：相同字节产生相同随机序列
         let mut rng1 = StableRng::from_seed_bytes(seed_bytes);
@@ -826,10 +834,26 @@ mod tests {
     fn test_fnv1a_stability() {
         // 以下期望值在 2026-07-02 由 FNV-1a（offset_basis=0xcbf29ce484222325, prime=0x100000001b3）计算得出
         // 修改任何一个值都意味着哈希算法或标签发生了变更——需要审查是否破坏了确定性契约
-        assert_eq!(fnv1a_64(b"topology"), 0x516188458c0dece4, "fnv1a_64(\"topology\") 漂移");
-        assert_eq!(fnv1a_64(b"layout"),   0x9c4f784aa5ce135f, "fnv1a_64(\"layout\") 漂移");
-        assert_eq!(fnv1a_64(b"terrain"),  0x3f8b069c872d66ae, "fnv1a_64(\"terrain\") 漂移");
-        assert_eq!(fnv1a_64(b"spawn"),    0x4328f78ab20e1f98, "fnv1a_64(\"spawn\") 漂移");
+        assert_eq!(
+            fnv1a_64(b"topology"),
+            0x516188458c0dece4,
+            "fnv1a_64(\"topology\") 漂移"
+        );
+        assert_eq!(
+            fnv1a_64(b"layout"),
+            0x9c4f784aa5ce135f,
+            "fnv1a_64(\"layout\") 漂移"
+        );
+        assert_eq!(
+            fnv1a_64(b"terrain"),
+            0x3f8b069c872d66ae,
+            "fnv1a_64(\"terrain\") 漂移"
+        );
+        assert_eq!(
+            fnv1a_64(b"spawn"),
+            0x4328f78ab20e1f98,
+            "fnv1a_64(\"spawn\") 漂移"
+        );
     }
 
     /// 验证 from_seed + random_range 的输出稳定性
@@ -868,7 +892,11 @@ mod tests {
         let mut concat = Vec::new();
         concat.extend_from_slice(&a);
         concat.extend_from_slice(b);
-        assert_eq!(fnv1a_64_chain(&a, b), fnv1a_64(&concat), "chain 与 concat 不一致");
+        assert_eq!(
+            fnv1a_64_chain(&a, b),
+            fnv1a_64(&concat),
+            "chain 与 concat 不一致"
+        );
 
         // 空 a
         assert_eq!(fnv1a_64_chain(&[], b), fnv1a_64(b));

@@ -11,6 +11,7 @@
 //! 注意：这是**进程内**唯一标识，不保证跨进程全局唯一。需要跨服务串联时，由
 //! 上游通过 `X-Request-Id` header 传入字符串，[`RequestIdMiddleware`] 会优先透传。
 
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -60,11 +61,11 @@ impl RequestId {
     /// 自行记录原始 header，本类型只负责进程内可排序的数值标识。
     pub fn parse_hex(s: &str) -> Option<Self> {
         let s = s.trim();
-        // 标准 UUID：去连字符后按十六进制解析（36→32 位）
+        // PERF-15: 用 Cow 避免无连字符时的多余分配
         let normalized = if s.contains('-') {
-            s.replace('-', "")
+            Cow::Owned(s.replace('-', ""))
         } else {
-            s.to_string()
+            Cow::Borrowed(s)
         };
         if normalized.is_empty() || normalized.len() > 32 {
             return None;

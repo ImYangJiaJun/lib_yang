@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 // PostgreSQL 事务行为集成测试
 // 验证 drop-without-commit 自动回滚与并发事务隔离（无脏读）。
 // 所有触达数据库的测试都标记 #[ignore]，默认 `cargo test` 套件保持离线。

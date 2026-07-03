@@ -44,7 +44,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 ///
 /// `sub` 经 hex 编码后嵌入 key，避免含 `:` 等特殊字符导致 Redis key 歧义。
 fn subject_min_iat_key(sub: &str) -> String {
-    format!("{SUBJECT_MIN_IAT_PREFIX}{}:min_iat", hex_encode(sub.as_bytes()))
+    format!(
+        "{SUBJECT_MIN_IAT_PREFIX}{}:min_iat",
+        hex_encode(sub.as_bytes())
+    )
 }
 
 /// 判定一个 Token 的签发时间 `iat` 是否被用户水位线 `min_iat` 撤销。
@@ -254,7 +257,10 @@ mod tests {
     #[test]
     fn test_subject_min_iat_key_format() {
         // sub 经 hex 编码，避免特殊字符导致 key 歧义
-        assert_eq!(subject_min_iat_key("user_42"), "token:user:757365725f3432:min_iat");
+        assert_eq!(
+            subject_min_iat_key("user_42"),
+            "token:user:757365725f3432:min_iat"
+        );
     }
 
     #[test]

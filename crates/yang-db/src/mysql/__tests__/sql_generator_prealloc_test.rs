@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! SqlGenerator 预分配优化属性测试
 //!
 //! **验证需求: 6.1, 6.2, 6.3**

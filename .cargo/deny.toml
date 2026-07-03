@@ -1,0 +1,63 @@
+# cargo-deny 配置
+#
+# 用于扫描项目依赖中的安全漏洞（advisories）、许可证合规性（licenses）
+# 以及禁止有问题的 crate/版本（bans）。
+#
+# 使用方式：
+#   cargo deny check advisories    # 检查安全公告
+#   cargo deny check licenses      # 检查许可证合规
+#   cargo deny check bans          # 检查被禁止的依赖
+
+# ==================== 安全公告 ====================
+[advisories]
+# 注意：v 开头的条目是忽略指定版本，不是忽略整个 crate
+# 只报告安全漏洞，不报告性能问题或代码质量问题
+vulnerability = "deny"
+# 报告已知的未维护 crate（仍可修复漏洞）
+unmaintained = "warn"
+# 报告已从 crates.io 下架的 crate（可能版本不完整）
+yanked = "warn"
+# 忽略列表：仅忽略特定版本的安全公告
+# 格式：ignore = ["RUSTSEC-YYYY-NNN"]
+ignore = []
+
+# ==================== 许可证 ====================
+[licenses]
+# 允许的许可证列表（SPDX 标识符）
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "CC0-1.0",
+    "Zlib",
+]
+# 置信度阈值：要求高置信度判定才报告
+confidence-threshold = 0.8
+
+# 例外：允许特定 crate 使用不在白名单中的许可证
+[[licenses.exceptions]]
+# 示例：允许特定 crate 的 GPL 许可证（按需添加）
+# crate = "some-gpl-crate"
+# allow = ["GPL-3.0"]
+
+# ==================== 禁止依赖 ====================
+[bans]
+# 禁止多个版本同一 crate（可能导致链接问题或 ODR 问题）
+multiple-versions = "warn"
+# 禁止使用已被 yanked 版本的 crate
+wildcards = "deny"
+# 禁止使用 git 依赖（生产环境应锁定版本）
+allow-wildcard-paths = false
+allow-git-paths = false
+
+# 禁止特定 crate 或版本
+[sources]
+# 未知 registry 的 crate 将被拒绝
+unknown-registry = "deny"
+# 未知 git 仓库的 crate 将被拒绝
+unknown-git = "deny"

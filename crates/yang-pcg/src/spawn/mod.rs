@@ -78,10 +78,8 @@ pub(crate) fn generate_spawns(
     let cross_spacing = min_cross_type_spacing(&config.config);
 
     // 构建 room_id -> terrain 映射，避免 O(R²) 线性扫描
-    let terrain_map: HashMap<&str, &Terrain> = terrains
-        .iter()
-        .map(|t| (t.room_id.as_str(), t))
-        .collect();
+    let terrain_map: HashMap<&str, &Terrain> =
+        terrains.iter().map(|t| (t.room_id.as_str(), t)).collect();
 
     for room in rooms {
         let Some(terrain) = terrain_map.get(room.id.as_str()) else {
@@ -136,10 +134,8 @@ pub(crate) fn generate_spawns_with_debug(
     let cross_spacing = min_cross_type_spacing(&config.config);
 
     // 构建 room_id -> terrain 映射，避免 O(R²) 线性扫描
-    let terrain_map: HashMap<&str, &Terrain> = terrains
-        .iter()
-        .map(|t| (t.room_id.as_str(), t))
-        .collect();
+    let terrain_map: HashMap<&str, &Terrain> =
+        terrains.iter().map(|t| (t.room_id.as_str(), t)).collect();
 
     for room in rooms {
         let Some(terrain) = terrain_map.get(room.id.as_str()) else {

@@ -466,10 +466,7 @@ mod tests {
             DbError::UnsupportedOperator("o".into()).category(),
             C::Client
         );
-        assert_eq!(
-            DbError::InvalidArgument("a".into()).category(),
-            C::Client
-        );
+        assert_eq!(DbError::InvalidArgument("a".into()).category(), C::Client);
         assert_eq!(
             DbError::TypeConversionError("t".into()).category(),
             C::Client
@@ -533,7 +530,7 @@ mod tests {
         assert_eq!(codes.len(), sorted.len(), "19 个变体的 code 应全部唯一");
         // 所有码在 8xxxxx 段
         for &c in &codes {
-            assert!(c >= 800000 && c < 900000, "code {} 不在 8xxxxx 段", c);
+            assert!((800000..900000).contains(&c), "code {} 不在 8xxxxx 段", c);
         }
     }
 }

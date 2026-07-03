@@ -1,8 +1,10 @@
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // 特殊字段类型集成测试（简化版）
 // 任务 21.5: 测试 JSON、DATETIME、TIMESTAMP、DECIMAL、BLOB、TEXT 等特殊字段类型
 // 主要测试字段类型标记和基本插入操作
-
 #![allow(dead_code)]
+#![allow(unused_results)]
 
 use serde_json::json;
 use yang_db::Database;

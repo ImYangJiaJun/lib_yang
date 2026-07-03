@@ -297,9 +297,8 @@ fn test_spawn_respects_min_spacing() {
     .expect("地形生成应成功");
 
     let spawn_rng = StableRng::from_seed(42);
-    let spawn_output =
-        spawn::generate_spawns(&output.rooms, &terrains, &normalized, &spawn_rng)
-            .expect("点位生成应成功");
+    let spawn_output = spawn::generate_spawns(&output.rooms, &terrains, &normalized, &spawn_rng)
+        .expect("点位生成应成功");
 
     // 验证交互物点位间距
     for i in 0..spawn_output.item_spawns.len() {

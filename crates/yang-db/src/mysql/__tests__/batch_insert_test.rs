@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! 批量插入内存分配优化属性测试
 //!
 //! **验证需求: 1.1, 1.2, 1.3, 1.4**

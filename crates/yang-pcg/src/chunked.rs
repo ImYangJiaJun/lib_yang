@@ -82,7 +82,10 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
     let normalized = validate_request(&request)?;
     // seed_and_digest_from_config 一次序列化同时产出 seed 和 digest，避免双重序列化。
     let (seed, config_digest) = match request.seed {
-        Some(s) => (s, ConfigDigest::from_config(&normalized.config)?.into_string()),
+        Some(s) => (
+            s,
+            ConfigDigest::from_config(&normalized.config)?.into_string(),
+        ),
         None => ConfigDigest::seed_and_digest_from_config(&normalized.config)?,
     };
     let root_rng = StableRng::from_seed(seed);
@@ -293,7 +296,10 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
     let normalized = validate_request(&request)?;
     // seed_and_digest_from_config 一次序列化同时产出 seed 和 digest，避免双重序列化。
     let (seed, config_digest) = match request.seed {
-        Some(s) => (s, ConfigDigest::from_config(&normalized.config)?.into_string()),
+        Some(s) => (
+            s,
+            ConfigDigest::from_config(&normalized.config)?.into_string(),
+        ),
         None => ConfigDigest::seed_and_digest_from_config(&normalized.config)?,
     };
     let root_rng = StableRng::from_seed(seed);

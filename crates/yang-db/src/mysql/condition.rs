@@ -268,6 +268,7 @@ pub fn write_condition_to_sql(cond: &Condition, out: &mut String, params: &mut V
 ///
 /// # 返回
 /// - SQL 字符串片段
+///
 /// 安全转义字段标识符，失败时回退到原始值并记录警告。
 ///
 /// 这是对 `quote_identifier` 的 defense-in-depth 包装：合法标识符返回反引号包裹形式，
@@ -393,6 +394,7 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use chrono::NaiveDate;
@@ -795,6 +797,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;

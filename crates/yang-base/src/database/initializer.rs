@@ -224,6 +224,7 @@ impl DatabaseInitializer {
     /// 使用 yang-db::Database::transaction 创建事务。
     /// 使用 yang-db::Transaction::execute 执行 SQL。
     /// 使用 yang-db::Transaction::commit 提交事务。
+    #[allow(deprecated)]
     async fn initialize_with_transaction(
         &self,
         plugins: &[Arc<dyn Plugin>],
@@ -277,6 +278,7 @@ impl DatabaseInitializer {
     /// # 说明
     ///
     /// 使用 yang-db::Database::execute 执行 SQL。
+    #[allow(deprecated)]
     async fn initialize_without_transaction(
         &self,
         plugins: &[Arc<dyn Plugin>],
@@ -316,6 +318,7 @@ impl DatabaseInitializer {
     /// # 说明
     ///
     /// 使用 yang-db::Database::execute 执行 SQL。
+    #[allow(deprecated)]
     pub async fn create_migration_table(&self) -> Result<(), BaseError> {
         let sql = r#"
             CREATE TABLE IF NOT EXISTS _migrations (
@@ -350,6 +353,7 @@ impl DatabaseInitializer {
     /// # 说明
     ///
     /// 使用 yang-db::Database::execute 执行 SQL。
+    #[allow(deprecated)]
     pub async fn run_migrations(&self, plugin: &dyn Plugin) -> Result<(), BaseError> {
         let module_name = plugin.name();
 
@@ -389,6 +393,7 @@ impl DatabaseInitializer {
     /// # 说明
     ///
     /// 使用 yang-db::Transaction::execute 执行 SQL。
+    #[allow(deprecated)]
     pub async fn run_migrations_in_tx(
         &self,
         tx: &mut yang_db::Transaction,

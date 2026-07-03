@@ -1,7 +1,5 @@
-// CRUD 操作集成测试（简化版）
-// 任务 21.2: 测试完整的插入、查询、更新、删除流程
-// 注意：由于 serde_json::Value 不实现 FromRow，这里主要测试 SQL 生成和基本执行
-
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(dead_code)]
 
 use serde_json::json;

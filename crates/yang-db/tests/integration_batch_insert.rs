@@ -1,8 +1,10 @@
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // 批量插入集成测试
 // 任务 1.2: 测试 insert_batch 的自动分批处理功能
 // 验证大批量插入（5000+ 条）时的自动分批处理
-
 #![allow(dead_code)]
+#![allow(unused_results)]
 
 use serde_json::json;
 use yang_db::Database;

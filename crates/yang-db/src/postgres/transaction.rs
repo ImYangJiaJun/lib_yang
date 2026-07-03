@@ -390,7 +390,8 @@ impl<'a> TransactionQueryBuilder<'a> {
                 log::debug!("事务中 insert() 成功，插入 ID: {}", last_insert_id);
             }
 
-            u64::try_from(last_insert_id).map_err(|_| DbError::InvalidArgument("返回主键为负".into()))
+            u64::try_from(last_insert_id)
+                .map_err(|_| DbError::InvalidArgument("返回主键为负".into()))
         } else {
             Err(DbError::TransactionError("事务已提交或回滚".to_string()))
         }

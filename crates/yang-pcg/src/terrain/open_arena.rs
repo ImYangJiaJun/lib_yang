@@ -143,7 +143,9 @@ fn ensure_doorway_connectivity(
     }
 
     // 检查是否所有门口都可达
-    let all_reachable = doorways.iter().all(|d| visited[(d.y as u32 * w + d.x as u32) as usize]);
+    let all_reachable = doorways
+        .iter()
+        .all(|d| visited[(d.y as u32 * w + d.x as u32) as usize]);
     if all_reachable {
         return;
     }

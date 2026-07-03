@@ -75,7 +75,10 @@ fn test_room_bounds_large_coords() {
     // 大坐标：使用 i32::MAX 作为边界，验证不溢出
     let bounds = RoomBounds {
         min: GridPoint { x: 0, y: 0 },
-        max: GridPoint { x: i32::MAX, y: i32::MAX },
+        max: GridPoint {
+            x: i32::MAX,
+            y: i32::MAX,
+        },
     };
     // width/height 用 unsigned_abs，不会溢出
     assert_eq!(bounds.width(), i32::MAX as u32);

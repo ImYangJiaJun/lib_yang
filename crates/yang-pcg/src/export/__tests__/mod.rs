@@ -397,10 +397,7 @@ fn test_import_json_malformed_version() {
         result.metadata.schema_version = bad_version.to_string();
         let json = serde_json::to_string(&result).expect("序列化应成功");
 
-        let err = import_json(&json).expect_err(&format!(
-            "畸形版本 '{}' 应被拒绝",
-            bad_version
-        ));
+        let err = import_json(&json).expect_err(&format!("畸形版本 '{}' 应被拒绝", bad_version));
         let err_msg = format!("{}", err);
         assert!(
             err_msg.contains("schema_version 格式非法"),
@@ -426,9 +423,8 @@ fn test_schema_version_compat() {
         result.metadata.schema_version = good_version.to_string();
         let json = serde_json::to_string(&result).expect("序列化应成功");
 
-        let (imported, _warnings) = import_json(&json).unwrap_or_else(|_| {
-            panic!("主版本相同的版本 '{}' 应被接受", good_version)
-        });
+        let (imported, _warnings) = import_json(&json)
+            .unwrap_or_else(|_| panic!("主版本相同的版本 '{}' 应被接受", good_version));
         assert_eq!(imported.metadata.schema_version, good_version);
     }
 
@@ -439,10 +435,8 @@ fn test_schema_version_compat() {
         result.metadata.schema_version = bad_version.to_string();
         let json = serde_json::to_string(&result).expect("序列化应成功");
 
-        let err = import_json(&json).expect_err(&format!(
-            "主版本不同的版本 '{}' 应被拒绝",
-            bad_version
-        ));
+        let err =
+            import_json(&json).expect_err(&format!("主版本不同的版本 '{}' 应被拒绝", bad_version));
         let err_msg = format!("{}", err);
         assert!(
             err_msg.contains("schema_version 不兼容"),
@@ -504,7 +498,10 @@ fn test_import_algorithm_version_exact_match_no_warning() {
     let json = serde_json::to_string(&result).expect("序列化应成功");
 
     let (imported, warnings) = import_json(&json).expect("导入应成功");
-    assert_eq!(imported.metadata.algorithm_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        imported.metadata.algorithm_version,
+        env!("CARGO_PKG_VERSION")
+    );
     assert!(warnings.is_empty(), "完全匹配时不应有警告");
 }
 
@@ -517,10 +514,7 @@ fn test_import_algorithm_version_invalid_format_no_warning() {
 
     let (imported, warnings) = import_json(&json).expect("非法 algorithm_version 不应阻止导入");
     assert_eq!(imported.metadata.algorithm_version, "invalid-version");
-    assert!(
-        warnings.is_empty(),
-        "非法格式应静默跳过，不产生警告"
-    );
+    assert!(warnings.is_empty(), "非法格式应静默跳过，不产生警告");
 }
 
 #[test]
@@ -896,8 +890,10 @@ fn test_consistency_pretty_and_compact_produce_same_result() {
     let json_pretty = export_json(&original).expect("pretty 导出应成功");
     let json_compact = export_json_compact(&original).expect("compact 导出应成功");
 
-    let (imported_pretty, _warnings_p) = import_json(&json_pretty).expect("从 pretty JSON 导入应成功");
-    let (imported_compact, _warnings_c) = import_json(&json_compact).expect("从 compact JSON 导入应成功");
+    let (imported_pretty, _warnings_p) =
+        import_json(&json_pretty).expect("从 pretty JSON 导入应成功");
+    let (imported_compact, _warnings_c) =
+        import_json(&json_compact).expect("从 compact JSON 导入应成功");
 
     // 元数据一致
     assert_eq!(

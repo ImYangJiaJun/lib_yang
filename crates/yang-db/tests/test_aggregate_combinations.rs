@@ -1,3 +1,7 @@
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(dead_code)]
+#![allow(unused_results)]
 /// 测试聚合函数与其他子句的组合使用
 ///
 /// 本测试文件验证 AVG、MIN、MAX 聚合函数与 WHERE、GROUP BY 子句的组合使用

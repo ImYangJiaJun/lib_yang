@@ -1092,8 +1092,8 @@ impl TableQuery {
                     }
                 }
                 // IN / NOT IN 列表元素数上限（QRY-2）
-                if let WhereCondition::In { values, .. }
-                | WhereCondition::NotIn { values, .. } = leaf
+                if let WhereCondition::In { values, .. } | WhereCondition::NotIn { values, .. } =
+                    leaf
                 {
                     if values.len() > Self::MAX_IN_LIST_SIZE {
                         return Err(BaseError::ParamInvalid(
@@ -1678,6 +1678,9 @@ impl TableQuery {
             SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
+            SqlParam::DateTime(dt) => query.bind(*dt),
+            SqlParam::Bytes(b) => query.bind(b.clone()),
+            SqlParam::Json(j) => query.bind(j.clone()),
         }
     }
 
@@ -1909,6 +1912,9 @@ impl TableQuery {
             SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
+            SqlParam::DateTime(dt) => query.bind(*dt),
+            SqlParam::Bytes(b) => query.bind(b.clone()),
+            SqlParam::Json(j) => query.bind(j.clone()),
         }
     }
 
@@ -2851,6 +2857,9 @@ impl TableQuery {
             SqlParam::Uint(u) => query.bind(*u),
             SqlParam::Float(f) => query.bind(*f),
             SqlParam::String(s) => query.bind(s.clone()),
+            SqlParam::DateTime(dt) => query.bind(*dt),
+            SqlParam::Bytes(b) => query.bind(b.clone()),
+            SqlParam::Json(j) => query.bind(j.clone()),
         }
     }
 
@@ -2954,6 +2963,7 @@ impl TableQuery {
 #[cfg(feature = "mysql")]
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
+#[allow(dead_code)] // DateTime/Bytes/Json 已声明，待 from_json 外部构造路径落地
 pub(crate) enum SqlParam {
     /// 空值
     Null,
@@ -2967,6 +2977,12 @@ pub(crate) enum SqlParam {
     Float(f64),
     /// 字符串
     String(String),
+    /// 日期时间（ISO 8601 字符串解析）
+    DateTime(chrono::NaiveDateTime),
+    /// 二进制数据
+    Bytes(Vec<u8>),
+    /// JSON 值
+    Json(serde_json::Value),
 }
 
 #[cfg(feature = "mysql")]
@@ -2999,10 +3015,18 @@ impl SqlParam {
                     ))
                 }
             }
-            Value::String(s) => Ok(SqlParam::String(s.clone())),
-            _ => Err(BaseError::DatabaseQueryFailed(
-                yang_db::DbError::QueryError(format!("不支持的值类型: {:?}", value)),
-            )),
+            Value::String(s) => {
+                // QRY-5: 尝试解析为 DateTime（ISO 8601 格式）
+                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f"))
+                {
+                    return Ok(SqlParam::DateTime(dt));
+                }
+                Ok(SqlParam::String(s.clone()))
+            }
+            Value::Array(_) => Ok(SqlParam::Json(value.clone())),
+            Value::Object(_) => Ok(SqlParam::Json(value.clone())),
         }
     }
 }

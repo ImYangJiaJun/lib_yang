@@ -163,6 +163,7 @@ pub struct TokenClaims {
 
 impl TokenClaims {
     /// 构造 `TokenClaims`（`#[non_exhaustive]` 后的唯一公开构造入口）。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         iss: impl Into<String>,
         sub: impl Into<String>,

@@ -1,8 +1,9 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 // PostgreSQL CRUD 操作集成测试（简化版）
 // 镜像 integration_crud_simple.rs 的风格，但使用 yang_db::postgres::Database
 // 与 postgres:// 连接串。所有触达数据库的测试都标记 #[ignore]，
 // 默认 `cargo test` 套件保持离线（不需要活的 PostgreSQL 实例）。
-
 #![allow(dead_code)]
 
 use serde_json::json;

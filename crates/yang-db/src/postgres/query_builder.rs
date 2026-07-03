@@ -227,10 +227,8 @@ impl SqlGenerator {
         self.append(" WHERE ");
 
         if conditions.len() == 1 {
-            let sql = crate::postgres::condition::condition_to_sql(
-                &conditions[0],
-                &mut self.params,
-            );
+            let sql =
+                crate::postgres::condition::condition_to_sql(&conditions[0], &mut self.params);
             self.append(&sql);
         } else {
             // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
@@ -1526,7 +1524,8 @@ impl<'a> QueryBuilder<'a> {
                 if self.enable_logging {
                     log::debug!("insert() 成功，插入 ID: {}", id);
                 }
-                u64::try_from(id).map_err(|_| crate::error::DbError::InvalidArgument("返回主键为负".into()))
+                u64::try_from(id)
+                    .map_err(|_| crate::error::DbError::InvalidArgument("返回主键为负".into()))
             }
             Err(e) => {
                 log::error!("insert() 失败: {}", e);
@@ -1946,6 +1945,8 @@ where
 // PLACEHOLDER_TESTS
 
 #[cfg(test)]
+#[allow(deprecated)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;

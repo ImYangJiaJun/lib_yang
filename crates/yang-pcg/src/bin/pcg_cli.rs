@@ -245,8 +245,8 @@ fn load_config(path: Option<&str>) -> Result<GenerationConfig, String> {
                     allowed_base.display()
                 ));
             }
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| format!("读取 {path} 失败: {e}"))?;
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("读取 {path} 失败: {e}"))?;
             serde_json::from_str::<GenerationConfig>(&text)
                 .map_err(|e| format!("解析 {path} 失败: {e}"))
         }
@@ -275,8 +275,16 @@ mod tests {
     #[test]
     fn parse_args_full_options() {
         let raw: Vec<String> = vec![
-            "--seed", "42", "--config", "cfg.json", "--out", "out.json",
-            "--format", "binary", "--trace-id", "run-001",
+            "--seed",
+            "42",
+            "--config",
+            "cfg.json",
+            "--out",
+            "out.json",
+            "--format",
+            "binary",
+            "--trace-id",
+            "run-001",
         ]
         .into_iter()
         .map(String::from)
@@ -303,10 +311,7 @@ mod tests {
 
     #[test]
     fn parse_args_missing_out() {
-        let raw: Vec<String> = vec!["--seed", "42"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let raw: Vec<String> = vec!["--seed", "42"].into_iter().map(String::from).collect();
         let err = parse_args(&raw).expect_err("缺 --out 应报错");
         assert!(err.contains("--out"), "错误信息应提及 --out");
     }
@@ -348,10 +353,7 @@ mod tests {
             .map(String::from)
             .collect();
         let err = parse_args(&raw).expect_err("--seed 缺值应报错");
-        assert!(
-            err.contains("缺少参数值"),
-            "错误信息应提及缺少参数值"
-        );
+        assert!(err.contains("缺少参数值"), "错误信息应提及缺少参数值");
     }
 
     // ─── load_config 测试 ───
@@ -372,8 +374,7 @@ mod tests {
 
     #[test]
     fn load_config_nonexistent_file() {
-        let err = load_config(Some("nonexistent_file_12345.json"))
-            .expect_err("不存在的文件应报错");
+        let err = load_config(Some("nonexistent_file_12345.json")).expect_err("不存在的文件应报错");
         assert!(
             err.contains("无法解析") || err.contains("读取"),
             "错误信息应包含路径错误描述: {}",
@@ -391,13 +392,8 @@ mod tests {
         let file_path = dir.join("bad.json");
         std::fs::write(&file_path, "{not valid json!!!").expect("写临时文件应成功");
 
-        let err = load_config(Some(file_path.to_str().unwrap()))
-            .expect_err("非法 JSON 应报错");
-        assert!(
-            err.contains("解析"),
-            "错误信息应提及解析失败: {}",
-            err
-        );
+        let err = load_config(Some(file_path.to_str().unwrap())).expect_err("非法 JSON 应报错");
+        assert!(err.contains("解析"), "错误信息应提及解析失败: {}", err);
 
         let _ = std::fs::remove_file(&file_path);
         let _ = std::fs::remove_dir(&dir);

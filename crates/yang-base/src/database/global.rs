@@ -205,6 +205,7 @@ impl GlobalDatabase {
     ///     "SELECT id, name FROM users WHERE status = 1"
     /// ).await?;
     /// ```
+    #[allow(deprecated)]
     pub async fn query<T>(sql: &str) -> Result<Vec<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
@@ -273,6 +274,7 @@ impl GlobalDatabase {
     ///     "DELETE FROM users WHERE id = 1"
     /// ).await?;
     /// ```
+    #[allow(deprecated)]
     pub async fn execute(sql: &str) -> Result<u64, BaseError> {
         Self::get()?
             .execute(sql)

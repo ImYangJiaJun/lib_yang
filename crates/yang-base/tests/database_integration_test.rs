@@ -11,6 +11,10 @@
 //! **注意**: 这些测试需要 Docker 环境。如果没有 Docker，测试将被跳过。
 //! 运行测试：`cargo test --test database_integration_test -- --test-threads=1`
 
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::database::{DatabaseInitializer, GlobalDatabase};
 use yang_base::plugin::{Plugin, PluginManager};

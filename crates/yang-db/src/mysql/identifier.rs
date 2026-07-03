@@ -60,6 +60,7 @@ pub fn quote_qualified(ident: &str) -> Result<String, DbError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

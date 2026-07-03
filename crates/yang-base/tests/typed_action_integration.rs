@@ -8,6 +8,9 @@
 //! **需要 Docker**：无 Docker 时静默跳过（与既有集成测试一致）。
 //! 运行：`cargo test --test typed_action_integration -- --ignored --test-threads=1`
 #![cfg(feature = "mysql")]
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -258,6 +258,7 @@ impl Database {
     }
 
     /// 初始化数据库（执行 SQL 脚本）
+    #[allow(deprecated)]
     pub async fn init(&self, sql_script: &str) -> Result<(), DbError> {
         // 按分号分割多个 SQL 语句
         let statements: Vec<&str> = sql_script
@@ -274,6 +275,7 @@ impl Database {
     }
 
     /// 创建表
+    #[allow(deprecated)]
     pub async fn create_table(&self, create_sql: &str) -> Result<(), DbError> {
         self.execute(create_sql).await?;
         Ok(())
@@ -283,6 +285,7 @@ impl Database {
     ///
     /// 表名经 `quote_identifier` 校验+转义（DB-6，双引号方言）；非法表名返回
     /// `InvalidArgument`。
+    #[allow(deprecated)]
     pub async fn drop_table(&self, table_name: &str) -> Result<(), DbError> {
         let quoted = crate::postgres::identifier::quote_identifier(table_name)?;
         let sql = format!("DROP TABLE IF EXISTS {}", quoted);

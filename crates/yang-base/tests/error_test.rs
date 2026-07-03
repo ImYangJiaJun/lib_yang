@@ -59,8 +59,13 @@ fn test_plugin_config_invalid_message() {
 
 #[test]
 fn test_database_connection_failed_message() {
-    let err = BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("无法连接到 MySQL".to_string()));
-    assert_eq!(format!("{}", err), "数据库连接失败: 连接错误: 无法连接到 MySQL");
+    let err = BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError(
+        "无法连接到 MySQL".to_string(),
+    ));
+    assert_eq!(
+        format!("{}", err),
+        "数据库连接失败: 连接错误: 无法连接到 MySQL"
+    );
 }
 
 #[test]

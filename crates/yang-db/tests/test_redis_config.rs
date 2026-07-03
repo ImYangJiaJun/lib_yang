@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 use std::time::Instant;
 use yang_db::{RedisClient, RedisConfig};
 

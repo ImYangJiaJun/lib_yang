@@ -85,7 +85,8 @@ fn test_from_error_plugin_errors() {
 
 #[test]
 fn test_from_error_database_errors() {
-    let error = BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("连接超时".to_string()));
+    let error =
+        BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("连接超时".to_string()));
     let response = ApiResponse::from_error(&error);
 
     assert_eq!(response.code, 200003);

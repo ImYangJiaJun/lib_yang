@@ -70,8 +70,15 @@ pub enum BaseError {
 
     // ==================== 数据库错误 ====================
     /// 数据库连接失败，持有底层 DbError 以保留错误链
-    #[error("数据库连接失败: {0}")]
+    #[error("数据库连接失败 [DbError]: {0}")]
     DatabaseConnectionFailed(#[source] yang_db::DbError),
+
+    /// 数据库连接失败（DbError 专用变体，用于 From<DbError> 映射）
+    ///
+    /// 与 `DatabaseConnectionFailed` 语义相同但独立编码 200011，
+    /// 便于下游区分"直接构造的连接错误"和"来自 DbError 包装的连接错误"。
+    #[error("数据库连接失败 [DbError]: {0}")]
+    DatabaseConnectionDbError(#[source] yang_db::DbError),
 
     /// 数据库已初始化
     #[error("数据库已初始化")]
@@ -349,8 +356,8 @@ impl From<yang_db::DbError> for BaseError {
             // 事务类：事务错误
             D::TransactionError(_) => BaseError::DatabaseTransactionFailed(err),
 
-            // 连接类：连接错误（保留底层 DbError 错误链）
-            D::ConnectionError(_) => BaseError::DatabaseConnectionFailed(err),
+            // 连接类：连接错误（保留底层 DbError 错误链）→ DatabaseConnectionDbError (200011)
+            D::ConnectionError(_) => BaseError::DatabaseConnectionDbError(err),
 
             // Redis 类：所有 Redis 相关错误（保留底层 DbError 错误链）
             D::RedisConnectionError(_)
@@ -428,7 +435,9 @@ impl From<jsonwebtoken::errors::Error> for BaseError {
             | ErrorKind::RsaFailedSigning
             | ErrorKind::InvalidAlgorithmName => BaseError::TokenVerifyFailed(err),
             // 真正解析/IO 错误 → TokenParseFailed
-            ErrorKind::Base64(_) | ErrorKind::Json(_) | ErrorKind::Utf8(_)
+            ErrorKind::Base64(_)
+            | ErrorKind::Json(_)
+            | ErrorKind::Utf8(_)
             | ErrorKind::Provider(_) => BaseError::TokenParseFailed(err),
             // 防非穷尽: 未显式列出的验证类错误 → TokenVerifyFailed
             _ => BaseError::TokenVerifyFailed(err),
@@ -506,6 +515,7 @@ impl BaseError {
 
             // ==================== 数据库错误 (2xxxxx) ====================
             BaseError::DatabaseConnectionFailed(_) => 200001,
+            BaseError::DatabaseConnectionDbError(_) => 200011,
             BaseError::DatabaseAlreadyInitialized => 200002,
             BaseError::DatabaseQueryFailed(_) => 200003,
             BaseError::DatabaseExecuteFailed(_) => 200004,
@@ -592,6 +602,7 @@ impl BaseError {
             BaseError::PluginShutdownFailed(_, _) => "100008",
             // 数据库错误 (2xxxxx)
             BaseError::DatabaseConnectionFailed(_) => "200001",
+            BaseError::DatabaseConnectionDbError(_) => "200011",
             BaseError::DatabaseAlreadyInitialized => "200002",
             BaseError::DatabaseQueryFailed(_) => "200003",
             BaseError::DatabaseExecuteFailed(_) => "200004",
@@ -675,7 +686,9 @@ impl BaseError {
             | BaseError::PluginShutdownFailed(_, _) => C::Server,
             // 数据库错误：连接失败/超时/连接池为瞬时（可重试），
             // 已包装的 DbError 同理（底层连接/超时语义已由 From<DbError> 正确分桶）
-            BaseError::DatabaseConnectionFailed(_) => C::Transient,
+            BaseError::DatabaseConnectionFailed(_) | BaseError::DatabaseConnectionDbError(_) => {
+                C::Transient
+            }
             BaseError::MissingWhereClause(_)
             | BaseError::DatabaseMigrationFailed(_, _)
             | BaseError::MigrationFailed(_, _, _) => C::Client,
@@ -801,7 +814,10 @@ mod tests {
     #[test]
     fn test_error_codes_database() {
         assert_eq!(
-            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("reason".to_string())).code(),
+            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError(
+                "reason".to_string()
+            ))
+            .code(),
             200001
         );
         assert_eq!(BaseError::DatabaseAlreadyInitialized.code(), 200002);
@@ -1040,6 +1056,7 @@ mod tests {
         let samples: Vec<BaseError> = vec![
             BaseError::PluginNotFound("p".into()),
             BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())),
+            BaseError::DatabaseConnectionDbError(yang_db::DbError::ConnectionError("c".into())),
             BaseError::DatabaseNotInitialized,
             BaseError::RedisNotInitialized,
             BaseError::RedisOperationDbError(yang_db::DbError::RedisConnectionError("c".into())),
@@ -1102,7 +1119,13 @@ mod tests {
         );
         // Transient
         assert_eq!(
-            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())).category(),
+            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into()))
+                .category(),
+            ErrorCategory::Transient
+        );
+        assert_eq!(
+            BaseError::DatabaseConnectionDbError(yang_db::DbError::ConnectionError("c".into()))
+                .category(),
             ErrorCategory::Transient
         );
         assert_eq!(BaseError::HttpTimeout.category(), ErrorCategory::Transient);
@@ -1120,7 +1143,10 @@ mod tests {
     /// is_retryable = (category == Transient)
     #[test]
     fn test_is_retryable() {
-        assert!(BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())).is_retryable());
+        assert!(
+            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into()))
+                .is_retryable()
+        );
         assert!(BaseError::HttpTimeout.is_retryable());
         assert!(!BaseError::ParamInvalid("k".into(), "r".into()).is_retryable());
         assert!(!BaseError::Unauthorized("u".into()).is_retryable());
@@ -1135,7 +1161,10 @@ mod tests {
         assert!(BaseError::TokenExpired.is_client_error());
         assert!(BaseError::RecordNotFound("r".into()).is_client_error());
         assert!(BaseError::ActionNotFound("a".into()).is_client_error());
-        assert!(!BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())).is_client_error());
+        assert!(
+            !BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into()))
+                .is_client_error()
+        );
         assert!(!BaseError::Unknown("u".into()).is_client_error());
     }
 
@@ -1143,7 +1172,10 @@ mod tests {
     #[test]
     fn test_is_server_error() {
         assert!(BaseError::Unknown("u".into()).is_server_error());
-        assert!(BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())).is_server_error());
+        assert!(
+            BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into()))
+                .is_server_error()
+        );
         assert!(BaseError::PluginAlreadyRegistered("p".into()).is_server_error());
         assert!(!BaseError::ParamInvalid("k".into(), "r".into()).is_server_error());
         assert!(!BaseError::Unauthorized("u".into()).is_server_error());

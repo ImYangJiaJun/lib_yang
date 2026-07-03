@@ -4,7 +4,9 @@ use crate::config::TerrainConfig;
 use crate::error::PcgResult;
 use crate::model::geometry::{GridPoint, GridSize, RoomBounds};
 use crate::model::room::{DoorAnchor, Room, RoomType};
-use crate::model::terrain::{ConnectivitySummary, Grid2D, ReservedZone, ReservedZoneBounds, Terrain, TileKind};
+use crate::model::terrain::{
+    ConnectivitySummary, Grid2D, ReservedZone, ReservedZoneBounds, Terrain, TileKind,
+};
 use crate::rng::StableRng;
 
 use super::grid::to_local;

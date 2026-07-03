@@ -88,7 +88,7 @@ sqlx = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 
 # JSON Schema 验证（可选，通过 "plugin-schema" feature 启用）
-jsonschema = { workspace = true, optional = true }
+jsonschema = { workspace = true, default-features = false, optional = true }
 
 # 指标门面（可选，通过 "metrics" feature 启用）
 metrics = { workspace = true, optional = true }

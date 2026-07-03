@@ -11,6 +11,10 @@
 //! **注意**: 这些测试需要 Docker 环境。如果没有 Docker，测试将被跳过。
 //! 运行测试：`cargo test --test table_query_paginate_test -- --test-threads=1 --ignored`
 
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
 use std::sync::Arc;

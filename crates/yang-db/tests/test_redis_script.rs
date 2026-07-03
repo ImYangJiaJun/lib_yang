@@ -1,3 +1,7 @@
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(dead_code)]
+#![allow(unused_results)]
 //! Lua 脚本单元测试
 //!
 //! 测试 Redis Lua 脚本功能的基础行为

@@ -2031,6 +2031,7 @@ fn parse_with_scores(result: &RedisValue) -> Vec<(String, f64)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -2168,7 +2169,7 @@ mod tests {
                 RedisValue::String("key2".to_string()),
             ]),
         ]);
-        let (cursor, keys) = parse_scan_result(&result).unwrap();
+        let (cursor, keys) = parse_scan_result(&result).expect("有效 scan 结果应解析成功");
         assert_eq!(cursor, 5);
         assert_eq!(keys, vec!["key1".to_string(), "key2".to_string()]);
     }
@@ -2179,7 +2180,7 @@ mod tests {
             RedisValue::String("0".to_string()),
             RedisValue::Array(vec![]),
         ]);
-        let (cursor, keys) = parse_scan_result(&result).unwrap();
+        let (cursor, keys) = parse_scan_result(&result).expect("有效 scan 结果应解析成功");
         assert_eq!(cursor, 0);
         assert!(keys.is_empty());
     }

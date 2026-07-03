@@ -160,11 +160,13 @@ fn candidate_points(terrain: &Terrain) -> Vec<GridPoint> {
 
 fn sample_rarity_tier(weights: &[f32], rng: &mut StableRng) -> u8 {
     // len==3 已由 OPT-L-04 config 校验保证
-    let w = [f64::from(weights[0]), f64::from(weights[1]), f64::from(weights[2])];
+    let w = [
+        f64::from(weights[0]),
+        f64::from(weights[1]),
+        f64::from(weights[2]),
+    ];
     let tiers = [0u8, 1, 2];
-    rng.choose_weighted(&tiers, &w)
-        .copied()
-        .unwrap_or(0)
+    rng.choose_weighted(&tiers, &w).copied().unwrap_or(0)
 }
 
 fn item_spawn_tag(room_type: RoomType) -> &'static str {

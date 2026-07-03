@@ -1,7 +1,8 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 // JOIN 查询集成测试（简化版）
 // 任务 21.4: 测试各种 JOIN 类型和多表连接
 // 主要测试 SQL 生成的正确性
-
 #![allow(dead_code)]
 
 use yang_db::Database;

@@ -372,17 +372,14 @@ impl TokenManager {
             custom: custom_claims,
         };
 
-        encode(&self.jwt_header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
+        encode(&self.jwt_header, &claims, &self.encoding_key)
+            .map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 使用预取时间戳生成 Refresh Token（内部方法，PERF-10 优化）。
     ///
     /// 与 [`generate_refresh_token`] 功能相同，但接受外部传入的 `now` 时间戳。
-    fn generate_refresh_token_at(
-        &self,
-        subject: &str,
-        now: u64,
-    ) -> Result<String, BaseError> {
+    fn generate_refresh_token_at(&self, subject: &str, now: u64) -> Result<String, BaseError> {
         let claims = TokenClaims {
             iss: self.issuer.clone(),
             sub: subject.to_string(),
@@ -395,7 +392,8 @@ impl TokenManager {
             custom: serde_json::Value::Null,
         };
 
-        encode(&self.jwt_header, &claims, &self.encoding_key).map_err(BaseError::TokenGenerateFailed)
+        encode(&self.jwt_header, &claims, &self.encoding_key)
+            .map_err(BaseError::TokenGenerateFailed)
     }
 
     /// 返回 Refresh Token 的有效期（秒）。

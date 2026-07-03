@@ -1343,9 +1343,7 @@ async fn test_slow_query_warn_fires() {
     }
 
     let buf = Arc::new(Mutex::new(Vec::new()));
-    let make_writer = BufMakeWriter {
-        buf: buf.clone(),
-    };
+    let make_writer = BufMakeWriter { buf: buf.clone() };
 
     let subscriber = tracing_subscriber::fmt()
         .with_writer(make_writer)
@@ -1365,8 +1363,7 @@ async fn test_slow_query_warn_fires() {
 
     assert_eq!(result, 42, "返回值应透传");
 
-    let output = String::from_utf8(buf.lock().unwrap().clone())
-        .expect("输出不是合法 UTF-8");
+    let output = String::from_utf8(buf.lock().unwrap().clone()).expect("输出不是合法 UTF-8");
     assert!(
         output.contains("慢查询"),
         "warn 应包含中文消息 '慢查询'，输出: {:?}",

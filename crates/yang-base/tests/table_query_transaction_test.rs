@@ -11,6 +11,10 @@
 //! **注意**: 这些测试需要 Docker 环境。无 Docker 时自动跳过。
 //! 运行：`cargo test --test table_query_transaction_test -- --test-threads=1 --ignored`
 
+#![allow(deprecated)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
 use std::collections::HashMap;

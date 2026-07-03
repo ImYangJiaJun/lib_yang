@@ -3,6 +3,10 @@
 //! 验证 `build_update_batch` 重构后生成的 SQL 结构与重构前完全一致，
 //! 同时确认中间分配次数降至 O(M) 级别（每个字段一次，而非每个字段×每条记录）。
 
+#![allow(unused_results)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use crate::mysql::query_builder::SqlGenerator;
 use std::collections::HashMap;
 

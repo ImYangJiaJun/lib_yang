@@ -958,10 +958,7 @@ mod tests {
     #[test]
     fn test_room_count_max_exceeds_boundary() {
         let config = GenerationConfig {
-            room_count: RangeU16 {
-                min: 10,
-                max: 4097,
-            },
+            room_count: RangeU16 { min: 10, max: 4097 },
             ..Default::default()
         };
         let result = config.normalize();

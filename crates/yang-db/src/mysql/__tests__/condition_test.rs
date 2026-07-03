@@ -1,5 +1,8 @@
 //! `SqlValue` 转换单元测试
 
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use crate::mysql::SqlValue;
 
 /// NEW-11：u64 > i64::MAX 不再静默截断环绕成负数，而是走十进制字符串。

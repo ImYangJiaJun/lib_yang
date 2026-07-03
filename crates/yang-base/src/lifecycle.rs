@@ -227,21 +227,12 @@ mod tests {
             .await
             .unwrap();
 
-        manager
-            .register(PluginB(Arc::clone(&order)))
-            .await
-            .unwrap();
+        manager.register(PluginB(Arc::clone(&order))).await.unwrap();
 
-        manager
-            .register(PluginC(Arc::clone(&order)))
-            .await
-            .unwrap();
+        manager.register(PluginC(Arc::clone(&order))).await.unwrap();
 
         let result = graceful_shutdown(Some(&manager)).await;
-        assert!(
-            result.is_ok(),
-            "全部插件 shutdown 成功时应返回 Ok"
-        );
+        assert!(result.is_ok(), "全部插件 shutdown 成功时应返回 Ok");
 
         let recorded = order.lock().unwrap().clone();
         assert_eq!(recorded.len(), 3, "应有 3 个插件被 shutdown");

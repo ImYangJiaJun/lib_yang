@@ -330,7 +330,8 @@ fn test_debug_toggle_terrains_identical() {
             terrain_off.tiles.data.len(),
             terrain_on.tiles.data.len(),
             "地形[{}] tiles.data 长度应一致（房间 {}）",
-            idx, terrain_off.room_id
+            idx,
+            terrain_off.room_id
         );
         for (tile_idx, (tile_off, tile_on)) in terrain_off
             .tiles

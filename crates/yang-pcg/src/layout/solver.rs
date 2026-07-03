@@ -58,12 +58,14 @@ pub fn solve_room_bounds(
                 critical_cursor_x, room_id
             ))
         })?;
-        let max_x: i32 = (critical_cursor_x + i64::from(width)).try_into().map_err(|_| {
-            PcgError::layout(format!(
-                "关键路径布局溢出: cursor({}) + width({}) 超出 i32 范围 (房间: {})",
-                critical_cursor_x, width, room_id
-            ))
-        })?;
+        let max_x: i32 = (critical_cursor_x + i64::from(width))
+            .try_into()
+            .map_err(|_| {
+                PcgError::layout(format!(
+                    "关键路径布局溢出: cursor({}) + width({}) 超出 i32 范围 (房间: {})",
+                    critical_cursor_x, width, room_id
+                ))
+            })?;
 
         let bounds = RoomBounds {
             min: GridPoint {
@@ -81,15 +83,12 @@ pub fn solve_room_bounds(
     }
 
     for (branch_index, branch) in graph.branches.iter().enumerate() {
-        let parent_bounds = bounds_map
-            .get(&branch.start_room)
-            .copied()
-            .ok_or_else(|| {
-                PcgError::layout(format!(
-                    "分支父房间 '{}' 不在 bounds_map 中",
-                    branch.start_room
-                ))
-            })?;
+        let parent_bounds = bounds_map.get(&branch.start_room).copied().ok_or_else(|| {
+            PcgError::layout(format!(
+                "分支父房间 '{}' 不在 bounds_map 中",
+                branch.start_room
+            ))
+        })?;
         let vertical_direction = if branch_index % 2 == 0 { 1 } else { -1 };
         let base_y = if vertical_direction > 0 {
             parent_bounds.max.y + row_spacing
@@ -258,8 +257,8 @@ mod tests {
         let graph = dense_same_parent_graph();
         for seed in 0u64..32 {
             let mut rng = StableRng::from_seed(seed);
-            let bounds_map = solve_room_bounds(&graph, &normalized, &mut rng)
-                .expect("布局求解应成功");
+            let bounds_map =
+                solve_room_bounds(&graph, &normalized, &mut rng).expect("布局求解应成功");
             assert_eq!(bounds_map.len(), 2 + 3 * 2, "应放置全部关键+分支房间");
             assert_no_pairwise_overlap(&bounds_map);
         }
@@ -274,10 +273,8 @@ mod tests {
         let graph = dense_same_parent_graph();
         let mut rng1 = StableRng::from_seed(99);
         let mut rng2 = StableRng::from_seed(99);
-        let a = solve_room_bounds(&graph, &normalized, &mut rng1)
-            .expect("布局求解应成功");
-        let b = solve_room_bounds(&graph, &normalized, &mut rng2)
-            .expect("布局求解应成功");
+        let a = solve_room_bounds(&graph, &normalized, &mut rng1).expect("布局求解应成功");
+        let b = solve_room_bounds(&graph, &normalized, &mut rng2).expect("布局求解应成功");
         assert_eq!(a, b, "同 seed 布局应完全一致");
     }
 }

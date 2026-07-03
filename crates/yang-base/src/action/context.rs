@@ -14,7 +14,7 @@ use crate::table::{TableConfig, TableQuery};
 use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
@@ -214,8 +214,9 @@ pub struct ActionContext {
     /// 请求数据
     pub request: Request,
     /// 当前用户（已认证）
-    // SAFETY: 此字段为 pub 以支持中间件注入认证用户。外部代码直接设置此字段会绕过认证——请使用 TokenAuthMiddleware。
-    pub user: Option<User>,
+    // SAFETY: 此字段为 pub(crate)，仅 crate 内中间件（如 TokenAuthMiddleware）可注入。
+    // 外部 crate 无法直接设置此字段，防止绕过认证。
+    pub(crate) user: Option<User>,
     /// 全局工具
     pub tools: Arc<GlobalTools>,
     /// 表配置（如果 action 关联表）
@@ -232,6 +233,7 @@ pub struct ActionContext {
     pub module: Option<String>,
     /// PERF-13: 缓存用户角色的 Arc 副本，避免 table_query() 每次重新 Arc 化。
     /// 在 `with_user()` 时一次性构建，后续 `table_query()` 仅需 `Arc::clone`（O(1)）。
+    #[allow(dead_code)]
     cached_roles: Arc<[String]>,
 }
 
@@ -281,8 +283,9 @@ impl ActionContext {
 
     /// 设置用户（链式调用）
     ///
-    /// 仅供中间件/内部使用。调用方有责任确保 user 已经过认证（如 TokenAuthMiddleware），
+    /// 仅供 crate 内中间件/内部使用。调用方有责任确保 user 已经过认证（如 TokenAuthMiddleware），
     /// 直接注入未验证的 User 将绕过所有鉴权。
+    #[allow(dead_code)]
     pub fn with_user(mut self, user: User) -> Self {
         self.user = Some(user);
         self

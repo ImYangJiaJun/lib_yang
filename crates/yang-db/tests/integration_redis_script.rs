@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Lua 脚本集成测试
 //!
 //! 使用 testcontainers 测试 Redis Lua 脚本的实际执行

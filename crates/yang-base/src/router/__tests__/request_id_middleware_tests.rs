@@ -113,8 +113,7 @@ async fn test_request_id_middleware_lowercase_tolerant() {
 /// 无 `X-Request-Id` 头时应保留默认生成的 request_id。
 #[tokio::test]
 async fn test_request_id_middleware_missing_header_fallback() {
-    let default_rid =
-        RequestId::from_u128(0xcafe_babe_0000_0000_0000_0000_0000_0001);
+    let default_rid = RequestId::from_u128(0xcafe_babe_0000_0000_0000_0000_0000_0001);
     let request = Request::new(json!({}));
     let captured = run_test(request, default_rid).await;
     assert_eq!(captured, Some(default_rid));

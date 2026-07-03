@@ -283,6 +283,8 @@ fn test_token_expiration() {
 
 /// 测试 parse_token_unsafe 方法
 /// 注意：由于 jsonwebtoken 库可能有时间容差，我们使用足够长的等待时间
+#[allow(deprecated)]
+#[allow(clippy::expect_used)]
 #[test]
 fn test_parse_token_unsafe() {
     let manager = TokenManager::new_symmetric(

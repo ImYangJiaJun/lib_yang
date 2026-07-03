@@ -209,10 +209,7 @@ impl SqlGenerator {
         self.append(" WHERE ");
 
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql(
-                &conditions[0],
-                &mut self.params,
-            );
+            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
             self.append(&sql);
         } else {
             // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
@@ -292,10 +289,7 @@ impl SqlGenerator {
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
         self.append(" HAVING ");
         if conditions.len() == 1 {
-            let sql = crate::mysql::condition::condition_to_sql(
-                &conditions[0],
-                &mut self.params,
-            );
+            let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
             self.append(&sql);
         } else {
             // 与 build_where 多条件路径对齐：内联拼接避免 to_vec + And 包装 + parts Vec。
@@ -2805,6 +2799,8 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use sqlx::mysql::MySqlPoolOptions;
@@ -3855,6 +3851,8 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_db::{RedisClient, RedisValue};
 
