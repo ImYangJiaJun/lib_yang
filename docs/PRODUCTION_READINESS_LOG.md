@@ -54,3 +54,10 @@
 - 对抗性验证：新增单元测试覆盖 `page=0/page_size=0` 和 `page_size=101` 的归一化结果。
 - 已运行验证：`cargo test -p yang-base --lib test_query_params_normalize_clamps_invalid_pagination`
 - 已运行验证：`cargo test -p yang-base --lib test_page_rejects_page_size_above_production_limit`
+
+## 2026-07-06 - yang-pcg Combat 敌人预算饱和加法
+
+- 范围：`crates/yang-pcg/src/spawn/budget.rs`
+- 风险：`RoomType::Combat` 使用 `base + room.difficulty`，在 debug 构建中会因 `u16` 溢出 panic，在 release 构建中存在回绕风险；Boss/Elite 分支已使用饱和运算。
+- 修改：将 Combat 分支改为 `base.saturating_add(room.difficulty)`，保持敌人预算上限在 `u16::MAX`。
+- 验证：`cargo test -p yang-pcg --lib test_combat_enemy_budget_saturates_on_overflow`
