@@ -175,6 +175,20 @@ fn test_global_tools_register_tool_rejects_duplicate_name() {
 }
 
 #[test]
+fn test_global_tools_register_tool_rejects_blank_name() {
+    let tools = create_test_tools();
+
+    for name in ["", "   "] {
+        let err = tools
+            .register_tool(name, Arc::new("redis://localhost".to_string()))
+            .expect_err("空白工具名应被拒绝");
+
+        assert!(matches!(err, BaseError::ConfigError(msg) if msg.contains("工具名称不能为空")));
+        assert!(tools.get_tool::<String>(name).is_none());
+    }
+}
+
+#[test]
 fn test_global_tools_get_nonexistent_tool() {
     let tools = create_test_tools();
 

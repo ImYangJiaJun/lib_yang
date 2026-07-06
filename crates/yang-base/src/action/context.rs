@@ -126,6 +126,10 @@ impl GlobalTools {
         name: &str,
         tool: Arc<T>,
     ) -> Result<(), BaseError> {
+        if name.trim().is_empty() {
+            return Err(BaseError::ConfigError("工具名称不能为空".to_string()));
+        }
+
         // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续注册
         let mut tools = self.tools.write().unwrap_or_else(|p| p.into_inner());
         if tools.contains_key(name) {

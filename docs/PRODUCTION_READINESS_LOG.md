@@ -172,3 +172,9 @@
 - 修改：`register_tool()` 改为返回 `Result<(), BaseError>`，同名重复注册返回 `BaseError::ConfigError("工具已注册: ...")`，不覆盖已有实例；并发测试同步为“首个注册成功，后续重复注册失败但不破坏 map”。
 - 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理注册失败。
 - 验证：`cargo test -p yang-base --lib global_tools`
+## 2026-07-07 - yang-base GlobalTools 工具名非空校验
+
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`
+- 风险：`GlobalTools::register_tool()` 允许空字符串或纯空白工具名进入注册表，后续按名称获取、审计和排错都缺少稳定标识。
+- 修改：注册前校验 `name.trim().is_empty()`，空白名称返回 `BaseError::ConfigError("工具名称不能为空")`，不进入写锁和注册表。
+- 验证：`cargo test -p yang-base --lib register_tool`
