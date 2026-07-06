@@ -276,9 +276,7 @@ impl Request {
     /// assert_eq!(request.token(), Some("my_secret_token"));
     /// ```
     pub fn token(&self) -> Option<&str> {
-        self.headers
-            .get("Authorization")
-            .or_else(|| self.headers.get("authorization"))
+        self.get_header("authorization")
             .and_then(|v| v.strip_prefix("Bearer "))
     }
 
@@ -305,7 +303,12 @@ impl Request {
     /// assert_eq!(request.get_header("Content-Type"), Some("application/json"));
     /// ```
     pub fn get_header(&self, name: &str) -> Option<&str> {
-        self.headers.get(name).map(|s| s.as_str())
+        self.headers
+            .get(name)
+            .or_else(|| self.headers.iter().find_map(|(key, value)| {
+                key.eq_ignore_ascii_case(name).then_some(value)
+            }))
+            .map(|s| s.as_str())
     }
 
     /// 获取查询参数值
@@ -364,5 +367,22 @@ impl Request {
 impl Default for Request {
     fn default() -> Self {
         Self::new(serde_json::Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_header_lookup_is_case_insensitive() {
+        let request = Request::new(json!({}))
+            .header("Content-Type", "application/json")
+            .header("aUtHoRiZaTiOn", "Bearer token123");
+
+        assert_eq!(request.get_header("content-type"), Some("application/json"));
+        assert_eq!(request.get_header("AUTHORIZATION"), Some("Bearer token123"));
+        assert_eq!(request.token(), Some("token123"));
     }
 }

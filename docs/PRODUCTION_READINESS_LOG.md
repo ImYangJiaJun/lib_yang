@@ -140,3 +140,9 @@
 - 风险：出站请求日志原样记录 `self.url`，当调用方直接传入带 query 参数或 userinfo 的 URL 时，可能把 token、password 等敏感信息写入日志。
 - 修改：新增私有 `redact_url_for_log()`，日志记录前移除 query，并将 URL username/password 替换为 `***`；成功和失败日志统一使用脱敏 URL。
 - 验证：`cargo test -p yang-base --lib test_redact_url_for_log_removes_query_and_userinfo`
+## 2026-07-07 - yang-base Action Request header 大小写不敏感读取
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：HTTP header 名大小写不敏感，但 `Action Request::get_header()` 只做精确匹配，`token()` 也只识别 `Authorization`/`authorization` 两种写法。路由或测试构造中出现混合大小写 header 时，认证 token 可能被误判为缺失。
+- 修改：`get_header()` 保留精确命中快路径，并增加 `eq_ignore_ascii_case` fallback；`token()` 复用 `get_header("authorization")`。
+- 验证：`cargo test -p yang-base --lib test_header_lookup_is_case_insensitive`
