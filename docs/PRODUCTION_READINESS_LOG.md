@@ -103,3 +103,9 @@
 - 风险：`RetryConfig` 可接受过大的 `max_retries`、空 `retry_on`、0 毫秒或过大的退避，以及非法 HTTP 状态码；这些配置会导致请求热循环、长时间阻塞或无意义重试，并且错误暴露在网络调用之后。
 - 修改：新增 `RetryConfig::validate()`，限制最大重试次数、退避时间和状态码范围；`RequestBuilder::send()` 在发起网络请求前 fail-fast 校验 retry 策略。
 - 验证：`cargo test -p yang-base --lib retry_config`
+## 2026-07-07 - yang-base 请求级 HTTP timeout 零值校验
+
+- 范围：`crates/yang-base/src/http/request.rs`
+- 风险：`HttpClientConfig` 已拒绝 0 秒超时，但 `RequestBuilder::timeout(0)` 仍可覆盖为 0 秒请求级超时，导致请求在发送后才以传输错误形式失败。
+- 修改：`RequestBuilder::send()` 在网络调用前检查 `self.timeout.is_zero()`，对 0 秒超时返回 `BaseError::ParamInvalid("http.timeout_secs", ...)`。
+- 验证：`cargo test -p yang-base --lib test_send_rejects_zero_request_timeout_before_network`

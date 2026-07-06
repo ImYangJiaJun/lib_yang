@@ -173,6 +173,26 @@ mod retry_config_tests {
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries"));
     }
+
+    #[tokio::test]
+    async fn test_send_rejects_zero_request_timeout_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            None,
+            None,
+        )
+        .timeout(0);
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("0 秒请求超时应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
+    }
 }
 
 /// HTTP 请求构建器
@@ -654,6 +674,13 @@ impl RequestBuilder {
             return Err(BaseError::ParamInvalid(
                 "header".to_string(),
                 self.header_errors.join("; "),
+            ));
+        }
+
+        if self.timeout.is_zero() {
+            return Err(BaseError::ParamInvalid(
+                "http.timeout_secs".to_string(),
+                "HTTP 请求超时时间必须大于 0 秒".to_string(),
             ));
         }
 
