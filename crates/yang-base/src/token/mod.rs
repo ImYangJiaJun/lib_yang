@@ -98,7 +98,7 @@ pub enum TokenType {
 /// ```
 /// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
 /// 请使用 [`TokenClaims::new`] 构造。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TokenClaims {
     /// 签发者（Issuer）
@@ -159,6 +159,23 @@ pub struct TokenClaims {
     /// ```
     #[serde(flatten)]
     pub custom: serde_json::Value,
+}
+
+// NEW-38: 手写 Debug 脱敏，防止 Token 字段（iss/sub/jti/自定义声明）明文泄漏
+impl core::fmt::Debug for TokenClaims {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TokenClaims")
+            .field("iss", &self.iss)
+            .field("sub", &self.sub)
+            .field("aud", &self.aud)
+            .field("exp", &self.exp)
+            .field("nbf", &self.nbf)
+            .field("iat", &self.iat)
+            .field("jti", &"***")
+            .field("token_type", &self.token_type)
+            .field("custom", &"***")
+            .finish()
+    }
 }
 
 impl TokenClaims {

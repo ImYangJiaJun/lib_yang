@@ -5,6 +5,7 @@ use crate::action::{ActionContext, GlobalTools, Request, User};
 use crate::token::TokenManager;
 use jsonwebtoken::Algorithm;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// 创建测试用的 TokenManager
@@ -39,7 +40,7 @@ fn test_user_new() {
 #[test]
 fn test_user_has_permission() {
     let mut user = User::new(1, "alice");
-    user.permissions = vec!["user:read".to_string(), "user:write".to_string()];
+    user.permissions = HashSet::from(["user:read".to_string(), "user:write".to_string()]);
 
     assert!(user.has_permission("user:read"));
     assert!(user.has_permission("user:write"));
@@ -58,7 +59,7 @@ fn test_user_has_permission_empty() {
 #[test]
 fn test_user_has_role() {
     let mut user = User::new(1, "alice");
-    user.roles = vec!["admin".to_string(), "user".to_string()];
+    user.roles = HashSet::from(["admin".to_string(), "user".to_string()]);
 
     assert!(user.has_role("admin"));
     assert!(user.has_role("user"));
@@ -77,7 +78,7 @@ fn test_user_has_role_empty() {
 #[test]
 fn test_user_has_any_role() {
     let mut user = User::new(1, "alice");
-    user.roles = vec!["admin".to_string(), "user".to_string()];
+    user.roles = HashSet::from(["admin".to_string(), "user".to_string()]);
 
     // 有任一角色
     assert!(user.has_any_role(&["admin".to_string()]));
@@ -101,7 +102,7 @@ fn test_user_has_any_role_empty_user_roles() {
 #[test]
 fn test_user_has_any_role_empty_check_roles() {
     let mut user = User::new(1, "alice");
-    user.roles = vec!["admin".to_string()];
+    user.roles = HashSet::from(["admin".to_string()]);
 
     // 空列表检查，应该返回 false
     assert!(!user.has_any_role(&[]));
@@ -112,8 +113,8 @@ fn test_user_clone() {
     let mut user = User::new(1, "alice");
     user.nickname = "Alice".to_string();
     user.email = "alice@example.com".to_string();
-    user.roles = vec!["admin".to_string()];
-    user.permissions = vec!["user:read".to_string()];
+    user.roles = HashSet::from(["admin".to_string()]);
+    user.permissions = HashSet::from(["user:read".to_string()]);
 
     let cloned = user.clone();
 
@@ -235,35 +236,35 @@ fn test_action_context_user_roles() {
 
     // 没有用户时返回空列表
     let context = ActionContext::new(request.clone(), tools.clone());
-    assert_eq!(context.user_roles(), Vec::<String>::new());
+    assert!(context.user_roles().is_empty());
 
-    // 有用户时返回用户角色
+    // 有用户时返回用户角色（顺序不保证，用集合比较）
     let mut user = User::new(1, "alice");
-    user.roles = vec!["admin".to_string(), "user".to_string()];
+    user.roles = HashSet::from(["admin".to_string(), "user".to_string()]);
     let context = ActionContext::new(request, tools).with_user(user);
-    assert_eq!(
-        context.user_roles(),
-        vec!["admin".to_string(), "user".to_string()]
-    );
+    let roles = context.user_roles();
+    assert!(roles.contains(&"admin".to_string()));
+    assert!(roles.contains(&"user".to_string()));
+    assert_eq!(roles.len(), 2);
 }
 
 #[test]
-fn test_action_context_user_roles_slice() {
+fn test_action_context_user_roles_set() {
     let request = Request::new(json!({}));
     let tools = create_test_tools();
 
-    // 没有用户时返回空切片
+    // 没有用户时返回空集合
     let context = ActionContext::new(request.clone(), tools.clone());
-    assert_eq!(context.user_roles_slice(), &[] as &[String]);
+    assert!(context.user_roles_set().is_none());
 
-    // 有用户时返回用户角色切片
+    // 有用户时返回用户角色集合
     let mut user = User::new(1, "alice");
-    user.roles = vec!["admin".to_string(), "user".to_string()];
+    user.roles = HashSet::from(["admin".to_string(), "user".to_string()]);
     let context = ActionContext::new(request, tools).with_user(user);
-    assert_eq!(
-        context.user_roles_slice(),
-        &["admin".to_string(), "user".to_string()]
-    );
+    let roles_set = context.user_roles_set().unwrap();
+    assert!(roles_set.contains("admin"));
+    assert!(roles_set.contains("user"));
+    assert!(!roles_set.contains("guest"));
 }
 
 #[test]

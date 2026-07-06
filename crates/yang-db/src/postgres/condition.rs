@@ -2,12 +2,14 @@ use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
 use super::identifier::quote_identifier;
+use crate::DbError;
 
 /// SQL 值类型（PostgreSQL）
 ///
 /// 与 MySQL 后端的 `SqlValue` 结构一致，独立定义以保持 `postgres` 模块自包含，
 /// 避免跨方言耦合。变体集合与 `From` 转换均与 MySQL 版本保持对齐。
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SqlValue {
     Null,
     Bool(bool),
@@ -289,6 +291,140 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
     let mut out = String::new();
     write_condition_to_sql_owned(condition, &mut out, params);
     out
+}
+
+/// 严格版条件转 SQL：非法标识符返回 [`DbError::InvalidArgument`] 而非 RAW 回退。
+///
+/// 与 [`condition_to_sql_owned`] 行为一致，但字段标识符校验失败时**不**回退到原始值，
+/// 而是立即返回错误，供调用方自行决定是否允许特定表达式（如 `a.b` 限定名）。
+///
+/// # 返回
+///
+/// - `Ok(String)`: SQL 片段
+/// - `Err(DbError::InvalidArgument)`: 包含非法标识符
+pub fn condition_to_sql_owned_checked(
+    condition: Condition,
+    params: &mut Vec<SqlValue>,
+) -> Result<String, DbError> {
+    let mut out = String::new();
+    write_condition_to_sql_owned_checked(condition, &mut out, params)?;
+    Ok(out)
+}
+
+/// checked 版本的内部写入逻辑，使用 `quote_identifier(...)?` 传播错误。
+fn write_condition_to_sql_owned_checked(
+    condition: Condition,
+    out: &mut String,
+    params: &mut Vec<SqlValue>,
+) -> Result<(), DbError> {
+    match condition {
+        Condition::Eq(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} = ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::Ne(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} != ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::Gt(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} > ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::Lt(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} < ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::Gte(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} >= ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::Lte(field, value) => {
+            let idx = push_placeholder(params, value);
+            out.push_str(&format!("{} <= ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::In(field, values) => {
+            if values.is_empty() {
+                out.push_str("1 = 0");
+                return Ok(());
+            }
+            out.push_str(&format!("{} IN (", quote_identifier(&field)?));
+            for (i, v) in values.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let idx = push_placeholder(params, v);
+                out.push_str(&format!("${}", idx));
+            }
+            out.push(')');
+            Ok(())
+        }
+        Condition::Between(field, start, end) => {
+            let idx_start = push_placeholder(params, start);
+            let idx_end = push_placeholder(params, end);
+            out.push_str(&format!(
+                "{} BETWEEN ${} AND ${}",
+                quote_identifier(&field)?,
+                idx_start,
+                idx_end
+            ));
+            Ok(())
+        }
+        Condition::Like(field, pattern) => {
+            let idx = push_placeholder(params, SqlValue::String(pattern));
+            out.push_str(&format!("{} LIKE ${}", quote_identifier(&field)?, idx));
+            Ok(())
+        }
+        Condition::IsNull(field) => {
+            out.push_str(&format!("{} IS NULL", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::IsNotNull(field) => {
+            out.push_str(&format!("{} IS NOT NULL", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::And(mut conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 1");
+                return Ok(());
+            }
+            if conditions.len() == 1 {
+                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+            }
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" AND ");
+                }
+                write_condition_to_sql_owned_checked(c, out, params)?;
+            }
+            out.push(')');
+            Ok(())
+        }
+        Condition::Or(mut conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 0");
+                return Ok(());
+            }
+            if conditions.len() == 1 {
+                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+            }
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" OR ");
+                }
+                write_condition_to_sql_owned_checked(c, out, params)?;
+            }
+            out.push(')');
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

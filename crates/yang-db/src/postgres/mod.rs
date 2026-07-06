@@ -22,7 +22,7 @@ pub mod query_builder;
 pub mod transaction;
 
 // 重新导出核心类型
-pub use condition::{condition_to_sql_owned, Condition, SqlValue};
+pub use condition::{condition_to_sql_owned, condition_to_sql_owned_checked, Condition, SqlValue};
 pub use database::{Database, DatabaseConfig};
 pub use field::FieldType;
 pub use identifier::{is_valid_identifier, quote_identifier, quote_qualified};

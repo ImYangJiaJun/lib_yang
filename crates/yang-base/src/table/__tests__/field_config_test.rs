@@ -181,7 +181,7 @@ fn test_field_permissions_default() {
     let permissions = FieldPermissions::default();
 
     // 默认情况下，所有角色都可以访问
-    let user_roles = ["user".to_string()];
+    let user_roles = HashSet::from(["user".to_string()]);
     assert!(permissions.can_read(&user_roles));
     assert!(permissions.can_write(&user_roles));
     assert!(permissions.can_filter(&user_roles));
@@ -196,14 +196,14 @@ fn test_field_permissions_can_read() {
     };
 
     // 有权限的角色
-    assert!(permissions.can_read(&["admin".to_string()]));
-    assert!(permissions.can_read(&["user".to_string()]));
+    assert!(permissions.can_read(&HashSet::from(["admin".to_string()])));
+    assert!(permissions.can_read(&HashSet::from(["user".to_string()])));
 
     // 没有权限的角色
-    assert!(!permissions.can_read(&["guest".to_string()]));
+    assert!(!permissions.can_read(&HashSet::from(["guest".to_string()])));
 
     // 多个角色，其中一个有权限
-    assert!(permissions.can_read(&["guest".to_string(), "user".to_string()]));
+    assert!(permissions.can_read(&HashSet::from(["guest".to_string(), "user".to_string()])));
 }
 
 #[test]
@@ -214,10 +214,10 @@ fn test_field_permissions_can_write() {
     };
 
     // 有权限的角色
-    assert!(permissions.can_write(&["admin".to_string()]));
+    assert!(permissions.can_write(&HashSet::from(["admin".to_string()])));
 
     // 没有权限的角色
-    assert!(!permissions.can_write(&["user".to_string()]));
+    assert!(!permissions.can_write(&HashSet::from(["user".to_string()])));
 }
 
 #[test]
@@ -228,10 +228,10 @@ fn test_field_permissions_can_filter() {
     };
 
     // 有权限的角色
-    assert!(permissions.can_filter(&["admin".to_string()]));
+    assert!(permissions.can_filter(&HashSet::from(["admin".to_string()])));
 
     // 没有权限的角色
-    assert!(!permissions.can_filter(&["user".to_string()]));
+    assert!(!permissions.can_filter(&HashSet::from(["user".to_string()])));
 }
 
 #[test]
@@ -242,10 +242,10 @@ fn test_field_permissions_can_sort() {
     };
 
     // 有权限的角色
-    assert!(permissions.can_sort(&["admin".to_string()]));
+    assert!(permissions.can_sort(&HashSet::from(["admin".to_string()])));
 
     // 没有权限的角色
-    assert!(!permissions.can_sort(&["user".to_string()]));
+    assert!(!permissions.can_sort(&HashSet::from(["user".to_string()])));
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn test_field_permissions_empty_roles() {
     };
 
     // 空列表表示所有人都可以访问
-    let any_roles = ["any_role".to_string()];
+    let any_roles = HashSet::from(["any_role".to_string()]);
     assert!(permissions.can_read(&any_roles));
     assert!(permissions.can_write(&any_roles));
     assert!(permissions.can_filter(&any_roles));

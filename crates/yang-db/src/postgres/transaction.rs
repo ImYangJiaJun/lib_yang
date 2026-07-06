@@ -46,6 +46,16 @@ impl Transaction {
     }
 
     /// 执行原生 SQL
+    ///
+    /// # 弃用说明
+    ///
+    /// 已弃用（与 MySQL `Transaction::execute` 对齐）。请使用参数化查询方法
+    /// [`execute_with_params`](Self::execute_with_params) 或
+    /// [`query_with_params`](Self::query_with_params) 以防 SQL 注入。
+    #[deprecated(
+        since = "0.1.0",
+        note = "使用 execute_with_params / query_with_params 等参数化方法替代"
+    )]
     pub async fn execute(&mut self, sql: &str) -> Result<u64, DbError> {
         if self.enable_logging {
             log::debug!("事务中执行: {}", sql);
@@ -206,6 +216,17 @@ impl Transaction {
     pub fn executor(&mut self) -> Option<&mut sqlx::PgConnection> {
         // `SqlxTransaction` 通过 DerefMut 解引用为底层 PgConnection
         self.tx.as_deref_mut()
+    }
+}
+
+// NEW-39: 与 MySQL 对齐——未提交/未回滚的事务被丢弃时输出诊断日志
+impl Drop for Transaction {
+    fn drop(&mut self) {
+        if self.tx.is_some() {
+            log::warn!(
+                "PG 事务被丢弃而未提交/回滚——底层将自动回滚。请显式调用 commit() 或 rollback()。"
+            );
+        }
     }
 }
 

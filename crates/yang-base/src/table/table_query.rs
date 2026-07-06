@@ -42,6 +42,7 @@ use crate::table::{QueryParams, SortOrder, TableConfig, WhereCondition};
 #[cfg(feature = "mysql")]
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// 表查询构建器
@@ -101,6 +102,8 @@ pub struct TableQuery {
     ///
     /// 使用 Arc<[String]> 共享所有权，避免不必要的克隆
     user_roles: Arc<[String]>,
+    /// 用户角色 HashSet 缓存（O(1) 查找，避免每次 can_read/can_write 时转换）
+    user_roles_set: HashSet<String>,
 
     /// 查询参数
     ///
@@ -224,9 +227,11 @@ impl TableQuery {
         user_roles: Arc<[String]>,
         pool: Option<Arc<sqlx::MySqlPool>>,
     ) -> Self {
+        let user_roles_set: HashSet<String> = user_roles.iter().cloned().collect();
         Self {
             table_config,
             user_roles,
+            user_roles_set,
             query_params: QueryParams::new(),
             include_trashed: false,
             allow_full_table: false,
@@ -245,9 +250,11 @@ impl TableQuery {
         user_roles: Arc<[String]>,
         _pool: Option<()>,
     ) -> Self {
+        let user_roles_set: HashSet<String> = user_roles.iter().cloned().collect();
         Self {
             table_config,
             user_roles,
+            user_roles_set,
             query_params: QueryParams::new(),
             include_trashed: false,
             allow_full_table: false,
@@ -341,7 +348,7 @@ impl TableQuery {
             })?;
 
             // 2. 检查用户是否有读取权限
-            if !field_config.permissions.can_read(&self.user_roles) {
+            if !field_config.permissions.can_read(&self.user_roles_set) {
                 return Err(BaseError::FieldPermissionDenied(
                     self.table_config.table_name.clone(),
                     field_name.to_string(),
@@ -896,7 +903,7 @@ impl TableQuery {
         }
 
         // 3. 检查用户是否有排序权限
-        if !field_config.permissions.can_sort(&self.user_roles) {
+        if !field_config.permissions.can_sort(&self.user_roles_set) {
             return Err(BaseError::FieldPermissionDenied(
                 self.table_config.table_name.clone(),
                 field.to_string(),
@@ -1002,7 +1009,7 @@ impl TableQuery {
         }
 
         // 3. 检查用户是否有筛选权限
-        if !field_config.permissions.can_filter(&self.user_roles) {
+        if !field_config.permissions.can_filter(&self.user_roles_set) {
             return Err(BaseError::FieldPermissionDenied(
                 self.table_config.table_name.clone(),
                 field.to_string(),
@@ -2212,7 +2219,7 @@ impl TableQuery {
 
         // 1. 写权限校验：仅拦截"无权限却显式赋了非 null 值"的字段
         for (field_name, field_config) in &self.table_config.fields {
-            if !field_config.permissions.can_write(&self.user_roles) {
+            if !field_config.permissions.can_write(&self.user_roles_set) {
                 if let Some(v) = prepared.get(field_name) {
                     if !v.is_null() {
                         return Err(BaseError::FieldPermissionDenied(
@@ -2253,7 +2260,7 @@ impl TableQuery {
 
         // 4. 在补齐后的数据上执行必填/类型/验证器校验
         for (field_name, field_config) in &self.table_config.fields {
-            if !field_config.permissions.can_write(&self.user_roles) {
+            if !field_config.permissions.can_write(&self.user_roles_set) {
                 continue;
             }
             let value = prepared.get(field_name).unwrap_or(&Value::Null);
@@ -2489,7 +2496,7 @@ impl TableQuery {
             })?;
 
             // 2. 检查用户是否有写入权限
-            if !field_config.permissions.can_write(&self.user_roles) {
+            if !field_config.permissions.can_write(&self.user_roles_set) {
                 return Err(BaseError::FieldPermissionDenied(
                     self.table_config.table_name.clone(),
                     field_name.clone(),

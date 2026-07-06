@@ -2,6 +2,7 @@ use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
 use super::identifier::quote_identifier;
+use crate::error::DbError;
 
 /// SQL 值类型
 #[derive(Debug, Clone)]
@@ -391,6 +392,136 @@ pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) 
     let mut out = String::new();
     write_condition_to_sql_owned(condition, &mut out, params);
     out
+}
+
+/// 严格版条件转 SQL：非法标识符返回 [`DbError::InvalidArgument`] 而非 RAW 回退。
+///
+/// 与 [`condition_to_sql_owned`] 行为一致，但字段标识符校验失败时**不**回退到原始值，
+/// 而是立即返回错误，供调用方自行决定是否允许特定表达式（如 `a.b` 限定名）。
+///
+/// # 返回
+///
+/// - `Ok(String)`: SQL 片段
+/// - `Err(DbError::InvalidArgument)`: 包含非法标识符
+pub fn condition_to_sql_owned_checked(
+    condition: Condition,
+    params: &mut Vec<SqlValue>,
+) -> Result<String, DbError> {
+    let mut out = String::new();
+    write_condition_to_sql_owned_checked(condition, &mut out, params)?;
+    Ok(out)
+}
+
+/// checked 版本的内部写入逻辑，使用 `quote_identifier(...)?` 传播错误。
+fn write_condition_to_sql_owned_checked(
+    condition: Condition,
+    out: &mut String,
+    params: &mut Vec<SqlValue>,
+) -> Result<(), DbError> {
+    match condition {
+        Condition::Eq(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} = ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Ne(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} != ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Gt(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} > ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Lt(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} < ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Gte(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} >= ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Lte(field, value) => {
+            params.push(value);
+            out.push_str(&format!("{} <= ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::In(field, values) => {
+            if values.is_empty() {
+                out.push_str("1 = 0");
+                return Ok(());
+            }
+            let count = values.len();
+            params.extend(values);
+            out.push_str(&format!("{} IN (", quote_identifier(&field)?));
+            for i in 0..count {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('?');
+            }
+            out.push(')');
+            Ok(())
+        }
+        Condition::Between(field, start, end) => {
+            params.push(start);
+            params.push(end);
+            out.push_str(&format!("{} BETWEEN ? AND ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::Like(field, pattern) => {
+            params.push(SqlValue::String(pattern));
+            out.push_str(&format!("{} LIKE ?", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::IsNull(field) => {
+            out.push_str(&format!("{} IS NULL", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::IsNotNull(field) => {
+            out.push_str(&format!("{} IS NOT NULL", quote_identifier(&field)?));
+            Ok(())
+        }
+        Condition::And(mut conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 1");
+                return Ok(());
+            }
+            if conditions.len() == 1 {
+                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+            }
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" AND ");
+                }
+                write_condition_to_sql_owned_checked(c, out, params)?;
+            }
+            out.push(')');
+            Ok(())
+        }
+        Condition::Or(mut conditions) => {
+            if conditions.is_empty() {
+                out.push_str("1 = 0");
+                return Ok(());
+            }
+            if conditions.len() == 1 {
+                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+            }
+            out.push('(');
+            for (i, c) in conditions.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" OR ");
+                }
+                write_condition_to_sql_owned_checked(c, out, params)?;
+            }
+            out.push(')');
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

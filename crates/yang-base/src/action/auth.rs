@@ -52,7 +52,7 @@ use yang_base_derive::Action;
 /// 注意：字段固定，与具体 [`CredentialVerifier`] 实现无关——`LoginAction<V>` 是
 /// 泛型，而 `#[derive(Action)]` 生成的 schema 静态量在各实例化间共享，故 Input
 /// 不能依赖 `V`。如需额外字段，可在 `extra` 中携带任意 JSON。
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
 pub struct LoginInput {
     /// 用户名 / 账号 / 邮箱等登录标识
     pub username: String,
@@ -63,8 +63,19 @@ pub struct LoginInput {
     pub extra: serde_json::Value,
 }
 
+// NEW-38: 手写 Debug 脱敏，防止密码明文泄漏到日志/tracing
+impl core::fmt::Debug for LoginInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LoginInput")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .field("extra", &self.extra)
+            .finish()
+    }
+}
+
 /// Token 对响应。
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Serialize, schemars::JsonSchema)]
 pub struct TokenPairResponse {
     /// Access Token
     pub access_token: String,
@@ -72,26 +83,54 @@ pub struct TokenPairResponse {
     pub refresh_token: String,
 }
 
+// NEW-38: 手写 Debug 脱敏，防止 Token 明文泄漏到日志/tracing
+impl core::fmt::Debug for TokenPairResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TokenPairResponse")
+            .field("access_token", &format!("***({} chars)", self.access_token.len()))
+            .field("refresh_token", &format!("***({} chars)", self.refresh_token.len()))
+            .finish()
+    }
+}
+
 /// 刷新输入。
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RefreshInput {
     /// Refresh Token
     pub refresh_token: String,
 }
 
+// NEW-38: 手写 Debug 脱敏
+impl core::fmt::Debug for RefreshInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RefreshInput")
+            .field("refresh_token", &format!("***({} chars)", self.refresh_token.len()))
+            .finish()
+    }
+}
+
 /// 刷新响应（仅新的 Access Token）。
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Serialize, schemars::JsonSchema)]
 pub struct AccessTokenResponse {
     /// 新的 Access Token
     pub access_token: String,
+}
+
+// NEW-38: 手写 Debug 脱敏
+impl core::fmt::Debug for AccessTokenResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AccessTokenResponse")
+            .field("access_token", &format!("***({} chars)", self.access_token.len()))
+            .finish()
+    }
 }
 
 /// 登出输入。
 ///
 /// 终止会话时建议**同时**传入 Access Token 与 Refresh Token：仅撤销 Access Token
 /// 会让攻击者仍能用未失效的 Refresh Token 刷出新的 Access Token，会话并未真正结束。
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogoutInput {
     /// 待撤销的 Token（通常是 Access Token）
@@ -102,6 +141,19 @@ pub struct LogoutInput {
     /// 不提供时仅撤销 `token`。
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+// NEW-38: 手写 Debug 脱敏
+impl core::fmt::Debug for LogoutInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LogoutInput")
+            .field("token", &format!("***({} chars)", self.token.len()))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|s| format!("***({} chars)", s.len())),
+            )
+            .finish()
+    }
 }
 
 /// 通用成功消息响应。

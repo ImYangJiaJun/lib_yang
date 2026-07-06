@@ -468,7 +468,7 @@ impl FieldPermissions {
     ///
     /// # 参数
     ///
-    /// - `user_roles`: 用户的角色列表
+    /// - `user_roles`: 用户的角色集合（HashSet，支持 O(1) 查找）
     ///
     /// # 返回值
     ///
@@ -485,19 +485,24 @@ impl FieldPermissions {
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_read(&["admin".to_string()]));
-    /// assert!(permissions.can_read(&["user".to_string()]));
-    /// assert!(!permissions.can_read(&["guest".to_string()]));
+    /// let admin_roles = HashSet::from(["admin".to_string()]);
+    /// let user_roles = HashSet::from(["user".to_string()]);
+    ///
+    /// assert!(permissions.can_read(&admin_roles));
+    /// assert!(permissions.can_read(&user_roles));
+    /// assert!(!permissions.can_read(&HashSet::from(["guest".to_string()])));
     /// ```
-    pub fn can_read(&self, user_roles: &[String]) -> bool {
-        self.readable_roles.is_empty() || user_roles.iter().any(|r| self.readable_roles.contains(r))
+    pub fn can_read(&self, user_roles: &HashSet<String>) -> bool {
+        self.readable_roles
+            .is_empty()
+            || user_roles.iter().any(|r| self.readable_roles.contains(r))
     }
 
     /// 检查用户是否有写入权限
     ///
     /// # 参数
     ///
-    /// - `user_roles`: 用户的角色列表
+    /// - `user_roles`: 用户的角色集合（HashSet，支持 O(1) 查找）
     ///
     /// # 返回值
     ///
@@ -514,10 +519,11 @@ impl FieldPermissions {
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_write(&["admin".to_string()]));
-    /// assert!(!permissions.can_write(&["user".to_string()]));
+    /// let admin_roles = HashSet::from(["admin".to_string()]);
+    ///
+    /// assert!(permissions.can_write(&admin_roles));
     /// ```
-    pub fn can_write(&self, user_roles: &[String]) -> bool {
+    pub fn can_write(&self, user_roles: &HashSet<String>) -> bool {
         self.writable_roles.is_empty() || user_roles.iter().any(|r| self.writable_roles.contains(r))
     }
 
@@ -542,10 +548,10 @@ impl FieldPermissions {
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_filter(&["admin".to_string()]));
-    /// assert!(!permissions.can_filter(&["user".to_string()]));
+    /// let admin_roles = HashSet::from(["admin".to_string()]);
+    /// assert!(permissions.can_filter(&admin_roles));
     /// ```
-    pub fn can_filter(&self, user_roles: &[String]) -> bool {
+    pub fn can_filter(&self, user_roles: &HashSet<String>) -> bool {
         self.filterable_roles.is_empty()
             || user_roles.iter().any(|r| self.filterable_roles.contains(r))
     }
@@ -554,7 +560,7 @@ impl FieldPermissions {
     ///
     /// # 参数
     ///
-    /// - `user_roles`: 用户的角色列表
+    /// - `user_roles`: 用户的角色集合（HashSet，支持 O(1) 查找）
     ///
     /// # 返回值
     ///
@@ -571,10 +577,10 @@ impl FieldPermissions {
     ///     ..Default::default()
     /// };
     ///
-    /// assert!(permissions.can_sort(&["admin".to_string()]));
-    /// assert!(!permissions.can_sort(&["user".to_string()]));
+    /// let admin_roles = HashSet::from(["admin".to_string()]);
+    /// assert!(permissions.can_sort(&admin_roles));
     /// ```
-    pub fn can_sort(&self, user_roles: &[String]) -> bool {
+    pub fn can_sort(&self, user_roles: &HashSet<String>) -> bool {
         self.sortable_roles.is_empty() || user_roles.iter().any(|r| self.sortable_roles.contains(r))
     }
 }

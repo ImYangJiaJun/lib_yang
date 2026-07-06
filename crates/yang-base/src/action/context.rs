@@ -14,7 +14,7 @@ use crate::table::{TableConfig, TableQuery};
 use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
@@ -41,36 +41,51 @@ pub struct User {
     pub nickname: String,
     /// 邮箱
     pub email: String,
-    /// 角色列表
-    pub roles: Vec<String>,
-    /// 权限列表
-    pub permissions: Vec<String>,
+    /// 角色集合（HashSet 保证 O(1) 查找）
+    pub roles: HashSet<String>,
+    /// 权限集合（HashSet 保证 O(1) 查找）
+    pub permissions: HashSet<String>,
 }
 
 impl User {
-    /// 创建新用户
+    /// 创建新用户（空角色/权限）
     pub fn new(id: i64, username: impl Into<String>) -> Self {
         Self {
             id,
             username: username.into(),
             nickname: String::new(),
             email: String::new(),
-            roles: Vec::new(),
-            permissions: Vec::new(),
+            roles: HashSet::new(),
+            permissions: HashSet::new(),
         }
     }
 
-    /// 检查是否有指定权限
+    /// 设置角色集合（替换现有角色）
+    pub fn with_roles(mut self, roles: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.roles = roles.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// 设置权限集合（替换现有权限）
+    pub fn with_permissions(
+        mut self,
+        permissions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.permissions = permissions.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// 检查是否有指定权限（O(1) HashSet 查找）
     pub fn has_permission(&self, permission: &str) -> bool {
-        self.permissions.iter().any(|p| p == permission)
+        self.permissions.contains(permission)
     }
 
-    /// 检查是否有指定角色
+    /// 检查是否有指定角色（O(1) HashSet 查找）
     pub fn has_role(&self, role: &str) -> bool {
-        self.roles.iter().any(|r| r == role)
+        self.roles.contains(role)
     }
 
-    /// 检查是否有任一角色
+    /// 检查是否有任一角色（O(1) 每角色）
     pub fn has_any_role(&self, roles: &[String]) -> bool {
         roles.iter().any(|r| self.has_role(r))
     }
@@ -426,8 +441,13 @@ impl ActionContext {
             .as_ref()
             .ok_or(BaseError::TableConfigNotSet)?;
 
-        // 通过 user_roles_slice 获取借用，再转换为 Arc<[String]>
-        let user_roles: Arc<[String]> = Arc::from(self.user_roles_slice().to_vec());
+        // 将用户角色 HashSet 转为 Vec 再打包为 Arc（table_query 需要 Vec）
+        let roles_set = self.user_roles_set();
+        let user_roles: Arc<[String]> = Arc::from(
+            roles_set
+                .map(|s| s.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
 
         // 启用 mysql feature 时，从全局数据库注入连接池（未初始化则为 None）。
         #[cfg(feature = "mysql")]
@@ -473,7 +493,7 @@ impl ActionContext {
         crate::database::GlobalDatabase::transaction().await
     }
 
-    /// 获取用户角色列表（克隆）
+    /// 获取用户角色列表（克隆为 Vec）
     ///
     /// # 返回
     ///
@@ -481,22 +501,20 @@ impl ActionContext {
     pub fn user_roles(&self) -> Vec<String> {
         self.user
             .as_ref()
-            .map(|u| u.roles.clone())
+            .map(|u| u.roles.iter().cloned().collect())
             .unwrap_or_default()
     }
 
-    /// 获取用户角色列表（借用切片，避免克隆）
+    /// 获取用户角色集合引用
     ///
-    /// 返回用户角色的借用切片，避免不必要的内存分配。
-    /// 如果用户未登录则返回空切片。
+    /// 返回用户角色的 HashSet 引用，支持 O(1) 包含检查。
+    /// 如果用户未登录则返回 `None`。
     ///
     /// # 返回
     ///
-    /// - `&[String]`: 用户角色切片引用
-    pub fn user_roles_slice(&self) -> &[String] {
-        self.user
-            .as_ref()
-            .map(|u| u.roles.as_slice())
-            .unwrap_or(&[])
+    /// - `Some(&HashSet<String>)`: 用户角色集合引用
+    /// - `None`: 用户未登录
+    pub fn user_roles_set(&self) -> Option<&HashSet<String>> {
+        self.user.as_ref().map(|u| &u.roles)
     }
 }

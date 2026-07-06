@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use jsonwebtoken::Algorithm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -44,12 +45,12 @@ fn create_test_user() -> User {
         username: "test_user".to_string(),
         nickname: "测试用户".to_string(),
         email: "test@example.com".to_string(),
-        roles: vec!["admin".to_string()],
-        permissions: vec![
+        roles: HashSet::from(["admin".to_string()]),
+        permissions: HashSet::from([
             "user:read".to_string(),
             "user:write".to_string(),
             "user:delete".to_string(),
-        ],
+        ]),
     }
 }
 
@@ -169,8 +170,8 @@ async fn test_dispatch_permission_denied() {
         username: "test_user".to_string(),
         nickname: "测试用户".to_string(),
         email: "test@example.com".to_string(),
-        roles: vec!["user".to_string()],
-        permissions: vec!["user:read".to_string()],
+        roles: HashSet::from(["user".to_string()]),
+        permissions: HashSet::from(["user:read".to_string()]),
     };
     let request = Request::new(json!({ "data": { "username": "alice" } }));
     let context = ActionContext::new(request, create_test_tools()).with_user(user);
