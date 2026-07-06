@@ -212,6 +212,29 @@ mod retry_config_tests {
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "authorization"));
     }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_url_before_network() {
+        let invalid_urls = ["not a url", "ftp://example.com/file"];
+
+        for url in invalid_urls {
+            let builder = RequestBuilder::new(
+                Client::new(),
+                Method::GET,
+                url.to_string(),
+                Duration::from_secs(30),
+                None,
+                None,
+            );
+
+            let err = match builder.send().await {
+                Ok(_) => panic!("非法 URL 应在网络请求前被拒绝"),
+                Err(err) => err,
+            };
+
+            assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "url"));
+        }
+    }
 }
 
 /// HTTP 请求构建器
@@ -696,6 +719,16 @@ impl RequestBuilder {
             ));
         }
 
+        let parsed_url = reqwest::Url::parse(&self.url).map_err(|err| {
+            BaseError::ParamInvalid("url".to_string(), format!("非法 HTTP URL: {}", err))
+        })?;
+        if !matches!(parsed_url.scheme(), "http" | "https") {
+            return Err(BaseError::ParamInvalid(
+                "url".to_string(),
+                "HTTP 客户端仅支持 http 和 https URL".to_string(),
+            ));
+        }
+
         if let Some(token) = &self.token {
             let auth_value = format!("Bearer {}", token);
             if let Err(err) = HeaderValue::from_str(&auth_value) {
@@ -723,8 +756,7 @@ impl RequestBuilder {
         let host = self
             .circuit_breaker
             .as_ref()
-            .and_then(|_| reqwest::Url::parse(&self.url).ok())
-            .and_then(|u| u.host_str().map(|h| h.to_string()));
+            .and_then(|_| parsed_url.host_str().map(|h| h.to_string()));
 
         // 无重试策略：单次发送（与原行为一致，仅多一层熔断准入）
         let Some(retry) = retry else {

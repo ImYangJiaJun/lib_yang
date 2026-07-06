@@ -128,3 +128,9 @@
 - 风险：`content_type`、`user_agent` 等显式 header 已在发送前校验，但默认 token 或 `bearer_token()` 设置的值可能包含非法控制字符，之前会在 reqwest 构造/发送阶段暴露为传输错误，错误类型不准确且定位较晚。
 - 修改：`RequestBuilder::send()` 在网络调用前构造并校验 `Authorization: Bearer <token>` 的 header 值，非法 token 返回 `BaseError::ParamInvalid("authorization", ...)`，且错误消息不回显 token 原文。
 - 验证：`cargo test -p yang-base --lib test_send_rejects_invalid_bearer_token_before_network`
+## 2026-07-07 - yang-base HTTP URL 参数 fail-fast 校验
+
+- 范围：`crates/yang-base/src/http/request.rs`
+- 风险：非法 URL 或非 `http/https` scheme 之前会交给 reqwest 在发送阶段处理，并被包装成 `HttpRequestFailed`，对调用方来说错误类型不准确，也会让熔断器 host 分键在非法 URL 上退化为无分键。
+- 修改：`RequestBuilder::send()` 在网络调用前解析 URL，并仅允许 `http`/`https` scheme；解析后的 URL 复用于熔断器 host 分键。
+- 验证：`cargo test -p yang-base --lib test_send_rejects_invalid_url_before_network`
