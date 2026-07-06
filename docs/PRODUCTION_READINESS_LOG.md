@@ -251,3 +251,10 @@
 - 修改：`header()` 在归一化写入前拒绝空白 header 名；`headers()` 继续复用 `header()`，批量写入同步继承该边界。
 - 验证：`cargo test -p yang-base --lib test_header_rejects_blank_names`
 - 验证：`cargo test -p yang-base --lib test_header_`
+## 2026-07-07 - yang-base ActionContext path 参数名读取校验
+
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`
+- 风险：`Request.path_params` 是 public 字段，外部可绕过 builder 直接写入空白 key；`ActionContext::path_param("")` 之前会读取该值并返回成功，导致 Action 读取侧接受无效参数名。
+- 修改：`ActionContext::path_param()` 在读取前校验 `key.trim().is_empty()`，空白参数名返回 `BaseError::ParamInvalid("", "路径参数名不能为空")`。
+- 验证：`cargo test -p yang-base --lib test_action_context_path_param_rejects_blank_key`
+- 验证：`cargo test -p yang-base --lib test_action_context_path_param`

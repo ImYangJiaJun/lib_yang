@@ -336,6 +336,24 @@ fn test_action_context_path_param() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_action_context_path_param_rejects_blank_key() {
+    let mut request = Request::new(json!({}));
+    request.path_params.insert("".to_string(), "123".to_string());
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    let result: Result<String, _> = context.path_param("");
+
+    match result {
+        Err(crate::error::BaseError::ParamInvalid(param, message)) => {
+            assert_eq!(param, "");
+            assert!(message.contains("路径参数名不能为空"));
+        }
+        other => panic!("空白路径参数名应返回 ParamInvalid，实际: {:?}", other),
+    }
+}
+
 #[ignore = "H-1 重构期间停用：query_param 已移除，Task 6 后用新 API 重写"]
 #[test]
 fn test_action_context_query_param() {
