@@ -244,3 +244,10 @@
 - 风险：`Request::path_param()` 与 `path_params()` 允许空字符串或纯空白路径参数 key 写入请求上下文，路由参数配置错误会延迟为运行期缺参或错参，降低 Action 入参边界可靠性。
 - 修改：`path_param()` 在写入前拒绝空白 key；`path_params()` 改为复用 `path_param()`，保证单个和批量写入行为一致。
 - 验证：`cargo test -p yang-base --lib test_path_param_rejects_blank_keys`
+## 2026-07-07 - yang-base Action Request header 空白名拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request::header()` 允许空字符串或纯空白 header 名进入请求上下文，认证、中间件和追踪逻辑依赖 header 索引时会遇到非 HTTP 语义 key。
+- 修改：`header()` 在归一化写入前拒绝空白 header 名；`headers()` 继续复用 `header()`，批量写入同步继承该边界。
+- 验证：`cargo test -p yang-base --lib test_header_rejects_blank_names`
+- 验证：`cargo test -p yang-base --lib test_header_`

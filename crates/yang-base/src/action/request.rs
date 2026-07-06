@@ -124,8 +124,12 @@ impl Request {
     ///     .header("Authorization", "Bearer token123");
     /// ```
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers
-            .insert(name.into().to_ascii_lowercase(), value.into());
+        let name = name.into();
+        if name.trim().is_empty() {
+            return self;
+        }
+
+        self.headers.insert(name.to_ascii_lowercase(), value.into());
         self
     }
 
@@ -425,6 +429,18 @@ mod tests {
         assert_eq!(request.headers.get("authorization").map(String::as_str), Some("Bearer new"));
         assert_eq!(request.get_header("Authorization"), Some("Bearer new"));
         assert_eq!(request.token(), Some("new"));
+    }
+
+    #[test]
+    fn test_header_rejects_blank_names() {
+        let request = Request::new(json!({}))
+            .header("", "empty")
+            .header("   ", "blank")
+            .header("X-Request-Id", "abc");
+
+        assert_eq!(request.get_header("x-request-id"), Some("abc"));
+        assert_eq!(request.get_header(""), None);
+        assert_eq!(request.get_header("   "), None);
     }
 
     #[test]
