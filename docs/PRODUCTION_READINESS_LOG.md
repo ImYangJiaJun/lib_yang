@@ -191,3 +191,10 @@
 - 风险：`AppRouter::register_module()` 允许空字符串或纯空白模块名进入路由表，后续 dispatch、metrics 和日志都缺少稳定模块标识。
 - 修改：注册模块前校验 `module_name.trim().is_empty()`，空白模块名返回 `BaseError::ConfigError("模块名称不能为空")`。
 - 验证：`cargo test -p yang-base --lib test_register_module_`
+## 2026-07-07 - yang-base ModuleRouter 重复 Action 注册 fail-fast
+
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`docs/yang-base.md`
+- 风险：`ModuleRouter::register_action()` 对同名 Action 静默覆盖，路由启动配置错误会变成运行时 dispatch 到错误处理器。
+- 修改：`register_action()` 改为返回 `Result<ModuleRouter, BaseError>`，重复 Action 名返回 `BaseError::ConfigError("Action 已注册: ...")`；`table_typed()` 使用 `?` 串联六个内置 Action 注册；同步 API 文档示例。
+- 兼容：这是有意的破坏性 API 收紧；自定义 Action 注册调用方现在必须处理注册失败。
+- 验证：`cargo test -p yang-base --lib register_action`

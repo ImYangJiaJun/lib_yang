@@ -248,16 +248,19 @@ impl ModuleRouter {
     /// use yang_base::action::builtin::AddAction;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .register_action(AddAction::<User>::new());
+    ///     .register_action(AddAction::<User>::new())?;
     /// ```
-    pub fn register_action<A>(mut self, action: A) -> Self
+    pub fn register_action<A>(mut self, action: A) -> Result<Self, BaseError>
     where
         A: crate::action::TypedAction,
     {
         let action: Arc<dyn DynAction> = Arc::new(action);
         let name = action.meta().name.to_string();
+        if self.actions.contains_key(&name) {
+            return Err(BaseError::ConfigError(format!("Action 已注册: {}", name)));
+        }
         self.actions.insert(name, action);
-        self
+        Ok(self)
     }
 
     /// 注册一个中间件（builder setter）
@@ -330,13 +333,12 @@ impl ModuleRouter {
             return Err(BaseError::TableConfigNotSet);
         }
 
-        Ok(self
-            .register_action(AddAction::<T>::new())
-            .register_action(PutAction::<T>::new())
-            .register_action(DelAction::<T>::new())
-            .register_action(GetAction::<T>::new())
-            .register_action(SelectAction::<T>::new())
-            .register_action(TableAction::<T>::new()))
+        self.register_action(AddAction::<T>::new())?
+            .register_action(PutAction::<T>::new())?
+            .register_action(DelAction::<T>::new())?
+            .register_action(GetAction::<T>::new())?
+            .register_action(SelectAction::<T>::new())?
+            .register_action(TableAction::<T>::new())
     }
 
     /// 分发请求到对应的 Action

@@ -2,6 +2,7 @@
 #![cfg(all(feature = "mysql", feature = "token"))]
 
 use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
+use crate::action::builtin::TableAction;
 use crate::error::BaseError;
 use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
 use crate::table::TableEntity;
@@ -129,6 +130,18 @@ fn test_table_typed_without_table_config() {
         BaseError::TableConfigNotSet => {}
         e => panic!("期望 TableConfigNotSet 错误，实际得到: {:?}", e),
     }
+}
+
+#[test]
+fn test_register_action_rejects_duplicate_action_name() {
+    let router = router_with_builtins();
+
+    let result = router.register_action(TableAction::<TestUser>::new());
+
+    assert!(matches!(
+        result,
+        Err(BaseError::ConfigError(msg)) if msg.contains("Action 已注册: table")
+    ));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
