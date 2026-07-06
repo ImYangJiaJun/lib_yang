@@ -97,3 +97,9 @@
 - 风险：`HttpClientConfig` 允许 0 秒超时、0 空闲连接等无效配置进入 reqwest builder，可能导致请求立即失败或连接池行为退化，且错误暴露较晚。
 - 修改：新增 `HttpClientConfig::validate()`，拒绝 `timeout_secs`、`pool_max_idle_per_host`、`pool_idle_timeout_secs` 的零值，并在 `HttpClient::with_config()` 开头 fail-fast。
 - 验证：`cargo test -p yang-base --lib http_client_config`；`cargo test -p yang-base --lib test_with_config_rejects_invalid_config_before_building_client`
+## 2026-07-07 - yang-base HTTP retry 策略边界校验
+
+- 范围：`crates/yang-base/src/http/request.rs`
+- 风险：`RetryConfig` 可接受过大的 `max_retries`、空 `retry_on`、0 毫秒或过大的退避，以及非法 HTTP 状态码；这些配置会导致请求热循环、长时间阻塞或无意义重试，并且错误暴露在网络调用之后。
+- 修改：新增 `RetryConfig::validate()`，限制最大重试次数、退避时间和状态码范围；`RequestBuilder::send()` 在发起网络请求前 fail-fast 校验 retry 策略。
+- 验证：`cargo test -p yang-base --lib retry_config`

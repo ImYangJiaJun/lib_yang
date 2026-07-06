@@ -48,6 +48,133 @@ impl Default for RetryConfig {
     }
 }
 
+impl RetryConfig {
+    const MAX_RETRIES: u32 = 10;
+    const MAX_BACKOFF_MS: u64 = 60_000;
+
+    /// 验证请求级重试策略。
+    ///
+    /// `max_retries == 0` 表示显式禁用重试，此时 `retry_on` 与 `backoff_ms` 不参与发送。
+    pub fn validate(&self) -> Result<(), BaseError> {
+        if self.max_retries > Self::MAX_RETRIES {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.max_retries".to_string(),
+                format!("最大重试次数不能超过 {}", Self::MAX_RETRIES),
+            ));
+        }
+
+        if self.max_retries == 0 {
+            return Ok(());
+        }
+
+        if self.retry_on.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.retry_on".to_string(),
+                "启用重试时 retry_on 不能为空".to_string(),
+            ));
+        }
+
+        if let Some(status) = self
+            .retry_on
+            .iter()
+            .copied()
+            .find(|status| !(100..=599).contains(status))
+        {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.retry_on".to_string(),
+                format!("非法 HTTP 状态码: {status}"),
+            ));
+        }
+
+        if self.backoff_ms == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.backoff_ms".to_string(),
+                "启用重试时初始退避时间必须大于 0 毫秒".to_string(),
+            ));
+        }
+
+        if self.backoff_ms > Self::MAX_BACKOFF_MS {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.backoff_ms".to_string(),
+                format!("初始退避时间不能超过 {} 毫秒", Self::MAX_BACKOFF_MS),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retry_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_retry_config_validate_rejects_unsafe_values() {
+        let invalid_configs = [
+            RetryConfig {
+                max_retries: 11,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: Vec::new(),
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                backoff_ms: 0,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                backoff_ms: 60_001,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: vec![99],
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: vec![600],
+                ..RetryConfig::default()
+            },
+        ];
+
+        for config in invalid_configs {
+            let err = config
+                .validate()
+                .expect_err("不安全 retry 配置应被拒绝");
+
+            assert!(matches!(err, BaseError::ParamInvalid(_, _)));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_retry_config_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            None,
+            None,
+        )
+        .retry(RetryConfig {
+            max_retries: 11,
+            ..RetryConfig::default()
+        });
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("无效 retry 配置应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries"));
+    }
+}
+
 /// HTTP 请求构建器
 ///
 /// 提供链式调用接口构建 HTTP 请求。
@@ -528,6 +655,10 @@ impl RequestBuilder {
                 "header".to_string(),
                 self.header_errors.join("; "),
             ));
+        }
+
+        if let Some(retry) = &self.retry {
+            retry.validate()?;
         }
 
         let retry = self.retry.clone();
