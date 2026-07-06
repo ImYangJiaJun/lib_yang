@@ -91,3 +91,9 @@
 - 风险：`paginate()` 在调用方未显式 `.page()` 时只把默认 `page/page_size` 用于返回元数据，数据查询仍可能不带 `LIMIT/OFFSET`，导致分页接口退化为全量读取。
 - 修改：新增有效分页归一化 helper，`paginate()` 在 COUNT 和数据 SELECT 之间使用同一份分页状态，并采用 `query_params` 的默认 page size。
 - 验证：`cargo test -p yang-base --lib test_effective_pagination_applies_default_limit_to_data_query_sql`
+## 2026-07-06 - yang-base HTTP 客户端配置零值校验
+
+- 范围：`crates/yang-base/src/http/client.rs`
+- 风险：`HttpClientConfig` 允许 0 秒超时、0 空闲连接等无效配置进入 reqwest builder，可能导致请求立即失败或连接池行为退化，且错误暴露较晚。
+- 修改：新增 `HttpClientConfig::validate()`，拒绝 `timeout_secs`、`pool_max_idle_per_host`、`pool_idle_timeout_secs` 的零值，并在 `HttpClient::with_config()` 开头 fail-fast。
+- 验证：`cargo test -p yang-base --lib http_client_config`；`cargo test -p yang-base --lib test_with_config_rejects_invalid_config_before_building_client`

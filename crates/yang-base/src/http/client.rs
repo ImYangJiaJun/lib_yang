@@ -68,6 +68,78 @@ impl Default for HttpClientConfig {
     }
 }
 
+impl HttpClientConfig {
+    /// 验证 HTTP 客户端配置。
+    ///
+    /// 拒绝会导致请求立即失败或连接池配置退化的零值参数。
+    pub fn validate(&self) -> Result<(), BaseError> {
+        if self.timeout_secs == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.timeout_secs".to_string(),
+                "HTTP 请求超时时间必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.pool_max_idle_per_host == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.pool_max_idle_per_host".to_string(),
+                "每个主机最大空闲连接数必须大于 0".to_string(),
+            ));
+        }
+        if self.pool_idle_timeout_secs == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.pool_idle_timeout_secs".to_string(),
+                "连接池空闲超时时间必须大于 0 秒".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn test_http_client_config_validate_rejects_zero_values() {
+        let invalid_configs = [
+            HttpClientConfig {
+                timeout_secs: 0,
+                ..HttpClientConfig::default()
+            },
+            HttpClientConfig {
+                pool_max_idle_per_host: 0,
+                ..HttpClientConfig::default()
+            },
+            HttpClientConfig {
+                pool_idle_timeout_secs: 0,
+                ..HttpClientConfig::default()
+            },
+        ];
+
+        for config in invalid_configs {
+            let err = config
+                .validate()
+                .expect_err("HTTP 客户端零值配置应被拒绝");
+
+            assert!(matches!(err, BaseError::ParamInvalid(_, _)));
+        }
+    }
+
+    #[test]
+    fn test_with_config_rejects_invalid_config_before_building_client() {
+        let config = HttpClientConfig {
+            timeout_secs: 0,
+            ..HttpClientConfig::default()
+        };
+
+        let err = HttpClient::with_config(config)
+            .expect_err("无效 HTTP 配置应在构建 reqwest client 前被拒绝");
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
+    }
+}
+
 /// HTTP 客户端
 ///
 /// 提供 HTTP 请求构建和发送能力。
@@ -129,6 +201,8 @@ impl HttpClient {
     /// let client = HttpClient::with_config(config)?;
     /// ```
     pub fn with_config(cfg: HttpClientConfig) -> Result<Self, BaseError> {
+        cfg.validate()?;
+
         // 构建 reqwest 客户端
         let mut builder = Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
