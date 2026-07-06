@@ -204,3 +204,11 @@
 - 风险：`ModuleRouter::register_action()` 允许空字符串或纯空白 Action 名进入路由表，dispatch、metrics 和日志会缺少稳定 Action 标识。
 - 修改：注册 Action 前校验 `name.trim().is_empty()`，空白名称返回 `BaseError::ConfigError("Action 名称不能为空")`。
 - 验证：`cargo test -p yang-base --lib register_action`
+## 2026-07-07 - yang-base ActionContext 用户注入边界收紧
+
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`、`crates/yang-base/tests/typed_action_integration.rs`、`docs/yang-base.md`
+- 风险：`ActionContext::with_user()` 是公开方法，外部调用方可构造上下文并注入任意用户绕过 TokenAuthMiddleware，`ModuleRouter::authorize_and_dispatch()` 只检查上下文中是否已有用户。
+- 修改：将 `with_user()` 降为 `pub(crate)`，新增只读 `authenticated_user()`；外部 CRUD 集成测试改为通过真实 access token 和 `TokenAuthMiddleware` 建立登录态；API 文档移除手动注入用户示例。
+- 兼容：这是有意的破坏性 API 收紧；外部认证扩展不能再直接篡改 `ActionContext.user`，需走受控中间件路径。
+- 验证：`cargo test -p yang-base --lib test_action_context_authenticated_user_getter`
+- 验证：`cargo test -p yang-base --test typed_action_integration --no-run`

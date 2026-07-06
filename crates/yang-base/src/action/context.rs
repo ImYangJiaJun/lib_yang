@@ -313,9 +313,17 @@ impl ActionContext {
     /// 仅供 crate 内中间件/内部使用。调用方有责任确保 user 已经过认证（如 TokenAuthMiddleware），
     /// 直接注入未验证的 User 将绕过所有鉴权。
     #[allow(dead_code)]
-    pub fn with_user(mut self, user: User) -> Self {
+    pub(crate) fn with_user(mut self, user: User) -> Self {
         self.user = Some(user);
         self
+    }
+
+    /// 获取已认证用户的只读引用。
+    ///
+    /// 外部调用方只能读取认证结果，不能手动注入用户；用户注入仅由 crate 内受信任
+    /// 中间件（如 `TokenAuthMiddleware`）完成。
+    pub fn authenticated_user(&self) -> Option<&User> {
+        self.user.as_ref()
     }
 
     /// 设置本次派发的 request_id（链式调用）

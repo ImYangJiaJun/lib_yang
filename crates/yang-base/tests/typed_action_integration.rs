@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
-use yang_base::action::{ActionContext, GlobalTools, Request, User};
+use yang_base::action::{ActionContext, GlobalTools, Request, TokenAuthMiddleware, User};
 use yang_base::database::GlobalDatabase;
 use yang_base::router::ModuleRouter;
 use yang_base::token::TokenManager;
@@ -48,8 +48,12 @@ fn test_tools() -> Arc<GlobalTools> {
 
 /// 已登录用户上下文（内置非公开 Action 需要登录态）。
 fn logged_in_ctx(body: serde_json::Value, tools: Arc<GlobalTools>) -> ActionContext {
-    let req = Request::new(body);
-    ActionContext::new(req, tools).with_user(User::new(1, "tester"))
+    let token = tools
+        .token_manager()
+        .generate_access_token("tester", serde_json::json!({}))
+        .expect("测试 access token 应生成成功");
+    let req = Request::new(body).header("authorization", format!("Bearer {token}"));
+    ActionContext::new(req, tools)
 }
 
 /// 启动 MySQL 容器并初始化 GlobalDatabase；无 Docker 时返回 None。
@@ -112,6 +116,9 @@ async fn full_crud_cycle() {
     };
     let tools = test_tools();
     let router = ModuleRouter::new("user", "用户")
+        .middleware(TokenAuthMiddleware::new(|claims| {
+            User::new(1, claims.sub.clone())
+        }))
         .with_table_config(Arc::new(
             <U as yang_base::table::TableEntity>::table_config().clone(),
         ))

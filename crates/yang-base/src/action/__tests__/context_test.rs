@@ -246,6 +246,22 @@ fn test_action_context_with_user() {
     assert_eq!(context.user.unwrap().id, 1);
 }
 
+#[test]
+fn test_action_context_authenticated_user_getter() {
+    let request = Request::new(json!({}));
+    let tools = create_test_tools();
+
+    let context = ActionContext::new(request.clone(), tools.clone());
+    assert!(context.authenticated_user().is_none());
+
+    let context = ActionContext::new(request, tools).with_user(User::new(1, "alice"));
+    let user = context
+        .authenticated_user()
+        .expect("内部注入用户后应可只读获取");
+    assert_eq!(user.id, 1);
+    assert_eq!(user.username, "alice");
+}
+
 #[ignore = "H-1 重构期间停用：param 已移除，Task 6 后用 extract_input 重写"]
 #[test]
 fn test_action_context_param() {

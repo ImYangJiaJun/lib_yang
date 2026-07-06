@@ -976,8 +976,8 @@ Request::new(body: Value)
 let ctx = ActionContext::new(request, Arc::new(tools));
 // 或使用全局单例
 let ctx = ActionContext::new_with_global_tools(request)?;
-// 链式设置
-let ctx = ctx.with_user(user).with_table_config(config);
+// 读取认证中间件注入的用户（外部不能手动注入用户）
+let user = ctx.authenticated_user();
 
 // 参数提取
 let name: String = ctx.param("name")?;                  // 必填，类型不匹配返回 Err
