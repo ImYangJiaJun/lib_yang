@@ -165,3 +165,10 @@
 - 风险：`Request::token()` 之前会把 `Bearer ` 解析为 `Some("")`，也会把 `Bearer    token` 解析为带前导空格的 token，后续认证错误定位不稳定。
 - 修改：`parse_bearer_token()` 改为按空白分段解析，仅接受 `Bearer <token>` 两段；多空格会被归一化，空 token 或额外分段返回 `None`。
 - 验证：`cargo test -p yang-base --lib test_token_`
+## 2026-07-07 - yang-base GlobalTools 重复工具注册 fail-fast
+
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`、`crates/yang-base/src/action/__tests__/global_tools_concurrency_test.rs`
+- 风险：`GlobalTools::register_tool()` 对同名工具静默覆盖，依赖注入配置错误会被延迟到运行期表现为工具实例不符合预期。
+- 修改：`register_tool()` 改为返回 `Result<(), BaseError>`，同名重复注册返回 `BaseError::ConfigError("工具已注册: ...")`，不覆盖已有实例；并发测试同步为“首个注册成功，后续重复注册失败但不破坏 map”。
+- 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理注册失败。
+- 验证：`cargo test -p yang-base --lib global_tools`

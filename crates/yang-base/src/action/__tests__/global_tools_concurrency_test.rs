@@ -4,7 +4,7 @@
 //! 锁中毒策略为 `unwrap_or_else(|p| p.into_inner())`（可恢复）。本测试用真实
 //! 多线程验证：
 //! - 并发 `register_tool` / `get_tool` 不 panic、不死锁，写入不丢
-//! - 同名并发注册：最终有且仅有一份可读出（后写覆盖，不破坏 map）
+//! - 同名并发注册：首个注册成功，后续重复注册失败但不破坏 map
 //! - OnceLock 语义：并发读取已初始化单例稳定返回同一实例
 //!
 //! 注意：进程级 `GLOBAL_TOOLS` 单例只能 `init` 一次且跨测试共享，故此处直接
@@ -46,7 +46,8 @@ fn concurrent_register_distinct_tools_no_loss() {
     for i in 0..N {
         let t = Arc::clone(&tools);
         handles.push(thread::spawn(move || {
-            t.register_tool(&format!("tool_{}", i), Arc::new(i));
+            t.register_tool(&format!("tool_{}", i), Arc::new(i))
+                .expect("不同名工具并发注册应成功");
         }));
     }
     for h in handles {
@@ -59,7 +60,7 @@ fn concurrent_register_distinct_tools_no_loss() {
     }
 }
 
-/// 并发同名注册 + 读取：不 panic、不死锁，最终恰有一份可读出。
+/// 并发同名注册 + 读取：不 panic、不死锁，最终保留首个成功注册的值。
 #[test]
 fn concurrent_same_name_register_and_get_consistent() {
     let tools = Arc::new(fresh_tools());
@@ -72,7 +73,7 @@ fn concurrent_same_name_register_and_get_consistent() {
         handles.push(thread::spawn(move || {
             for round in 0..200usize {
                 if t % 2 == 0 {
-                    tools.register_tool(name, Arc::new(t * 1000 + round));
+                    let _ = tools.register_tool(name, Arc::new(t * 1000 + round));
                 } else {
                     // 读取：注册前可能为 None，注册后应为 Some，二者都不应 panic
                     let _ = tools.get_tool::<usize>(name);
@@ -95,7 +96,9 @@ fn concurrent_same_name_register_and_get_consistent() {
 #[test]
 fn get_tool_wrong_type_returns_none_under_contention() {
     let tools = Arc::new(fresh_tools());
-    tools.register_tool("typed", Arc::new(42usize));
+    tools
+        .register_tool("typed", Arc::new(42usize))
+        .expect("首次注册 typed 工具应成功");
 
     let mut handles = Vec::new();
     for _ in 0..16 {

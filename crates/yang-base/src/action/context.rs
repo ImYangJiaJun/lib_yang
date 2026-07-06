@@ -121,10 +121,18 @@ impl GlobalTools {
     }
 
     /// 注册自定义工具
-    pub fn register_tool<T: Any + Send + Sync>(&self, name: &str, tool: Arc<T>) {
+    pub fn register_tool<T: Any + Send + Sync>(
+        &self,
+        name: &str,
+        tool: Arc<T>,
+    ) -> Result<(), BaseError> {
         // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续注册
         let mut tools = self.tools.write().unwrap_or_else(|p| p.into_inner());
+        if tools.contains_key(name) {
+            return Err(BaseError::ConfigError(format!("工具已注册: {}", name)));
+        }
         tools.insert(name.to_string(), tool);
+        Ok(())
     }
 
     /// 获取已注册的工具

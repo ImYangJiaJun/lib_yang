@@ -2,6 +2,7 @@
 #![cfg(feature = "token")]
 
 use crate::action::{ActionContext, GlobalTools, Request, User};
+use crate::error::BaseError;
 use crate::token::TokenManager;
 use jsonwebtoken::Algorithm;
 use serde_json::json;
@@ -144,12 +145,33 @@ fn test_global_tools_register_and_get_tool() {
 
     // 注册工具
     let redis_client = Arc::new("redis://localhost".to_string());
-    tools.register_tool("redis", redis_client.clone());
+    tools
+        .register_tool("redis", redis_client.clone())
+        .expect("首次注册 redis 工具应成功");
 
     // 获取工具
     let retrieved: Option<Arc<String>> = tools.get_tool("redis");
     assert!(retrieved.is_some());
     assert_eq!(*retrieved.unwrap(), "redis://localhost");
+}
+
+#[test]
+fn test_global_tools_register_tool_rejects_duplicate_name() {
+    let tools = create_test_tools();
+
+    let first = tools.register_tool("redis", Arc::new("redis://first".to_string()));
+    assert!(first.is_ok());
+
+    let err = tools
+        .register_tool("redis", Arc::new("redis://second".to_string()))
+        .expect_err("重复注册同名工具应失败");
+
+    assert!(matches!(err, BaseError::ConfigError(msg) if msg.contains("工具已注册: redis")));
+    let retrieved: Option<Arc<String>> = tools.get_tool("redis");
+    assert_eq!(
+        retrieved.as_deref().map(String::as_str),
+        Some("redis://first")
+    );
 }
 
 #[test]
@@ -167,7 +189,9 @@ fn test_global_tools_get_tool_wrong_type() {
 
     // 注册字符串类型的工具
     let redis_client = Arc::new("redis://localhost".to_string());
-    tools.register_tool("redis", redis_client);
+    tools
+        .register_tool("redis", redis_client)
+        .expect("首次注册 redis 工具应成功");
 
     // 尝试以错误的类型获取
     let result: Option<Arc<i32>> = tools.get_tool("redis");
