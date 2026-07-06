@@ -198,3 +198,9 @@
 - 修改：`register_action()` 改为返回 `Result<ModuleRouter, BaseError>`，重复 Action 名返回 `BaseError::ConfigError("Action 已注册: ...")`；`table_typed()` 使用 `?` 串联六个内置 Action 注册；同步 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；自定义 Action 注册调用方现在必须处理注册失败。
 - 验证：`cargo test -p yang-base --lib register_action`
+## 2026-07-07 - yang-base ModuleRouter Action 名非空校验
+
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`
+- 风险：`ModuleRouter::register_action()` 允许空字符串或纯空白 Action 名进入路由表，dispatch、metrics 和日志会缺少稳定 Action 标识。
+- 修改：注册 Action 前校验 `name.trim().is_empty()`，空白名称返回 `BaseError::ConfigError("Action 名称不能为空")`。
+- 验证：`cargo test -p yang-base --lib register_action`

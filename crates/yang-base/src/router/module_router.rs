@@ -256,6 +256,9 @@ impl ModuleRouter {
     {
         let action: Arc<dyn DynAction> = Arc::new(action);
         let name = action.meta().name.to_string();
+        if name.trim().is_empty() {
+            return Err(BaseError::ConfigError("Action 名称不能为空".to_string()));
+        }
         if self.actions.contains_key(&name) {
             return Err(BaseError::ConfigError(format!("Action 已注册: {}", name)));
         }

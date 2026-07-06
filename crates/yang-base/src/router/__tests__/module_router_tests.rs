@@ -3,6 +3,8 @@
 
 use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::action::builtin::TableAction;
+use crate::action::meta::ActionMeta;
+use crate::action::{PermissionMode, TypedAction, TypedHandler};
 use crate::error::BaseError;
 use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
 use crate::table::TableEntity;
@@ -12,7 +14,7 @@ use jsonwebtoken::Algorithm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 测试用类型化实体
@@ -34,6 +36,58 @@ pub struct TestUser {
     pub username: String,
     #[entity(max_length = 100)]
     pub email: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct BlankActionInput {}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct BlankActionOutput {}
+
+struct BlankNameAction;
+
+#[async_trait]
+impl TypedHandler for BlankNameAction {
+    type Input = BlankActionInput;
+    type Output = BlankActionOutput;
+
+    async fn handle(
+        &self,
+        _ctx: ActionContext,
+        _input: BlankActionInput,
+    ) -> Result<BlankActionOutput, BaseError> {
+        Ok(BlankActionOutput {})
+    }
+}
+
+impl TypedAction for BlankNameAction {
+    fn name(&self) -> &'static str {
+        "   "
+    }
+
+    fn input_schema(&self) -> &'static schemars::schema::RootSchema {
+        static S: OnceLock<schemars::schema::RootSchema> = OnceLock::new();
+        S.get_or_init(|| schemars::schema_for!(BlankActionInput))
+    }
+
+    fn output_schema(&self) -> &'static schemars::schema::RootSchema {
+        static S: OnceLock<schemars::schema::RootSchema> = OnceLock::new();
+        S.get_or_init(|| schemars::schema_for!(BlankActionOutput))
+    }
+
+    fn meta_static(&self) -> &'static ActionMeta {
+        static M: OnceLock<ActionMeta> = OnceLock::new();
+        M.get_or_init(|| ActionMeta {
+            name: "   ",
+            display_name: "空白 Action",
+            description: "",
+            permissions: &[],
+            permission_mode: PermissionMode::All,
+            is_public: false,
+            input_schema: self.input_schema(),
+            output_schema: self.output_schema(),
+        })
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -141,6 +195,16 @@ fn test_register_action_rejects_duplicate_action_name() {
     assert!(matches!(
         result,
         Err(BaseError::ConfigError(msg)) if msg.contains("Action 已注册: table")
+    ));
+}
+
+#[test]
+fn test_register_action_rejects_blank_action_name() {
+    let result = ModuleRouter::new("user", "用户管理").register_action(BlankNameAction);
+
+    assert!(matches!(
+        result,
+        Err(BaseError::ConfigError(msg)) if msg.contains("Action 名称不能为空")
     ));
 }
 
