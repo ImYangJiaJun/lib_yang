@@ -371,6 +371,10 @@ impl Request {
     /// assert_eq!(request.get_query("page"), Some("1"));
     /// ```
     pub fn get_query(&self, key: &str) -> Option<&str> {
+        if key.trim().is_empty() {
+            return None;
+        }
+
         self.query.get(key).map(|s| s.as_str())
     }
 
@@ -497,6 +501,18 @@ mod tests {
 
         assert_eq!(request.get_query("page"), Some("1"));
         assert_eq!(request.get_query("limit"), Some("10"));
+        assert_eq!(request.get_query(""), None);
+        assert_eq!(request.get_query("   "), None);
+    }
+
+    #[test]
+    fn test_get_query_rejects_blank_keys() {
+        let mut request = Request::new(json!({}));
+        request.query.insert("".to_string(), "empty".to_string());
+        request.query.insert("   ".to_string(), "blank".to_string());
+        request.query.insert("page".to_string(), "1".to_string());
+
+        assert_eq!(request.get_query("page"), Some("1"));
         assert_eq!(request.get_query(""), None);
         assert_eq!(request.get_query("   "), None);
     }

@@ -272,3 +272,10 @@
 - 修改：`get_header()` 在读取前校验空白名称，空白 header 名直接返回 `None`，保留合法名称的大小写不敏感查找。
 - 验证：`cargo test -p yang-base --lib test_get_header_rejects_blank_names`
 - 验证：`cargo test -p yang-base --lib test_header_`
+## 2026-07-07 - yang-base Action Request query 空白键读取拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request.query` 是 public 字段，外部可绕过 `query()` builder 直接写入空白 key；`get_query("")` 之前会读取该值，导致读取侧接受无效 query 名。
+- 修改：`get_query()` 在读取前校验空白 key，空白 query 名直接返回 `None`，合法 query 读取行为不变。
+- 验证：`cargo test -p yang-base --lib test_get_query_rejects_blank_keys`
+- 验证：`cargo test -p yang-base --lib query_rejects_blank_keys`
