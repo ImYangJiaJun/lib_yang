@@ -212,6 +212,12 @@
 - 兼容：这是有意的破坏性 API 收紧；外部认证扩展不能再直接篡改 `ActionContext.user`，需走受控中间件路径。
 - 验证：`cargo test -p yang-base --lib test_action_context_authenticated_user_getter`
 - 验证：`cargo test -p yang-base --test typed_action_integration --no-run`
+## 2026-07-07 - yang-base ModuleRouter Action 权限元数据非空校验
+
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`
+- 风险：自定义 Action 的 `ActionMeta.permissions` 可包含空白权限名，注册成功后会在运行期表现为永远无法满足或错误信息不可定位的权限要求。
+- 修改：`ModuleRouter::register_action()` 在注册阶段遍历 `meta.permissions`，发现空白权限名时返回 `BaseError::ConfigError("Action 权限名称不能为空")`。
+- 验证：`cargo test -p yang-base --lib register_action`
 ## 2026-07-07 - yang-base ModuleRouter 默认权限名非空校验
 
 - 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`crates/yang-base/src/router/mod.rs`、`docs/yang-base.md`

@@ -4,7 +4,7 @@
 use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::action::builtin::TableAction;
 use crate::action::meta::ActionMeta;
-use crate::action::{PermissionMode, TypedAction, TypedHandler};
+use crate::action::{Permission, PermissionMode, TypedAction, TypedHandler};
 use crate::error::BaseError;
 use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
 use crate::table::TableEntity;
@@ -86,6 +86,56 @@ impl TypedAction for BlankNameAction {
             is_public: false,
             input_schema: self.input_schema(),
             output_schema: self.output_schema(),
+        })
+    }
+}
+
+struct BlankPermissionAction;
+
+#[async_trait]
+impl TypedHandler for BlankPermissionAction {
+    type Input = BlankActionInput;
+    type Output = BlankActionOutput;
+
+    async fn handle(
+        &self,
+        _ctx: ActionContext,
+        _input: BlankActionInput,
+    ) -> Result<BlankActionOutput, BaseError> {
+        Ok(BlankActionOutput {})
+    }
+}
+
+impl TypedAction for BlankPermissionAction {
+    fn name(&self) -> &'static str {
+        "blank_permission"
+    }
+
+    fn input_schema(&self) -> &'static schemars::schema::RootSchema {
+        static S: OnceLock<schemars::schema::RootSchema> = OnceLock::new();
+        S.get_or_init(|| schemars::schema_for!(BlankActionInput))
+    }
+
+    fn output_schema(&self) -> &'static schemars::schema::RootSchema {
+        static S: OnceLock<schemars::schema::RootSchema> = OnceLock::new();
+        S.get_or_init(|| schemars::schema_for!(BlankActionOutput))
+    }
+
+    fn meta_static(&self) -> &'static ActionMeta {
+        static M: OnceLock<ActionMeta> = OnceLock::new();
+        M.get_or_init(|| {
+            let permissions: &'static [Permission] =
+                Box::leak(vec![Permission::from_static("   ")].into_boxed_slice());
+            ActionMeta {
+                name: "blank_permission",
+                display_name: "空白权限 Action",
+                description: "",
+                permissions,
+                permission_mode: PermissionMode::All,
+                is_public: false,
+                input_schema: self.input_schema(),
+                output_schema: self.output_schema(),
+            }
         })
     }
 }
@@ -200,6 +250,19 @@ fn test_default_permissions_rejects_blank_permission_name() {
 }
 
 #[test]
+fn test_default_permissions_rejects_duplicate_permission_name() {
+    let result = ModuleRouter::new("user", "用户管理").default_permissions(vec![
+        "user:read".to_string(),
+        "user:read".to_string(),
+    ]);
+
+    assert!(matches!(
+        result,
+        Err(BaseError::ConfigError(msg)) if msg.contains("默认权限重复: user:read")
+    ));
+}
+
+#[test]
 fn test_register_action_rejects_duplicate_action_name() {
     let router = router_with_builtins();
 
@@ -218,6 +281,16 @@ fn test_register_action_rejects_blank_action_name() {
     assert!(matches!(
         result,
         Err(BaseError::ConfigError(msg)) if msg.contains("Action 名称不能为空")
+    ));
+}
+
+#[test]
+fn test_register_action_rejects_blank_permission_name() {
+    let result = ModuleRouter::new("user", "用户管理").register_action(BlankPermissionAction);
+
+    assert!(matches!(
+        result,
+        Err(BaseError::ConfigError(msg)) if msg.contains("Action 权限名称不能为空")
     ));
 }
 
