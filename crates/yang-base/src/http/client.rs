@@ -91,6 +91,9 @@ impl HttpClientConfig {
                 "连接池空闲超时时间必须大于 0 秒".to_string(),
             ));
         }
+        if let Some(circuit_breaker) = &self.circuit_breaker {
+            circuit_breaker.validate()?;
+        }
 
         Ok(())
     }
@@ -137,6 +140,26 @@ mod config_tests {
             .expect_err("无效 HTTP 配置应在构建 reqwest client 前被拒绝");
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
+    }
+
+    #[test]
+    fn test_http_client_config_validate_rejects_invalid_circuit_breaker_config() {
+        let config = HttpClientConfig {
+            circuit_breaker: Some(crate::http::CircuitBreakerConfig {
+                failure_threshold: 0,
+                ..crate::http::CircuitBreakerConfig::default()
+            }),
+            ..HttpClientConfig::default()
+        };
+
+        let err = config
+            .validate()
+            .expect_err("HTTP 客户端应拒绝非法熔断器配置");
+
+        assert!(matches!(
+            err,
+            BaseError::ParamInvalid(field, _) if field == "http.circuit_breaker.failure_threshold"
+        ));
     }
 }
 

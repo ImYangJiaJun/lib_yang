@@ -16,6 +16,7 @@
 //! 的 `clone()` 复用同一份。锁仅在同步的检查/记录期间短暂持有，绝不跨 `.await`。
 //! HalfOpen 不做并发探测限流——多个并发请求都会被放行探测，适合本场景的轻量需求。
 
+use crate::error::BaseError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +40,78 @@ impl Default for CircuitBreakerConfig {
             failure_threshold: 5,
             cooldown_secs: 30,
             success_threshold: 1,
+        }
+    }
+}
+
+impl CircuitBreakerConfig {
+    /// 验证熔断器策略配置。
+    ///
+    /// 阈值和冷却时间为 0 时会破坏状态机语义，因此在构建客户端前 fail-fast。
+    pub fn validate(&self) -> Result<(), BaseError> {
+        if self.failure_threshold == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.circuit_breaker.failure_threshold".to_string(),
+                "熔断器失败阈值必须大于 0".to_string(),
+            ));
+        }
+        if self.cooldown_secs == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.circuit_breaker.cooldown_secs".to_string(),
+                "熔断器冷却时间必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.success_threshold == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.circuit_breaker.success_threshold".to_string(),
+                "熔断器恢复成功阈值必须大于 0".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    use crate::error::BaseError;
+
+    #[test]
+    fn test_circuit_breaker_config_validate_rejects_zero_values() {
+        let invalid_configs = [
+            (
+                "http.circuit_breaker.failure_threshold",
+                CircuitBreakerConfig {
+                    failure_threshold: 0,
+                    ..CircuitBreakerConfig::default()
+                },
+            ),
+            (
+                "http.circuit_breaker.cooldown_secs",
+                CircuitBreakerConfig {
+                    cooldown_secs: 0,
+                    ..CircuitBreakerConfig::default()
+                },
+            ),
+            (
+                "http.circuit_breaker.success_threshold",
+                CircuitBreakerConfig {
+                    success_threshold: 0,
+                    ..CircuitBreakerConfig::default()
+                },
+            ),
+        ];
+
+        for (expected_field, config) in invalid_configs {
+            let err = config
+                .validate()
+                .expect_err("熔断器零值配置应被拒绝");
+
+            assert!(matches!(
+                err,
+                BaseError::ParamInvalid(field, _) if field == expected_field
+            ));
         }
     }
 }

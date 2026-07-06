@@ -109,3 +109,9 @@
 - 风险：`HttpClientConfig` 已拒绝 0 秒超时，但 `RequestBuilder::timeout(0)` 仍可覆盖为 0 秒请求级超时，导致请求在发送后才以传输错误形式失败。
 - 修改：`RequestBuilder::send()` 在网络调用前检查 `self.timeout.is_zero()`，对 0 秒超时返回 `BaseError::ParamInvalid("http.timeout_secs", ...)`。
 - 验证：`cargo test -p yang-base --lib test_send_rejects_zero_request_timeout_before_network`
+## 2026-07-07 - yang-base HTTP 熔断器配置零值校验
+
+- 范围：`crates/yang-base/src/http/circuit_breaker.rs`、`crates/yang-base/src/http/client.rs`
+- 风险：`CircuitBreakerConfig` 可接受 0 次失败阈值、0 秒冷却或 0 次恢复成功阈值，破坏 Closed/Open/HalfOpen 状态机语义，并可能让非法策略进入客户端运行期。
+- 修改：新增 `CircuitBreakerConfig::validate()`，拒绝熔断器零值策略；`HttpClientConfig::validate()` 在构建客户端前同步校验嵌套熔断器配置。
+- 验证：`cargo test -p yang-base --lib circuit_breaker_config`
