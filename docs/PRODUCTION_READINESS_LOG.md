@@ -153,3 +153,9 @@
 - 修改：通过 builder 写入 header 时统一将名称归一化为 ASCII 小写；批量写入复用单个 `header()` 逻辑，同名大小写变体以后写值覆盖先写值。
 - 兼容：这是有意的公共字段内容形态收紧；`Request.headers` 仍为 `HashMap<String, String>`，但经 builder 写入的 key 现在稳定为小写。
 - 验证：`cargo test -p yang-base --lib test_header_`
+## 2026-07-07 - yang-base Action Request Bearer scheme 大小写不敏感
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：HTTP Authorization scheme 大小写不敏感，但 `Request::token()` 只接受精确 `Bearer `，导致 `bearer <token>` 或 `BEARER <token>` 被误判为未认证。
+- 修改：新增私有 `parse_bearer_token()`，用 `split_once(' ')` 拆分 scheme/token，并对 scheme 使用 `eq_ignore_ascii_case("Bearer")`。
+- 验证：`cargo test -p yang-base --lib test_token_accepts_case_insensitive_bearer_scheme`

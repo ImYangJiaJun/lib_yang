@@ -4,6 +4,11 @@
 
 use std::collections::HashMap;
 
+fn parse_bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("Bearer").then_some(token)
+}
+
 /// Action 请求
 ///
 /// 封装 HTTP 请求信息，用于 Action 执行
@@ -280,7 +285,7 @@ impl Request {
     /// ```
     pub fn token(&self) -> Option<&str> {
         self.get_header("authorization")
-            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(parse_bearer_token)
     }
 
     /// 获取请求头值
@@ -399,5 +404,14 @@ mod tests {
         assert_eq!(request.headers.get("authorization").map(String::as_str), Some("Bearer new"));
         assert_eq!(request.get_header("Authorization"), Some("Bearer new"));
         assert_eq!(request.token(), Some("new"));
+    }
+
+    #[test]
+    fn test_token_accepts_case_insensitive_bearer_scheme() {
+        let lower = Request::new(json!({})).header("authorization", "bearer lower-token");
+        let upper = Request::new(json!({})).header("authorization", "BEARER upper-token");
+
+        assert_eq!(lower.token(), Some("lower-token"));
+        assert_eq!(upper.token(), Some("upper-token"));
     }
 }
