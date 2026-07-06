@@ -265,3 +265,10 @@
 - 修改：配置默认权限时用 `HashSet` 检测重复项，发现重复权限名返回 `BaseError::ConfigError("默认权限重复: ...")`。
 - 验证：`cargo test -p yang-base --lib test_default_permissions_rejects_duplicate_permission_name`
 - 验证：`cargo test -p yang-base --lib default_permissions`
+## 2026-07-07 - yang-base Action Request header 空白名读取拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request.headers` 是 public 字段，外部可绕过 `header()` builder 直接写入空白 key；`get_header("")` 之前会读取该值，导致读取侧接受非 HTTP 语义 header 名。
+- 修改：`get_header()` 在读取前校验空白名称，空白 header 名直接返回 `None`，保留合法名称的大小写不敏感查找。
+- 验证：`cargo test -p yang-base --lib test_get_header_rejects_blank_names`
+- 验证：`cargo test -p yang-base --lib test_header_`

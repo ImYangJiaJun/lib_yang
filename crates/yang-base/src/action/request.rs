@@ -336,6 +336,10 @@ impl Request {
     /// assert_eq!(request.get_header("Content-Type"), Some("application/json"));
     /// ```
     pub fn get_header(&self, name: &str) -> Option<&str> {
+        if name.trim().is_empty() {
+            return None;
+        }
+
         self.headers
             .get(name)
             .or_else(|| self.headers.iter().find_map(|(key, value)| {
@@ -437,6 +441,20 @@ mod tests {
             .header("", "empty")
             .header("   ", "blank")
             .header("X-Request-Id", "abc");
+
+        assert_eq!(request.get_header("x-request-id"), Some("abc"));
+        assert_eq!(request.get_header(""), None);
+        assert_eq!(request.get_header("   "), None);
+    }
+
+    #[test]
+    fn test_get_header_rejects_blank_names() {
+        let mut request = Request::new(json!({}));
+        request.headers.insert("".to_string(), "empty".to_string());
+        request.headers.insert("   ".to_string(), "blank".to_string());
+        request
+            .headers
+            .insert("x-request-id".to_string(), "abc".to_string());
 
         assert_eq!(request.get_header("x-request-id"), Some("abc"));
         assert_eq!(request.get_header(""), None);
