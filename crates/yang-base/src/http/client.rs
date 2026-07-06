@@ -247,7 +247,10 @@ impl HttpClient {
 
         let client = builder.build().map_err(BaseError::HttpClientCreateFailed)?;
 
-        let circuit_breaker = cfg.circuit_breaker.map(crate::http::CircuitBreaker::new);
+        let circuit_breaker = cfg
+            .circuit_breaker
+            .map(crate::http::CircuitBreaker::new)
+            .transpose()?;
 
         Ok(Self {
             client,

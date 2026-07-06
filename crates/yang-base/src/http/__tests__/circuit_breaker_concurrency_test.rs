@@ -18,6 +18,7 @@ fn cb(failure_threshold: u32, cooldown_secs: u64, success_threshold: u32) -> Cir
         cooldown_secs,
         success_threshold,
     })
+    .expect("测试熔断器配置应合法")
 }
 
 /// N 个线程各记录一次失败，阈值设为 N：必然恰好打开熔断，无计数丢失。

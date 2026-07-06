@@ -114,6 +114,20 @@ mod config_tests {
             ));
         }
     }
+
+    #[test]
+    fn test_circuit_breaker_new_rejects_invalid_config() {
+        let err = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 0,
+            ..CircuitBreakerConfig::default()
+        })
+        .expect_err("公开构造器应拒绝非法熔断器配置");
+
+        assert!(matches!(
+            err,
+            BaseError::ParamInvalid(field, _) if field == "http.circuit_breaker.failure_threshold"
+        ));
+    }
 }
 
 /// 单个 host 的熔断状态。注意：HashMap 中**无 entry** 等价于「Closed 且零失败」，
@@ -138,11 +152,13 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     /// 用给定策略创建熔断器。
-    pub fn new(config: CircuitBreakerConfig) -> Self {
-        Self {
+    pub fn new(config: CircuitBreakerConfig) -> Result<Self, BaseError> {
+        config.validate()?;
+
+        Ok(Self {
             config,
             states: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     /// 请求发送前的准入检查。`true` 放行，`false` 表示熔断打开应直接拒绝。

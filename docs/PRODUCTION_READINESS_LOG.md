@@ -115,3 +115,10 @@
 - 风险：`CircuitBreakerConfig` 可接受 0 次失败阈值、0 秒冷却或 0 次恢复成功阈值，破坏 Closed/Open/HalfOpen 状态机语义，并可能让非法策略进入客户端运行期。
 - 修改：新增 `CircuitBreakerConfig::validate()`，拒绝熔断器零值策略；`HttpClientConfig::validate()` 在构建客户端前同步校验嵌套熔断器配置。
 - 验证：`cargo test -p yang-base --lib circuit_breaker_config`
+## 2026-07-07 - yang-base CircuitBreaker 构造器 fail-fast
+
+- 范围：`crates/yang-base/src/http/circuit_breaker.rs`、`crates/yang-base/src/http/client.rs`、`crates/yang-base/src/http/__tests__/circuit_breaker_test.rs`、`crates/yang-base/src/http/__tests__/circuit_breaker_concurrency_test.rs`
+- 风险：虽然 `HttpClientConfig` 路径已校验熔断器配置，公开的 `CircuitBreaker::new` 仍可被库调用方直接传入非法策略，绕过 fail-fast 边界。
+- 修改：将 `CircuitBreaker::new` 改为返回 `Result<CircuitBreaker, BaseError>` 并内部调用 `CircuitBreakerConfig::validate()`；`HttpClient::with_config()` 使用 `transpose()?` 传播构造错误。
+- 兼容：这是一次有意的破坏性 API 收紧；当前库尚未正式使用，优先保证基础库边界正确。
+- 验证：`cargo test -p yang-base --lib circuit_breaker`
