@@ -85,3 +85,9 @@
 - 风险：显式 `select_fields()` 会校验字段读取权限，但默认读路径生成 `SELECT *` 时没有底层权限防线，库调用方绕过内置 Action 时可能返回用户无权读取的字段。
 - 修改：将字段读取权限校验下沉到 SQL 构造层；`SELECT *` 要求当前角色可读取表内所有字段，显式字段也在构造 SQL 时再次校验。
 - 验证：`cargo test -p yang-base --lib test_select_star_rejects_unreadable_field`
+## 2026-07-06 - yang-base paginate 默认分页写回数据查询
+
+- 范围：`crates/yang-base/src/table/table_query.rs`
+- 风险：`paginate()` 在调用方未显式 `.page()` 时只把默认 `page/page_size` 用于返回元数据，数据查询仍可能不带 `LIMIT/OFFSET`，导致分页接口退化为全量读取。
+- 修改：新增有效分页归一化 helper，`paginate()` 在 COUNT 和数据 SELECT 之间使用同一份分页状态，并采用 `query_params` 的默认 page size。
+- 验证：`cargo test -p yang-base --lib test_effective_pagination_applies_default_limit_to_data_query_sql`

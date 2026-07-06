@@ -1354,6 +1354,20 @@ impl TableQuery {
     /// # Ok(())
     /// # }
     /// ```
+    fn with_effective_pagination(self) -> Result<(Self, usize, usize), BaseError> {
+        let page = self.query_params.page.unwrap_or(1);
+        let page_size = self
+            .query_params
+            .page_size
+            .unwrap_or(super::query_params::DEFAULT_QUERY_PAGE_SIZE);
+        let query = self.page(page, page_size)?;
+
+        Ok((query, page, page_size))
+    }
+
+    /// 执行分页查询。
+    ///
+    /// 未显式设置分页时会使用默认页码和默认每页大小，并确保数据查询带有 `LIMIT/OFFSET`。
     pub async fn paginate<T>(self) -> Result<crate::table::PaginatedResult<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin + Serialize,
@@ -1364,12 +1378,11 @@ impl TableQuery {
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
-        // 2. 获取分页参数，如果未设置则使用默认值
-        let page = self.query_params.page.unwrap_or(1);
-        let page_size = self.query_params.page_size.unwrap_or(20);
+        // 2. 获取分页参数，如果未设置则使用默认值，并写回数据查询
+        let (query, page, page_size) = self.with_effective_pagination()?;
 
         // 3. 执行 COUNT(*) 查询获取总记录数
-        let total = self.count_internal().await?;
+        let total = query.count_internal().await?;
 
         // 4. 如果总记录数为 0，直接返回空结果
         if total == 0 {
@@ -1377,7 +1390,7 @@ impl TableQuery {
         }
 
         // 5. 执行数据查询
-        let data = self.select().await?;
+        let data = query.select().await?;
 
         // 6. 构建并返回 PaginatedResult
         Ok(crate::table::PaginatedResult::new(
@@ -3155,6 +3168,28 @@ mod tests {
 
         assert!(
             matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret")
+        );
+    }
+
+    #[test]
+    fn test_effective_pagination_applies_default_limit_to_data_query_sql() {
+        let (query, page, page_size) = test_query()
+            .with_effective_pagination()
+            .expect("默认分页参数应合法");
+
+        assert_eq!(page, 1);
+        assert_eq!(page_size, crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE);
+
+        let (sql, _) = query
+            .build_select_sql(None)
+            .expect("默认分页后的 SELECT SQL 应可构建");
+
+        assert!(
+            sql.contains(&format!(
+                " LIMIT {} OFFSET 0",
+                crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE
+            )),
+            "分页数据查询必须包含默认 LIMIT，实际 SQL: {sql}"
         );
     }
 }
