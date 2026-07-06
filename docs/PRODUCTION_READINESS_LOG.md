@@ -61,3 +61,9 @@
 - 风险：`RoomType::Combat` 使用 `base + room.difficulty`，在 debug 构建中会因 `u16` 溢出 panic，在 release 构建中存在回绕风险；Boss/Elite 分支已使用饱和运算。
 - 修改：将 Combat 分支改为 `base.saturating_add(room.difficulty)`，保持敌人预算上限在 `u16::MAX`。
 - 验证：`cargo test -p yang-pcg --lib test_combat_enemy_budget_saturates_on_overflow`
+## 2026-07-06 - yang-pcg RoomBounds 极端坐标宽整数计算
+
+- 范围：`crates/yang-pcg/src/model/geometry.rs`
+- 风险：`RoomBounds::width`、`height`、`center` 直接使用 `i32` 加减，极端合法坐标会在 debug 构建中溢出 panic，在 release 构建中得到错误几何结果。
+- 修改：将宽度、高度、中心点的中间计算提升到 `i64`，保持对外返回类型不变，并补充极端坐标回归测试。
+- 验证：`cargo test -p yang-pcg --lib test_room_bounds_`

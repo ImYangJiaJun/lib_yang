@@ -53,19 +53,23 @@ pub struct RoomBounds {
 impl RoomBounds {
     /// 获取房间宽度
     pub fn width(&self) -> u32 {
-        (self.max.x - self.min.x).unsigned_abs()
+        (i64::from(self.max.x) - i64::from(self.min.x))
+            .unsigned_abs()
+            .min(u64::from(u32::MAX)) as u32
     }
 
     /// 获取房间高度
     pub fn height(&self) -> u32 {
-        (self.max.y - self.min.y).unsigned_abs()
+        (i64::from(self.max.y) - i64::from(self.min.y))
+            .unsigned_abs()
+            .min(u64::from(u32::MAX)) as u32
     }
 
     /// 获取房间中心点
     pub fn center(&self) -> GridPoint {
         GridPoint {
-            x: (self.min.x + self.max.x) / 2,
-            y: (self.min.y + self.max.y) / 2,
+            x: ((i64::from(self.min.x) + i64::from(self.max.x)) / 2) as i32,
+            y: ((i64::from(self.min.y) + i64::from(self.max.y)) / 2) as i32,
         }
     }
 
@@ -149,5 +153,49 @@ pub struct Bounds3 {
 impl Bounds3 {
     pub fn new(min: WorldPoint, max: WorldPoint) -> Self {
         Self { min, max }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_room_bounds_width_height_do_not_overflow_extreme_coordinates() {
+        let bounds = RoomBounds {
+            min: GridPoint {
+                x: i32::MIN,
+                y: i32::MIN,
+            },
+            max: GridPoint {
+                x: i32::MAX,
+                y: i32::MAX,
+            },
+        };
+
+        assert_eq!(bounds.width(), u32::MAX);
+        assert_eq!(bounds.height(), u32::MAX);
+    }
+
+    #[test]
+    fn test_room_bounds_center_uses_wide_arithmetic() {
+        let bounds = RoomBounds {
+            min: GridPoint {
+                x: i32::MAX - 1,
+                y: i32::MAX - 1,
+            },
+            max: GridPoint {
+                x: i32::MAX,
+                y: i32::MAX,
+            },
+        };
+
+        assert_eq!(
+            bounds.center(),
+            GridPoint {
+                x: i32::MAX - 1,
+                y: i32::MAX - 1,
+            }
+        );
     }
 }
