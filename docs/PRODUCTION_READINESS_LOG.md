@@ -185,3 +185,9 @@
 - 修改：`register_module()` 改为返回 `Result<AppRouter, BaseError>`，重复模块名返回 `BaseError::ConfigError("模块已注册: ...")`，不覆盖已有模块；同步源码和 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理模块注册失败。
 - 验证：`cargo test -p yang-base --lib test_register_module_rejects_duplicate_module_name`
+## 2026-07-07 - yang-base AppRouter 模块名非空校验
+
+- 范围：`crates/yang-base/src/router/app_router.rs`
+- 风险：`AppRouter::register_module()` 允许空字符串或纯空白模块名进入路由表，后续 dispatch、metrics 和日志都缺少稳定模块标识。
+- 修改：注册模块前校验 `module_name.trim().is_empty()`，空白模块名返回 `BaseError::ConfigError("模块名称不能为空")`。
+- 验证：`cargo test -p yang-base --lib test_register_module_`

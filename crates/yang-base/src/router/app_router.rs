@@ -100,6 +100,9 @@ impl AppRouter {
     /// ```
     pub fn register_module(mut self, router: ModuleRouter) -> Result<Self, BaseError> {
         let module_name = router.module_name().to_string();
+        if module_name.trim().is_empty() {
+            return Err(BaseError::ConfigError("模块名称不能为空".to_string()));
+        }
         if self.modules.contains_key(&module_name) {
             return Err(BaseError::ConfigError(format!(
                 "模块已注册: {}",
@@ -206,6 +209,16 @@ mod tests {
         assert!(matches!(
             result,
             Err(BaseError::ConfigError(msg)) if msg.contains("模块已注册: user")
+        ));
+    }
+
+    #[test]
+    fn test_register_module_rejects_blank_module_name() {
+        let result = AppRouter::new().register_module(ModuleRouter::new("   ", "空白模块"));
+
+        assert!(matches!(
+            result,
+            Err(BaseError::ConfigError(msg)) if msg.contains("模块名称不能为空")
         ));
     }
 }
