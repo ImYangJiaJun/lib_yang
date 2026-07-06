@@ -35,3 +35,12 @@
 - 已运行验证：`cargo test -p yang-db --lib database_config_validate_rejects_invalid_timeouts`
 - 已运行验证：`cargo test -p yang-db --lib database_config_validate_accepts_default_config`
 - 已运行验证：`cargo test -p yang-db --lib test_connect_with_config_rejects_invalid_config_before_connecting`
+
+## 2026-07-06 - yang-base TableQuery 底层分页上限
+
+- 范围：`crates/yang-base/src/table/table_query.rs`
+- 风险：内置 `SelectAction` 限制 `page_size <= 100`，但底层 `TableQuery::page()` 只拒绝 0。自定义 action 或库调用方直接使用 `ctx.table_query()?.page(...)` 时可绕过上层限制，发起超大查询，造成数据库压力或应用内存风险。
+- 修复：新增 `MAX_TABLE_QUERY_PAGE_SIZE = 100`，并在 `TableQuery::page()` 底层统一拒绝超过上限的 `page_size`。
+- 对抗性验证：新增单元测试证明 `TableQuery::page(1, 101)` 会返回 `BaseError::ParamInvalid("page_size", ...)`。
+- 已运行验证：`cargo test -p yang-base --lib test_page_rejects_page_size_above_production_limit`
+- 已运行验证：`cargo test -p yang-base --lib test_paginated_result_new`

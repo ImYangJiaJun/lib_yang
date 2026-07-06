@@ -45,6 +45,13 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// 受保护表查询允许的最大单页大小。
+///
+/// 该上限必须在 `TableQuery` 底层执行，而不能只放在上层 action。自定义 action 或库调用方
+/// 可直接调用 `ctx.table_query()?.page(...)`，底层没有上限会绕过内置 `SelectAction` 的保护，
+/// 导致超大查询拖垮数据库或应用内存。
+pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = 100;
+
 /// 表查询构建器
 ///
 /// 基于 TableConfig 创建类型安全的查询构建器，支持：
@@ -940,6 +947,12 @@ impl TableQuery {
             return Err(BaseError::ParamInvalid(
                 "page".to_string(),
                 "页码与每页大小必须从 1 开始且大于 0".to_string(),
+            ));
+        }
+        if page_size > MAX_TABLE_QUERY_PAGE_SIZE {
+            return Err(BaseError::ParamInvalid(
+                "page_size".to_string(),
+                format!("每页大小不能超过 {}", MAX_TABLE_QUERY_PAGE_SIZE),
             ));
         }
         self.query_params.page = Some(page);
@@ -3035,5 +3048,29 @@ impl SqlParam {
             Value::Array(_) => Ok(SqlParam::Json(value.clone())),
             Value::Object(_) => Ok(SqlParam::Json(value.clone())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn test_query() -> TableQuery {
+        let config = Arc::new(
+            crate::table::TableConfig::new("users")
+                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)),
+        );
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        TableQuery::new(config, roles, None)
+    }
+
+    #[test]
+    fn test_page_rejects_page_size_above_production_limit() {
+        let err = test_query()
+            .page(1, 101)
+            .expect_err("page_size 超过 100 应被拒绝");
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "page_size"));
     }
 }
