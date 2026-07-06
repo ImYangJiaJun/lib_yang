@@ -9,6 +9,22 @@ use reqwest::{Client, Method};
 use serde::Serialize;
 use std::time::Duration;
 
+fn redact_url_for_log(url: &str) -> String {
+    let Ok(mut parsed_url) = reqwest::Url::parse(url) else {
+        return "<invalid-url>".to_string();
+    };
+
+    parsed_url.set_query(None);
+    if !parsed_url.username().is_empty() {
+        let _ = parsed_url.set_username("***");
+    }
+    if parsed_url.password().is_some() {
+        let _ = parsed_url.set_password(Some("***"));
+    }
+
+    parsed_url.to_string()
+}
+
 /// 请求级重试策略配置（L-4）。
 ///
 /// 对临时性失败（连接错误、可重试的 5xx 等）按指数退避自动重试。
@@ -107,6 +123,16 @@ impl RetryConfig {
 #[cfg(test)]
 mod retry_config_tests {
     use super::*;
+
+    #[test]
+    fn test_redact_url_for_log_removes_query_and_userinfo() {
+        let redacted = redact_url_for_log("https://user:secret@example.com/path?token=secret&x=1");
+
+        assert_eq!(redacted, "https://***:***@example.com/path");
+        assert!(!redacted.contains("token"));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("user"));
+    }
 
     #[test]
     fn test_retry_config_validate_rejects_unsafe_values() {
@@ -850,16 +876,17 @@ impl RequestBuilder {
         }
 
         // 发送请求（NG-1：记录方法/URL/状态码/耗时，便于排查外部 API 慢响应与失败）。
-        // URL 仅记 self.url（不含 query 参数，query 经 reqwest 单独拼接，避免泄漏敏感参数）。
+        // URL 日志脱敏：移除 query，并隐藏 userinfo，避免泄漏 token/password。
         let start = std::time::Instant::now();
         let result = request.send().await;
         let elapsed_ms = start.elapsed().as_millis();
+        let log_url = redact_url_for_log(&self.url);
         match &result {
             Ok(resp) => {
                 tracing::debug!(
                     target: "yang_base::http",
                     method = %self.method,
-                    url = %self.url,
+                    url = %log_url,
                     status = resp.status().as_u16(),
                     elapsed_ms = elapsed_ms as u64,
                     "HTTP 出站请求完成"
@@ -869,7 +896,7 @@ impl RequestBuilder {
                 tracing::warn!(
                     target: "yang_base::http",
                     method = %self.method,
-                    url = %self.url,
+                    url = %log_url,
                     elapsed_ms = elapsed_ms as u64,
                     error = %e,
                     "HTTP 出站请求失败"

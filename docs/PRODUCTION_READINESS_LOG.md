@@ -134,3 +134,9 @@
 - 风险：非法 URL 或非 `http/https` scheme 之前会交给 reqwest 在发送阶段处理，并被包装成 `HttpRequestFailed`，对调用方来说错误类型不准确，也会让熔断器 host 分键在非法 URL 上退化为无分键。
 - 修改：`RequestBuilder::send()` 在网络调用前解析 URL，并仅允许 `http`/`https` scheme；解析后的 URL 复用于熔断器 host 分键。
 - 验证：`cargo test -p yang-base --lib test_send_rejects_invalid_url_before_network`
+## 2026-07-07 - yang-base HTTP 出站 URL 日志脱敏
+
+- 范围：`crates/yang-base/src/http/request.rs`
+- 风险：出站请求日志原样记录 `self.url`，当调用方直接传入带 query 参数或 userinfo 的 URL 时，可能把 token、password 等敏感信息写入日志。
+- 修改：新增私有 `redact_url_for_log()`，日志记录前移除 query，并将 URL username/password 替换为 `***`；成功和失败日志统一使用脱敏 URL。
+- 验证：`cargo test -p yang-base --lib test_redact_url_for_log_removes_query_and_userinfo`
