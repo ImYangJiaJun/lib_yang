@@ -76,6 +76,46 @@ impl DatabaseConfig {
         self.test_before_acquire = enabled;
         self
     }
+
+    /// 校验数据库连接池配置是否适合生产运行。
+    ///
+    /// Builder 方法保持纯赋值以兼容历史调用；真正建池前由连接入口显式校验，避免将明显
+    /// 非法的配置下推给 sqlx 后才在运行时失败。
+    pub fn validate(&self) -> std::result::Result<(), DbError> {
+        if self.max_connections == 0 {
+            return Err(DbError::InvalidArgument(
+                "PostgreSQL max_connections 必须大于 0".to_string(),
+            ));
+        }
+        if self.min_connections > self.max_connections {
+            return Err(DbError::InvalidArgument(format!(
+                "PostgreSQL min_connections({}) 不能大于 max_connections({})",
+                self.min_connections, self.max_connections
+            )));
+        }
+        if self.connect_timeout == 0 {
+            return Err(DbError::InvalidArgument(
+                "PostgreSQL connect_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.idle_timeout == 0 {
+            return Err(DbError::InvalidArgument(
+                "PostgreSQL idle_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.idle_timeout <= self.connect_timeout {
+            return Err(DbError::InvalidArgument(format!(
+                "PostgreSQL idle_timeout({}) 必须大于 connect_timeout({})",
+                self.idle_timeout, self.connect_timeout
+            )));
+        }
+        if matches!(self.max_lifetime, Some(0)) {
+            return Err(DbError::InvalidArgument(
+                "PostgreSQL max_lifetime 为 Some 时必须大于 0 秒".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 数据库连接管理器
@@ -125,6 +165,8 @@ impl Database {
     pub async fn connect_with_config(url: &str, config: DatabaseConfig) -> Result<Self, DbError> {
         use sqlx::postgres::PgPoolOptions;
         use std::time::Duration;
+
+        config.validate()?;
 
         // 使用配置参数创建连接池
         let mut options = PgPoolOptions::new()
@@ -463,4 +505,82 @@ fn bind_json_param<'q>(
     param: &serde_json::Value,
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
     bind_json_value!(query, param)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_database_config_validate_accepts_default_config() {
+        let config = DatabaseConfig::default();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_database_config_validate_rejects_invalid_pool_size() {
+        let err = DatabaseConfig {
+            max_connections: 0,
+            ..DatabaseConfig::default()
+        }
+        .validate()
+        .expect_err("max_connections 为 0 应被拒绝");
+
+        assert!(matches!(err, DbError::InvalidArgument(_)));
+
+        let err = DatabaseConfig {
+            max_connections: 2,
+            min_connections: 3,
+            ..DatabaseConfig::default()
+        }
+        .validate()
+        .expect_err("min_connections 大于 max_connections 应被拒绝");
+
+        assert!(matches!(err, DbError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn test_database_config_validate_rejects_invalid_timeouts() {
+        for config in [
+            DatabaseConfig {
+                connect_timeout: 0,
+                ..DatabaseConfig::default()
+            },
+            DatabaseConfig {
+                idle_timeout: 0,
+                ..DatabaseConfig::default()
+            },
+            DatabaseConfig {
+                max_lifetime: Some(0),
+                ..DatabaseConfig::default()
+            },
+        ] {
+            let err = config.validate().expect_err("非法超时配置应被拒绝");
+
+            assert!(matches!(err, DbError::InvalidArgument(_)));
+        }
+
+        let err = DatabaseConfig {
+            connect_timeout: 30,
+            idle_timeout: 30,
+            ..DatabaseConfig::default()
+        }
+        .validate()
+        .expect_err("idle_timeout 不大于 connect_timeout 应被拒绝");
+
+        assert!(matches!(err, DbError::InvalidArgument(_)));
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_config_rejects_invalid_config_before_connecting() {
+        let config = DatabaseConfig {
+            max_connections: 0,
+            ..DatabaseConfig::default()
+        };
+        let result =
+            Database::connect_with_config("postgres://postgres:bad@127.0.0.1:1/test", config).await;
+
+        assert!(matches!(result, Err(DbError::InvalidArgument(_))));
+    }
 }
