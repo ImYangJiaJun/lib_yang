@@ -893,7 +893,7 @@ impl TableQuery {
     ///
     /// let query = query.order_by("created_at", SortOrder::Desc)?;
     /// ```
-    pub fn order_by(mut self, field: &str, order: SortOrder) -> Result<Self, BaseError> {
+    fn validate_order_field(&self, field: &str) -> Result<(), BaseError> {
         // 1. 检查字段是否存在
         let field_config = self.table_config.get_field(field).ok_or_else(|| {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
@@ -917,6 +917,15 @@ impl TableQuery {
                 "用户无排序权限".to_string(),
             ));
         }
+
+        Ok(())
+    }
+
+    /// 添加排序规则。
+    ///
+    /// 会校验字段存在、字段允许排序，以及当前用户角色具备排序权限。
+    pub fn order_by(mut self, field: &str, order: SortOrder) -> Result<Self, BaseError> {
+        self.validate_order_field(field)?;
 
         // 添加排序规则
         self.query_params.order_by.push((field.to_string(), order));
@@ -1875,13 +1884,7 @@ impl TableQuery {
             let order_clauses: Result<Vec<String>, BaseError> = orders
                 .iter()
                 .map(|(field, order)| {
-                    // 校验字段存在，避免 default_order 配置错字段名拼出非法 SQL
-                    if self.table_config.get_field(field).is_none() {
-                        return Err(BaseError::FieldNotFound(
-                            self.table_config.table_name.clone(),
-                            field.clone(),
-                        ));
-                    }
+                    self.validate_order_field(field)?;
                     let direction = match order {
                         SortOrder::Asc => "ASC",
                         SortOrder::Desc => "DESC",
@@ -3072,5 +3075,30 @@ mod tests {
             .expect_err("page_size 超过 100 应被拒绝");
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "page_size"));
+    }
+
+    #[test]
+    fn test_default_order_rejects_unsortable_field() {
+        let config = Arc::new(
+            crate::table::TableConfig::new("users")
+                .field(
+                    crate::table::FieldConfig::new("secret_rank", crate::table::FieldType::Integer)
+                        .sortable(false),
+                )
+                .default_order(vec![(
+                    "secret_rank".to_string(),
+                    crate::table::SortOrder::Desc,
+                )]),
+        );
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let query = TableQuery::new(config, roles, None);
+
+        let err = query
+            .build_select_sql(None)
+            .expect_err("默认排序不应绕过 sortable(false)");
+
+        assert!(
+            matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret_rank")
+        );
     }
 }

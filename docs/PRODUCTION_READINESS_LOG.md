@@ -73,3 +73,9 @@
 - 风险：`sample_range_u16` 用 `range.max.saturating_add(1)` 构造半开区间，当 `range.max == u16::MAX` 时会把合法上界永久排除，破坏闭区间采样语义，并影响拓扑、布局和点位数量采样。
 - 修改：将采样区间提升为 `u32` 后再构造半开区间，采样结果再转回 `u16`。
 - 验证：`cargo test -p yang-pcg --lib test_sample_range_u16_includes_u16_max_upper_bound`
+## 2026-07-06 - yang-base 默认排序复用排序权限校验
+
+- 范围：`crates/yang-base/src/table/table_query.rs`
+- 风险：显式 `order_by()` 会拒绝 `sortable(false)` 或无排序权限字段，但 `TableConfig::default_order` 在 SQL 构造时只检查字段存在，可能绕过同一条硬约束。
+- 修改：抽出统一排序字段校验，显式排序和默认排序共同检查字段存在、`sortable` 开关和角色排序权限。
+- 验证：`cargo test -p yang-base --lib test_default_order_rejects_unsortable_field`
