@@ -35,7 +35,7 @@ use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode, User}
 use crate::error::BaseError;
 use crate::router::middleware::{Middleware, Next};
 use crate::table::TableConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -197,6 +197,16 @@ impl ModuleRouter {
             .any(|permission| permission.trim().is_empty())
         {
             return Err(BaseError::ConfigError("默认权限名称不能为空".to_string()));
+        }
+
+        let mut seen = HashSet::with_capacity(permissions.len());
+        for permission in &permissions {
+            if !seen.insert(permission.as_str()) {
+                return Err(BaseError::ConfigError(format!(
+                    "默认权限重复: {}",
+                    permission
+                )));
+            }
         }
 
         self.default_permissions = permissions;

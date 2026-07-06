@@ -258,3 +258,10 @@
 - 修改：`ActionContext::path_param()` 在读取前校验 `key.trim().is_empty()`，空白参数名返回 `BaseError::ParamInvalid("", "路径参数名不能为空")`。
 - 验证：`cargo test -p yang-base --lib test_action_context_path_param_rejects_blank_key`
 - 验证：`cargo test -p yang-base --lib test_action_context_path_param`
+## 2026-07-07 - yang-base ModuleRouter 默认权限重复名校验
+
+- 范围：`crates/yang-base/src/router/module_router.rs`
+- 风险：`ModuleRouter::default_permissions()` 允许重复权限名进入默认权限列表，导致配置冗余、错误信息重复，并掩盖启动阶段的权限配置错误。
+- 修改：配置默认权限时用 `HashSet` 检测重复项，发现重复权限名返回 `BaseError::ConfigError("默认权限重复: ...")`。
+- 验证：`cargo test -p yang-base --lib test_default_permissions_rejects_duplicate_permission_name`
+- 验证：`cargo test -p yang-base --lib default_permissions`
