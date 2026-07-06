@@ -238,3 +238,9 @@
 - 风险：`Request::query()` 与 `queries()` 允许空字符串或纯空白 query key 写入请求上下文，调用方后续无法可靠区分参数缺失、错误写入和真实空 key。
 - 修改：`query()` 在写入前拒绝空白 key；`queries()` 改为复用 `query()`，保证单个和批量写入行为一致。
 - 验证：`cargo test -p yang-base --lib test_query_rejects_blank_keys`
+## 2026-07-07 - yang-base Action Request path 参数空白键拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request::path_param()` 与 `path_params()` 允许空字符串或纯空白路径参数 key 写入请求上下文，路由参数配置错误会延迟为运行期缺参或错参，降低 Action 入参边界可靠性。
+- 修改：`path_param()` 在写入前拒绝空白 key；`path_params()` 改为复用 `path_param()`，保证单个和批量写入行为一致。
+- 验证：`cargo test -p yang-base --lib test_path_param_rejects_blank_keys`

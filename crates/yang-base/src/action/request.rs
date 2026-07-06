@@ -244,7 +244,12 @@ impl Request {
     ///     .path_param("action", "update");
     /// ```
     pub fn path_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.path_params.insert(key.into(), value.into());
+        let key = key.into();
+        if key.trim().is_empty() {
+            return self;
+        }
+
+        self.path_params.insert(key, value.into());
         self
     }
 
@@ -273,7 +278,9 @@ impl Request {
     ///     .path_params(path_params);
     /// ```
     pub fn path_params(mut self, path_params: HashMap<String, String>) -> Self {
-        self.path_params.extend(path_params);
+        for (key, value) in path_params {
+            self = self.path_param(key, value);
+        }
         self
     }
 
@@ -458,5 +465,25 @@ mod tests {
         assert_eq!(request.get_query("limit"), Some("10"));
         assert_eq!(request.get_query(""), None);
         assert_eq!(request.get_query("   "), None);
+    }
+
+    #[test]
+    fn test_path_param_rejects_blank_keys() {
+        let request = Request::new(json!({}))
+            .path_param("", "empty")
+            .path_param("   ", "blank")
+            .path_param("id", "42");
+
+        let mut path_params = std::collections::HashMap::new();
+        path_params.insert("".to_string(), "empty-bulk".to_string());
+        path_params.insert("   ".to_string(), "blank-bulk".to_string());
+        path_params.insert("slug".to_string(), "demo".to_string());
+
+        let request = request.path_params(path_params);
+
+        assert_eq!(request.get_path_param("id"), Some("42"));
+        assert_eq!(request.get_path_param("slug"), Some("demo"));
+        assert_eq!(request.get_path_param(""), None);
+        assert_eq!(request.get_path_param("   "), None);
     }
 }
