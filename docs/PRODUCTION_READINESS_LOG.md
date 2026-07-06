@@ -159,3 +159,9 @@
 - 风险：HTTP Authorization scheme 大小写不敏感，但 `Request::token()` 只接受精确 `Bearer `，导致 `bearer <token>` 或 `BEARER <token>` 被误判为未认证。
 - 修改：新增私有 `parse_bearer_token()`，用 `split_once(' ')` 拆分 scheme/token，并对 scheme 使用 `eq_ignore_ascii_case("Bearer")`。
 - 验证：`cargo test -p yang-base --lib test_token_accepts_case_insensitive_bearer_scheme`
+## 2026-07-07 - yang-base Action Request Bearer token 空白边界校验
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request::token()` 之前会把 `Bearer ` 解析为 `Some("")`，也会把 `Bearer    token` 解析为带前导空格的 token，后续认证错误定位不稳定。
+- 修改：`parse_bearer_token()` 改为按空白分段解析，仅接受 `Bearer <token>` 两段；多空格会被归一化，空 token 或额外分段返回 `None`。
+- 验证：`cargo test -p yang-base --lib test_token_`

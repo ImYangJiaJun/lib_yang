@@ -5,8 +5,15 @@
 use std::collections::HashMap;
 
 fn parse_bearer_token(value: &str) -> Option<&str> {
-    let (scheme, token) = value.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("Bearer").then_some(token)
+    let mut parts = value.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+
+    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+
+    Some(token)
 }
 
 /// Action 请求
@@ -413,5 +420,16 @@ mod tests {
 
         assert_eq!(lower.token(), Some("lower-token"));
         assert_eq!(upper.token(), Some("upper-token"));
+    }
+
+    #[test]
+    fn test_token_trims_scheme_spacing_and_rejects_empty_or_split_token() {
+        let padded = Request::new(json!({})).header("authorization", "Bearer    padded-token");
+        let empty = Request::new(json!({})).header("authorization", "Bearer ");
+        let split = Request::new(json!({})).header("authorization", "Bearer token extra");
+
+        assert_eq!(padded.token(), Some("padded-token"));
+        assert_eq!(empty.token(), None);
+        assert_eq!(split.token(), None);
     }
 }
