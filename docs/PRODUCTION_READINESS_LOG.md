@@ -79,3 +79,9 @@
 - 风险：显式 `order_by()` 会拒绝 `sortable(false)` 或无排序权限字段，但 `TableConfig::default_order` 在 SQL 构造时只检查字段存在，可能绕过同一条硬约束。
 - 修改：抽出统一排序字段校验，显式排序和默认排序共同检查字段存在、`sortable` 开关和角色排序权限。
 - 验证：`cargo test -p yang-base --lib test_default_order_rejects_unsortable_field`
+## 2026-07-06 - yang-base SELECT * 强制字段读取权限
+
+- 范围：`crates/yang-base/src/table/table_query.rs`
+- 风险：显式 `select_fields()` 会校验字段读取权限，但默认读路径生成 `SELECT *` 时没有底层权限防线，库调用方绕过内置 Action 时可能返回用户无权读取的字段。
+- 修改：将字段读取权限校验下沉到 SQL 构造层；`SELECT *` 要求当前角色可读取表内所有字段，显式字段也在构造 SQL 时再次校验。
+- 验证：`cargo test -p yang-base --lib test_select_star_rejects_unreadable_field`

@@ -343,25 +343,45 @@ impl TableQuery {
     /// let result2 = query2.select_fields(&["nonexistent_field"]);
     /// assert!(result2.is_err());
     /// ```
-    pub fn select_fields(mut self, fields: &[&str]) -> Result<Self, BaseError> {
-        // 验证每个字段
-        for field_name in fields {
-            // 1. 检查字段是否存在
-            let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
-                BaseError::FieldNotFound(
-                    self.table_config.table_name.clone(),
-                    field_name.to_string(),
-                )
-            })?;
+    fn validate_read_field(&self, field_name: &str) -> Result<(), BaseError> {
+        let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
+            BaseError::FieldNotFound(
+                self.table_config.table_name.clone(),
+                field_name.to_string(),
+            )
+        })?;
 
-            // 2. 检查用户是否有读取权限
+        if !field_config.permissions.can_read(&self.user_roles_set) {
+            return Err(BaseError::FieldPermissionDenied(
+                self.table_config.table_name.clone(),
+                field_name.to_string(),
+                "用户无读取权限".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn validate_all_fields_readable(&self) -> Result<(), BaseError> {
+        for (field_name, field_config) in &self.table_config.fields {
             if !field_config.permissions.can_read(&self.user_roles_set) {
                 return Err(BaseError::FieldPermissionDenied(
                     self.table_config.table_name.clone(),
-                    field_name.to_string(),
+                    field_name.clone(),
                     "用户无读取权限".to_string(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// 选择要查询的字段。
+    ///
+    /// 会校验字段存在，并校验当前用户角色具备这些字段的读取权限。
+    pub fn select_fields(mut self, fields: &[&str]) -> Result<Self, BaseError> {
+        // 验证每个字段
+        for field_name in fields {
+            self.validate_read_field(field_name)?;
         }
 
         // 设置字段列表
@@ -1854,14 +1874,21 @@ impl TableQuery {
         // 1. 字段列表（通过 quote_identifier 转义字段名）
         if let Some(fields) = &self.query_params.fields {
             if fields.is_empty() {
+                self.validate_all_fields_readable()?;
                 sql.push('*');
             } else {
                 // 对每个字段名进行反引号转义
-                let quoted_fields: Result<Vec<String>, BaseError> =
-                    fields.iter().map(|f| self.quote_identifier(f)).collect();
+                let quoted_fields: Result<Vec<String>, BaseError> = fields
+                    .iter()
+                    .map(|f| {
+                        self.validate_read_field(f)?;
+                        self.quote_identifier(f)
+                    })
+                    .collect();
                 sql.push_str(&quoted_fields?.join(", "));
             }
         } else {
+            self.validate_all_fields_readable()?;
             sql.push('*');
         }
 
@@ -3057,6 +3084,7 @@ impl SqlParam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     fn test_query() -> TableQuery {
@@ -3099,6 +3127,34 @@ mod tests {
 
         assert!(
             matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret_rank")
+        );
+    }
+
+    #[test]
+    fn test_select_star_rejects_unreadable_field() {
+        let protected_permissions = crate::table::FieldPermissions {
+            readable_roles: HashSet::from(["admin".to_string()]),
+            ..crate::table::FieldPermissions::default()
+        };
+        let config = Arc::new(
+            crate::table::TableConfig::new("users")
+                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer))
+                .field(
+                    crate::table::FieldConfig::new("secret", crate::table::FieldType::String {
+                        max_length: 64,
+                    })
+                    .permissions(protected_permissions),
+                ),
+        );
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let query = TableQuery::new(config, roles, None);
+
+        let err = query
+            .build_select_sql(None)
+            .expect_err("SELECT * 不应返回用户无权读取的字段");
+
+        assert!(
+            matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret")
         );
     }
 }
