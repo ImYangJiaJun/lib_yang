@@ -232,3 +232,9 @@
 - 修改：`RequestId::parse_hex()` 将解析结果 `0` 视为无效并返回 `None`，`RequestIdMiddleware` 因此保留已有默认生成值；新增中间件测试覆盖全零 header 不透传。
 - 验证：`cargo test -p yang-base --lib request_id_middleware`
 - 验证：`cargo test -p yang-base --lib action::request_id::tests`
+## 2026-07-07 - yang-base Action Request query 空白键拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request::query()` 与 `queries()` 允许空字符串或纯空白 query key 写入请求上下文，调用方后续无法可靠区分参数缺失、错误写入和真实空 key。
+- 修改：`query()` 在写入前拒绝空白 key；`queries()` 改为复用 `query()`，保证单个和批量写入行为一致。
+- 验证：`cargo test -p yang-base --lib test_query_rejects_blank_keys`

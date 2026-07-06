@@ -182,7 +182,12 @@ impl Request {
     ///     .query("limit", "10");
     /// ```
     pub fn query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.query.insert(key.into(), value.into());
+        let key = key.into();
+        if key.trim().is_empty() {
+            return self;
+        }
+
+        self.query.insert(key, value.into());
         self
     }
 
@@ -211,7 +216,9 @@ impl Request {
     ///     .queries(query);
     /// ```
     pub fn queries(mut self, query: HashMap<String, String>) -> Self {
-        self.query.extend(query);
+        for (key, value) in query {
+            self = self.query(key, value);
+        }
         self
     }
 
@@ -431,5 +438,25 @@ mod tests {
         assert_eq!(padded.token(), Some("padded-token"));
         assert_eq!(empty.token(), None);
         assert_eq!(split.token(), None);
+    }
+
+    #[test]
+    fn test_query_rejects_blank_keys() {
+        let request = Request::new(json!({}))
+            .query("", "empty")
+            .query("   ", "blank")
+            .query("page", "1");
+
+        let mut query = std::collections::HashMap::new();
+        query.insert("".to_string(), "empty-bulk".to_string());
+        query.insert("   ".to_string(), "blank-bulk".to_string());
+        query.insert("limit".to_string(), "10".to_string());
+
+        let request = request.queries(query);
+
+        assert_eq!(request.get_query("page"), Some("1"));
+        assert_eq!(request.get_query("limit"), Some("10"));
+        assert_eq!(request.get_query(""), None);
+        assert_eq!(request.get_query("   "), None);
     }
 }
