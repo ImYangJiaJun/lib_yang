@@ -67,3 +67,9 @@
 - 风险：`RoomBounds::width`、`height`、`center` 直接使用 `i32` 加减，极端合法坐标会在 debug 构建中溢出 panic，在 release 构建中得到错误几何结果。
 - 修改：将宽度、高度、中心点的中间计算提升到 `i64`，保持对外返回类型不变，并补充极端坐标回归测试。
 - 验证：`cargo test -p yang-pcg --lib test_room_bounds_`
+## 2026-07-06 - yang-pcg RangeU16 闭区间采样包含最大上界
+
+- 范围：`crates/yang-pcg/src/topology/graph.rs`
+- 风险：`sample_range_u16` 用 `range.max.saturating_add(1)` 构造半开区间，当 `range.max == u16::MAX` 时会把合法上界永久排除，破坏闭区间采样语义，并影响拓扑、布局和点位数量采样。
+- 修改：将采样区间提升为 `u32` 后再构造半开区间，采样结果再转回 `u16`。
+- 验证：`cargo test -p yang-pcg --lib test_sample_range_u16_includes_u16_max_upper_bound`
