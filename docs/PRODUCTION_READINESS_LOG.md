@@ -212,3 +212,10 @@
 - 兼容：这是有意的破坏性 API 收紧；外部认证扩展不能再直接篡改 `ActionContext.user`，需走受控中间件路径。
 - 验证：`cargo test -p yang-base --lib test_action_context_authenticated_user_getter`
 - 验证：`cargo test -p yang-base --test typed_action_integration --no-run`
+## 2026-07-07 - yang-base ModuleRouter 默认权限名非空校验
+
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`crates/yang-base/src/router/mod.rs`、`docs/yang-base.md`
+- 风险：`ModuleRouter::default_permissions()` 允许空字符串或纯空白权限名进入模块默认权限列表，后续鉴权失败信息和配置排错都缺少稳定权限标识。
+- 修改：`default_permissions()` 改为返回 `Result<ModuleRouter, BaseError>`，配置阶段拒绝空白权限名并返回 `BaseError::ConfigError("默认权限名称不能为空")`；同步源码和 API 文档示例。
+- 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理默认权限配置错误。
+- 验证：`cargo test -p yang-base --lib default_permissions`

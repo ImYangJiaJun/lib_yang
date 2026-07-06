@@ -187,6 +187,19 @@ fn test_table_typed_without_table_config() {
 }
 
 #[test]
+fn test_default_permissions_rejects_blank_permission_name() {
+    let result = ModuleRouter::new("user", "用户管理").default_permissions(vec![
+        "user:read".to_string(),
+        "   ".to_string(),
+    ]);
+
+    assert!(matches!(
+        result,
+        Err(BaseError::ConfigError(msg)) if msg.contains("默认权限名称不能为空")
+    ));
+}
+
+#[test]
 fn test_register_action_rejects_duplicate_action_name() {
     let router = router_with_builtins();
 
@@ -240,7 +253,9 @@ async fn test_dispatch_unauthorized() {
 
 #[tokio::test]
 async fn test_dispatch_permission_denied() {
-    let router = router_with_builtins().default_permissions(vec!["admin:access".to_string()]);
+    let router = router_with_builtins()
+        .default_permissions(vec!["admin:access".to_string()])
+        .expect("有效默认权限应设置成功");
 
     let user = User {
         id: 1,
@@ -261,7 +276,9 @@ async fn test_dispatch_permission_denied() {
 
 #[tokio::test]
 async fn test_dispatch_with_sufficient_permissions_passes_authz() {
-    let router = router_with_builtins().default_permissions(vec!["user:write".to_string()]);
+    let router = router_with_builtins()
+        .default_permissions(vec!["user:write".to_string()])
+        .expect("有效默认权限应设置成功");
 
     let user = create_test_user();
     let request = Request::new(json!({ "data": { "username": "alice" } }));

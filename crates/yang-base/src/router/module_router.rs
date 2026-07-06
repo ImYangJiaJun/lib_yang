@@ -126,7 +126,8 @@ impl ModuleRouter {
     ///
     /// # 返回
     ///
-    /// - 修改后的 ModuleRouter 实例（支持链式调用）
+    /// - `Ok(ModuleRouter)`: 修改后的实例（支持链式调用）
+    /// - `Err(BaseError::ConfigError)`: 权限名称为空
     ///
     /// # 示例
     ///
@@ -188,11 +189,18 @@ impl ModuleRouter {
     /// use yang_base::router::ModuleRouter;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .default_permissions(vec!["user:access".to_string()]);
+    ///     .default_permissions(vec!["user:access".to_string()])?;
     /// ```
-    pub fn default_permissions(mut self, permissions: Vec<String>) -> Self {
+    pub fn default_permissions(mut self, permissions: Vec<String>) -> Result<Self, BaseError> {
+        if permissions
+            .iter()
+            .any(|permission| permission.trim().is_empty())
+        {
+            return Err(BaseError::ConfigError("默认权限名称不能为空".to_string()));
+        }
+
         self.default_permissions = permissions;
-        self
+        Ok(self)
     }
 
     /// 设置默认权限匹配模式（builder setter）
@@ -216,7 +224,7 @@ impl ModuleRouter {
     /// use yang_base::action::PermissionMode;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .default_permissions(vec!["user:read".to_string(), "user:write".to_string()])
+    ///     .default_permissions(vec!["user:read".to_string(), "user:write".to_string()])?
     ///     .default_permission_mode(PermissionMode::Any);
     /// ```
     pub fn default_permission_mode(mut self, mode: PermissionMode) -> Self {

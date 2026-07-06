@@ -1078,7 +1078,7 @@ use yang_base::router::{ModuleRouter, BUILTIN_ACTION_NAMES};
 
 let router = ModuleRouter::new("user", "用户管理")
     .with_table_config(Arc::new(table_config))
-    .default_permissions(vec!["user:access".into()])
+    .default_permissions(vec!["user:access".into()])?
     .table_typed::<UserEntity>()?   // 一行注册全套类型化 CRUD（需 mysql feature）
     .register_action(LoginAction)?; // 注册自定义 Action
 
