@@ -44,3 +44,13 @@
 - 对抗性验证：新增单元测试证明 `TableQuery::page(1, 101)` 会返回 `BaseError::ParamInvalid("page_size", ...)`。
 - 已运行验证：`cargo test -p yang-base --lib test_page_rejects_page_size_above_production_limit`
 - 已运行验证：`cargo test -p yang-base --lib test_paginated_result_new`
+
+## 2026-07-06 - yang-base QueryParams 分页归一化上限
+
+- 范围：`crates/yang-base/src/table/query_params.rs`、`crates/yang-base/src/table/table_query.rs`、`crates/yang-base/src/table/mod.rs`
+- 风险：`QueryParams::normalize()` 只修正 `page=0`，不处理 `page_size=0` 或超大 `page_size`。作为可反序列化 DTO，它可能在进入 `TableQuery` 前被上层独立归一化；如果不处理 page_size，会形成和底层执行边界不一致的分页行为。
+- 修复：新增 `DEFAULT_QUERY_PAGE_SIZE = 10` 与 `MAX_QUERY_PAGE_SIZE = 100`，`normalize()` 将 `page_size=0` 归一化为默认值，并将超过上限的 `page_size` 截到 100。
+- 修复：`MAX_TABLE_QUERY_PAGE_SIZE` 改为复用 `MAX_QUERY_PAGE_SIZE`，并通过 `table::mod` 重导出分页上限常量，避免调用方重复硬编码。
+- 对抗性验证：新增单元测试覆盖 `page=0/page_size=0` 和 `page_size=101` 的归一化结果。
+- 已运行验证：`cargo test -p yang-base --lib test_query_params_normalize_clamps_invalid_pagination`
+- 已运行验证：`cargo test -p yang-base --lib test_page_rejects_page_size_above_production_limit`

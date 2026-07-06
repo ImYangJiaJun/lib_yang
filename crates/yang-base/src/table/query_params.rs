@@ -42,6 +42,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 默认每页条数。
+pub const DEFAULT_QUERY_PAGE_SIZE: usize = 10;
+
+/// 查询请求模型允许的最大每页条数。
+pub const MAX_QUERY_PAGE_SIZE: usize = 100;
+
 /// WHERE 条件枚举
 ///
 /// 定义各种查询条件类型，支持常见的 SQL WHERE 子句操作。
@@ -540,8 +546,15 @@ impl QueryParams {
     /// ```
     pub fn normalize(&mut self) {
         if let Some(page) = self.page {
-            if page < 1 {
+            if page == 0 {
                 self.page = Some(1);
+            }
+        }
+        if let Some(page_size) = self.page_size {
+            if page_size == 0 {
+                self.page_size = Some(DEFAULT_QUERY_PAGE_SIZE);
+            } else if page_size > MAX_QUERY_PAGE_SIZE {
+                self.page_size = Some(MAX_QUERY_PAGE_SIZE);
             }
         }
     }

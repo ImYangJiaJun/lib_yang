@@ -50,7 +50,7 @@ use std::sync::Arc;
 /// 该上限必须在 `TableQuery` 底层执行，而不能只放在上层 action。自定义 action 或库调用方
 /// 可直接调用 `ctx.table_query()?.page(...)`，底层没有上限会绕过内置 `SelectAction` 的保护，
 /// 导致超大查询拖垮数据库或应用内存。
-pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = 100;
+pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE_SIZE;
 
 /// 表查询构建器
 ///

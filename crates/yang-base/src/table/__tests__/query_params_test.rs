@@ -182,6 +182,21 @@ fn test_query_params_with_pagination() {
 }
 
 #[test]
+fn test_query_params_normalize_clamps_invalid_pagination() {
+    let mut params = QueryParams::new().with_pagination(0, 0);
+    params.normalize();
+
+    assert_eq!(params.page, Some(1));
+    assert_eq!(params.page_size, Some(10));
+
+    let mut params = QueryParams::new().with_pagination(1, 101);
+    params.normalize();
+
+    assert_eq!(params.page, Some(1));
+    assert_eq!(params.page_size, Some(100));
+}
+
+#[test]
 fn test_query_params_builder_chain() {
     let params = QueryParams::new()
         .with_fields(vec!["id".to_string(), "name".to_string()])
