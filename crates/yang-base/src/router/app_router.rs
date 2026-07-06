@@ -25,7 +25,7 @@
 //!
 //! // 创建应用路由器并注册模块
 //! let app_router = AppRouter::new()
-//!     .register_module(user_router);
+//!     .register_module(user_router)?;
 //!
 //! // 分发请求
 //! let response = app_router.dispatch("user", "add", context).await?;
@@ -78,7 +78,7 @@ impl AppRouter {
     /// 注册模块路由器
     ///
     /// 将 `ModuleRouter` 注册到应用路由器中，使用模块名称作为 Key。
-    /// 若同名模块已存在，则覆盖旧的注册。
+    /// 若同名模块已存在，则返回 `BaseError::ConfigError`，不覆盖旧的注册。
     ///
     /// # 参数
     ///
@@ -86,7 +86,8 @@ impl AppRouter {
     ///
     /// # 返回
     ///
-    /// - 修改后的 `AppRouter` 实例（支持链式调用）
+    /// - `Ok(AppRouter)`: 修改后的实例（支持链式调用）
+    /// - `Err(BaseError::ConfigError)`: 模块名重复
     ///
     /// # 示例
     ///
@@ -94,13 +95,19 @@ impl AppRouter {
     /// use yang_base::router::{AppRouter, ModuleRouter};
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"))
-    ///     .register_module(ModuleRouter::new("order", "订单管理"));
+    ///     .register_module(ModuleRouter::new("user", "用户管理"))?
+    ///     .register_module(ModuleRouter::new("order", "订单管理"))?;
     /// ```
-    pub fn register_module(mut self, router: ModuleRouter) -> Self {
+    pub fn register_module(mut self, router: ModuleRouter) -> Result<Self, BaseError> {
         let module_name = router.module_name().to_string();
+        if self.modules.contains_key(&module_name) {
+            return Err(BaseError::ConfigError(format!(
+                "模块已注册: {}",
+                module_name
+            )));
+        }
         self.modules.insert(module_name, router);
-        self
+        Ok(self)
     }
 
     /// 获取已注册的模块名称列表
@@ -115,8 +122,8 @@ impl AppRouter {
     /// use yang_base::router::{AppRouter, ModuleRouter};
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"))
-    ///     .register_module(ModuleRouter::new("order", "订单管理"));
+    ///     .register_module(ModuleRouter::new("user", "用户管理"))?
+    ///     .register_module(ModuleRouter::new("order", "订单管理"))?;
     ///
     /// let names = app_router.module_names();
     /// assert_eq!(names.len(), 2);
@@ -154,7 +161,7 @@ impl AppRouter {
     /// use yang_base::action::ActionContext;
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"));
+    ///     .register_module(ModuleRouter::new("user", "用户管理"))?;
     ///
     /// // 模块不存在时返回错误
     /// let result = app_router.dispatch("unknown", "add", context).await;
@@ -181,5 +188,24 @@ impl AppRouter {
 impl Default for AppRouter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_register_module_rejects_duplicate_module_name() {
+        let router = AppRouter::new()
+            .register_module(ModuleRouter::new("user", "用户管理"))
+            .expect("首次注册 user 模块应成功");
+
+        let result = router.register_module(ModuleRouter::new("user", "重复用户模块"));
+
+        assert!(matches!(
+            result,
+            Err(BaseError::ConfigError(msg)) if msg.contains("模块已注册: user")
+        ));
     }
 }

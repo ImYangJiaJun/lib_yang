@@ -25,7 +25,7 @@
 //!
 //! // 创建应用路由器并注册模块
 //! let app_router = AppRouter::new()
-//!     .register_module(user_router);
+//!     .register_module(user_router)?;
 //! ```
 
 mod app_router;

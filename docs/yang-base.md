@@ -1110,8 +1110,8 @@ router.get_table_config() // Option<&Arc<TableConfig>>
 use yang_base::router::AppRouter;
 
 let app_router = AppRouter::new()
-    .register_module(user_router)
-    .register_module(order_router);
+    .register_module(user_router)?
+    .register_module(order_router)?;
 
 app_router.module_names() // Vec<String>
 
@@ -1182,7 +1182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ModuleRouter::new("user", "用户管理")
                 .with_table_config(users_config)
                 .table_typed::<UserEntity>()?
-        );
+        )?;
 
     // 6. 处理请求（示例）
     let request = Request::new(serde_json::json!({ "data": { "username": "alice", "email": "a@b.com" } }));

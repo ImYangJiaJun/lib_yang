@@ -178,3 +178,10 @@
 - 风险：`GlobalTools::register_tool()` 允许空字符串或纯空白工具名进入注册表，后续按名称获取、审计和排错都缺少稳定标识。
 - 修改：注册前校验 `name.trim().is_empty()`，空白名称返回 `BaseError::ConfigError("工具名称不能为空")`，不进入写锁和注册表。
 - 验证：`cargo test -p yang-base --lib register_tool`
+## 2026-07-07 - yang-base AppRouter 重复模块注册 fail-fast
+
+- 范围：`crates/yang-base/src/router/app_router.rs`、`crates/yang-base/src/router/mod.rs`、`docs/yang-base.md`
+- 风险：`AppRouter::register_module()` 对同名模块静默覆盖，应用启动阶段的路由配置错误会被延迟到运行期表现为错误模块处理请求。
+- 修改：`register_module()` 改为返回 `Result<AppRouter, BaseError>`，重复模块名返回 `BaseError::ConfigError("模块已注册: ...")`，不覆盖已有模块；同步源码和 API 文档示例。
+- 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理模块注册失败。
+- 验证：`cargo test -p yang-base --lib test_register_module_rejects_duplicate_module_name`
