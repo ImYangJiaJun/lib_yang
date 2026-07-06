@@ -76,6 +76,7 @@ impl RedisClient {
     /// }
     /// ```
     pub async fn connect_with_config(url: impl Into<String>, config: RedisConfig) -> Result<Self> {
+        config.validate()?;
         let url_str = url.into();
 
         // 使用 from_url 创建配置，然后设置连接池参数
@@ -2158,6 +2159,14 @@ mod tests {
         let client = RedisClient { pool };
 
         assert_eq!(client.pool_status().max_size, 25);
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_config_rejects_invalid_config_before_connecting() {
+        let config = RedisConfig::default().with_max_connections(0);
+        let result = RedisClient::connect_with_config("redis://127.0.0.1:1", config).await;
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
     }
 
     #[test]

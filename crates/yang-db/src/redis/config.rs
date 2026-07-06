@@ -163,6 +163,51 @@ impl RedisConfig {
         self
     }
 
+    /// 校验 Redis 连接池配置是否适合生产运行。
+    ///
+    /// Builder 方法保持纯赋值以兼容历史调用；真正建池前由调用方显式校验，避免将明显
+    /// 非法的配置下推给连接池实现后才在运行时失败。
+    pub fn validate(&self) -> std::result::Result<(), crate::error::DbError> {
+        if self.max_connections == 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis max_connections 必须大于 0".to_string(),
+            ));
+        }
+        if self.min_connections > self.max_connections {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "Redis min_connections({}) 不能大于 max_connections({})",
+                self.min_connections, self.max_connections
+            )));
+        }
+        if self.connect_timeout == 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis connect_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.wait_timeout == 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis wait_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.idle_timeout == 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis idle_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        if self.idle_timeout <= self.connect_timeout {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "Redis idle_timeout({}) 必须大于 connect_timeout({})",
+                self.idle_timeout, self.connect_timeout
+            )));
+        }
+        if matches!(self.max_lifetime, Some(0)) {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis max_lifetime 为 Some 时必须大于 0 秒".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     // ==================== Duration 辅助方法 ====================
 
     /// 获取连接超时 Duration
@@ -224,6 +269,59 @@ mod tests {
         assert_eq!(config.max_lifetime, Some(3600));
         assert!(config.test_before_acquire);
         assert!(config.enable_logging);
+    }
+
+    #[test]
+    fn test_validate_accepts_default_config() {
+        let config = RedisConfig::default();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_connections() {
+        let err = RedisConfig::default()
+            .with_max_connections(0)
+            .validate()
+            .expect_err("max_connections 为 0 应被拒绝");
+
+        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_min_connections_above_max() {
+        let err = RedisConfig::default()
+            .with_max_connections(2)
+            .with_min_connections(3)
+            .validate()
+            .expect_err("min_connections 大于 max_connections 应被拒绝");
+
+        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_timeouts() {
+        for config in [
+            RedisConfig::default().with_connect_timeout(0),
+            RedisConfig::default().with_wait_timeout(0),
+            RedisConfig::default().with_idle_timeout(0),
+            RedisConfig::default().with_max_lifetime(Some(0)),
+        ] {
+            let err = config.validate().expect_err("零秒超时配置应被拒绝");
+
+            assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_idle_timeout_not_greater_than_connect_timeout() {
+        let err = RedisConfig::default()
+            .with_connect_timeout(5)
+            .with_idle_timeout(5)
+            .validate()
+            .expect_err("idle_timeout 不大于 connect_timeout 应被拒绝");
+
+        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
     }
 
     #[test]
