@@ -193,6 +193,25 @@ mod retry_config_tests {
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
     }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_bearer_token_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            Some("bad\r\ntoken".to_string()),
+            None,
+        );
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("非法 bearer token 应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "authorization"));
+    }
 }
 
 /// HTTP 请求构建器
@@ -675,6 +694,16 @@ impl RequestBuilder {
                 "header".to_string(),
                 self.header_errors.join("; "),
             ));
+        }
+
+        if let Some(token) = &self.token {
+            let auth_value = format!("Bearer {}", token);
+            if let Err(err) = HeaderValue::from_str(&auth_value) {
+                return Err(BaseError::ParamInvalid(
+                    "authorization".to_string(),
+                    format!("非法 bearer token，无法构造 Authorization 头: {}", err),
+                ));
+            }
         }
 
         if self.timeout.is_zero() {

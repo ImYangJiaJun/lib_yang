@@ -122,3 +122,9 @@
 - 修改：将 `CircuitBreaker::new` 改为返回 `Result<CircuitBreaker, BaseError>` 并内部调用 `CircuitBreakerConfig::validate()`；`HttpClient::with_config()` 使用 `transpose()?` 传播构造错误。
 - 兼容：这是一次有意的破坏性 API 收紧；当前库尚未正式使用，优先保证基础库边界正确。
 - 验证：`cargo test -p yang-base --lib circuit_breaker`
+## 2026-07-07 - yang-base HTTP bearer token 头部 fail-fast 校验
+
+- 范围：`crates/yang-base/src/http/request.rs`
+- 风险：`content_type`、`user_agent` 等显式 header 已在发送前校验，但默认 token 或 `bearer_token()` 设置的值可能包含非法控制字符，之前会在 reqwest 构造/发送阶段暴露为传输错误，错误类型不准确且定位较晚。
+- 修改：`RequestBuilder::send()` 在网络调用前构造并校验 `Authorization: Bearer <token>` 的 header 值，非法 token 返回 `BaseError::ParamInvalid("authorization", ...)`，且错误消息不回显 token 原文。
+- 验证：`cargo test -p yang-base --lib test_send_rejects_invalid_bearer_token_before_network`
