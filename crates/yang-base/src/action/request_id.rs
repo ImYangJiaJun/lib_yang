@@ -54,7 +54,7 @@ impl RequestId {
     ///   去连字符后恰为 32 位十六进制，覆盖最常见的上游标识与 W3C traceparent 的
     ///   trace-id 段。
     ///
-    /// 非十六进制或去连字符后超 32 位返回 `None`，调用方据此降级为新生成。
+    /// 非十六进制、全零值或去连字符后超 32 位返回 `None`，调用方据此降级为新生成。
     ///
     /// **限制**：`RequestId` 底层是 `u128`，无法承载任意字符串标识（如纯字母 trace
     /// id）。这类上游标识会被拒绝并降级——若需端到端透传任意字符串标识，应在传输层
@@ -70,7 +70,10 @@ impl RequestId {
         if normalized.is_empty() || normalized.len() > 32 {
             return None;
         }
-        u128::from_str_radix(&normalized, 16).ok().map(RequestId)
+        u128::from_str_radix(&normalized, 16)
+            .ok()
+            .filter(|value| *value != 0)
+            .map(RequestId)
     }
 }
 

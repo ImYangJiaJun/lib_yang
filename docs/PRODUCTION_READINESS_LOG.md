@@ -225,3 +225,10 @@
 - 修改：`default_permissions()` 改为返回 `Result<ModuleRouter, BaseError>`，配置阶段拒绝空白权限名并返回 `BaseError::ConfigError("默认权限名称不能为空")`；同步源码和 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理默认权限配置错误。
 - 验证：`cargo test -p yang-base --lib default_permissions`
+## 2026-07-07 - yang-base RequestId 上游全零标识拒绝
+
+- 范围：`crates/yang-base/src/action/request_id.rs`、`crates/yang-base/src/router/__tests__/request_id_middleware_tests.rs`
+- 风险：上游 `X-Request-Id` 为全零值时会被解析为 `RequestId(0)` 并覆盖 `ActionContext` 已生成的运行期标识；全零值是典型无效/哨兵标识，会破坏日志、span、metrics 和审计串联。
+- 修改：`RequestId::parse_hex()` 将解析结果 `0` 视为无效并返回 `None`，`RequestIdMiddleware` 因此保留已有默认生成值；新增中间件测试覆盖全零 header 不透传。
+- 验证：`cargo test -p yang-base --lib request_id_middleware`
+- 验证：`cargo test -p yang-base --lib action::request_id::tests`
