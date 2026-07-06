@@ -112,7 +112,8 @@ impl Request {
     ///     .header("Authorization", "Bearer token123");
     /// ```
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(name.into(), value.into());
+        self.headers
+            .insert(name.into().to_ascii_lowercase(), value.into());
         self
     }
 
@@ -141,7 +142,9 @@ impl Request {
     ///     .headers(headers);
     /// ```
     pub fn headers(mut self, headers: HashMap<String, String>) -> Self {
-        self.headers.extend(headers);
+        for (name, value) in headers {
+            self = self.header(name, value);
+        }
         self
     }
 
@@ -384,5 +387,17 @@ mod tests {
         assert_eq!(request.get_header("content-type"), Some("application/json"));
         assert_eq!(request.get_header("AUTHORIZATION"), Some("Bearer token123"));
         assert_eq!(request.token(), Some("token123"));
+    }
+
+    #[test]
+    fn test_header_insert_normalizes_name_and_overwrites_case_variants() {
+        let request = Request::new(json!({}))
+            .header("Authorization", "Bearer old")
+            .header("authorization", "Bearer new");
+
+        assert_eq!(request.headers.len(), 1);
+        assert_eq!(request.headers.get("authorization").map(String::as_str), Some("Bearer new"));
+        assert_eq!(request.get_header("Authorization"), Some("Bearer new"));
+        assert_eq!(request.token(), Some("new"));
     }
 }

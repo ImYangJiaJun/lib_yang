@@ -146,3 +146,10 @@
 - 风险：HTTP header 名大小写不敏感，但 `Action Request::get_header()` 只做精确匹配，`token()` 也只识别 `Authorization`/`authorization` 两种写法。路由或测试构造中出现混合大小写 header 时，认证 token 可能被误判为缺失。
 - 修改：`get_header()` 保留精确命中快路径，并增加 `eq_ignore_ascii_case` fallback；`token()` 复用 `get_header("authorization")`。
 - 验证：`cargo test -p yang-base --lib test_header_lookup_is_case_insensitive`
+## 2026-07-07 - yang-base Action Request header 写入归一化
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request::header()`/`headers()` 允许 `Authorization` 与 `authorization` 等大小写变体同时存在，导致读取值取决于查询大小写，认证和中间件行为不确定。
+- 修改：通过 builder 写入 header 时统一将名称归一化为 ASCII 小写；批量写入复用单个 `header()` 逻辑，同名大小写变体以后写值覆盖先写值。
+- 兼容：这是有意的公共字段内容形态收紧；`Request.headers` 仍为 `HashMap<String, String>`，但经 builder 写入的 key 现在稳定为小写。
+- 验证：`cargo test -p yang-base --lib test_header_`
