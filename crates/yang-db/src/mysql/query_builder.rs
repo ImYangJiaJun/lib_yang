@@ -1382,27 +1382,36 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// 尝试获取生成的 SQL（用于调试）。
+    ///
+    /// 与 [`Self::to_sql`] 不同，本方法不会吞掉 SQL 生成错误。调用方需要区分非法表名、
+    /// 缺少 `GROUP BY` 等生产级配置错误时，应优先使用本方法。
+    ///
+    /// # 返回
+    /// - `Ok(String)`: 生成的完整 SQL 语句字符串
+    /// - `Err(DbError)`: SQL 生成失败的真实原因
+    pub fn try_to_sql(&self) -> Result<String, crate::error::DbError> {
+        let mut generator = SqlGenerator::new();
+        generator.build_select(self)?;
+        Ok(generator.get_sql().to_string())
+    }
+
     /// 获取生成的 SQL（用于调试）
     ///
     /// # 返回
     /// - 生成的完整 SQL 语句字符串
+    ///
+    /// # 说明
+    /// 兼容历史 `String` 返回值；生成失败时返回固定的不可执行哨兵，避免旧降级逻辑把
+    /// 未校验表名或不完整查询拼成看似可执行的 SQL。需要错误细节请使用 [`Self::try_to_sql`]。
     pub fn to_sql(&self) -> String {
-        let mut generator = SqlGenerator::new();
-
-        // 使用 build_select 生成完整的 SQL
-        match generator.build_select(self) {
-            Ok(_) => generator.get_sql().to_string(),
-            Err(_) => {
-                // 如果生成失败，返回简化版本
-                let fields_str = if self.fields.is_empty() {
-                    "*".to_string()
-                } else {
-                    self.fields.join(", ")
-                };
-
-                let distinct_str = if self.distinct { "DISTINCT " } else { "" };
-
-                format!("SELECT {}{} FROM {}", distinct_str, fields_str, self.table)
+        match self.try_to_sql() {
+            Ok(sql) => sql,
+            Err(err) => {
+                if self.enable_logging {
+                    log::warn!("生成 SELECT SQL 失败: {err}");
+                }
+                "/* SQL generation failed */".to_string()
             }
         }
     }
@@ -3219,6 +3228,36 @@ mod tests {
             result.unwrap_err(),
             crate::DbError::MissingGroupByClause
         ));
+    }
+
+    #[test]
+    fn test_try_to_sql_surfaces_invalid_table_identifier() {
+        let pool = make_sync_test_pool();
+        let builder = QueryBuilder::new(pool, "users; DROP TABLE users", false);
+        let result = builder.try_to_sql();
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn test_try_to_sql_surfaces_missing_group_by() {
+        let pool = make_sync_test_pool();
+        let builder =
+            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
+        let result = builder.try_to_sql();
+
+        assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));
+    }
+
+    #[test]
+    fn test_to_sql_does_not_fallback_to_raw_untrusted_table() {
+        let pool = make_sync_test_pool();
+        let builder = QueryBuilder::new(pool, "users; DROP TABLE users", false);
+        let sql = builder.to_sql();
+
+        assert_eq!(sql, "/* SQL generation failed */");
+        assert!(!sql.contains("DROP TABLE"));
+        assert!(!sql.contains("users;"));
     }
 
     #[test]
