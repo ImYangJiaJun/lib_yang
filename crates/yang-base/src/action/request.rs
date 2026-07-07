@@ -401,6 +401,10 @@ impl Request {
     /// assert_eq!(request.get_path_param("id"), Some("123"));
     /// ```
     pub fn get_path_param(&self, key: &str) -> Option<&str> {
+        if key.trim().is_empty() {
+            return None;
+        }
+
         self.path_params.get(key).map(|s| s.as_str())
     }
 }
@@ -533,6 +537,22 @@ mod tests {
 
         assert_eq!(request.get_path_param("id"), Some("42"));
         assert_eq!(request.get_path_param("slug"), Some("demo"));
+        assert_eq!(request.get_path_param(""), None);
+        assert_eq!(request.get_path_param("   "), None);
+    }
+
+    #[test]
+    fn test_get_path_param_rejects_blank_keys() {
+        let mut request = Request::new(json!({}));
+        request
+            .path_params
+            .insert("".to_string(), "empty".to_string());
+        request
+            .path_params
+            .insert("   ".to_string(), "blank".to_string());
+        request.path_params.insert("id".to_string(), "42".to_string());
+
+        assert_eq!(request.get_path_param("id"), Some("42"));
         assert_eq!(request.get_path_param(""), None);
         assert_eq!(request.get_path_param("   "), None);
     }

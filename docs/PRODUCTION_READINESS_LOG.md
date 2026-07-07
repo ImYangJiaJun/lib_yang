@@ -279,3 +279,10 @@
 - 修改：`get_query()` 在读取前校验空白 key，空白 query 名直接返回 `None`，合法 query 读取行为不变。
 - 验证：`cargo test -p yang-base --lib test_get_query_rejects_blank_keys`
 - 验证：`cargo test -p yang-base --lib query_rejects_blank_keys`
+## 2026-07-07 - yang-base Action Request path 参数空白键读取拒绝
+
+- 范围：`crates/yang-base/src/action/request.rs`
+- 风险：`Request.path_params` 是 public 字段，外部可绕过 `path_param()` builder 直接写入空白 key；`get_path_param("")` 之前会读取该值，导致读取侧接受无效路径参数名。
+- 修改：`get_path_param()` 在读取前校验空白 key，空白路径参数名直接返回 `None`，合法路径参数读取行为不变。
+- 验证：`cargo test -p yang-base --lib test_get_path_param_rejects_blank_keys`
+- 验证：`cargo test -p yang-base --lib path_param_rejects_blank_keys`
