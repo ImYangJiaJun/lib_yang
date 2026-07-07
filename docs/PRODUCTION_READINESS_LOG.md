@@ -417,3 +417,9 @@
 - 问题：`PluginManager`、`PluginManagerBuilder`、`PluginRegistry` 以 `Plugin::name()` 或查询参数原样作为索引，带边界空格的插件名可能注册后无法用规范名查找，也可能绕过重复注册；配置加载同样可能用原始名称存储。
 - 修改：新增内部插件名规范化逻辑，注册时 trim 并拒绝空名称；运行期/构建期查找、配置加载、配置读取和构建期依赖检查均使用规范化名称；构建期拓扑排序改为基于内部规范化 key 排序。
 - 验证：先新增 `plugin_names` 相关测试并确认失败，再实现规范化；随后运行 `cargo test -p yang-base --lib plugin_names`、`cargo test -p yang-base --lib topological`、`cargo test -p yang-base --lib dependency` 确认通过。
+
+## 2026-07-07 - PCG Grid2D 拒绝零维度
+
+- 问题：`Grid2D::new(0, n)` 或 `Grid2D::new(n, 0)` 会成功创建空网格，但地形网格作为房间基础结构要求宽高均为正数，零维度会把配置错误推迟到后续算法阶段。
+- 修改：`Grid2D::new` 在计算尺寸和分配前拒绝 0 宽或 0 高，返回 `PcgError::terrain`。
+- 验证：先新增 `grid_new_rejects_zero_dimensions` 并确认失败，再实现非零校验，随后运行该单测确认通过。

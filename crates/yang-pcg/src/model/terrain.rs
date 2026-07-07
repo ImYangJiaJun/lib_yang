@@ -61,6 +61,10 @@ pub struct Grid2D<T> {
 impl<T: Clone> Grid2D<T> {
     /// 创建新网格
     pub fn new(width: u32, height: u32, default_value: T) -> PcgResult<Self> {
+        if width == 0 || height == 0 {
+            return Err(PcgError::terrain("Grid2D 宽度和高度必须大于 0"));
+        }
+
         let size = (width as usize)
             .checked_mul(height as usize)
             .ok_or_else(|| PcgError::terrain("Grid2D 尺寸乘法溢出"))?;
@@ -151,6 +155,12 @@ mod tests {
         let result = Grid2D::new(65_536, 65_536, TileKind::Wall);
 
         assert!(result.is_err(), "异常尺寸不应 panic 或尝试巨量分配");
+    }
+
+    #[test]
+    fn grid_new_rejects_zero_dimensions() {
+        assert!(Grid2D::new(0, 1, TileKind::Wall).is_err());
+        assert!(Grid2D::new(1, 0, TileKind::Wall).is_err());
     }
 }
 
