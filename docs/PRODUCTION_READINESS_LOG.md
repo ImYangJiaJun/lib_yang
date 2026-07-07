@@ -411,3 +411,9 @@
 - 问题：`GlobalTools::register_tool` 只用 `trim()` 判断空白，但注册、读取和重复检测仍使用原始名称，导致带边界空格的工具名注册后无法用规范名读取，也可能绕过重复注册检查。
 - 修改：`register_tool` 和 `get_tool` 均使用 trim 后的工具名称；空白名称仍被拒绝或返回 None。
 - 验证：先新增 `test_global_tools_trims_tool_names_for_register_and_get` 并确认失败，再实现名称规范化，随后运行该单测确认通过。
+
+## 2026-07-07 - 插件名称规范化与空名称拒绝
+
+- 问题：`PluginManager`、`PluginManagerBuilder`、`PluginRegistry` 以 `Plugin::name()` 或查询参数原样作为索引，带边界空格的插件名可能注册后无法用规范名查找，也可能绕过重复注册；配置加载同样可能用原始名称存储。
+- 修改：新增内部插件名规范化逻辑，注册时 trim 并拒绝空名称；运行期/构建期查找、配置加载、配置读取和构建期依赖检查均使用规范化名称；构建期拓扑排序改为基于内部规范化 key 排序。
+- 验证：先新增 `plugin_names` 相关测试并确认失败，再实现规范化；随后运行 `cargo test -p yang-base --lib plugin_names`、`cargo test -p yang-base --lib topological`、`cargo test -p yang-base --lib dependency` 确认通过。

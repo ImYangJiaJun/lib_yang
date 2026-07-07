@@ -35,6 +35,23 @@ use tokio::sync::RwLock;
 
 use crate::error::BaseError;
 
+fn normalize_plugin_name(name: &str) -> Result<&str, BaseError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(BaseError::PluginRegisterFailed(
+            "<empty>".to_string(),
+            "插件名称不能为空".to_string(),
+        ));
+    }
+
+    Ok(name)
+}
+
+fn normalize_plugin_lookup_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    (!name.is_empty()).then_some(name)
+}
+
 /// 插件接口
 ///
 /// 所有插件必须实现此 trait
@@ -241,7 +258,7 @@ impl PluginManager {
     /// manager.register(MyPlugin).await?;
     /// ```
     pub async fn register<P: Plugin + 'static>(&self, plugin: P) -> Result<(), BaseError> {
-        let name = plugin.name().to_string();
+        let name = normalize_plugin_name(plugin.name())?.to_string();
         let plugin = Arc::new(plugin);
 
         // 第一阶段：读锁检查（快速路径，避免持写锁跨 await）
@@ -291,6 +308,7 @@ impl PluginManager {
     /// }
     /// ```
     pub async fn get(&self, name: &str) -> Option<Arc<dyn Plugin>> {
+        let name = normalize_plugin_lookup_name(name)?;
         let plugins = self.plugins.read().await;
         plugins.get(name).cloned()
     }
@@ -342,21 +360,24 @@ impl PluginManager {
     /// manager.load_config("my_plugin", config).await?;
     /// ```
     pub async fn load_config(&self, name: &str, config: JsonValue) -> Result<(), BaseError> {
+        let normalized_name = normalize_plugin_lookup_name(name)
+            .ok_or_else(|| BaseError::PluginNotFound(name.to_string()))?;
+
         // 获取插件
         let plugin = self
-            .get(name)
+            .get(normalized_name)
             .await
-            .ok_or_else(|| BaseError::PluginNotFound(name.to_string()))?;
+            .ok_or_else(|| BaseError::PluginNotFound(normalized_name.to_string()))?;
 
         // 验证配置（插件未定义 config_schema 时跳过验证）
         if let Some(schema) = plugin.config_schema() {
-            self.validate_config(name, &config, &schema)?;
+            self.validate_config(normalized_name, &config, &schema)?;
         }
 
         // 存储配置
         {
             let mut configs = self.configs.write().await;
-            configs.insert(name.to_string(), config);
+            configs.insert(normalized_name.to_string(), config);
         }
 
         Ok(())
@@ -382,6 +403,7 @@ impl PluginManager {
     /// }
     /// ```
     pub async fn get_config(&self, name: &str) -> Option<JsonValue> {
+        let name = normalize_plugin_lookup_name(name)?;
         let configs = self.configs.read().await;
         configs.get(name).cloned()
     }
@@ -634,7 +656,7 @@ impl PluginManagerBuilder {
     /// builder.register(MyPlugin).await?;
     /// ```
     pub async fn register<P: Plugin + 'static>(&mut self, plugin: P) -> Result<(), BaseError> {
-        let name = plugin.name().to_string();
+        let name = normalize_plugin_name(plugin.name())?.to_string();
 
         // 检查插件是否已注册（构建阶段直接访问 HashMap，无需加锁）
         if self.plugins.contains_key(&name) {
@@ -677,13 +699,13 @@ impl PluginManagerBuilder {
     /// ```
     pub fn build(self) -> Result<PluginRegistry, BaseError> {
         // 检查每个插件的依赖是否都已注册
-        for plugin in self.plugins.values() {
-            let plugin_name = plugin.name().to_string();
+        for (plugin_name, plugin) in &self.plugins {
             for dep in plugin.dependencies() {
-                if !self.plugins.contains_key(*dep) {
+                let dep = normalize_plugin_name(dep)?;
+                if !self.plugins.contains_key(dep) {
                     // 依赖未注册，返回错误
                     return Err(BaseError::PluginDependencyMissing(
-                        plugin_name,
+                        plugin_name.clone(),
                         dep.to_string(),
                     ));
                 }
@@ -792,6 +814,7 @@ impl PluginRegistry {
     /// }
     /// ```
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Plugin>> {
+        let name = normalize_plugin_lookup_name(name)?;
         self.plugins.get(name)
     }
 
@@ -826,6 +849,7 @@ impl PluginRegistry {
     /// - `Some(&JsonValue)`: 插件配置
     /// - `None`: 配置不存在
     pub fn get_config(&self, name: &str) -> Option<&JsonValue> {
+        let name = normalize_plugin_lookup_name(name)?;
         self.configs.get(name)
     }
 
@@ -886,11 +910,12 @@ impl PluginRegistry {
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut graph: HashMap<String, Vec<String>> = HashMap::new();
 
-        for plugin in plugins.values() {
-            let name = plugin.name().to_string();
+        for (name, plugin) in plugins {
+            let name = name.clone();
             in_degree.entry(name.clone()).or_insert(0);
 
             for dep in plugin.dependencies() {
+                let dep = normalize_plugin_name(dep)?;
                 // dep -> name 的边：dep 是 name 的依赖，dep 先执行
                 graph.entry(dep.to_string()).or_default().push(name.clone());
                 *in_degree.entry(name.clone()).or_insert(0) += 1;
@@ -936,14 +961,12 @@ impl PluginRegistry {
             )));
         }
 
-        // 按排序顺序构建插件列表
-        let mut sorted_plugins: Vec<Arc<dyn Plugin>> = plugins.values().cloned().collect();
-        sorted_plugins.sort_by_key(|p| {
-            sorted_names
-                .iter()
-                .position(|n| n == p.name())
-                .unwrap_or(usize::MAX)
-        });
+        // 按排序顺序构建插件列表。这里使用注册阶段规范化后的 HashMap key，
+        // 避免插件对象 `name()` 返回带边界空格时与内部索引不一致。
+        let sorted_plugins: Vec<Arc<dyn Plugin>> = sorted_names
+            .iter()
+            .filter_map(|name| plugins.get(name).cloned())
+            .collect();
 
         Ok(sorted_plugins)
     }
@@ -1002,6 +1025,26 @@ mod tests {
 
         async fn on_register(&self) -> Result<(), Box<dyn std::error::Error>> {
             Err("注册失败".into())
+        }
+    }
+
+    /// 测试用插件：名称带边界空格
+    struct PluginASpaced;
+
+    #[async_trait]
+    impl Plugin for PluginASpaced {
+        fn name(&self) -> &str {
+            " plugin_a "
+        }
+    }
+
+    /// 测试用插件：空白名称
+    struct PluginBlankName;
+
+    #[async_trait]
+    impl Plugin for PluginBlankName {
+        fn name(&self) -> &str {
+            "   "
         }
     }
 
@@ -1118,6 +1161,69 @@ mod tests {
         assert!(
             matches!(result, Err(BaseError::PluginAlreadyRegistered(_))),
             "注册重名插件应返回 PluginAlreadyRegistered 错误"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builder_register_trims_plugin_names() {
+        let mut builder = PluginManagerBuilder::new();
+        builder
+            .register(PluginASpaced)
+            .await
+            .expect("插件名应在构建期注册时 trim");
+
+        let result = builder.register(PluginA).await;
+        assert!(
+            matches!(result, Err(BaseError::PluginAlreadyRegistered(name)) if name == "plugin_a"),
+            "trim 后的重复插件名应返回 PluginAlreadyRegistered"
+        );
+
+        let registry = builder.build().expect("构建注册表应成功");
+        assert!(registry.get("plugin_a").is_some());
+        assert!(registry.get(" plugin_a ").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_manager_register_trims_plugin_names_and_config_keys() {
+        let manager = PluginManager::new();
+        manager
+            .register(PluginASpaced)
+            .await
+            .expect("插件名应在运行期注册时 trim");
+
+        assert!(manager.get("plugin_a").await.is_some());
+        assert!(manager.get(" plugin_a ").await.is_some());
+
+        let result = manager.register(PluginA).await;
+        assert!(
+            matches!(result, Err(BaseError::PluginAlreadyRegistered(name)) if name == "plugin_a"),
+            "trim 后的重复插件名应返回 PluginAlreadyRegistered"
+        );
+
+        let config = serde_json::json!({"enabled": true});
+        manager
+            .load_config(" plugin_a ", config.clone())
+            .await
+            .expect("配置加载应使用 trim 后插件名");
+
+        assert_eq!(manager.get_config("plugin_a").await, Some(config.clone()));
+        assert_eq!(manager.get_config(" plugin_a ").await, Some(config));
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_blank_plugin_names() {
+        let mut builder = PluginManagerBuilder::new();
+        let builder_result = builder.register(PluginBlankName).await;
+        assert!(
+            matches!(builder_result, Err(BaseError::PluginRegisterFailed(name, message)) if name == "<empty>" && message.contains("插件名称不能为空")),
+            "构建期注册空白插件名应返回 PluginRegisterFailed"
+        );
+
+        let manager = PluginManager::new();
+        let manager_result = manager.register(PluginBlankName).await;
+        assert!(
+            matches!(manager_result, Err(BaseError::PluginRegisterFailed(name, message)) if name == "<empty>" && message.contains("插件名称不能为空")),
+            "运行期注册空白插件名应返回 PluginRegisterFailed"
         );
     }
 
