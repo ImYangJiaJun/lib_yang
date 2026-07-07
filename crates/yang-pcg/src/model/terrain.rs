@@ -64,25 +64,70 @@ impl<T: Clone> Grid2D<T> {
 
     /// 获取指定位置的瓦片
     pub fn get(&self, x: i32, y: i32) -> Option<&T> {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if x < 0 || y < 0 {
             return None;
         }
-        let index = (y as u32 * self.width + x as u32) as usize;
+        let x = x as u32;
+        let y = y as u32;
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let index = (y as usize)
+            .checked_mul(self.width as usize)?
+            .checked_add(x as usize)?;
         self.data.get(index)
     }
 
     /// 设置指定位置的瓦片
     pub fn set(&mut self, x: i32, y: i32, value: T) -> bool {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if x < 0 || y < 0 {
             return false;
         }
-        let index = (y as u32 * self.width + x as u32) as usize;
+        let x = x as u32;
+        let y = y as u32;
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let Some(index) = (y as usize)
+            .checked_mul(self.width as usize)
+            .and_then(|base| base.checked_add(x as usize))
+        else {
+            return false;
+        };
         if index < self.data.len() {
             self.data[index] = value;
             true
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_get_returns_none_when_index_calculation_overflows() {
+        let grid = Grid2D {
+            width: 65_536,
+            height: 65_537,
+            data: vec![TileKind::Floor],
+        };
+
+        assert_eq!(grid.get(0, 65_536), None);
+    }
+
+    #[test]
+    fn grid_set_returns_false_when_index_calculation_overflows() {
+        let mut grid = Grid2D {
+            width: 65_536,
+            height: 65_537,
+            data: vec![TileKind::Floor],
+        };
+
+        assert!(!grid.set(0, 65_536, TileKind::Wall));
+        assert_eq!(grid.data[0], TileKind::Floor);
     }
 }
 

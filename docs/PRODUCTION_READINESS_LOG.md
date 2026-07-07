@@ -293,3 +293,9 @@
 - 修改：`param_optional_strict()` 在读取前校验空白参数名，空白 key 返回 `BaseError::ParamInvalid("", "参数名不能为空")`，缺失的合法参数仍返回 `Ok(None)`。
 - 验证：`cargo test -p yang-base --lib test_action_context_param_optional_strict_rejects_blank_key`
 - 验证：`cargo test -p yang-base --lib test_action_context_param_optional_strict`
+## 2026-07-07 - yang-pcg Grid2D 索引溢出保护
+
+- 范围：`crates/yang-pcg/src/model/terrain.rs`
+- 风险：`Grid2D::get()` 与 `set()` 使用 `u32` 乘加计算行优先索引，异常大尺寸下 debug 会 panic，release 可能整数回绕后错误命中 `data[0]` 等位置。
+- 修改：坐标先做负值和边界检查，再使用 `usize::checked_mul()`/`checked_add()` 计算索引；溢出时 `get()` 返回 `None`，`set()` 返回 `false`。
+- 验证：`cargo test -p yang-pcg grid_`
