@@ -1165,6 +1165,13 @@ impl TableQuery {
                 if let WhereCondition::In { values, .. } | WhereCondition::NotIn { values, .. } =
                     leaf
                 {
+                    if values.is_empty() {
+                        return Err(BaseError::ParamInvalid(
+                            "values".to_string(),
+                            "IN/NOT IN 列表不能为空".to_string(),
+                        ));
+                    }
+
                     if values.len() > Self::MAX_IN_LIST_SIZE {
                         return Err(BaseError::ParamInvalid(
                             "values".to_string(),

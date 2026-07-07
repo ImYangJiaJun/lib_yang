@@ -339,3 +339,11 @@
 - 修改：`where_in` 对空列表返回 `BaseError::ParamInvalid("values", "IN 列表不能为空")`；`where_not_in` 对空列表返回 `BaseError::ParamInvalid("values", "NOT IN 列表不能为空")`；保留原最大长度限制。
 - 兼容：非空列表、权限校验和最大长度限制行为不变。
 - 验证：`cargo test -p yang-base --lib rejects_empty_values`；`cargo test -p yang-base --lib where_in`；`cargo test -p yang-base --lib where_not_in`。
+
+## 2026-07-07 - yang-base WhereCondition 递归空 IN 列表拒绝
+
+- 范围：`crates/yang-base/src/table/table_query.rs` 与 `crates/yang-base/src/table/__tests__/table_query_test.rs`。
+- 风险：即使 `where_in` / `where_not_in` 入口拒绝空列表，调用方仍可通过 `where_tree`、`where_or` 或 `where_and` 直接提交 `WhereCondition::In/NotIn` 空值列表，绕过入口校验。
+- 修改：`validate_condition_tree` 的 IN/NOT IN 叶子校验新增空列表拒绝，递归入口与便捷入口保持一致。
+- 兼容：非空 IN/NOT IN 条件、空 AND/OR 组拒绝和最大长度限制行为不变。
+- 验证：`cargo test -p yang-base --lib empty_in_values`；`cargo test -p yang-base --lib empty_not_in_values`；`cargo test -p yang-base --lib test_empty_groups_rejected`。

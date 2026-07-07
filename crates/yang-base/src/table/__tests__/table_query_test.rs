@@ -1182,6 +1182,38 @@ fn test_empty_groups_rejected() {
     );
 }
 
+#[test]
+fn test_where_tree_rejects_empty_in_values() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    let result = query.where_tree(WhereCondition::In {
+        field: "id".into(),
+        values: vec![],
+    });
+
+    assert!(
+        matches!(result, Err(BaseError::ParamInvalid(field, _)) if field == "values"),
+        "where_tree 不应接受空 IN 列表"
+    );
+}
+
+#[test]
+fn test_where_group_rejects_empty_not_in_values() {
+    let config = create_test_table_config();
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+
+    let result = query.where_or(vec![WhereCondition::NotIn {
+        field: "id".into(),
+        values: vec![],
+    }]);
+
+    assert!(
+        matches!(result, Err(BaseError::ParamInvalid(field, _)) if field == "values"),
+        "where_or 不应递归接受空 NOT IN 列表"
+    );
+}
+
 /// 字段级 `.filterable(false)` 是硬约束：即便角色权限放行也拒绝筛选。
 #[test]
 fn test_non_filterable_field_rejected() {
