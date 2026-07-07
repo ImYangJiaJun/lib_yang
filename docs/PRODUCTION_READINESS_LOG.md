@@ -387,3 +387,9 @@
 - 修改：MySQL 与 PostgreSQL 的条件树校验新增叶子字段标识符校验，使用各自方言的 `quote_identifier` 判断合法性；`field()`/`group()`/`order()` 的可信表达式入口保持不变。
 - 兼容：合法条件字段、非法表名、缺少 GROUP BY、空 IN 和空布尔组的既有错误行为保持不变。
 - 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_invalid_condition_identifier`；`cargo test -p yang-db --lib test_try_to_sql_surfaces`；`cargo test -p yang-db --lib test_try_to_sql_rejects_empty`；`cargo test -p yang-db --lib where_and`。
+
+## 2026-07-07 - HTTP 请求 query 参数空 key 校验
+
+- 问题：`RequestBuilder::query` 允许空白 query key 进入发送阶段，与 `action::Request` 的空 key 处理不一致，也会把明显无效的调用方输入推迟到网络层暴露。
+- 修改：`RequestBuilder::send` 在解析 URL 和发送网络请求前扫描 query 参数名，发现空白 key 时返回 `BaseError::ParamInvalid("query", ...)`。
+- 验证：先新增 `test_send_rejects_blank_query_key_before_network` 并确认失败，再实现前置校验，随后运行该单测确认通过。

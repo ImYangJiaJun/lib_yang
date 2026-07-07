@@ -221,6 +221,26 @@ mod retry_config_tests {
     }
 
     #[tokio::test]
+    async fn test_send_rejects_blank_query_key_before_network() {
+        let client = crate::http::HttpClient::new(30).expect("HTTP client should be valid");
+        let result = client
+            .get("https://api.example.com/users")
+            .query("   ", "value")
+            .send()
+            .await;
+
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => panic!("空白 query key 应在发送前被拒绝"),
+        };
+
+        assert!(matches!(
+            err,
+            crate::error::BaseError::ParamInvalid(field, _) if field == "query"
+        ));
+    }
+
+    #[tokio::test]
     async fn test_send_rejects_invalid_bearer_token_before_network() {
         let builder = RequestBuilder::new(
             Client::new(),
@@ -742,6 +762,17 @@ impl RequestBuilder {
             return Err(BaseError::ParamInvalid(
                 "header".to_string(),
                 self.header_errors.join("; "),
+            ));
+        }
+
+        if self
+            .query_params
+            .iter()
+            .any(|(key, _)| key.trim().is_empty())
+        {
+            return Err(BaseError::ParamInvalid(
+                "query".to_string(),
+                "query 参数名称不能为空".to_string(),
             ));
         }
 
