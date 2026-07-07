@@ -331,3 +331,11 @@
 - 修改：`select_fields` 入口显式拒绝空列表，返回 `BaseError::ParamInvalid("fields", "查询字段列表不能为空")`。
 - 兼容：合法非空字段选择行为不变。
 - 验证：`cargo test -p yang-base --lib test_select_fields_rejects_empty_list`；`cargo test -p yang-base --lib select_fields`。
+
+## 2026-07-07 - yang-base TableQuery 空 IN 列表拒绝
+
+- 范围：`crates/yang-base/src/table/table_query.rs` 与 `crates/yang-base/src/table/__tests__/table_query_test.rs`。
+- 风险：此前 `where_in` / `where_not_in` 接受空 `Vec`，会把 `WhereCondition::In/NotIn` 的值列表置空，后续可能渲染为非法或语义不明确的 SQL。
+- 修改：`where_in` 对空列表返回 `BaseError::ParamInvalid("values", "IN 列表不能为空")`；`where_not_in` 对空列表返回 `BaseError::ParamInvalid("values", "NOT IN 列表不能为空")`；保留原最大长度限制。
+- 兼容：非空列表、权限校验和最大长度限制行为不变。
+- 验证：`cargo test -p yang-base --lib rejects_empty_values`；`cargo test -p yang-base --lib where_in`；`cargo test -p yang-base --lib where_not_in`。

@@ -210,6 +210,36 @@ fn test_where_in_success() {
 }
 
 #[test]
+fn test_where_in_rejects_empty_values() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
+
+    let err = query
+        .where_in("name", vec![])
+        .expect_err("空 IN 列表不应生成非法 SQL");
+
+    assert!(matches!(
+        err,
+        BaseError::ParamInvalid(field, _) if field == "values"
+    ));
+}
+
+#[test]
+fn test_where_not_in_rejects_empty_values() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
+
+    let err = query
+        .where_not_in("name", vec![])
+        .expect_err("空 NOT IN 列表不应生成非法 SQL");
+
+    assert!(matches!(
+        err,
+        BaseError::ParamInvalid(field, _) if field == "values"
+    ));
+}
+
+#[test]
 fn test_where_in_permission_denied() {
     let table_config = create_test_table_config();
     let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);

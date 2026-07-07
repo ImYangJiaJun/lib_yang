@@ -496,6 +496,13 @@ impl TableQuery {
     /// let query = query.where_in("status", vec![json!(1), json!(2), json!(3)])?;
     /// ```
     pub fn where_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+        if values.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "values".to_string(),
+                "IN 列表不能为空".to_string(),
+            ));
+        }
+
         // QRY-2: IN 列表元素数上限
         if values.len() > Self::MAX_IN_LIST_SIZE {
             return Err(BaseError::ParamInvalid(
@@ -870,6 +877,13 @@ impl TableQuery {
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
     pub fn where_not_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+        if values.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "values".to_string(),
+                "NOT IN 列表不能为空".to_string(),
+            ));
+        }
+
         // QRY-2: NOT IN 列表元素数上限
         if values.len() > Self::MAX_IN_LIST_SIZE {
             return Err(BaseError::ParamInvalid(
