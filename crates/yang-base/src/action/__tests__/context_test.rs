@@ -337,6 +337,19 @@ fn test_action_context_path_param() {
 }
 
 #[test]
+fn test_action_context_path_param_trims_lookup_key() {
+    let request = Request::new(json!({})).path_param(" id ", "123");
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    let id: String = context
+        .path_param(" id ")
+        .expect("路径参数查询 key 应支持边界空格规范化");
+
+    assert_eq!(id, "123");
+}
+
+#[test]
 fn test_action_context_path_param_rejects_blank_key() {
     let mut request = Request::new(json!({}));
     request.path_params.insert("".to_string(), "123".to_string());

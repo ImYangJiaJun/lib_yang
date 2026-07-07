@@ -431,7 +431,8 @@ impl ActionContext {
     /// - `Err(BaseError::ParamMissing)`: 路径参数不存在
     /// - `Err(BaseError::ParamInvalid)`: 参数值无法转换为目标类型
     pub fn path_param<T: DeserializeOwned>(&self, key: &str) -> Result<T, BaseError> {
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return Err(BaseError::ParamInvalid(
                 key.to_string(),
                 "路径参数名不能为空".to_string(),
