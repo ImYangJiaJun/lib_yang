@@ -100,6 +100,27 @@ impl SqlGenerator {
         self.params.clear();
     }
 
+    fn validate_conditions(conditions: &[Condition]) -> Result<(), crate::error::DbError> {
+        for condition in conditions {
+            Self::validate_condition(condition)?;
+        }
+        Ok(())
+    }
+
+    fn validate_condition(condition: &Condition) -> Result<(), crate::error::DbError> {
+        match condition {
+            Condition::In(field, values) if values.is_empty() => {
+                Err(crate::error::DbError::InvalidArgument(format!(
+                    "IN 条件 `{field}` 的值列表不能为空"
+                )))
+            }
+            Condition::And(conditions) | Condition::Or(conditions) => {
+                Self::validate_conditions(conditions)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// 测试专用：暴露 clear 方法供测试模块调用
     #[cfg(test)]
     pub(crate) fn clear_for_test(&mut self) {
@@ -206,6 +227,8 @@ impl SqlGenerator {
             return Ok(());
         }
 
+        Self::validate_conditions(conditions)?;
+
         self.append(" WHERE ");
 
         if conditions.len() == 1 {
@@ -287,6 +310,8 @@ impl SqlGenerator {
 
     /// 生成 HAVING 子句
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
+        Self::validate_conditions(conditions)?;
+
         self.append(" HAVING ");
         if conditions.len() == 1 {
             let sql = crate::mysql::condition::condition_to_sql(&conditions[0], &mut self.params);
@@ -3247,6 +3272,16 @@ mod tests {
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));
+    }
+
+    #[test]
+    fn test_try_to_sql_rejects_empty_in_condition() {
+        let pool = make_sync_test_pool();
+        let builder = QueryBuilder::new(pool, "users", false)
+            .where_in("id", Vec::<i64>::new());
+        let result = builder.try_to_sql();
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
     }
 
     #[test]

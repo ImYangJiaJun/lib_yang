@@ -355,3 +355,11 @@
 - 修改：`where_contains` 在转义通配符前按 `keyword.trim().is_empty()` 拒绝空白关键词，返回 `BaseError::ParamInvalid("keyword", "搜索关键词不能为空")`。
 - 兼容：非空关键词的通配符转义、长度上限和字段权限校验保持不变。
 - 验证：`cargo test -p yang-base --lib test_where_contains_rejects_blank_keyword`；`cargo test -p yang-base --lib where_like`。
+
+## 2026-07-07 - yang-db SQL 生成拒绝空 IN 条件
+
+- 范围：`crates/yang-db/src/mysql/query_builder.rs` 与 `crates/yang-db/src/postgres/query_builder.rs`。
+- 风险：底层 `QueryBuilder::where_in` 保持历史 infallible builder 形态，空列表此前会进入条件树并在 SQL 生成阶段形成非法或无意义的 `IN ()`。
+- 修改：MySQL 与 PostgreSQL 的 `SqlGenerator` 在构建 WHERE/HAVING 前递归校验条件树，遇到空 `Condition::In` 返回 `DbError::InvalidArgument`；`try_to_sql` 暴露真实错误，兼容的 `to_sql` 仍会降级为不可执行哨兵。
+- 兼容：`where_in` 方法签名不变；非空 IN、非法表名、缺少 GROUP BY 的错误行为不变。
+- 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_in_condition`；`cargo test -p yang-db --lib test_try_to_sql_surfaces`。
