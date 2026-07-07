@@ -286,3 +286,10 @@
 - 修改：`get_path_param()` 在读取前校验空白 key，空白路径参数名直接返回 `None`，合法路径参数读取行为不变。
 - 验证：`cargo test -p yang-base --lib test_get_path_param_rejects_blank_keys`
 - 验证：`cargo test -p yang-base --lib path_param_rejects_blank_keys`
+## 2026-07-07 - yang-base ActionContext body 参数空白名读取校验
+
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`
+- 风险：`ActionContext::param_optional_strict("")` 之前会读取 `Request.body` 中的空 key 并返回成功，导致旧 body 参数读取入口接受无效参数名。
+- 修改：`param_optional_strict()` 在读取前校验空白参数名，空白 key 返回 `BaseError::ParamInvalid("", "参数名不能为空")`，缺失的合法参数仍返回 `Ok(None)`。
+- 验证：`cargo test -p yang-base --lib test_action_context_param_optional_strict_rejects_blank_key`
+- 验证：`cargo test -p yang-base --lib test_action_context_param_optional_strict`

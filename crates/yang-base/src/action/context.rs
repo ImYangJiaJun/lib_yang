@@ -395,6 +395,13 @@ impl ActionContext {
         &self,
         key: &str,
     ) -> Result<Option<T>, BaseError> {
+        if key.trim().is_empty() {
+            return Err(BaseError::ParamInvalid(
+                key.to_string(),
+                "参数名不能为空".to_string(),
+            ));
+        }
+
         match self.request.body.get(key) {
             // 参数不存在，返回 None
             None => Ok(None),

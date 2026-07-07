@@ -385,6 +385,26 @@ fn test_action_context_param_optional_strict() {
     assert!(bad.is_err());
 }
 
+#[allow(deprecated)]
+#[test]
+fn test_action_context_param_optional_strict_rejects_blank_key() {
+    let request = Request::new(json!({
+        "": 25
+    }));
+    let tools = create_test_tools();
+    let context = ActionContext::new(request, tools);
+
+    let result: Result<Option<i64>, _> = context.param_optional_strict("");
+
+    match result {
+        Err(crate::error::BaseError::ParamInvalid(param, message)) => {
+            assert_eq!(param, "");
+            assert!(message.contains("参数名不能为空"));
+        }
+        other => panic!("空白参数名应返回 ParamInvalid，实际: {:?}", other),
+    }
+}
+
 /// 测试 GlobalTools 全局单例功能
 ///
 /// 注意：由于 OnceLock 只能初始化一次，所有单例相关测试放在同一个函数中按顺序执行
