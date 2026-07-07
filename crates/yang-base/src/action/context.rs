@@ -126,7 +126,8 @@ impl GlobalTools {
         name: &str,
         tool: Arc<T>,
     ) -> Result<(), BaseError> {
-        if name.trim().is_empty() {
+        let name = name.trim();
+        if name.is_empty() {
             return Err(BaseError::ConfigError("工具名称不能为空".to_string()));
         }
 
@@ -141,6 +142,11 @@ impl GlobalTools {
 
     /// 获取已注册的工具
     pub fn get_tool<T: Any + Send + Sync>(&self, name: &str) -> Option<Arc<T>> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+
         // 使用 unwrap_or_else 处理锁中毒：即使锁中毒也能恢复数据并继续读取
         let tools = self.tools.read().unwrap_or_else(|p| p.into_inner());
         tools

@@ -405,3 +405,9 @@
 - 问题：`Request::path_param` 已对 key 做边界空格规范化，但 `ActionContext::path_param` 直接用调用方传入的原始 key 查底层 map，导致 `context.path_param(" id ")` 返回 `ParamMissing`。
 - 修改：`ActionContext::path_param` 在空白校验、查找和错误信息中统一使用 trim 后的 key。
 - 验证：先新增 `test_action_context_path_param_trims_lookup_key` 并确认失败，再实现规范化，随后运行该单测确认通过。
+
+## 2026-07-07 - GlobalTools 工具名称规范化
+
+- 问题：`GlobalTools::register_tool` 只用 `trim()` 判断空白，但注册、读取和重复检测仍使用原始名称，导致带边界空格的工具名注册后无法用规范名读取，也可能绕过重复注册检查。
+- 修改：`register_tool` 和 `get_tool` 均使用 trim 后的工具名称；空白名称仍被拒绝或返回 None。
+- 验证：先新增 `test_global_tools_trims_tool_names_for_register_and_get` 并确认失败，再实现名称规范化，随后运行该单测确认通过。

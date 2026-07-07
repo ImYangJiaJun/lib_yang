@@ -175,6 +175,33 @@ fn test_global_tools_register_tool_rejects_duplicate_name() {
 }
 
 #[test]
+fn test_global_tools_trims_tool_names_for_register_and_get() {
+    let tools = create_test_tools();
+
+    tools
+        .register_tool(" redis ", Arc::new("redis://first".to_string()))
+        .expect("工具名应在注册前去除边界空格");
+
+    let retrieved: Option<Arc<String>> = tools.get_tool("redis");
+    assert_eq!(
+        retrieved.as_deref().map(String::as_str),
+        Some("redis://first")
+    );
+
+    let retrieved_with_spaces: Option<Arc<String>> = tools.get_tool(" redis ");
+    assert_eq!(
+        retrieved_with_spaces.as_deref().map(String::as_str),
+        Some("redis://first")
+    );
+
+    let err = tools
+        .register_tool("redis", Arc::new("redis://second".to_string()))
+        .expect_err("trim 后的重复工具名应被拒绝");
+
+    assert!(matches!(err, BaseError::ConfigError(msg) if msg.contains("工具已注册: redis")));
+}
+
+#[test]
 fn test_global_tools_register_tool_rejects_blank_name() {
     let tools = create_test_tools();
 
