@@ -129,6 +129,11 @@ impl SqlGenerator {
                     "IN 条件 `{field}` 的值列表不能为空"
                 )))
             }
+            Condition::And(conditions) | Condition::Or(conditions) if conditions.is_empty() => {
+                Err(crate::error::DbError::InvalidArgument(
+                    "AND/OR 条件组不能为空".to_string(),
+                ))
+            }
             Condition::And(conditions) | Condition::Or(conditions) => {
                 Self::validate_conditions(conditions)
             }
@@ -2033,6 +2038,16 @@ mod tests {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
             .where_in("id", Vec::<i64>::new());
+        let result = builder.try_to_sql();
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn test_try_to_sql_rejects_empty_boolean_condition() {
+        let pool = make_sync_test_pool();
+        let mut builder = QueryBuilder::new(pool, "users", false);
+        builder.conditions.push(Condition::And(vec![]));
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));

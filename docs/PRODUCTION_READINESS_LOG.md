@@ -363,3 +363,11 @@
 - 修改：MySQL 与 PostgreSQL 的 `SqlGenerator` 在构建 WHERE/HAVING 前递归校验条件树，遇到空 `Condition::In` 返回 `DbError::InvalidArgument`；`try_to_sql` 暴露真实错误，兼容的 `to_sql` 仍会降级为不可执行哨兵。
 - 兼容：`where_in` 方法签名不变；非空 IN、非法表名、缺少 GROUP BY 的错误行为不变。
 - 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_in_condition`；`cargo test -p yang-db --lib test_try_to_sql_surfaces`。
+
+## 2026-07-07 - yang-db SQL 生成拒绝空布尔条件组
+
+- 范围：`crates/yang-db/src/mysql/query_builder.rs` 与 `crates/yang-db/src/postgres/query_builder.rs`。
+- 风险：底层条件树允许 `Condition::And(vec![])` / `Condition::Or(vec![])` 进入 SQL 生成，历史渲染可能退化为恒真/恒假片段，尤其恒真组会让调用方误以为存在有效 WHERE。
+- 修改：MySQL 与 PostgreSQL 的 `SqlGenerator` 递归条件校验新增空 AND/OR 组拒绝，统一返回 `DbError::InvalidArgument`。
+- 兼容：非空布尔条件组和空 IN 拒绝逻辑保持不变。
+- 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_boolean_condition`；`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_in_condition`。
