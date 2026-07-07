@@ -315,3 +315,11 @@
 - 验证：`cargo test -p yang-pcg grid_`
 - 验证：`cargo test -p yang-pcg test_grid2d`
 - 验证：`cargo test -p yang-pcg test_generation_result_full_json_roundtrip`
+
+## 2026-07-07 - yang-base TableConfig 字段注册空白名称校验
+
+- 范围：`crates/yang-base/src/table/table_config.rs`、`crates/yang-base-derive/src/table_entity.rs`、table 相关单元测试、integration test 构造器与 `batch_field_config` 示例。
+- 风险：此前 `TableConfig::field` / `fields` / `fields_from_iter` 会接受空白字段名，导致无效字段进入表配置并推迟到查询构建阶段暴露。
+- 修改：字段注册 builder 改为返回 `Result<Self, BaseError>`，统一拒绝 `name.trim().is_empty()` 的 `FieldConfig`；合法调用点显式 `expect`；`TableEntity` 派生宏对空白列名做编译期 `abort!`，并适配 fallible builder。
+- 兼容：这是公开 API 破坏性变更，调用方需要在字段注册链上使用 `?` 或带上下文的 `expect`。
+- 验证：`cargo test -p yang-base --lib test_table_config_field_rejects_blank_name`；`cargo test -p yang-base --lib table_config`；`cargo test -p yang-base --test table_query_paginate_test --no-run`；`cargo test -p yang-base --test table_query_crud_test --no-run`；`cargo test -p yang-base --test table_query_transaction_test --no-run`；`cargo check -p yang-base --example batch_field_config`。

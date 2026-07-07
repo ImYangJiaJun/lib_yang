@@ -32,20 +32,32 @@ fn test_table_config_primary_key() {
 #[test]
 fn test_table_config_add_field() {
     let table = TableConfig::new("users")
-        .field(FieldConfig::new("id", FieldType::BigInt))
+        .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "username",
             FieldType::String { max_length: 50 },
-        ))
+        )).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "email",
             FieldType::String { max_length: 100 },
-        ));
+        )).expect("有效字段配置应注册成功");
 
     assert_eq!(table.fields.len(), 3);
     assert!(table.fields.contains_key("id"));
     assert!(table.fields.contains_key("username"));
     assert!(table.fields.contains_key("email"));
+}
+
+#[test]
+fn test_table_config_field_rejects_blank_name() {
+    let err = TableConfig::new("users")
+        .field(FieldConfig::new("   ", FieldType::BigInt))
+        .expect_err("空白字段名不应被注册进表配置");
+
+    assert!(matches!(
+        err,
+        BaseError::ConfigError(message) if message.contains("字段名称不能为空")
+    ));
 }
 
 #[test]
@@ -123,11 +135,11 @@ fn test_table_config_validate_field_success() {
         .field(FieldConfig::new(
             "username",
             FieldType::String { max_length: 50 },
-        ))
+        )).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "email",
             FieldType::String { max_length: 100 },
-        ));
+        )).expect("有效字段配置应注册成功");
 
     assert!(table.validate_field("username").is_ok());
     assert!(table.validate_field("email").is_ok());
@@ -138,7 +150,7 @@ fn test_table_config_validate_field_not_found() {
     let table = TableConfig::new("users").field(FieldConfig::new(
         "username",
         FieldType::String { max_length: 50 },
-    ));
+    )).expect("有效字段配置应注册成功");
 
     let result = table.validate_field("nonexistent");
     assert!(result.is_err());
@@ -156,7 +168,7 @@ fn test_table_config_get_field_success() {
     let table = TableConfig::new("users").field(FieldConfig::new(
         "username",
         FieldType::String { max_length: 50 },
-    ));
+    )).expect("有效字段配置应注册成功");
 
     let field = table.get_field("username");
     assert!(field.is_some());
@@ -168,7 +180,7 @@ fn test_table_config_get_field_not_found() {
     let table = TableConfig::new("users").field(FieldConfig::new(
         "username",
         FieldType::String { max_length: 50 },
-    ));
+    )).expect("有效字段配置应注册成功");
 
     let field = table.get_field("nonexistent");
     assert!(field.is_none());
@@ -180,12 +192,12 @@ fn test_table_config_validate_query_success() {
         .field(FieldConfig::new(
             "username",
             FieldType::String { max_length: 50 },
-        ))
+        )).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "email",
             FieldType::String { max_length: 100 },
-        ))
-        .field(FieldConfig::new("age", FieldType::Integer));
+        )).expect("有效字段配置应注册成功")
+        .field(FieldConfig::new("age", FieldType::Integer)).expect("有效字段配置应注册成功");
 
     assert!(table.validate_query(&["username", "email"]).is_ok());
     assert!(table.validate_query(&["username", "age"]).is_ok());
@@ -198,11 +210,11 @@ fn test_table_config_validate_query_field_not_found() {
         .field(FieldConfig::new(
             "username",
             FieldType::String { max_length: 50 },
-        ))
+        )).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "email",
             FieldType::String { max_length: 100 },
-        ));
+        )).expect("有效字段配置应注册成功");
 
     let result = table.validate_query(&["username", "nonexistent"]);
     assert!(result.is_err());
@@ -221,17 +233,17 @@ fn test_table_config_complete_example() {
     let table = TableConfig::new("users")
         .display_name("用户表")
         .primary_key("id")
-        .field(FieldConfig::new("id", FieldType::BigInt).required(true))
+        .field(FieldConfig::new("id", FieldType::BigInt).required(true)).expect("有效字段配置应注册成功")
         .field(
             FieldConfig::new("username", FieldType::String { max_length: 50 })
                 .display_name("用户名")
                 .required(true),
-        )
+        ).expect("有效字段配置应注册成功")
         .field(
             FieldConfig::new("email", FieldType::String { max_length: 100 })
                 .display_name("邮箱")
                 .required(true),
-        )
+        ).expect("有效字段配置应注册成功")
         .field(
             FieldConfig::new(
                 "status",
@@ -241,7 +253,7 @@ fn test_table_config_complete_example() {
             )
             .display_name("状态")
             .required(true),
-        )
+        ).expect("有效字段配置应注册成功")
         .unique_index(vec!["username".to_string()])
         .unique_index(vec!["email".to_string()])
         .index(vec!["status".to_string()])
@@ -282,12 +294,12 @@ fn test_table_config_chain_methods() {
     let table = TableConfig::new("products")
         .display_name("产品表")
         .primary_key("product_id")
-        .field(FieldConfig::new("product_id", FieldType::BigInt))
+        .field(FieldConfig::new("product_id", FieldType::BigInt)).expect("有效字段配置应注册成功")
         .field(FieldConfig::new(
             "name",
             FieldType::String { max_length: 100 },
-        ))
-        .field(FieldConfig::new("price", FieldType::Double))
+        )).expect("有效字段配置应注册成功")
+        .field(FieldConfig::new("price", FieldType::Double)).expect("有效字段配置应注册成功")
         .unique_index(vec!["name".to_string()])
         .index(vec!["price".to_string()])
         .default_order(vec![("name".to_string(), SortOrder::Asc)])

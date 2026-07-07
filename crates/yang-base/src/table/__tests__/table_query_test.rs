@@ -22,15 +22,15 @@ use std::sync::Arc;
 fn create_test_table_config() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "name",
                 FieldType::String { max_length: 50 },
-            ))
+            )).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "email",
                 FieldType::String { max_length: 100 },
-            ))
+            )).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
                     readable_roles: HashSet::from(["admin".to_string()]),
@@ -38,7 +38,7 @@ fn create_test_table_config() -> Arc<TableConfig> {
                     filterable_roles: HashSet::from(["admin".to_string()]),
                     sortable_roles: HashSet::from(["admin".to_string()]),
                 }),
-            )
+            ).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("secret", FieldType::String { max_length: 255 }).permissions(
                     FieldPermissions {
@@ -48,7 +48,7 @@ fn create_test_table_config() -> Arc<TableConfig> {
                         sortable_roles: HashSet::from(["admin".to_string()]),
                     },
                 ),
-            ),
+            ).expect("有效字段配置应注册成功"),
     )
 }
 
@@ -416,10 +416,10 @@ fn test_empty_user_roles() {
 fn create_test_table_config_for_insert() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
-            .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true))
-            .field(FieldConfig::new("age", FieldType::Integer))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("age", FieldType::Integer)).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
                     readable_roles: HashSet::from(["admin".to_string()]),
@@ -427,7 +427,7 @@ fn create_test_table_config_for_insert() -> Arc<TableConfig> {
                     filterable_roles: HashSet::from(["admin".to_string()]),
                     sortable_roles: HashSet::from(["admin".to_string()]),
                 }),
-            ),
+            ).expect("有效字段配置应注册成功"),
     )
 }
 
@@ -706,16 +706,16 @@ fn test_update_empty_data() {
 fn create_test_table_config_with_soft_delete() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "name",
                 FieldType::String { max_length: 50 },
-            ))
+            )).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "email",
                 FieldType::String { max_length: 100 },
-            ))
-            .field(FieldConfig::new("deleted_at", FieldType::BigInt))
+            )).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("deleted_at", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .soft_delete_field("deleted_at"), // 配置软删除字段
     )
 }
@@ -728,8 +728,8 @@ fn create_test_table_config_with_soft_delete() -> Arc<TableConfig> {
 fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("logs")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("message", FieldType::Text)),
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("message", FieldType::Text)).expect("有效字段配置应注册成功"),
         // 未配置 soft_delete_field
     )
 }
@@ -892,12 +892,12 @@ fn test_new_where_methods_build_sql() {
     use crate::table::{FieldConfig, FieldType, TableConfig};
     let config = std::sync::Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("age", FieldType::Integer))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("age", FieldType::Integer)).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "name",
                 FieldType::String { max_length: 50 },
-            )),
+            )).expect("有效字段配置应注册成功"),
     );
     let q = crate::table::TableQuery::new_without_pool(config)
         .where_lt("age", serde_json::json!(18))
@@ -954,14 +954,14 @@ fn test_new_where_methods_build_sql() {
 fn create_test_table_config_with_defaults() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true)).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("status", FieldType::String { max_length: 20 })
                     .required(true)
                     .default_value(json!("active")),
-            )
-            .field(FieldConfig::new("created_at", FieldType::BigInt))
+            ).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("created_at", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .timestamps(true, false, false),
     )
 }
@@ -1016,11 +1016,11 @@ fn test_insert_missing_required_no_default_errors() {
 fn test_select_falls_back_to_default_order() {
     let config = Arc::new(
         TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "name",
                 FieldType::String { max_length: 50 },
-            ))
+            )).expect("有效字段配置应注册成功")
             .default_order(vec![
                 ("name".to_string(), SortOrder::Asc),
                 ("id".to_string(), SortOrder::Desc),
@@ -1143,11 +1143,11 @@ fn test_non_filterable_field_rejected() {
     // password 字段：filterable(false)，但角色权限为空（默认放行所有角色）
     let config = Arc::new(
         TableConfig::new("accounts")
-            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("password", FieldType::String { max_length: 255 })
                     .filterable(false),
-            ),
+            ).expect("有效字段配置应注册成功"),
     );
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
     let result = query.where_eq("password", json!("secret"));
@@ -1163,11 +1163,11 @@ fn test_non_filterable_field_rejected() {
 fn test_non_sortable_field_rejected() {
     let config = Arc::new(
         TableConfig::new("accounts")
-            .field(FieldConfig::new("id", FieldType::BigInt))
+            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("description", FieldType::String { max_length: 255 })
                     .sortable(false),
-            ),
+            ).expect("有效字段配置应注册成功"),
     );
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
     let result = query.order_by("description", SortOrder::Asc);

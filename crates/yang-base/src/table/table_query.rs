@@ -15,9 +15,9 @@
 //! // 创建表配置
 //! let table_config = Arc::new(
 //!     TableConfig::new("users")
-//!         .field(FieldConfig::new("id", FieldType::BigInt))
-//!         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-//!         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+//!         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+//!         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+//!         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
 //! );
 //!
 //! // 创建查询构建器
@@ -76,8 +76,8 @@ pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE
 ///
 /// let table_config = Arc::new(
 ///     TableConfig::new("users")
-///         .field(FieldConfig::new("id", FieldType::BigInt))
-///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
+///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
 /// );
 ///
 /// let query = TableQuery::new(
@@ -314,9 +314,9 @@ impl TableQuery {
     /// // 创建表配置
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
     /// );
     ///
     /// // 创建查询构建器（不需要数据库连接）
@@ -333,7 +333,7 @@ impl TableQuery {
     /// // 选择不存在的字段，应返回错误
     /// let table_config2 = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
     /// );
     /// let query2 = TableQuery::new(
     ///     table_config2,
@@ -1328,9 +1328,9 @@ impl TableQuery {
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
     /// );
     ///
     /// let query = TableQuery::new(
@@ -1782,9 +1782,9 @@ impl TableQuery {
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
     /// );
     ///
     /// let query = TableQuery::new(
@@ -2092,9 +2092,9 @@ impl TableQuery {
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
     /// );
     ///
     /// let query = TableQuery::new(
@@ -2416,9 +2416,9 @@ impl TableQuery {
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
     /// );
     ///
     /// let query = TableQuery::new(
@@ -2700,9 +2700,9 @@ impl TableQuery {
     /// // 配置了软删除字段的表
     /// let table_config = Arc::new(
     ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-    ///         .field(FieldConfig::new("deleted_at", FieldType::BigInt))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("deleted_at", FieldType::BigInt)).expect("有效字段配置应注册成功")
     ///         .soft_delete_field("deleted_at")  // 配置软删除字段
     /// );
     ///
@@ -2722,8 +2722,8 @@ impl TableQuery {
     /// // 未配置软删除字段的表将执行物理删除
     /// let table_config2 = Arc::new(
     ///     TableConfig::new("logs")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt))
-    ///         .field(FieldConfig::new("message", FieldType::Text))
+    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///         .field(FieldConfig::new("message", FieldType::Text)).expect("有效字段配置应注册成功")
     ///         // 未配置 soft_delete_field
     /// );
     ///
@@ -3103,7 +3103,7 @@ mod tests {
     fn test_query() -> TableQuery {
         let config = Arc::new(
             crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)),
+                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)).expect("有效字段配置应注册成功"),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         TableQuery::new(config, roles, None)
@@ -3125,7 +3125,7 @@ mod tests {
                 .field(
                     crate::table::FieldConfig::new("secret_rank", crate::table::FieldType::Integer)
                         .sortable(false),
-                )
+                ).expect("有效字段配置应注册成功")
                 .default_order(vec![(
                     "secret_rank".to_string(),
                     crate::table::SortOrder::Desc,
@@ -3151,13 +3151,13 @@ mod tests {
         };
         let config = Arc::new(
             crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer))
+                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)).expect("有效字段配置应注册成功")
                 .field(
                     crate::table::FieldConfig::new("secret", crate::table::FieldType::String {
                         max_length: 64,
                     })
                     .permissions(protected_permissions),
-                ),
+                ).expect("有效字段配置应注册成功"),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         let query = TableQuery::new(config, roles, None);

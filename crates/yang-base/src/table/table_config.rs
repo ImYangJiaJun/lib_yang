@@ -27,9 +27,9 @@ use std::collections::HashMap;
 /// let table = TableConfig::new("users")
 ///     .display_name("用户表")
 ///     .primary_key("id")
-///     .field(FieldConfig::new("id", FieldType::BigInt).required(true))
-///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true))
-///     .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true))
+///     .field(FieldConfig::new("id", FieldType::BigInt).required(true)).expect("有效字段配置应注册成功")
+///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true)).expect("有效字段配置应注册成功")
+///     .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true)).expect("有效字段配置应注册成功")
 ///     .unique_index(vec!["username".to_string()])
 ///     .unique_index(vec!["email".to_string()])
 ///     .default_order(vec![("created_at".to_string(), SortOrder::Desc)])
@@ -127,7 +127,11 @@ impl TableConfig {
     ///
     /// # 返回值
     ///
-    /// 返回 self，支持链式调用
+    /// 返回 `Result<Self, BaseError>`，支持通过 `?` 或 `expect` 继续链式调用
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError`：字段名为空白字符串
     ///
     /// # 示例
     ///
@@ -183,13 +187,14 @@ impl TableConfig {
     /// use yang_base::table::{TableConfig, FieldConfig, FieldType};
     ///
     /// let table = TableConfig::new("users")
-    ///     .field(FieldConfig::new("id", FieldType::BigInt))
-    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }));
+    ///     .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功");
     /// assert_eq!(table.fields.len(), 2);
     /// ```
-    pub fn field(mut self, field: FieldConfig) -> Self {
+    pub fn field(mut self, field: FieldConfig) -> Result<Self, BaseError> {
+        Self::validate_field_config(&field)?;
         self.fields.insert(field.name.clone(), field);
-        self
+        Ok(self)
     }
 
     /// 批量添加字段配置
@@ -200,7 +205,11 @@ impl TableConfig {
     ///
     /// # 返回值
     ///
-    /// 返回 self，支持链式调用
+    /// 返回 `Result<Self, BaseError>`，支持通过 `?` 或 `expect` 继续链式调用
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError`：任一字段名为空白字符串
     ///
     /// # 示例
     ///
@@ -212,14 +221,14 @@ impl TableConfig {
     ///         FieldConfig::new("id", FieldType::BigInt).required(true),
     ///         FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true),
     ///         FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true),
-    ///     ]);
+    ///     ]).expect("有效字段配置应注册成功");
     /// assert_eq!(table.fields.len(), 3);
     /// ```
-    pub fn fields(mut self, fields: Vec<FieldConfig>) -> Self {
+    pub fn fields(mut self, fields: Vec<FieldConfig>) -> Result<Self, BaseError> {
         for field in fields {
-            self.fields.insert(field.name.clone(), field);
+            self = self.field(field)?;
         }
-        self
+        Ok(self)
     }
 
     /// 从迭代器批量添加字段配置
@@ -230,7 +239,11 @@ impl TableConfig {
     ///
     /// # 返回值
     ///
-    /// 返回 self，支持链式调用
+    /// 返回 `Result<Self, BaseError>`，支持通过 `?` 或 `expect` 继续链式调用
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ConfigError`：任一字段名为空白字符串
     ///
     /// # 示例
     ///
@@ -243,17 +256,25 @@ impl TableConfig {
     /// ];
     ///
     /// let table = TableConfig::new("users")
-    ///     .fields_from_iter(field_configs.into_iter());
+    ///     .fields_from_iter(field_configs.into_iter()).expect("有效字段配置应注册成功");
     /// assert_eq!(table.fields.len(), 2);
     /// ```
-    pub fn fields_from_iter<I>(mut self, fields: I) -> Self
+    pub fn fields_from_iter<I>(mut self, fields: I) -> Result<Self, BaseError>
     where
         I: IntoIterator<Item = FieldConfig>,
     {
         for field in fields {
-            self.fields.insert(field.name.clone(), field);
+            self = self.field(field)?;
         }
-        self
+        Ok(self)
+    }
+
+    fn validate_field_config(field: &FieldConfig) -> Result<(), BaseError> {
+        if field.name.trim().is_empty() {
+            return Err(BaseError::ConfigError("字段名称不能为空".to_string()));
+        }
+
+        Ok(())
     }
 
     /// 添加唯一索引
@@ -415,7 +436,7 @@ impl TableConfig {
     /// use yang_base::table::{TableConfig, FieldConfig, FieldType};
     ///
     /// let table = TableConfig::new("users")
-    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }));
+    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功");
     ///
     /// assert!(table.validate_field("username").is_ok());
     /// assert!(table.validate_field("nonexistent").is_err());
@@ -447,7 +468,7 @@ impl TableConfig {
     /// use yang_base::table::{TableConfig, FieldConfig, FieldType};
     ///
     /// let table = TableConfig::new("users")
-    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }));
+    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功");
     ///
     /// let field = table.get_field("username");
     /// assert!(field.is_some());
@@ -475,8 +496,8 @@ impl TableConfig {
     /// use yang_base::table::{TableConfig, FieldConfig, FieldType};
     ///
     /// let table = TableConfig::new("users")
-    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 }))
-    ///     .field(FieldConfig::new("email", FieldType::String { max_length: 100 }));
+    ///     .field(FieldConfig::new("username", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
+    ///     .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功");
     ///
     /// assert!(table.validate_query(&["username", "email"]).is_ok());
     /// assert!(table.validate_query(&["username", "nonexistent"]).is_err());

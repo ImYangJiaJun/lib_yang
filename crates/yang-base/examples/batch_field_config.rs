@@ -10,17 +10,17 @@ fn main() {
     let _table_old_way = TableConfig::new("users")
         .display_name("用户表")
         .primary_key("id")
-        .field(FieldConfig::new("id", FieldType::BigInt).required(true))
+        .field(FieldConfig::new("id", FieldType::BigInt).required(true)).expect("有效字段配置应注册成功")
         .field(
             FieldConfig::new("username", FieldType::String { max_length: 50 })
                 .display_name("用户名")
                 .required(true),
-        )
+        ).expect("有效字段配置应注册成功")
         .field(
             FieldConfig::new("email", FieldType::String { max_length: 100 })
                 .display_name("邮箱")
                 .required(true),
-        );
+        ).expect("有效字段配置应注册成功");
 
     // 方法2：批量添加字段（推荐）
     let table_new_way = TableConfig::new("users")
@@ -51,7 +51,7 @@ fn main() {
             )
             .display_name("状态")
             .default_value(json!("active")),
-        ])
+        ]).expect("有效字段配置应注册成功")
         .unique_index(vec!["username".to_string()])
         .unique_index(vec!["email".to_string()])
         .default_order(vec![("created_at".to_string(), SortOrder::Desc)])
@@ -71,7 +71,7 @@ fn main() {
 
     let table_from_iter = TableConfig::new("products")
         .display_name("产品表")
-        .fields_from_iter(field_configs);
+        .fields_from_iter(field_configs).expect("有效字段配置应注册成功");
 
     println!("\n产品表字段数量: {}", table_from_iter.fields.len());
 
@@ -86,13 +86,13 @@ fn main() {
                 .required(true)
                 .validator(Validator::Min(0.0))
                 .validator(Validator::Max(999999.0)),
-        ])
+        ]).expect("有效字段配置应注册成功")
         // 单独添加复杂的 JSON 字段
         .field(
             FieldConfig::new("metadata", FieldType::Json)
                 .display_name("元数据")
                 .required(false),
-        )
+        ).expect("有效字段配置应注册成功")
         .timestamps(true, true, false);
 
     println!("\n订单表字段数量: {}", table_mixed.fields.len());

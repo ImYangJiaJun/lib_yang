@@ -154,13 +154,19 @@ pub fn expand(input: DeriveInput) -> TokenStream {
         .iter()
         .map(|(n, o)| {
             let column = o.column.clone().unwrap_or_else(|| n.clone());
+            if column.trim().is_empty() {
+                match &o.ident {
+                    Some(ident) => abort!(ident, "TableEntity 字段列名不能为空"),
+                    None => abort!(input, "TableEntity 字段列名不能为空"),
+                }
+            }
             let ft = rust_type_to_field_type(&o.ty, o.max_length.unwrap_or(255));
             let (_inner, is_option) = unwrap_option(&o.ty);
             let required = o.required.unwrap_or(!is_option);
             quote! {
                 config = config.field(
                     ::yang_base::table::FieldConfig::new(#column, #ft).required(#required)
-                );
+                ).expect("TableEntity 派生生成的字段配置应合法");
             }
         })
         .collect();
