@@ -299,3 +299,9 @@
 - 风险：`Grid2D::get()` 与 `set()` 使用 `u32` 乘加计算行优先索引，异常大尺寸下 debug 会 panic，release 可能整数回绕后错误命中 `data[0]` 等位置。
 - 修改：坐标先做负值和边界检查，再使用 `usize::checked_mul()`/`checked_add()` 计算索引；溢出时 `get()` 返回 `None`，`set()` 返回 `false`。
 - 验证：`cargo test -p yang-pcg grid_`
+## 2026-07-07 - yang-base DynamicRow 空白列名读取拒绝
+
+- 范围：`crates/yang-base/src/table/dynamic_row.rs`
+- 风险：`DynamicRow.columns` 是 public map，外部或解码路径若写入空字符串/纯空白列名，`DynamicRow::get()` 之前会返回该值，导致表行读取侧接受无效列名。
+- 修改：`DynamicRow::get()` 在读取前校验空白列名，空白 key 直接返回 `None`，合法列读取行为不变。
+- 验证：`cargo test -p yang-base --lib get_rejects_blank_column_name`

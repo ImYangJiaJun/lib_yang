@@ -78,6 +78,10 @@ impl DynamicRow {
     /// - `Some(&Value)`：列存在时返回值的引用
     /// - `None`：列不存在
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        if key.trim().is_empty() {
+            return None;
+        }
+
         self.columns.get(key)
     }
 }
@@ -85,6 +89,24 @@ impl DynamicRow {
 impl Default for DynamicRow {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn get_rejects_blank_column_name() {
+        let mut row = DynamicRow::new();
+        row.columns.insert("".to_string(), json!(1));
+        row.columns.insert("   ".to_string(), json!(2));
+        row.columns.insert("name".to_string(), json!("Alice"));
+
+        assert_eq!(row.get("name").and_then(|value| value.as_str()), Some("Alice"));
+        assert_eq!(row.get(""), None);
+        assert_eq!(row.get("   "), None);
     }
 }
 
