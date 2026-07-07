@@ -371,3 +371,11 @@
 - 修改：MySQL 与 PostgreSQL 的 `SqlGenerator` 递归条件校验新增空 AND/OR 组拒绝，统一返回 `DbError::InvalidArgument`。
 - 兼容：非空布尔条件组和空 IN 拒绝逻辑保持不变。
 - 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_boolean_condition`；`cargo test -p yang-db --lib test_try_to_sql_rejects_empty_in_condition`。
+
+## 2026-07-07 - yang-db checked 条件转换拒绝空条件
+
+- 范围：`crates/yang-db/src/mysql/condition.rs` 与 `crates/yang-db/src/postgres/condition.rs`。
+- 风险：`condition_to_sql_owned_checked` 是返回 `Result` 的安全转换入口，但此前仍会把空 IN 折叠为 `1 = 0`、空 AND 折叠为 `1 = 1`、空 OR 折叠为 `1 = 0`，与 checked API 的显式错误语义不一致。
+- 修改：MySQL 与 PostgreSQL 的 checked 条件转换对空 IN/AND/OR 返回 `DbError::InvalidArgument`；legacy `condition_to_sql` / `condition_to_sql_owned` 继续保持原常量折叠兼容行为。
+- 兼容：只收紧 checked API；非空条件和 legacy 空 IN 渲染保持不变。
+- 验证：`cargo test -p yang-db --lib test_checked_rejects_empty`；`cargo test -p yang-db --lib test_condition_in_empty`。

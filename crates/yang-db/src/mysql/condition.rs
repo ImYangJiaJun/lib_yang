@@ -451,8 +451,9 @@ fn write_condition_to_sql_owned_checked(
         }
         Condition::In(field, values) => {
             if values.is_empty() {
-                out.push_str("1 = 0");
-                return Ok(());
+                return Err(DbError::InvalidArgument(format!(
+                    "IN 条件 `{field}` 的值列表不能为空"
+                )));
             }
             let count = values.len();
             params.extend(values);
@@ -487,8 +488,7 @@ fn write_condition_to_sql_owned_checked(
         }
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
-                out.push_str("1 = 1");
-                return Ok(());
+                return Err(DbError::InvalidArgument("AND 条件组不能为空".to_string()));
             }
             if conditions.len() == 1 {
                 return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
@@ -505,8 +505,7 @@ fn write_condition_to_sql_owned_checked(
         }
         Condition::Or(mut conditions) => {
             if conditions.is_empty() {
-                out.push_str("1 = 0");
-                return Ok(());
+                return Err(DbError::InvalidArgument("OR 条件组不能为空".to_string()));
             }
             if conditions.len() == 1 {
                 return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
@@ -529,6 +528,26 @@ fn write_condition_to_sql_owned_checked(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn test_checked_rejects_empty_in_condition() {
+        let mut params = Vec::new();
+        let result =
+            condition_to_sql_owned_checked(Condition::In("id".to_string(), vec![]), &mut params);
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_checked_rejects_empty_boolean_condition() {
+        let mut params = Vec::new();
+        let result =
+            condition_to_sql_owned_checked(Condition::And(vec![]), &mut params);
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+        assert!(params.is_empty());
+    }
 
     #[test]
     fn test_from_i32() {
