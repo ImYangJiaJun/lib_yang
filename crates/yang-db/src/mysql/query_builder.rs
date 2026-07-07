@@ -107,12 +107,30 @@ impl SqlGenerator {
         Ok(())
     }
 
+    fn validate_condition_field(field: &str) -> Result<(), crate::error::DbError> {
+        super::identifier::quote_identifier(field).map(|_| ())
+    }
+
     fn validate_condition(condition: &Condition) -> Result<(), crate::error::DbError> {
         match condition {
-            Condition::In(field, values) if values.is_empty() => {
-                Err(crate::error::DbError::InvalidArgument(format!(
-                    "IN 条件 `{field}` 的值列表不能为空"
-                )))
+            Condition::Eq(field, _)
+            | Condition::Ne(field, _)
+            | Condition::Gt(field, _)
+            | Condition::Lt(field, _)
+            | Condition::Gte(field, _)
+            | Condition::Lte(field, _)
+            | Condition::Between(field, _, _)
+            | Condition::Like(field, _)
+            | Condition::IsNull(field)
+            | Condition::IsNotNull(field) => Self::validate_condition_field(field),
+            Condition::In(field, values) => {
+                Self::validate_condition_field(field)?;
+                if values.is_empty() {
+                    return Err(crate::error::DbError::InvalidArgument(format!(
+                        "IN 条件 `{field}` 的值列表不能为空"
+                    )));
+                }
+                Ok(())
             }
             Condition::And(conditions) | Condition::Or(conditions) if conditions.is_empty() => {
                 Err(crate::error::DbError::InvalidArgument(
@@ -122,7 +140,6 @@ impl SqlGenerator {
             Condition::And(conditions) | Condition::Or(conditions) => {
                 Self::validate_conditions(conditions)
             }
-            _ => Ok(()),
         }
     }
 
@@ -3264,6 +3281,16 @@ mod tests {
     fn test_try_to_sql_surfaces_invalid_table_identifier() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users; DROP TABLE users", false);
+        let result = builder.try_to_sql();
+
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn test_try_to_sql_rejects_invalid_condition_identifier() {
+        let pool = make_sync_test_pool();
+        let builder =
+            QueryBuilder::new(pool, "users", false).where_and_unchecked("id;DROP", "=", 1i64);
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));

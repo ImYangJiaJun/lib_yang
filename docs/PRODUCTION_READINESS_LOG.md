@@ -379,3 +379,11 @@
 - 修改：MySQL 与 PostgreSQL 的 checked 条件转换对空 IN/AND/OR 返回 `DbError::InvalidArgument`；legacy `condition_to_sql` / `condition_to_sql_owned` 继续保持原常量折叠兼容行为。
 - 兼容：只收紧 checked API；非空条件和 legacy 空 IN 渲染保持不变。
 - 验证：`cargo test -p yang-db --lib test_checked_rejects_empty`；`cargo test -p yang-db --lib test_condition_in_empty`。
+
+## 2026-07-07 - yang-db SQL 生成拒绝非法条件字段标识符
+
+- 范围：`crates/yang-db/src/mysql/query_builder.rs` 与 `crates/yang-db/src/postgres/query_builder.rs`。
+- 风险：`try_to_sql()` 是显式错误面，但此前 `SqlGenerator::validate_condition` 只拒绝空 IN/空布尔组，未校验 WHERE/HAVING 叶子条件字段；非法字段名可继续进入 legacy 条件渲染路径。
+- 修改：MySQL 与 PostgreSQL 的条件树校验新增叶子字段标识符校验，使用各自方言的 `quote_identifier` 判断合法性；`field()`/`group()`/`order()` 的可信表达式入口保持不变。
+- 兼容：合法条件字段、非法表名、缺少 GROUP BY、空 IN 和空布尔组的既有错误行为保持不变。
+- 验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_invalid_condition_identifier`；`cargo test -p yang-db --lib test_try_to_sql_surfaces`；`cargo test -p yang-db --lib test_try_to_sql_rejects_empty`；`cargo test -p yang-db --lib where_and`。
