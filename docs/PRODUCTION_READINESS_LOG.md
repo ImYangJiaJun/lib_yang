@@ -347,3 +347,11 @@
 - 修改：`validate_condition_tree` 的 IN/NOT IN 叶子校验新增空列表拒绝，递归入口与便捷入口保持一致。
 - 兼容：非空 IN/NOT IN 条件、空 AND/OR 组拒绝和最大长度限制行为不变。
 - 验证：`cargo test -p yang-base --lib empty_in_values`；`cargo test -p yang-base --lib empty_not_in_values`；`cargo test -p yang-base --lib test_empty_groups_rejected`。
+
+## 2026-07-07 - yang-base TableQuery 空白 contains 关键词拒绝
+
+- 范围：`crates/yang-base/src/table/table_query.rs` 与 `crates/yang-base/src/table/__tests__/table_query_test.rs`。
+- 风险：此前 `where_contains` 会把空白关键词包装成 `%   %` 或 `%%` 类 LIKE 条件，调用方可能误以为存在有效筛选，实际形成近似全匹配或低选择性查询。
+- 修改：`where_contains` 在转义通配符前按 `keyword.trim().is_empty()` 拒绝空白关键词，返回 `BaseError::ParamInvalid("keyword", "搜索关键词不能为空")`。
+- 兼容：非空关键词的通配符转义、长度上限和字段权限校验保持不变。
+- 验证：`cargo test -p yang-base --lib test_where_contains_rejects_blank_keyword`；`cargo test -p yang-base --lib where_like`。

@@ -266,6 +266,21 @@ fn test_where_like_success() {
 }
 
 #[test]
+fn test_where_contains_rejects_blank_keyword() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
+
+    let err = query
+        .where_contains("name", "   ")
+        .expect_err("空白关键词不应被转换成 %% 全匹配 LIKE");
+
+    assert!(matches!(
+        err,
+        BaseError::ParamInvalid(field, _) if field == "keyword"
+    ));
+}
+
+#[test]
 fn test_where_like_permission_denied() {
     let table_config = create_test_table_config();
     let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);

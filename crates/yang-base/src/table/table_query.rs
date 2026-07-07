@@ -602,6 +602,13 @@ impl TableQuery {
     /// let query = query.where_contains("name", "alice")?;
     /// ```
     pub fn where_contains(mut self, field: &str, keyword: &str) -> Result<Self, BaseError> {
+        if keyword.trim().is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "keyword".to_string(),
+                "搜索关键词不能为空".to_string(),
+            ));
+        }
+
         // 转义 LIKE 通配符：% → \%，_ → \_
         let escaped = keyword
             .replace('\\', "\\\\")
