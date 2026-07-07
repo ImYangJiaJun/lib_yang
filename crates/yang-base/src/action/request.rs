@@ -125,7 +125,8 @@ impl Request {
     /// ```
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         let name = name.into();
-        if name.trim().is_empty() {
+        let name = name.trim();
+        if name.is_empty() {
             return self;
         }
 
@@ -187,11 +188,12 @@ impl Request {
     /// ```
     pub fn query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let key = key.into();
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return self;
         }
 
-        self.query.insert(key, value.into());
+        self.query.insert(key.to_string(), value.into());
         self
     }
 
@@ -249,11 +251,12 @@ impl Request {
     /// ```
     pub fn path_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let key = key.into();
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return self;
         }
 
-        self.path_params.insert(key, value.into());
+        self.path_params.insert(key.to_string(), value.into());
         self
     }
 
@@ -336,7 +339,8 @@ impl Request {
     /// assert_eq!(request.get_header("Content-Type"), Some("application/json"));
     /// ```
     pub fn get_header(&self, name: &str) -> Option<&str> {
-        if name.trim().is_empty() {
+        let name = name.trim();
+        if name.is_empty() {
             return None;
         }
 
@@ -371,7 +375,8 @@ impl Request {
     /// assert_eq!(request.get_query("page"), Some("1"));
     /// ```
     pub fn get_query(&self, key: &str) -> Option<&str> {
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return None;
         }
 
@@ -401,7 +406,8 @@ impl Request {
     /// assert_eq!(request.get_path_param("id"), Some("123"));
     /// ```
     pub fn get_path_param(&self, key: &str) -> Option<&str> {
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return None;
         }
 
@@ -441,6 +447,16 @@ mod tests {
         assert_eq!(request.headers.get("authorization").map(String::as_str), Some("Bearer new"));
         assert_eq!(request.get_header("Authorization"), Some("Bearer new"));
         assert_eq!(request.token(), Some("new"));
+    }
+
+    #[test]
+    fn test_header_trims_name_before_normalizing() {
+        let request = Request::new(json!({})).header(" Authorization ", "Bearer token123");
+
+        assert_eq!(request.headers.len(), 1);
+        assert_eq!(request.get_header("authorization"), Some("Bearer token123"));
+        assert_eq!(request.get_header(" Authorization "), Some("Bearer token123"));
+        assert_eq!(request.token(), Some("token123"));
     }
 
     #[test]
@@ -510,6 +526,15 @@ mod tests {
     }
 
     #[test]
+    fn test_query_trims_keys_before_storing() {
+        let request = Request::new(json!({})).query(" page ", "1");
+
+        assert_eq!(request.query.len(), 1);
+        assert_eq!(request.get_query("page"), Some("1"));
+        assert_eq!(request.get_query(" page "), Some("1"));
+    }
+
+    #[test]
     fn test_get_query_rejects_blank_keys() {
         let mut request = Request::new(json!({}));
         request.query.insert("".to_string(), "empty".to_string());
@@ -539,6 +564,15 @@ mod tests {
         assert_eq!(request.get_path_param("slug"), Some("demo"));
         assert_eq!(request.get_path_param(""), None);
         assert_eq!(request.get_path_param("   "), None);
+    }
+
+    #[test]
+    fn test_path_param_trims_keys_before_storing() {
+        let request = Request::new(json!({})).path_param(" id ", "42");
+
+        assert_eq!(request.path_params.len(), 1);
+        assert_eq!(request.get_path_param("id"), Some("42"));
+        assert_eq!(request.get_path_param(" id "), Some("42"));
     }
 
     #[test]

@@ -393,3 +393,9 @@
 - 问题：`RequestBuilder::query` 允许空白 query key 进入发送阶段，与 `action::Request` 的空 key 处理不一致，也会把明显无效的调用方输入推迟到网络层暴露。
 - 修改：`RequestBuilder::send` 在解析 URL 和发送网络请求前扫描 query 参数名，发现空白 key 时返回 `BaseError::ParamInvalid("query", ...)`。
 - 验证：先新增 `test_send_rejects_blank_query_key_before_network` 并确认失败，再实现前置校验，随后运行该单测确认通过。
+
+## 2026-07-07 - Action 请求参数 key 边界空格规范化
+
+- 问题：`Request::header`、`Request::query`、`Request::path_param` 只用 `trim()` 判断空白，但存储时保留边界空格，导致 `token()`、`get_query()`、`get_path_param()` 等正常读取失败。
+- 修改：写入和读取 header/query/path 参数 key 时统一先 `trim()`；header key 在 trim 后继续做 ASCII 小写规范化。
+- 验证：先新增 header/query/path 三个 trim 行为用例并确认失败，再实现规范化，随后运行 `cargo test -p yang-base --lib trims` 确认通过。
