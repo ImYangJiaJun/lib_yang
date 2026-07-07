@@ -1,9 +1,16 @@
 // 地形数据模型
 // 定义房间内部地形的数据结构
 
+use crate::error::{PcgError, PcgResult};
 use crate::model::geometry::{GridPoint, GridSize};
 use crate::model::room::RoomId;
 use serde::{Deserialize, Serialize};
+
+/// 单个 `Grid2D` 允许的最大格子数。
+///
+/// PCG 房间地形是内存常驻基础结构；超过该上限通常表示配置错误或异常输入。
+/// 该限制避免病态尺寸触发整数溢出或巨量分配。
+const MAX_GRID_CELLS: usize = 1_048_576;
 
 /// 地形
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,13 +60,22 @@ pub struct Grid2D<T> {
 
 impl<T: Clone> Grid2D<T> {
     /// 创建新网格
-    pub fn new(width: u32, height: u32, default_value: T) -> Self {
-        let size = (width * height) as usize;
-        Self {
+    pub fn new(width: u32, height: u32, default_value: T) -> PcgResult<Self> {
+        let size = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or_else(|| PcgError::terrain("Grid2D 尺寸乘法溢出"))?;
+        if size > MAX_GRID_CELLS {
+            return Err(PcgError::terrain(format!(
+                "Grid2D 尺寸过大: {}x{} = {}，最大允许 {}",
+                width, height, size, MAX_GRID_CELLS
+            )));
+        }
+
+        Ok(Self {
             width,
             height,
             data: vec![default_value; size],
-        }
+        })
     }
 
     /// 获取指定位置的瓦片
@@ -128,6 +144,13 @@ mod tests {
 
         assert!(!grid.set(0, 65_536, TileKind::Wall));
         assert_eq!(grid.data[0], TileKind::Floor);
+    }
+
+    #[test]
+    fn grid_new_rejects_excessive_size() {
+        let result = Grid2D::new(65_536, 65_536, TileKind::Wall);
+
+        assert!(result.is_err(), "异常尺寸不应 panic 或尝试巨量分配");
     }
 }
 

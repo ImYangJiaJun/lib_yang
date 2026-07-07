@@ -41,14 +41,14 @@ impl TerrainStrategy for MazeStrategy {
         let (bounds, width, height) = extract_room_bounds(room)?;
 
         // 初始化网格为墙体（迷宫从全墙开始雕刻）
-        let mut tiles = Grid2D::new(width, height, TileKind::Wall);
+        let mut tiles = Grid2D::new(width, height, TileKind::Wall)?;
 
         // 标记门口瓦片
         let doorway_locals = super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
 
         // 使用递归回溯算法生成迷宫
         // 迷宫在奇数坐标上雕刻通道（确保墙体间隔）
-        generate_maze_recursive_backtrack(&mut tiles, width, height, rng);
+        generate_maze_recursive_backtrack(&mut tiles, width, height, rng)?;
 
         // 确保门口连接到迷宫网络
         connect_doorways_to_maze(&mut tiles, &doorway_locals, width, height);
@@ -79,14 +79,14 @@ fn generate_maze_recursive_backtrack(
     width: u32,
     height: u32,
     rng: &mut StableRng,
-) {
+) -> PcgResult<()> {
     // 迷宫起点（选择内部奇数坐标）
     let start_x = if width > 4 { 2 } else { 1 };
     let start_y = if height > 4 { 2 } else { 1 };
 
     // 使用栈模拟递归（避免栈溢出）
     let mut stack: Vec<GridPoint> = Vec::new();
-    let mut visited = Grid2D::new(width, height, false);
+    let mut visited = Grid2D::new(width, height, false)?;
 
     let start = GridPoint {
         x: start_x,
@@ -118,6 +118,8 @@ fn generate_maze_recursive_backtrack(
 
         stack.push(next);
     }
+
+    Ok(())
 }
 
 /// 获取未访问的邻居节点（步长为 2）

@@ -56,9 +56,9 @@ impl TerrainStrategy for OrganicStrategy {
             .collect();
 
         // 步骤 1：随机初始化网格
-        let mut grid_a = initialize_random_grid(width, height, config.obstacle_density, rng);
+        let mut grid_a = initialize_random_grid(width, height, config.obstacle_density, rng)?;
         // grid_b 仅用于双缓冲写入目标，首次 apply_ca_step_into 会全覆盖，无需 clone
-        let mut grid_b = Grid2D::new(width, height, TileKind::Wall);
+        let mut grid_b = Grid2D::new(width, height, TileKind::Wall)?;
 
         // 步骤 2：应用 cellular automata 规则（双缓冲，避免每次迭代重新分配）
         for _ in 0..CA_ITERATIONS {
@@ -124,9 +124,9 @@ fn initialize_random_grid(
     height: u32,
     density: f32,
     rng: &mut StableRng,
-) -> Grid2D<TileKind> {
+) -> PcgResult<Grid2D<TileKind>> {
     // OPT-P-13: 使用 init_room_grid 单遍初始化（Wall 边框 + Floor 内部）
-    let mut tiles = init_room_grid(width, height);
+    let mut tiles = init_room_grid(width, height)?;
 
     // 初始填充概率（密度越高，初始墙体越多）
     let fill_probability = (density * 0.8 + 0.2) as f64;
@@ -139,7 +139,7 @@ fn initialize_random_grid(
         }
     }
 
-    tiles
+    Ok(tiles)
 }
 
 /// 应用一步 cellular automata 规则（双缓冲版本，写入目标网格以避免分配）

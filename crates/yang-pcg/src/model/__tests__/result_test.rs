@@ -236,7 +236,7 @@ fn test_generation_result_full_json_roundtrip() {
     }];
 
     // 构建包含 Grid2D 的地形数据
-    let terrain_tiles = Grid2D::new(5, 3, TileKind::Floor);
+    let terrain_tiles = Grid2D::new(5, 3, TileKind::Floor).expect("有效尺寸应创建成功");
     let terrains = vec![Terrain {
         room_id: "room-0".to_string(),
         grid_size: GridSize {

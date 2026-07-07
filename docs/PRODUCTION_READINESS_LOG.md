@@ -305,3 +305,13 @@
 - 风险：`DynamicRow.columns` 是 public map，外部或解码路径若写入空字符串/纯空白列名，`DynamicRow::get()` 之前会返回该值，导致表行读取侧接受无效列名。
 - 修改：`DynamicRow::get()` 在读取前校验空白列名，空白 key 直接返回 `None`，合法列读取行为不变。
 - 验证：`cargo test -p yang-base --lib get_rejects_blank_column_name`
+## 2026-07-07 - yang-pcg Grid2D 可失败构造与尺寸上限
+
+- 范围：`crates/yang-pcg/src/model/terrain.rs`、`crates/yang-pcg/src/terrain/carve.rs`、`crates/yang-pcg/src/terrain/maze.rs`、`crates/yang-pcg/src/terrain/organic.rs`、`crates/yang-pcg/src/terrain/open_arena.rs`、`crates/yang-pcg/src/terrain/pillar.rs`、`crates/yang-pcg/src/model/__tests__/terrain_test.rs`、`crates/yang-pcg/src/model/__tests__/result_test.rs`
+- 风险：`Grid2D::new()` 之前用 `width * height` 直接计算容量，异常尺寸可能在 debug 下 panic，或在 release/64 位平台上尝试巨量分配导致 OOM。
+- 修改：`Grid2D::new()` 改为返回 `PcgResult<Grid2D<T>>`，使用 checked 乘法并引入单网格最大格子数 `1_048_576`；terrain 策略调用点通过 `?` 传播构造错误，测试中的合法尺寸显式 `expect`。
+- 兼容：这是有意的破坏性 API 收紧；调用方必须处理网格构造失败。
+- 验证：`cargo test -p yang-pcg grid_new_rejects_excessive_size`
+- 验证：`cargo test -p yang-pcg grid_`
+- 验证：`cargo test -p yang-pcg test_grid2d`
+- 验证：`cargo test -p yang-pcg test_generation_result_full_json_roundtrip`

@@ -24,7 +24,7 @@ fn test_tile_kind_variants() {
 #[test]
 fn test_grid2d_creation() {
     // 测试 2D 网格创建
-    let grid = Grid2D::new(10, 10, TileKind::Empty);
+    let grid = Grid2D::new(10, 10, TileKind::Empty).expect("有效尺寸应创建成功");
 
     assert_eq!(grid.width, 10);
     assert_eq!(grid.height, 10);
@@ -34,7 +34,7 @@ fn test_grid2d_creation() {
 #[test]
 fn test_grid2d_get_set() {
     // 测试网格读写操作
-    let mut grid = Grid2D::new(5, 5, TileKind::Empty);
+    let mut grid = Grid2D::new(5, 5, TileKind::Empty).expect("有效尺寸应创建成功");
 
     // 设置瓦片
     assert!(grid.set(2, 3, TileKind::Floor));
@@ -48,7 +48,7 @@ fn test_grid2d_get_set() {
 #[test]
 fn test_grid2d_bounds_check() {
     // 测试网格边界检查
-    let mut grid = Grid2D::new(5, 5, TileKind::Empty);
+    let mut grid = Grid2D::new(5, 5, TileKind::Empty).expect("有效尺寸应创建成功");
 
     // 越界访问应返回 None
     assert!(grid.get(-1, 0).is_none());
@@ -70,7 +70,7 @@ fn test_terrain_creation() {
             width: 20,
             height: 20,
         },
-        tiles: Grid2D::new(20, 20, TileKind::Empty),
+        tiles: Grid2D::new(20, 20, TileKind::Empty).expect("有效尺寸应创建成功"),
         reserved_zones: vec![],
         connectivity_summary: ConnectivitySummary {
             all_doors_connected: true,

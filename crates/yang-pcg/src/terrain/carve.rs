@@ -55,14 +55,14 @@ pub(crate) fn extract_room_bounds(room: &Room) -> PcgResult<(RoomBounds, u32, u3
 ///
 /// 一次性完成全 Wall 填充 + 内部 Floor 覆写（与 OPT-P-13 单遍初始化合并），
 /// 避免各策略重复内联边框绘制循环。
-pub(crate) fn init_room_grid(width: u32, height: u32) -> Grid2D<TileKind> {
-    let mut tiles = Grid2D::new(width, height, TileKind::Wall);
+pub(crate) fn init_room_grid(width: u32, height: u32) -> PcgResult<Grid2D<TileKind>> {
+    let mut tiles = Grid2D::new(width, height, TileKind::Wall)?;
     for y in 1..height as i32 - 1 {
         for x in 1..width as i32 - 1 {
             tiles.set(x, y, TileKind::Floor);
         }
     }
-    tiles
+    Ok(tiles)
 }
 
 /// 使用 TerrainConfig 为单个房间生成地形。
@@ -86,7 +86,7 @@ pub fn carve_room_terrain_with_config(
     rng: &mut StableRng,
 ) -> PcgResult<Terrain> {
     let (bounds, width, height) = extract_room_bounds(room)?;
-    let mut tiles = init_room_grid(width, height);
+    let mut tiles = init_room_grid(width, height)?;
 
     mark_doorways(&mut tiles, door_anchors, &room.id, bounds.min);
 

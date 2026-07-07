@@ -39,7 +39,7 @@ impl TerrainStrategy for PillarStrategy {
         rng: &mut StableRng,
     ) -> PcgResult<Terrain> {
         let (bounds, width, height) = extract_room_bounds(room)?;
-        let mut tiles = init_room_grid(width, height);
+        let mut tiles = init_room_grid(width, height)?;
 
         // 标记门口瓦片
         super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
