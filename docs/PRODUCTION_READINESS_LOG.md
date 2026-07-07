@@ -323,3 +323,11 @@
 - 修改：字段注册 builder 改为返回 `Result<Self, BaseError>`，统一拒绝 `name.trim().is_empty()` 的 `FieldConfig`；合法调用点显式 `expect`；`TableEntity` 派生宏对空白列名做编译期 `abort!`，并适配 fallible builder。
 - 兼容：这是公开 API 破坏性变更，调用方需要在字段注册链上使用 `?` 或带上下文的 `expect`。
 - 验证：`cargo test -p yang-base --lib test_table_config_field_rejects_blank_name`；`cargo test -p yang-base --lib table_config`；`cargo test -p yang-base --test table_query_paginate_test --no-run`；`cargo test -p yang-base --test table_query_crud_test --no-run`；`cargo test -p yang-base --test table_query_transaction_test --no-run`；`cargo check -p yang-base --example batch_field_config`。
+
+## 2026-07-07 - yang-base TableQuery 空字段选择拒绝
+
+- 范围：`crates/yang-base/src/table/table_query.rs` 与 `crates/yang-base/src/table/__tests__/table_query_test.rs`。
+- 风险：此前 `TableQuery::select_fields(&[])` 会接受空字段列表并写入 `QueryParams.fields = Some([])`，后续可能构造无意义或非法的 SELECT 字段片段。
+- 修改：`select_fields` 入口显式拒绝空列表，返回 `BaseError::ParamInvalid("fields", "查询字段列表不能为空")`。
+- 兼容：合法非空字段选择行为不变。
+- 验证：`cargo test -p yang-base --lib test_select_fields_rejects_empty_list`；`cargo test -p yang-base --lib select_fields`。

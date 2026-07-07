@@ -85,6 +85,21 @@ fn test_select_fields_success() {
 }
 
 #[test]
+fn test_select_fields_rejects_empty_list() {
+    let table_config = create_test_table_config();
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
+
+    let err = query
+        .select_fields(&[])
+        .expect_err("空字段选择列表不应被接受");
+
+    assert!(matches!(
+        err,
+        BaseError::ParamInvalid(field, _) if field == "fields"
+    ));
+}
+
+#[test]
 fn test_select_fields_not_found() {
     let table_config = create_test_table_config();
     let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);

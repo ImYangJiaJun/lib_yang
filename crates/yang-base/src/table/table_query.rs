@@ -379,6 +379,13 @@ impl TableQuery {
     ///
     /// 会校验字段存在，并校验当前用户角色具备这些字段的读取权限。
     pub fn select_fields(mut self, fields: &[&str]) -> Result<Self, BaseError> {
+        if fields.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "fields".to_string(),
+                "查询字段列表不能为空".to_string(),
+            ));
+        }
+
         // 验证每个字段
         for field_name in fields {
             self.validate_read_field(field_name)?;
