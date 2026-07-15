@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P2-04 Phase 2 纵向契约测试
+
+- 范围：最小 DirectoryPlugin 与真实 TypedAction 的 crate 内纵向契约测试，不修改生产 dispatch；覆盖完整 RequestMeta 适配输入，且不连接数据库。
+- 正向旅程：PluginManagerBuilder 注册/构建 -> ModuleRouter Action/route/认证中间件注册 -> AppRouter dispatch -> 权限校验 -> typed body 提取 -> `ActionContext::table_query()` 无连接构造 -> ApiResponse -> ApiCatalog -> OpenAPI。
+- 对抗性旅程：重复插件注册返回 `PluginAlreadyRegistered`；移除认证中间件后私有 Action 返回 `Unauthorized`；把 `query` 从 String 改为 number 后在 handler 前返回 `ParamInvalid("body", ..)`。同时精确比较 OpenAPI request schema 与 catalog 中运行时 input RootSchema，防止文档复制漂移。
+- 验证：纵向正反用例 2 项通过；`cargo fmt --all -- --check`；yang-db lib（381 passed，1 ignored）；yang-base lib（478 passed，8 ignored）；yang-db doctest（65 passed）；yang-base doctest（74 passed，148 ignored）；两库 all-target/all-feature Clippy `-D warnings` 与 yang-base Rust 1.80 all-feature check 均通过。
+- Phase 2 结果：Action 运行时 Schema 与 OpenAPI 使用同一 catalog 对象；缺 route、重复 route/operation 在注册或 catalog 构建期失败；公开性只存在于 ActionMeta，不在 RouteDescriptor 复制，因此不存在双源冲突。
+
 ## 2026-07-15 - P2-03 OpenAPI 3.1 投影
 
 - 范围：`yang-base/openapi` 可选 feature、`OpenApiInfo`、`ApiCatalog::to_openapi`、完整 JSON snapshot 和 ApiCatalog 文档。

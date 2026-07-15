@@ -4,3 +4,5 @@ mod module_router_tests;
 mod openapi_tests;
 mod request_id_middleware_tests;
 mod tracing_span_tests;
+#[cfg(all(feature = "token", feature = "openapi"))]
+mod vertical_contract_tests;

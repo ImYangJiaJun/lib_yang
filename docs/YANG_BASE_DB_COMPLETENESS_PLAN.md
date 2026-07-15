@@ -382,7 +382,7 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 - 不在 ActionMeta 重复存 method/path；以 RouteDescriptor 为唯一来源。
 - 使用 snapshot 测试确保模块、Action、权限或 Schema 变化会显式更新契约。
 
-#### P2-04 纵向契约测试 — `PENDING` — effort M
+#### P2-04 纵向契约测试 — `DONE` — effort M
 
 构造一个最小示例插件，验证：注册 -> 路由 -> 鉴权 -> 类型化输入 -> TableQuery -> ApiResponse ->
 ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由集成测试覆盖。
