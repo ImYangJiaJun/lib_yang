@@ -17,13 +17,13 @@ YANG 数据库操作库，提供类型安全的 MySQL/PostgreSQL 查询构建器
 
 ```toml
 # 仅 MySQL
-yang-db = { version = "0.1.3", default-features = false, features = ["mysql"] }
+yang-db = { version = "0.1.4", default-features = false, features = ["mysql"] }
 
 # 仅 PostgreSQL
-yang-db = { version = "0.1.3", default-features = false, features = ["postgres"] }
+yang-db = { version = "0.1.4", default-features = false, features = ["postgres"] }
 
 # 仅 Redis
-yang-db = { version = "0.1.3", default-features = false, features = ["redis"] }
+yang-db = { version = "0.1.4", default-features = false, features = ["redis"] }
 ```
 
 无 feature 组合仍提供 `DbError`、`DbErrorCategory`、`IsolationLevel` 与 `PoolStatus` 等后端无关契约。docs.rs 使用 all-features 构建完整 API。

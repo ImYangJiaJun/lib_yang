@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P5-01 版本与兼容策略
+
+- 范围：发布版本提升为 yang-db 0.1.4/yang-base 0.1.2，公开 `VERSION` 常量，同步 README 依赖示例；新增 `docs/VERSIONING.md` 定义 0.1.x 兼容增强与 0.2.0 breaking 收口规则。
+- RED：兼容契约产生 3 个编译错误，确认两库缺版本常量，且 P4-01 曾把两参数 `record_migration` 破坏性改为四参数。
+- 兼容修复：恢复 `record_migration(module, version)` 为 deprecated 两参数入口；新 checksum/status 语义迁移到 `record_migration_with_checksum`，内部执行路径使用新 API。兼容测试只做类型检查，不需要数据库。
+- 迁移文档：为迁移记录、checked identifier/expr、`try_to_sql`、unchecked operator 和分号切割 init 提供替代示例；0.2.0 才删除 deprecated RAW/unchecked/init/无 checksum 入口并重新评估默认 feature。
+- 对抗性验证：版本与旧 API 编译契约 1 passed；两库 all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P4-03 可选后台元数据
 
 - 范围：新增默认关闭且无依赖的 `admin-metadata` feature、独立 `yang_base::admin` 模块、五种展示形态、icon/group/order、稳定核心目标引用与确定性注册表；CI feature matrix 增加最小组合。

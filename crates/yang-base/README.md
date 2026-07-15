@@ -74,16 +74,16 @@ serde_json = "1.0"
 
 ```toml
 # 仅核心插件/路由/表元数据，不引入数据库与网络驱动
-yang-base = { version = "0.1.1", default-features = false }
+yang-base = { version = "0.1.2", default-features = false }
 
 # 仅 MySQL
-yang-base = { version = "0.1.1", default-features = false, features = ["mysql"] }
+yang-base = { version = "0.1.2", default-features = false, features = ["mysql"] }
 
 # 仅 Redis
-yang-base = { version = "0.1.1", default-features = false, features = ["redis"] }
+yang-base = { version = "0.1.2", default-features = false, features = ["redis"] }
 
 # Token 撤销依赖 Redis，因此 token 会自动启用 redis
-yang-base = { version = "0.1.1", default-features = false, features = ["token"] }
+yang-base = { version = "0.1.2", default-features = false, features = ["token"] }
 ```
 
 `yang-base` 通过 `default-features = false` 依赖 `yang-db`，只转发实际选中的后端 feature；docs.rs 使用 all-features 构建完整 API。

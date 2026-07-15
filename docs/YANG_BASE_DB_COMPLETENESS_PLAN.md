@@ -465,7 +465,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 
 ### Phase 5：发布和文档收口
 
-#### P5-01 版本与兼容策略 — `PENDING` — effort M
+#### P5-01 版本与兼容策略 — `DONE` — effort M
 
 - 0.1.x：恢复门禁、增加兼容 API、deprecated 不安全/含糊入口。
 - 0.2.0：删除 RAW fallback，启用明确的 identifier/expr 类型边界，完成 feature 拆分。

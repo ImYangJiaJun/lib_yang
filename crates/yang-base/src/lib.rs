@@ -61,6 +61,9 @@
 // 强制公开 API 文档覆盖率检查：所有公开项必须有文档注释
 #![warn(missing_docs)]
 
+/// 当前 yang-base crate 版本。
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // 让派生宏内部的 `::yang_base::...` 路径在 yang-base 自身的测试中正常解析。
 extern crate self as yang_base;
 

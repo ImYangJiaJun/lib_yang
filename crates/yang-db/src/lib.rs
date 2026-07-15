@@ -1,6 +1,9 @@
 // 后端能力契约
 pub mod capability;
 
+/// 当前 yang-db crate 版本。
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // 错误类型模块
 pub mod error;
 

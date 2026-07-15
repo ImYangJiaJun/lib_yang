@@ -636,7 +636,7 @@ impl DatabaseInitializer {
             }
 
             if let Err(reservation_error) = self
-                .record_migration(module_name, &version, &checksum, "running")
+                .record_migration_with_checksum(module_name, &version, &checksum, "running")
                 .await
             {
                 let record = self.load_migration_record(module_name, &version).await?;
@@ -816,7 +816,7 @@ impl DatabaseInitializer {
     /// # 说明
     ///
     /// 使用参数化查询，防止 SQL 注入攻击。
-    pub async fn record_migration(
+    pub async fn record_migration_with_checksum(
         &self,
         module_name: &str,
         version: &str,
@@ -843,6 +843,32 @@ impl DatabaseInitializer {
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
 
+        Ok(())
+    }
+
+    /// 兼容旧版的迁移记录入口。
+    ///
+    /// 此方法无法提供 SQL 内容，因此写入的记录不可做 checksum 验证；新代码必须使用
+    /// [`Self::record_migration_with_checksum`] 或直接使用 `run_migrations`。
+    #[deprecated(
+        since = "0.1.2",
+        note = "使用 record_migration_with_checksum 或 run_migrations，旧入口无法验证 SQL 内容"
+    )]
+    pub async fn record_migration(
+        &self,
+        module_name: &str,
+        version: &str,
+    ) -> Result<(), BaseError> {
+        self.db()
+            .execute_with_params(
+                "INSERT INTO _migrations (module_name, version, checksum, status) VALUES (?, ?, NULL, 'applied')",
+                vec![
+                    serde_json::Value::String(module_name.to_string()),
+                    serde_json::Value::String(version.to_string()),
+                ],
+            )
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
         Ok(())
     }
 

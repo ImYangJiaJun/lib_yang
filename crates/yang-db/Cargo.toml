@@ -1,6 +1,6 @@
 [package]
 name = "yang-db"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 
 description = "个人使用数据库操作"
