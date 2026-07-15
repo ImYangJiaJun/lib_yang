@@ -397,7 +397,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 
 这一阶段禁止按 `br-db` 方法清单机械复制。每个能力必须先提供至少一个本项目消费者或最小业务用例。
 
-#### P3-01 子查询与 EXISTS — `PENDING` — effort L
+#### P3-01 子查询与 EXISTS — `DONE` — effort L
 
 - `where_exists` / `where_not_exists`。
 - `where_in_subquery`。

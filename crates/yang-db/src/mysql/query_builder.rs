@@ -1198,6 +1198,31 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// 添加受控 EXISTS 子查询。
+    pub fn where_exists(mut self, subquery: crate::mysql::Subquery) -> Self {
+        self.conditions.push(Condition::Exists(Box::new(subquery)));
+        self
+    }
+
+    /// 添加受控 NOT EXISTS 子查询。
+    pub fn where_not_exists(mut self, subquery: crate::mysql::Subquery) -> Self {
+        self.conditions
+            .push(Condition::NotExists(Box::new(subquery)));
+        self
+    }
+
+    /// 添加受控 IN 子查询，外层字段必须是合法的单段或两段标识符。
+    pub fn where_in_subquery(
+        mut self,
+        field: &str,
+        subquery: crate::mysql::Subquery,
+    ) -> Result<Self, crate::error::DbError> {
+        crate::mysql::identifier::quote_qualified(field)?;
+        self.conditions
+            .push(Condition::InSubquery(field.to_string(), Box::new(subquery)));
+        Ok(self)
+    }
+
     /// 添加 BETWEEN 条件
     pub fn where_between<V>(mut self, field: &str, start: V, end: V) -> Self
     where
@@ -2874,6 +2899,7 @@ where
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::mysql::Subquery;
     use sqlx::mysql::MySqlPoolOptions;
 
     // 创建测试用的连接池（懒连接：仅校验 URL，不建立真实连接）。
@@ -2908,6 +2934,81 @@ mod tests {
                     .expect("无法解析测试数据库 URL")
             })
         })
+    }
+
+    #[test]
+    fn test_controlled_subqueries_render_exists_not_exists_and_in_in_parameter_order() {
+        let pool = make_sync_test_pool();
+        let paid_order = Subquery::new("orders", "id")
+            .expect("合法子查询")
+            .where_column("orders.user_id", "=", "users.id")
+            .expect("合法关联列")
+            .where_value("orders.status", "=", "paid")
+            .expect("合法绑定条件");
+        let active_user = Subquery::new("memberships", "user_id")
+            .expect("合法子查询")
+            .where_value("memberships.active", "=", true)
+            .expect("合法绑定条件");
+        let banned_user = Subquery::new("bans", "id")
+            .expect("合法子查询")
+            .where_column("bans.user_id", "=", "users.id")
+            .expect("合法关联列")
+            .where_value("bans.reason", "=", "fraud")
+            .expect("合法绑定条件");
+
+        let builder = QueryBuilder::new(pool, "users", false)
+            .where_and("users.tenant_id", "=", 7)
+            .expect("合法外层条件")
+            .where_exists(paid_order)
+            .where_in_subquery("users.id", active_user)
+            .expect("合法 IN 子查询")
+            .where_not_exists(banned_user);
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&builder).expect("子查询应可渲染");
+
+        assert_eq!(
+            generator.get_sql(),
+            "SELECT * FROM `users` WHERE (`users`.`tenant_id` = ? AND EXISTS (SELECT `id` FROM `orders` WHERE `orders`.`user_id` = `users`.`id` AND `orders`.`status` = ?) AND `users`.`id` IN (SELECT `user_id` FROM `memberships` WHERE `memberships`.`active` = ?) AND NOT EXISTS (SELECT `id` FROM `bans` WHERE `bans`.`user_id` = `users`.`id` AND `bans`.`reason` = ?))"
+        );
+        assert!(
+            matches!(generator.get_params(), [SqlValue::Int(7), SqlValue::String(status), SqlValue::Bool(true), SqlValue::String(reason)] if status == "paid" && reason == "fraud")
+        );
+    }
+
+    #[test]
+    fn test_controlled_subqueries_reject_adversarial_structure_before_rendering() {
+        for payload in [
+            "",
+            "orders; DROP TABLE users",
+            "orders --",
+            "a.b",
+            "orders\0",
+        ] {
+            assert!(
+                Subquery::new(payload, "id").is_err(),
+                "非法表名被接受: {payload:?}"
+            );
+        }
+        for payload in ["", "id) FROM users --", "COUNT(*)", "a.b.c", "id\0"] {
+            assert!(
+                Subquery::new("orders", payload).is_err(),
+                "非法投影被接受: {payload:?}"
+            );
+        }
+        assert!(Subquery::new("orders", "id")
+            .expect("合法子查询")
+            .where_column("orders.user_id", "= 1 OR 1=1 --", "users.id")
+            .is_err());
+        assert!(Subquery::new("orders", "id")
+            .expect("合法子查询")
+            .where_value("orders.status --", "=", "paid")
+            .is_err());
+        assert!(QueryBuilder::new(make_sync_test_pool(), "users", false)
+            .where_in_subquery(
+                "users.id) OR 1=1 --",
+                Subquery::new("orders", "user_id").expect("合法子查询"),
+            )
+            .is_err());
     }
 
     #[tokio::test]

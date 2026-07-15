@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P3-01 受控子查询与 EXISTS
+
+- 范围：MySQL/PostgreSQL 对称提供 `Subquery`、`where_exists`、`where_not_exists`、`where_in_subquery`，支持绑定值条件与受控列对列关联，不接收外部裸 SQL。
+- RED：双方言 QueryBuilder 测试因 `Subquery` 与三个查询入口缺失产生 6 个编译错误，确认公共能力不存在；实现后的首轮精确 SQL 断言又暴露多条件根节点会由既有 renderer 加括号，按真实契约修正快照。
+- 安全边界：子查询表名只接受单段标识符，投影/条件/关联列只接受一至两段标识符；比较符收敛为固定枚举。空值、注释、分号、三段名、函数、NUL 和操作符注入均在 SQL 渲染前返回结构化错误。
+- 对抗性验证：4 项双方言单测覆盖 EXISTS/NOT EXISTS/IN、关联列、外层/嵌套参数顺序和恶意结构；PostgreSQL 精确锁定 `$1` 至 `$4` 连续编号。`yang-db` lib 385 passed/1 ignored，doctest 65 passed，all-target/all-feature Clippy 通过。
+- 真实数据库：临时 MySQL 8 与 PostgreSQL 16 容器分别执行关联 EXISTS 与绑定条件，均只返回预期用户（各 1 passed）；集成契约保存在 `integration_advanced_queries.rs`，默认离线套件标记 ignored。
+
 ## 2026-07-15 - P2-04 Phase 2 纵向契约测试
 
 - 范围：最小 DirectoryPlugin 与真实 TypedAction 的 crate 内纵向契约测试，不修改生产 dispatch；覆盖完整 RequestMeta 适配输入，且不连接数据库。

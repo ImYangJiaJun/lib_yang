@@ -5,6 +5,101 @@ use serde_json::Value as JsonValue;
 
 use crate::DbError;
 
+/// 受控列比较操作符。
+#[derive(Debug, Clone, Copy)]
+pub enum ComparisonOperator {
+    /// 等于。
+    Eq,
+    /// 不等于。
+    Ne,
+    /// 大于。
+    Gt,
+    /// 小于。
+    Lt,
+    /// 大于等于。
+    Gte,
+    /// 小于等于。
+    Lte,
+}
+
+impl ComparisonOperator {
+    fn parse(op: &str) -> Result<Self, DbError> {
+        match op {
+            "=" => Ok(Self::Eq),
+            "!=" => Ok(Self::Ne),
+            ">" => Ok(Self::Gt),
+            "<" => Ok(Self::Lt),
+            ">=" => Ok(Self::Gte),
+            "<=" => Ok(Self::Lte),
+            _ => Err(DbError::UnsupportedOperator(op.to_string())),
+        }
+    }
+
+    fn as_sql(self) -> &'static str {
+        match self {
+            Self::Eq => "=",
+            Self::Ne => "!=",
+            Self::Gt => ">",
+            Self::Lt => "<",
+            Self::Gte => ">=",
+            Self::Lte => "<=",
+        }
+    }
+}
+
+/// 只能由安全标识符和绑定条件构造的 SELECT 子查询。
+#[derive(Debug, Clone)]
+pub struct Subquery {
+    table: String,
+    field: String,
+    conditions: Vec<Condition>,
+}
+
+impl Subquery {
+    /// 创建只投影一个字段的受控子查询。
+    pub fn new(table: &str, field: &str) -> Result<Self, DbError> {
+        super::identifier::quote_identifier(table)?;
+        super::identifier::quote_qualified(field)?;
+        Ok(Self {
+            table: table.to_string(),
+            field: field.to_string(),
+            conditions: Vec::new(),
+        })
+    }
+
+    /// 添加字段与绑定值的 AND 条件。
+    pub fn where_value<V>(mut self, field: &str, op: &str, value: V) -> Result<Self, DbError>
+    where
+        V: Into<SqlValue>,
+    {
+        super::identifier::quote_qualified(field)?;
+        let value = value.into();
+        let condition = match op {
+            "=" => Condition::Eq(field.to_string(), value),
+            "!=" => Condition::Ne(field.to_string(), value),
+            ">" => Condition::Gt(field.to_string(), value),
+            "<" => Condition::Lt(field.to_string(), value),
+            ">=" => Condition::Gte(field.to_string(), value),
+            "<=" => Condition::Lte(field.to_string(), value),
+            _ => return Err(DbError::UnsupportedOperator(op.to_string())),
+        };
+        self.conditions.push(condition);
+        Ok(self)
+    }
+
+    /// 添加两个已校验列之间的 AND 比较，用于关联子查询。
+    pub fn where_column(mut self, left: &str, op: &str, right: &str) -> Result<Self, DbError> {
+        super::identifier::quote_qualified(left)?;
+        super::identifier::quote_qualified(right)?;
+        self.conditions.push(Condition::ColumnComparison(
+            left.to_string(),
+            ComparisonOperator::parse(op)?,
+            right.to_string(),
+        ));
+        Ok(self)
+    }
+}
+
 /// SQL 值类型（PostgreSQL）
 ///
 /// 与 MySQL 后端的 `SqlValue` 结构一致，独立定义以保持 `postgres` 模块自包含，
@@ -49,6 +144,14 @@ pub enum Condition {
     IsNull(String),
     /// IS NOT NULL 条件
     IsNotNull(String),
+    /// 两个标识符之间的受控比较。
+    ColumnComparison(String, ComparisonOperator, String),
+    /// EXISTS 子查询。
+    Exists(Box<Subquery>),
+    /// NOT EXISTS 子查询。
+    NotExists(Box<Subquery>),
+    /// IN 子查询。
+    InSubquery(String, Box<Subquery>),
     /// AND 组合
     And(Vec<Condition>),
     /// OR 组合
@@ -296,6 +399,33 @@ fn write_condition_to_sql_owned_checked(
             out.push_str(&format!("{} IS NOT NULL", quote_identifier(&field)?));
             Ok(())
         }
+        Condition::ColumnComparison(left, op, right) => {
+            out.push_str(&format!(
+                "{} {} {}",
+                quote_identifier(&left)?,
+                op.as_sql(),
+                quote_identifier(&right)?
+            ));
+            Ok(())
+        }
+        Condition::Exists(subquery) => {
+            out.push_str("EXISTS (");
+            write_subquery(*subquery, out, params, parameter_offset)?;
+            out.push(')');
+            Ok(())
+        }
+        Condition::NotExists(subquery) => {
+            out.push_str("NOT EXISTS (");
+            write_subquery(*subquery, out, params, parameter_offset)?;
+            out.push(')');
+            Ok(())
+        }
+        Condition::InSubquery(field, subquery) => {
+            out.push_str(&format!("{} IN (", quote_identifier(&field)?));
+            write_subquery(*subquery, out, params, parameter_offset)?;
+            out.push(')');
+            Ok(())
+        }
         Condition::And(mut conditions) => {
             if conditions.is_empty() {
                 return Err(DbError::InvalidArgument("AND 条件组不能为空".to_string()));
@@ -341,6 +471,28 @@ fn write_condition_to_sql_owned_checked(
             Ok(())
         }
     }
+}
+
+fn write_subquery(
+    subquery: Subquery,
+    out: &mut String,
+    params: &mut Vec<SqlValue>,
+    parameter_offset: usize,
+) -> Result<(), DbError> {
+    out.push_str("SELECT ");
+    out.push_str(&super::identifier::quote_qualified(&subquery.field)?);
+    out.push_str(" FROM ");
+    out.push_str(&super::identifier::quote_identifier(&subquery.table)?);
+    if !subquery.conditions.is_empty() {
+        out.push_str(" WHERE ");
+        for (index, condition) in subquery.conditions.into_iter().enumerate() {
+            if index > 0 {
+                out.push_str(" AND ");
+            }
+            write_condition_to_sql_owned_checked(condition, out, params, parameter_offset)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
