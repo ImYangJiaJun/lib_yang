@@ -130,6 +130,28 @@ pub enum BaseError {
         source: yang_db::DbError,
     },
 
+    /// 已执行迁移的内容与当前声明不一致。
+    #[error("迁移校验和不一致 [{module}] v{version}: expected={expected}, actual={actual:?}")]
+    MigrationChecksumMismatch {
+        /// 模块或插件名称。
+        module: String,
+        /// 迁移版本。
+        version: String,
+        /// 当前声明的校验和。
+        expected: String,
+        /// 数据库中保存的校验和；None 表示旧记录不可验证。
+        actual: Option<String>,
+    },
+
+    /// 同一迁移已被另一个初始化器预留。
+    #[error("迁移正在执行 [{module}] v{version}")]
+    MigrationInProgress {
+        /// 模块或插件名称。
+        module: String,
+        /// 迁移版本。
+        version: String,
+    },
+
     /// 数据库未初始化
     #[error("数据库未初始化")]
     DatabaseNotInitialized,
@@ -552,7 +574,9 @@ impl BaseError {
             BaseError::DatabaseInitFailed(_) => 200005,
             BaseError::DatabaseMigrationFailed(_, _) => 200006,
             BaseError::MigrationFailed(_, _, _) => 200007,
-            BaseError::MigrationExecutionFailed { .. } => 200007,
+            BaseError::MigrationExecutionFailed { .. }
+            | BaseError::MigrationChecksumMismatch { .. }
+            | BaseError::MigrationInProgress { .. } => 200007,
             BaseError::DatabaseNotInitialized => 200008,
             BaseError::DatabaseTransactionFailed(_) => 200009,
             BaseError::MissingWhereClause(_) => 200010,
@@ -645,7 +669,9 @@ impl BaseError {
             BaseError::DatabaseInitFailed(_) => "200005",
             BaseError::DatabaseMigrationFailed(_, _) => "200006",
             BaseError::MigrationFailed(_, _, _) => "200007",
-            BaseError::MigrationExecutionFailed { .. } => "200007",
+            BaseError::MigrationExecutionFailed { .. }
+            | BaseError::MigrationChecksumMismatch { .. }
+            | BaseError::MigrationInProgress { .. } => "200007",
             BaseError::DatabaseNotInitialized => "200008",
             BaseError::DatabaseTransactionFailed(_) => "200009",
             BaseError::MissingWhereClause(_) => "200010",
@@ -730,7 +756,9 @@ impl BaseError {
             BaseError::MissingWhereClause(_)
             | BaseError::DatabaseMigrationFailed(_, _)
             | BaseError::MigrationFailed(_, _, _)
-            | BaseError::MigrationExecutionFailed { .. } => C::Client,
+            | BaseError::MigrationExecutionFailed { .. }
+            | BaseError::MigrationChecksumMismatch { .. }
+            | BaseError::MigrationInProgress { .. } => C::Client,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
             | BaseError::DatabaseInitFailed(_) => C::Server,

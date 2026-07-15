@@ -436,7 +436,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 
 ### Phase 4：迁移治理与可选系统元数据
 
-#### P4-01 迁移可验证性 — `PENDING` — effort L
+#### P4-01 迁移可验证性 — `DONE` — effort L
 
 - 迁移记录增加 checksum；同 module/version 内容变化时启动失败。
 - 明确一次 migration 的事务边界和不支持事务 DDL 的处理策略。

@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P4-01 迁移可验证性
+
+- 范围：`DatabaseInitializer` 迁移表新增 checksum/status，公开 `MigrationPlan`/`MigrationPlanEntry`/`MigrationPlanStatus` 与只读 `plan_migrations`/`plan_all`，新增 checksum mismatch/in-progress 结构化错误和 `docs/MIGRATIONS.md`。
+- RED：迁移记录分类测试产生 10 个缺函数/类型错误；实现后覆盖 Pending、Applied、ChecksumMismatch（含旧记录 NULL checksum）和 InProgress。
+- dry-run/checksum：迁移表不存在时计划仍返回 Pending 且零写入；相同 module/version 内容变化在执行前返回 `MigrationChecksumMismatch`。旧版无 checksum 记录 fail-closed，需人工核对补录。
+- 并发/恢复：执行前用 `(module_name, version)` 唯一键写 `running` 预留，成功后精确更新一行为 `applied`；竞争者只会看到 Applied 或 `MigrationInProgress`，失败尽力清理自身预留。真实 MySQL 8 双初始化器并发只执行一次业务 INSERT。
+- 事务边界：文档明确 MySQL DML 可与记录共用事务，而 DDL 会隐式提交；running 状态显式暴露恢复边界。每个 migration 是一个独立语句，不做分号切割；MySQL/PostgreSQL `Database::init` 旧入口已 deprecated。
+- 对抗性验证：真实 MySQL dry-run 零写、应用后计划、内容漂移拒绝、并发唯一执行共 1 项集成测试通过；yang-base lib 479 passed/8 ignored，doctest 74 passed/148 ignored，两库 all-target/all-feature Clippy 通过。
+
 ## 2026-07-15 - P3-05 支持矩阵与 non-goal
 
 - 范围：重写 `crates/yang-db/README.md` 的开发状态，加入 MySQL 8/PostgreSQL 16/Redis 7 支持矩阵，并明确 SQLite、MSSQL 与数据库运维职责边界。

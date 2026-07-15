@@ -54,4 +54,6 @@ pub use global::GlobalDatabase;
 #[cfg(feature = "redis")]
 pub use global_redis::GlobalRedis;
 #[cfg(feature = "mysql")]
-pub use initializer::DatabaseInitializer;
+pub use initializer::{
+    DatabaseInitializer, MigrationPlan, MigrationPlanEntry, MigrationPlanStatus,
+};

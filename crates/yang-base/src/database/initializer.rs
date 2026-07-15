@@ -34,6 +34,60 @@ use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
 use std::sync::Arc;
 use yang_db::Database;
 
+/// 迁移 dry-run 中单项的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MigrationPlanStatus {
+    /// 尚未执行。
+    Pending,
+    /// 已执行且校验和一致。
+    Applied,
+    /// 相同 module/version 的内容已变化或历史记录不可验证。
+    ChecksumMismatch,
+    /// 另一个初始化器已预留并正在执行。
+    InProgress,
+}
+
+/// 一条可审计的迁移计划记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationPlanEntry {
+    /// 插件/模块名称。
+    pub module: String,
+    /// 迁移版本。
+    pub version: String,
+    /// 当前 SQL 内容的稳定校验和。
+    pub checksum: String,
+    /// 与数据库记录比较后的状态。
+    pub status: MigrationPlanStatus,
+}
+
+/// dry-run 迁移计划；生成过程只读数据库，不创建表或写记录。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationPlan {
+    /// 按插件依赖顺序及插件声明顺序排列的迁移项。
+    pub entries: Vec<MigrationPlanEntry>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MigrationRecord {
+    checksum: Option<String>,
+    status: String,
+}
+
+fn classify_migration_record(
+    record: Option<(Option<&str>, &str)>,
+    expected_checksum: &str,
+) -> MigrationPlanStatus {
+    match record {
+        None => MigrationPlanStatus::Pending,
+        Some((_, status)) if status != "applied" => MigrationPlanStatus::InProgress,
+        Some((Some(actual), "applied")) if actual == expected_checksum => {
+            MigrationPlanStatus::Applied
+        }
+        Some(_) => MigrationPlanStatus::ChecksumMismatch,
+    }
+}
+
 /// 计算迁移 SQL 的稳定 FNV-1a 64 位校验和。
 fn migration_checksum(sql: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -179,6 +233,98 @@ impl DatabaseInitializer {
     /// 收敛 [`DbRef`] 的两个变体，初始化逻辑无需关心数据库来源（owned 或全局单例）。
     fn db(&self) -> &Database {
         self.db.db()
+    }
+
+    /// 只读生成单个插件的迁移计划，不创建迁移表、不执行 SQL、不写迁移记录。
+    pub async fn plan_migrations(&self, plugin: &dyn Plugin) -> Result<MigrationPlan, BaseError> {
+        let table_exists = self
+            .db()
+            .table_exists("_migrations")
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        let mut entries = Vec::new();
+        for (version, sql) in plugin.migration_sql() {
+            let checksum = migration_checksum(&sql);
+            let record = if table_exists {
+                self.load_migration_record(plugin.name(), &version).await?
+            } else {
+                None
+            };
+            let status = classify_migration_record(
+                record
+                    .as_ref()
+                    .map(|record| (record.checksum.as_deref(), record.status.as_str())),
+                &checksum,
+            );
+            entries.push(MigrationPlanEntry {
+                module: plugin.name().to_string(),
+                version,
+                checksum,
+                status,
+            });
+        }
+        Ok(MigrationPlan { entries })
+    }
+
+    /// 只读生成全部插件的迁移计划。
+    pub async fn plan_all(
+        &self,
+        plugin_manager: &PluginManager,
+    ) -> Result<MigrationPlan, BaseError> {
+        let mut plan = MigrationPlan::default();
+        for plugin in plugin_manager.get_all().await {
+            plan.entries
+                .extend(self.plan_migrations(plugin.as_ref()).await?.entries);
+        }
+        Ok(plan)
+    }
+
+    async fn load_migration_record(
+        &self,
+        module: &str,
+        version: &str,
+    ) -> Result<Option<MigrationRecord>, BaseError> {
+        let sql = "SELECT checksum, status FROM _migrations WHERE module_name = ? AND version = ? LIMIT 1";
+        let records: Vec<MigrationRecord> = self
+            .db()
+            .query_with_params(
+                sql,
+                vec![
+                    serde_json::Value::String(module.to_string()),
+                    serde_json::Value::String(version.to_string()),
+                ],
+            )
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        Ok(records.into_iter().next())
+    }
+
+    fn validate_migration_record(
+        &self,
+        module: &str,
+        version: &str,
+        expected_checksum: &str,
+        record: Option<MigrationRecord>,
+    ) -> Result<bool, BaseError> {
+        match classify_migration_record(
+            record
+                .as_ref()
+                .map(|record| (record.checksum.as_deref(), record.status.as_str())),
+            expected_checksum,
+        ) {
+            MigrationPlanStatus::Pending => Ok(false),
+            MigrationPlanStatus::Applied => Ok(true),
+            MigrationPlanStatus::ChecksumMismatch => Err(BaseError::MigrationChecksumMismatch {
+                module: module.to_string(),
+                version: version.to_string(),
+                expected: expected_checksum.to_string(),
+                actual: record.and_then(|record| record.checksum),
+            }),
+            MigrationPlanStatus::InProgress => Err(BaseError::MigrationInProgress {
+                module: module.to_string(),
+                version: version.to_string(),
+            }),
+        }
     }
 
     /// 初始化所有插件的数据库
@@ -365,6 +511,8 @@ impl DatabaseInitializer {
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 module_name VARCHAR(255) NOT NULL COMMENT '模块名称',
                 version VARCHAR(255) NOT NULL COMMENT '迁移版本',
+                checksum CHAR(16) NULL COMMENT 'FNV-1a 迁移内容校验和',
+                status VARCHAR(16) NOT NULL DEFAULT 'applied' COMMENT 'running/applied',
                 executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '执行时间',
                 UNIQUE KEY unique_migration (module_name, version),
                 INDEX idx_module_name (module_name)
@@ -376,6 +524,44 @@ impl DatabaseInitializer {
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
 
+        self.ensure_migration_column(
+            "checksum",
+            "ALTER TABLE _migrations ADD COLUMN checksum CHAR(16) NULL AFTER version",
+        )
+        .await?;
+        self.ensure_migration_column(
+            "status",
+            "ALTER TABLE _migrations ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'applied' AFTER checksum",
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_migration_column(
+        &self,
+        column: &str,
+        alter_sql: &str,
+    ) -> Result<(), BaseError> {
+        #[derive(sqlx::FromRow)]
+        struct CountResult {
+            count: i64,
+        }
+        let rows: Vec<CountResult> = self
+            .db()
+            .query_with_params(
+                "SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '_migrations' AND column_name = ?",
+                vec![serde_json::Value::String(column.to_string())],
+            )
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        if rows.first().map(|row| row.count).unwrap_or(0) == 0 {
+            #[allow(deprecated)]
+            self.db()
+                .execute(alter_sql)
+                .await
+                .map_err(BaseError::DatabaseExecuteFailed)?;
+        }
         Ok(())
     }
 
@@ -398,22 +584,42 @@ impl DatabaseInitializer {
         let module_name = plugin.name();
 
         for (version, sql) in plugin.migration_sql() {
-            // 检查迁移是否已执行
-            if self.is_migration_executed(module_name, &version).await? {
-                log::debug!("迁移 {} v{} 已执行，跳过", module_name, version);
+            let checksum = migration_checksum(&sql);
+            if self.validate_migration_record(
+                module_name,
+                &version,
+                &checksum,
+                self.load_migration_record(module_name, &version).await?,
+            )? {
                 continue;
+            }
+
+            if let Err(reservation_error) = self
+                .record_migration(module_name, &version, &checksum, "running")
+                .await
+            {
+                let record = self.load_migration_record(module_name, &version).await?;
+                if self.validate_migration_record(module_name, &version, &checksum, record)? {
+                    continue;
+                }
+                return Err(reservation_error);
             }
 
             log::info!("执行迁移: {} v{}", module_name, version);
 
-            // 执行迁移 SQL（使用 yang-db::Database::execute）
-            self.db()
-                .execute(&sql)
-                .await
-                .map_err(|source| migration_execution_error(module_name, &version, &sql, source))?;
-
-            // 记录迁移
-            self.record_migration(module_name, &version).await?;
+            if let Err(source) = self.db().execute(&sql).await {
+                let _ = self
+                    .delete_migration_reservation(module_name, &version, &checksum)
+                    .await;
+                return Err(migration_execution_error(
+                    module_name,
+                    &version,
+                    &sql,
+                    source,
+                ));
+            }
+            self.mark_migration_applied(module_name, &version, &checksum)
+                .await?;
         }
 
         Ok(())
@@ -443,28 +649,69 @@ impl DatabaseInitializer {
         let module_name = plugin.name();
 
         for (version, sql) in plugin.migration_sql() {
-            // 检查迁移是否已执行
-            if self.is_migration_executed(module_name, &version).await? {
-                log::debug!("迁移 {} v{} 已执行，跳过", module_name, version);
-                continue;
-            }
-
-            log::info!("执行迁移: {} v{}", module_name, version);
-
-            // 执行迁移 SQL（使用 yang-db::Transaction::execute）
-            tx.execute(&sql)
-                .await
-                .map_err(|source| migration_execution_error(module_name, &version, &sql, source))?;
-
-            // 记录迁移（使用参数化查询，防止 SQL 注入）
-            let record_sql = "INSERT INTO _migrations (module_name, version) VALUES (?, ?)";
+            let checksum = migration_checksum(&sql);
+            let record_sql = "SELECT checksum, status FROM _migrations WHERE module_name = ? AND version = ? LIMIT 1";
             let record_params = vec![
                 serde_json::Value::String(module_name.to_string()),
                 serde_json::Value::String(version.clone()),
             ];
-            tx.execute_with_params(record_sql, record_params)
+            let records: Vec<MigrationRecord> = tx
+                .query_with_params(record_sql, record_params)
+                .await
+                .map_err(BaseError::DatabaseQueryFailed)?;
+            if self.validate_migration_record(
+                module_name,
+                &version,
+                &checksum,
+                records.into_iter().next(),
+            )? {
+                continue;
+            }
+
+            let reserve_sql = "INSERT INTO _migrations (module_name, version, checksum, status) VALUES (?, ?, ?, 'running')";
+            let reserve_params = vec![
+                serde_json::Value::String(module_name.to_string()),
+                serde_json::Value::String(version.clone()),
+                serde_json::Value::String(checksum.clone()),
+            ];
+            tx.execute_with_params(reserve_sql, reserve_params)
                 .await
                 .map_err(BaseError::DatabaseExecuteFailed)?;
+
+            log::info!("执行迁移: {} v{}", module_name, version);
+
+            if let Err(source) = tx.execute(&sql).await {
+                let cleanup_sql = "DELETE FROM _migrations WHERE module_name = ? AND version = ? AND checksum = ? AND status = 'running'";
+                let cleanup_params = vec![
+                    serde_json::Value::String(module_name.to_string()),
+                    serde_json::Value::String(version.clone()),
+                    serde_json::Value::String(checksum.clone()),
+                ];
+                let _ = tx.execute_with_params(cleanup_sql, cleanup_params).await;
+                return Err(migration_execution_error(
+                    module_name,
+                    &version,
+                    &sql,
+                    source,
+                ));
+            }
+
+            let applied_sql = "UPDATE _migrations SET status = 'applied', executed_at = CURRENT_TIMESTAMP WHERE module_name = ? AND version = ? AND checksum = ? AND status = 'running'";
+            let applied_params = vec![
+                serde_json::Value::String(module_name.to_string()),
+                serde_json::Value::String(version.clone()),
+                serde_json::Value::String(checksum),
+            ];
+            let affected = tx
+                .execute_with_params(applied_sql, applied_params)
+                .await
+                .map_err(BaseError::DatabaseExecuteFailed)?;
+            if affected != 1 {
+                return Err(BaseError::DatabaseMigrationFailed(
+                    module_name.to_string(),
+                    format!("迁移 v{version} 的 running 预留已丢失"),
+                ));
+            }
         }
 
         Ok(())
@@ -497,7 +744,7 @@ impl DatabaseInitializer {
         }
 
         // 使用参数占位符，防止 SQL 注入
-        let sql = "SELECT COUNT(*) as count FROM _migrations WHERE module_name = ? AND version = ?";
+        let sql = "SELECT COUNT(*) as count FROM _migrations WHERE module_name = ? AND version = ? AND status = 'applied'";
         let params = vec![
             serde_json::Value::String(module_name.to_string()),
             serde_json::Value::String(version.to_string()),
@@ -532,12 +779,22 @@ impl DatabaseInitializer {
         &self,
         module_name: &str,
         version: &str,
+        checksum: &str,
+        status: &str,
     ) -> Result<(), BaseError> {
-        // 使用参数占位符，防止 SQL 注入
-        let sql = "INSERT INTO _migrations (module_name, version) VALUES (?, ?)";
+        if !matches!(status, "running" | "applied") {
+            return Err(BaseError::DatabaseMigrationFailed(
+                module_name.to_string(),
+                format!("非法迁移状态: {status}"),
+            ));
+        }
+        let sql =
+            "INSERT INTO _migrations (module_name, version, checksum, status) VALUES (?, ?, ?, ?)";
         let params = vec![
             serde_json::Value::String(module_name.to_string()),
             serde_json::Value::String(version.to_string()),
+            serde_json::Value::String(checksum.to_string()),
+            serde_json::Value::String(status.to_string()),
         ];
 
         self.db()
@@ -545,6 +802,53 @@ impl DatabaseInitializer {
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
 
+        Ok(())
+    }
+
+    async fn mark_migration_applied(
+        &self,
+        module: &str,
+        version: &str,
+        checksum: &str,
+    ) -> Result<(), BaseError> {
+        let affected = self
+            .db()
+            .execute_with_params(
+                "UPDATE _migrations SET status = 'applied', executed_at = CURRENT_TIMESTAMP WHERE module_name = ? AND version = ? AND checksum = ? AND status = 'running'",
+                vec![
+                    serde_json::Value::String(module.to_string()),
+                    serde_json::Value::String(version.to_string()),
+                    serde_json::Value::String(checksum.to_string()),
+                ],
+            )
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        if affected != 1 {
+            return Err(BaseError::DatabaseMigrationFailed(
+                module.to_string(),
+                format!("迁移 v{version} 的 running 预留已丢失"),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn delete_migration_reservation(
+        &self,
+        module: &str,
+        version: &str,
+        checksum: &str,
+    ) -> Result<(), BaseError> {
+        self.db()
+            .execute_with_params(
+                "DELETE FROM _migrations WHERE module_name = ? AND version = ? AND checksum = ? AND status = 'running'",
+                vec![
+                    serde_json::Value::String(module.to_string()),
+                    serde_json::Value::String(version.to_string()),
+                    serde_json::Value::String(checksum.to_string()),
+                ],
+            )
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
         Ok(())
     }
 }
@@ -579,5 +883,29 @@ mod tests {
             other => panic!("期望 MigrationExecutionFailed，得到: {other:?}"),
         }
         assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn migration_record_classification_detects_drift_and_in_progress() {
+        assert_eq!(
+            classify_migration_record(None, "new-checksum"),
+            MigrationPlanStatus::Pending
+        );
+        assert_eq!(
+            classify_migration_record(Some((Some("same"), "applied")), "same"),
+            MigrationPlanStatus::Applied
+        );
+        assert_eq!(
+            classify_migration_record(Some((Some("old"), "applied")), "new"),
+            MigrationPlanStatus::ChecksumMismatch
+        );
+        assert_eq!(
+            classify_migration_record(Some((None, "applied")), "new"),
+            MigrationPlanStatus::ChecksumMismatch
+        );
+        assert_eq!(
+            classify_migration_record(Some((Some("same"), "running")), "same"),
+            MigrationPlanStatus::InProgress
+        );
     }
 }

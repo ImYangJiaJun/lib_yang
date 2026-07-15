@@ -305,6 +305,10 @@ impl Database {
     }
 
     /// 初始化数据库（执行 SQL 脚本）
+    #[deprecated(
+        since = "0.1.4",
+        note = "分号切割无法正确处理函数/DO 块；请使用逐 migration 语句或专用脚本执行器"
+    )]
     #[allow(deprecated)]
     pub async fn init(&self, sql_script: &str) -> Result<(), DbError> {
         // 按分号分割多个 SQL 语句
