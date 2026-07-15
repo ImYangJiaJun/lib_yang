@@ -20,6 +20,7 @@
 //! - `redis`：启用 Redis 全局访问功能（`token` 会自动启用它）
 //! - `validator`：启用正则表达式校验器（依赖 `regex`）
 //! - `plugin-schema`：启用插件 JSON Schema 配置验证（依赖 `jsonschema`）
+//! - `admin-metadata`：启用独立后台展示描述（不新增依赖、不改变 dispatch）
 //!
 //! # 快速开始
 //!
@@ -64,6 +65,8 @@
 extern crate self as yang_base;
 
 pub mod action;
+#[cfg(feature = "admin-metadata")]
+pub mod admin;
 pub mod config;
 pub mod database;
 pub mod error;

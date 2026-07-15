@@ -12,6 +12,7 @@ pub enum RowLock {
 }
 
 impl RowLock {
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) const fn as_sql(self) -> &'static str {
         match self {
             Self::ForUpdate => "FOR UPDATE",

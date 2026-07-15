@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P4-03 可选后台元数据
+
+- 范围：新增默认关闭且无依赖的 `admin-metadata` feature、独立 `yang_base::admin` 模块、五种展示形态、icon/group/order、稳定核心目标引用与确定性注册表；CI feature matrix 增加最小组合。
+- RED：以 `--no-default-features --features admin-metadata` 运行契约测试时 Cargo 直接报告 feature 不存在，确认核心库没有该可选能力。
+- 引用边界：Action 使用 module/action，Table 使用 module/table，ApiCatalog 使用 operation id；稳定 ID 严格限制 ASCII，重复元数据 ID、空标题和注入式 ID 均失败。类型不持有 dispatch/router/table 对象，不改变注册、鉴权或执行路径。
+- 对抗性验证：2 项契约测试覆盖 menu/button/list/tree/form、icon/group/order、三种稳定引用、确定性查询和恶意 ID；最小 feature 测试通过，all-feature Clippy 通过。
+- 零成本验证：`cargo tree -e normal` 对比 none 与仅 admin-metadata 完全一致，证明关闭/开启该纯类型 feature 都未引入展示层依赖；审核流继续属于业务插件。
+- 门禁：Rust 1.80 `-Dwarnings` 最小 feature check、CI contract 自测/实测、all-feature doctest（74 passed/148 ignored）与 all-target/all-feature Clippy 均通过；同时修复无 SQL feature 时 RowLock 内部渲染方法的 dead-code gate。
+
 ## 2026-07-15 - P4-02 TableConfig 与数据库 Schema
 
 - 范围：新增 `SchemaColumn`、`SchemaIssue`/`SchemaIssueKind`、`SchemaValidationReport`、`TableConfig::validate_schema`，以及 MySQL `DatabaseInitializer::validate_table_config` 只读 introspection 入口。

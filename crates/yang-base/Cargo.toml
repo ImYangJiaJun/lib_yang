@@ -48,6 +48,9 @@ metrics = ["dep:metrics"]
 # 从 ApiCatalog 投影 OpenAPI 3.1 JSON（默认关闭）
 openapi = []
 
+# 可选后台展示元数据；纯 std 类型，不引入依赖，也不改变核心 dispatch
+admin-metadata = []
+
 [dependencies]
 # 内部依赖
 yang-db = { path = "../yang-db", version = "0.1.3", default-features = false }

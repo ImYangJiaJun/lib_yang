@@ -102,6 +102,9 @@ jobs:
           - name: yang-base-metrics
             package: yang-base
             args: --no-default-features --features metrics
+          - name: yang-base-admin-metadata
+            package: yang-base
+            args: --no-default-features --features admin-metadata
           - name: yang-base-default
             package: yang-base
             args: ""

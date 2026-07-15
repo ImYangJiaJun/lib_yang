@@ -450,7 +450,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 增加“TableConfig 字段是否能由当前迁移提供”的可选验证接口。
 - 自动 schema diff、自动 ALTER 和回滚生成不在本阶段实现，需独立 RFC 和灾难恢复设计。
 
-#### P4-03 可选后台元数据 — `PENDING` — effort L
+#### P4-03 可选后台元数据 — `DONE` — effort L
 
 - 在独立模块或 crate 定义 menu/icon/group/button/list/tree/form 等展示描述。
 - 通过 Action/Table/ApiCatalog 稳定 ID 建立引用，不改变核心 dispatch。
