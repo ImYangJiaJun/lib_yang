@@ -422,7 +422,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 字段必须是受验证标识符，增量必须走绑定参数。
 - 覆盖溢出、负数、无 WHERE 全表保护和事务内调用。
 
-#### P3-05 明确不支持项 — `PENDING` — effort S
+#### P3-05 明确不支持项 — `DONE` — effort S
 
 - 在 README/API 文档列出当前支持 MySQL/PostgreSQL/Redis。
 - SQLite/MSSQL 保持 non-goal；出现真实消费者时单独 RFC，评估驱动、类型映射、DDL、事务和 CI 成本。

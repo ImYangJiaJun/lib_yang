@@ -2,6 +2,13 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P3-05 支持矩阵与 non-goal
+
+- 范围：重写 `crates/yang-db/README.md` 的开发状态，加入 MySQL 8/PostgreSQL 16/Redis 7 支持矩阵，并明确 SQLite、MSSQL 与数据库运维职责边界。
+- RED：可执行文档契约 2 项均失败，分别确认 README 缺少支持/non-goal 边界且仍把查询、CRUD、事务、JOIN、聚合列为待实现。
+- 决策：SQLite/MSSQL 仅在出现真实消费者后通过独立 RFC 评估驱动、类型映射、DDL、事务与 CI；`backup`/`restore`/`database-create` 不进入 QueryBuilder，优先使用数据库原生工具并由运维层治理。
+- 对抗性验证：文档测试逐项锁定三种支持后端、两个 non-goal、RFC 成本维度、运维关键词与“不进入 QueryBuilder”约束，并阻止过期“待实现功能”清单回归；2 passed，all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P3-04 原子字段更新
 
 - 范围：MySQL/PostgreSQL 普通 QueryBuilder 与 TransactionQueryBuilder 对称增加 `increment`/`decrement`；两条执行路径共享同一个 `SqlGenerator::build_arithmetic_update`。

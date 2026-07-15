@@ -28,6 +28,20 @@ yang-db = { version = "0.1.3", default-features = false, features = ["redis"] }
 
 无 feature 组合仍提供 `DbError`、`DbErrorCategory`、`IsolationLevel` 与 `PoolStatus` 等后端无关契约。docs.rs 使用 all-features 构建完整 API。
 
+## 支持矩阵与 non-goal
+
+当前正式支持的后端如下：
+
+| 后端 | 状态 | 主要范围 |
+|---|---|---|
+| MySQL 8 | 支持 | 参数化 CRUD、事务、子查询、UNION、行锁、原子更新 |
+| PostgreSQL 16 | 支持 | 与 MySQL 对称的查询/事务 API，使用 `$N` 占位符与 `RETURNING` |
+| Redis 7 | 支持 | 连接池、常用数据结构、Pipeline、WATCH 事务与 Lua |
+
+- SQLite 与 MSSQL 是当前 non-goal，不提供 feature、驱动或兼容承诺。出现真实消费者后必须通过独立 RFC 评估驱动、类型映射、DDL、事务和 CI 成本，不能只复制方法清单。
+- `backup`、`restore`、`database-create` 等数据库运维能力不进入 `QueryBuilder`。这类操作优先使用数据库原生工具，并由部署/运维层管理权限、审计、加密与生命周期。
+- 原生 SQL 入口仅作为明确标注的逃生舱；面向外部输入的查询应使用 checked identifier API 和绑定参数。
+
 ## 依赖
 
 - `sqlx`: 可选异步 SQL 工具包，按 feature 启用 MySQL/PostgreSQL
@@ -91,19 +105,7 @@ SQL 值类型枚举，支持：
 
 ## 开发状态
 
-当前已完成：
-- ✅ 项目结构设置
-- ✅ 核心类型定义
-- ✅ 依赖配置
-- ✅ 基础单元测试
-
-待实现功能：
-- 查询构建和执行
-- CRUD 操作
-- 事务管理
-- JOIN 查询
-- 聚合函数
-- 原生 SQL 支持
+核心查询、CRUD、事务、JOIN、聚合与三后端 feature 隔离均已实现。当前能力边界以本 README、公开 API 文档和 `BackendCapabilities` 机读契约为准；新增方言或运维职责必须先更新这些契约。
 
 ## 测试
 
