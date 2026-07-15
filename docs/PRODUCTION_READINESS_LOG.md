@@ -660,3 +660,11 @@
 - 问题：`Grid2D::new(0, n)` 或 `Grid2D::new(n, 0)` 会成功创建空网格，但地形网格作为房间基础结构要求宽高均为正数，零维度会把配置错误推迟到后续算法阶段。
 - 修改：`Grid2D::new` 在计算尺寸和分配前拒绝 0 宽或 0 高，返回 `PcgError::terrain`。
 - 验证：先新增 `grid_new_rejects_zero_dimensions` 并确认失败，再实现非零校验，随后运行该单测确认通过。
+
+## 2026-07-15 - TableQuery 插入时省略数据库生成的自增字段
+
+- 范围：`crates/yang-base/src/table/table_query.rs`。
+- 风险：schema 同步器已能按 `FieldConfig::auto_increment` 创建自增主键，但插入校验仍会把缺失的必填自增字段判为 `FieldRequired`，使模块无法直接使用数据库生成的主键。
+- 修改：插入准备阶段将缺失或为 `null` 的自增字段从最终 INSERT 数据中移除，跳过其默认值和必填校验；显式非空值继续走既有权限、类型与验证器检查。
+- 兼容：非自增字段的默认值、时间戳、必填与权限行为不变；显式主键插入行为不变。
+- 验证：先新增 `test_insert_omits_database_generated_auto_increment_field` 并确认失败为 `FieldRequired("id")`，实现后运行该单测及 `yang-base` 库测试和 Clippy。

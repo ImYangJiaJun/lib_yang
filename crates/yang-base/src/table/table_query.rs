@@ -2292,9 +2292,10 @@ impl TableQuery {
     ///
     /// 处理顺序（修复 required+default 字段被误报 FieldRequired 的问题）：
     /// 1. 写权限校验：对调用方显式提供了非 null 值、但用户无写权限的字段拒绝
-    /// 2. 填充默认值：data 中缺失或为 null 且配置了 `default_value` 的字段补默认值
-    /// 3. 填充时间戳：`timestamp_fields` 配置且列存在、调用方未提供时，写入当前时间
-    /// 4. 必填/类型/验证器校验：在补齐后的数据上执行
+    /// 2. 规范化数据库生成字段：未提供或为 null 的自增字段交给数据库生成
+    /// 3. 填充默认值：data 中缺失或为 null 且配置了 `default_value` 的字段补默认值
+    /// 4. 填充时间戳：`timestamp_fields` 配置且列存在、调用方未提供时，写入当前时间
+    /// 5. 必填/类型/验证器校验：在补齐后的数据上执行
     ///
     /// # 参数
     ///
@@ -2325,8 +2326,23 @@ impl TableQuery {
             }
         }
 
-        // 2. 填充默认值（缺失或为 null 且配置了 default_value）
+        // 2. 数据库生成的自增字段未提供或为 null 时，不进入 INSERT 字段列表。
         for (field_name, field_config) in &self.table_config.fields {
+            if field_config.auto_increment
+                && prepared
+                    .get(field_name)
+                    .map(serde_json::Value::is_null)
+                    .unwrap_or(true)
+            {
+                prepared.remove(field_name);
+            }
+        }
+
+        // 3. 填充默认值（缺失或为 null 且配置了 default_value）
+        for (field_name, field_config) in &self.table_config.fields {
+            if field_config.auto_increment {
+                continue;
+            }
             if let Some(default) = &field_config.default_value {
                 let missing = prepared
                     .get(field_name)
@@ -2338,7 +2354,7 @@ impl TableQuery {
             }
         }
 
-        // 3. 填充创建/更新时间戳（列存在且调用方未提供时）
+        // 4. 填充创建/更新时间戳（列存在且调用方未提供时）
         if let Some(ts) = &self.table_config.timestamp_fields {
             let now = chrono::Utc::now().timestamp();
             for ts_field in [&ts.created_at, &ts.updated_at].into_iter().flatten() {
@@ -2351,9 +2367,12 @@ impl TableQuery {
             }
         }
 
-        // 4. 在补齐后的数据上执行必填/类型/验证器校验
+        // 5. 在补齐后的数据上执行必填/类型/验证器校验
         for (field_name, field_config) in &self.table_config.fields {
             if !field_config.permissions.can_write(&self.user_roles_set) {
+                continue;
+            }
+            if field_config.auto_increment && !prepared.contains_key(field_name) {
                 continue;
             }
             let value = prepared.get(field_name).unwrap_or(&Value::Null);
@@ -3148,6 +3167,50 @@ mod tests {
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         TableQuery::new(config, roles, None)
+    }
+
+    #[test]
+    fn test_insert_omits_database_generated_auto_increment_field() {
+        let config = Arc::new(
+            crate::table::TableConfig::new("accounts")
+                .primary_key("id")
+                .field(
+                    crate::table::FieldConfig::new("id", crate::table::FieldType::BigInt)
+                        .required(true)
+                        .auto_increment(true),
+                )
+                .expect("自增主键配置应有效")
+                .field(
+                    crate::table::FieldConfig::new(
+                        "username",
+                        crate::table::FieldType::String { max_length: 64 },
+                    )
+                    .required(true),
+                )
+                .expect("用户名字段配置应有效"),
+        );
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let query = TableQuery::new(config, roles, None);
+        let data = std::collections::HashMap::from([(
+            "username".to_string(),
+            Value::String("alice".to_string()),
+        )]);
+
+        let prepared = query
+            .prepare_and_validate_insert(data)
+            .expect("数据库生成的自增主键不应要求调用方提供");
+
+        assert!(!prepared.contains_key("id"));
+
+        let data_with_null_id = std::collections::HashMap::from([
+            ("id".to_string(), Value::Null),
+            ("username".to_string(), Value::String("bob".to_string())),
+        ]);
+        let prepared = query
+            .prepare_and_validate_insert(data_with_null_id)
+            .expect("null 自增主键应等价于未提供");
+
+        assert!(!prepared.contains_key("id"));
     }
 
     #[test]
