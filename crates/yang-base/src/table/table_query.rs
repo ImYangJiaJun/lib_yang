@@ -362,17 +362,30 @@ impl TableQuery {
         Ok(())
     }
 
-    fn validate_all_fields_readable(&self) -> Result<(), BaseError> {
-        for (field_name, field_config) in &self.table_config.fields {
-            if !field_config.permissions.can_read(&self.user_roles_set) {
-                return Err(BaseError::FieldPermissionDenied(
-                    self.table_config.table_name.clone(),
-                    field_name.clone(),
-                    "用户无读取权限".to_string(),
-                ));
-            }
+    fn validate_all_fields_readable_for_roles(
+        &self,
+        roles: &HashSet<String>,
+    ) -> Result<(), BaseError> {
+        if let Some(field_name) = self
+            .table_config
+            .fields
+            .iter()
+            .filter_map(|(field_name, field_config)| {
+                (!field_config.permissions.can_read(roles)).then_some(field_name)
+            })
+            .min()
+        {
+            return Err(BaseError::FieldPermissionDenied(
+                self.table_config.table_name.clone(),
+                field_name.clone(),
+                "用户无读取权限".to_string(),
+            ));
         }
         Ok(())
+    }
+
+    fn validate_all_fields_readable(&self) -> Result<(), BaseError> {
+        self.validate_all_fields_readable_for_roles(&self.user_roles_set)
     }
 
     /// 选择要查询的字段。
@@ -414,16 +427,7 @@ impl TableQuery {
     /// - `Ok(())`：用户对全部字段可读
     /// - `Err(BaseError::FieldPermissionDenied)`：存在不可读字段
     pub fn ensure_fields_readable(&self, user: &crate::action::User) -> Result<(), BaseError> {
-        for (field_name, field_config) in &self.table_config.fields {
-            if !field_config.permissions.can_read(&user.roles) {
-                return Err(BaseError::FieldPermissionDenied(
-                    self.table_config.table_name.clone(),
-                    field_name.clone(),
-                    "用户无读取权限".to_string(),
-                ));
-            }
-        }
-        Ok(())
+        self.validate_all_fields_readable_for_roles(&user.roles)
     }
 
     /// 添加等于条件 (WHERE field = value)
@@ -3204,6 +3208,143 @@ mod tests {
         assert!(
             matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret")
         );
+    }
+
+    #[test]
+    fn test_select_projection_permission_matrix() {
+        let protected = crate::table::FieldPermissions {
+            readable_roles: HashSet::from(["admin".to_string()]),
+            ..crate::table::FieldPermissions::default()
+        };
+
+        let all_readable = Arc::new(
+            crate::table::TableConfig::new("public_rows")
+                .field(crate::table::FieldConfig::new(
+                    "id",
+                    crate::table::FieldType::Integer,
+                ))
+                .expect("公开字段配置应有效")
+                .field(crate::table::FieldConfig::new(
+                    "name",
+                    crate::table::FieldType::String { max_length: 64 },
+                ))
+                .expect("公开字段配置应有效"),
+        );
+        let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
+        let (sql, _) = TableQuery::new(all_readable, Arc::clone(&roles), None)
+            .build_select_sql(None)
+            .expect("全部字段可读时 SELECT * 应成功");
+        assert!(sql.starts_with("SELECT * FROM `public_rows`"));
+
+        let partially_readable = Arc::new(
+            crate::table::TableConfig::new("mixed_rows")
+                .field(crate::table::FieldConfig::new(
+                    "id",
+                    crate::table::FieldType::Integer,
+                ))
+                .expect("公开字段配置应有效")
+                .field(
+                    crate::table::FieldConfig::new(
+                        "secret",
+                        crate::table::FieldType::String { max_length: 64 },
+                    )
+                    .permissions(protected.clone()),
+                )
+                .expect("受限字段配置应有效"),
+        );
+        let partial_err = TableQuery::new(
+            Arc::clone(&partially_readable),
+            Arc::clone(&roles),
+            None,
+        )
+        .build_select_sql(None)
+        .expect_err("部分字段不可读时 SELECT * 应 fail-closed");
+        assert!(
+            matches!(partial_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "secret")
+        );
+
+        let explicit_err = TableQuery::new(partially_readable, Arc::clone(&roles), None)
+            .select_fields(&["id", "secret"])
+            .expect_err("显式请求受限字段应被拒绝");
+        assert!(
+            matches!(explicit_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "secret")
+        );
+
+        let none_readable = Arc::new(
+            crate::table::TableConfig::new("private_rows")
+                .field(
+                    crate::table::FieldConfig::new("alpha", crate::table::FieldType::Integer)
+                        .permissions(protected.clone()),
+                )
+                .expect("受限字段配置应有效")
+                .field(
+                    crate::table::FieldConfig::new("beta", crate::table::FieldType::Integer)
+                        .permissions(protected),
+                )
+                .expect("受限字段配置应有效"),
+        );
+        let none_err = TableQuery::new(none_readable, roles, None)
+            .build_select_sql(None)
+            .expect_err("零字段可读时 SELECT * 应 fail-closed");
+        assert!(matches!(
+            none_err,
+            BaseError::FieldPermissionDenied(table, _, _) if table == "private_rows"
+        ));
+    }
+
+    #[test]
+    fn test_unreadable_field_errors_are_deterministic() {
+        let protected = crate::table::FieldPermissions {
+            readable_roles: HashSet::from(["admin".to_string()]),
+            ..crate::table::FieldPermissions::default()
+        };
+        let user = crate::action::User::new(1, "reader").with_roles(["user"]);
+
+        for _ in 0..64 {
+            let config = Arc::new(
+                crate::table::TableConfig::new("secrets")
+                    .field(
+                        crate::table::FieldConfig::new(
+                            "z_secret",
+                            crate::table::FieldType::Integer,
+                        )
+                        .permissions(protected.clone()),
+                    )
+                    .expect("受限字段配置应有效")
+                    .field(
+                        crate::table::FieldConfig::new(
+                            "a_secret",
+                            crate::table::FieldType::Integer,
+                        )
+                        .permissions(protected.clone()),
+                    )
+                    .expect("受限字段配置应有效")
+                    .field(
+                        crate::table::FieldConfig::new(
+                            "m_secret",
+                            crate::table::FieldType::Integer,
+                        )
+                        .permissions(protected.clone()),
+                    )
+                    .expect("受限字段配置应有效"),
+            );
+            let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
+            let query = TableQuery::new(config, roles, None);
+
+            let sql_err = query
+                .build_select_sql(None)
+                .expect_err("SELECT * 应拒绝受限字段");
+            assert!(
+                matches!(sql_err, BaseError::FieldPermissionDenied(_, field, _) if field == "a_secret")
+            );
+
+            let action_err = query
+                .ensure_fields_readable(&user)
+                .expect_err("整实体 Action 应拒绝受限字段");
+            assert!(
+                matches!(action_err, BaseError::FieldPermissionDenied(_, field, _) if field == "a_secret")
+            );
+        }
     }
 
     #[test]

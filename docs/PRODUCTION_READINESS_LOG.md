@@ -2,6 +2,20 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P0-02 字段权限投影契约与确定性错误
+
+- 范围：`crates/yang-base/src/table/table_query.rs`、`crates/yang-base/src/table/__tests__/table_query_test.rs`
+- 风险：两个 OR 语义测试默认生成 `SELECT *`，却使用含管理员专属字段的 `user` fixture，正确的 fail-closed 字段权限会先于 OR SQL 断言触发；同时全字段权限校验直接遍历 `HashMap`，多个受限字段时错误文本不确定。
+- 修复：OR/嵌套测试显式选择断言涉及的 `id/name/email` 可读字段；`build_select_sql()` 与整实体 Action 的 `ensure_fields_readable()` 共用同一权限校验，并固定返回字典序最小的不可读字段。
+- 产品语义：`SelectAction<T>` 返回完整实体 `T`，缺字段投影无法保证反序列化契约，因此继续要求全部字段可读，不新增静默投影可读字段的默认路径；显式请求受限字段仍返回 `FieldPermissionDenied`。
+- RED：`cargo test -p yang-base --lib` 稳定失败于两个 OR 测试；`cargo test -p yang-base --lib test_unreadable_field_errors_are_deterministic` 证明错误字段受 HashMap 顺序影响。
+- 对抗性验证：覆盖全部可读、部分不可读、零可读、显式越权四种投影情况，并连续重建 64 次多受限字段配置，验证底层 SELECT 与整实体 Action 均固定报告 `a_secret`。
+- 已运行验证：`cargo test -p yang-base --lib test_unreadable_field_errors_are_deterministic`
+- 已运行验证：`cargo test -p yang-base --lib test_select_projection_permission_matrix`
+- 已运行验证：`cargo test -p yang-base --lib test_where_or_renders_parenthesized_or`
+- 已运行验证：`cargo test -p yang-base --lib test_nested_or_and_groups`
+- 已运行验证：`cargo test -p yang-base --lib`（461 passed，0 failed，8 ignored）
+
 ## 2026-07-15 - P0-01 MySQL/PostgreSQL 限定条件字段回归
 
 - 范围：`crates/yang-db/src/mysql/condition.rs`、`crates/yang-db/src/mysql/query_builder.rs`、`crates/yang-db/src/postgres/condition.rs`、`crates/yang-db/src/postgres/query_builder.rs`

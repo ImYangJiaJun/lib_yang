@@ -254,7 +254,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 - 新增两方言合法/恶意限定名测试。
 - `try_to_sql()` 返回真实错误；`to_sql()` 仍只返回不可执行哨兵。
 
-#### P0-02 固化字段权限投影契约 — `PENDING` — effort S/M
+#### P0-02 固化字段权限投影契约 — `DONE` — effort S/M
 
 **范围**
 

@@ -1108,6 +1108,8 @@ fn test_where_or_renders_parenthesized_or() {
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
 
     let query = query
+        .select_fields(&["id", "name", "email"])
+        .expect("OR 语义测试只选择断言涉及的可读字段")
         .where_eq("name", json!("alice"))
         .unwrap()
         .where_or(vec![
@@ -1140,6 +1142,8 @@ fn test_nested_or_and_groups() {
 
     // (name = 'a' OR (email = 'b' AND id >= 5))
     let query = query
+        .select_fields(&["id", "name", "email"])
+        .expect("嵌套 OR/AND 测试只选择断言涉及的可读字段")
         .where_or(vec![
             WhereCondition::Eq {
                 field: "name".into(),
