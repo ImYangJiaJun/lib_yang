@@ -32,6 +32,21 @@ impl SchemaColumn {
             max_length,
         }
     }
+
+    /// 在完整列类型描述中标记 `AUTO_INCREMENT`。
+    ///
+    /// 该信息保存在 `column_type` 描述中，避免扩展公开结构字段而破坏 0.1.x
+    /// 调用方的结构体字面量兼容性。
+    pub fn with_auto_increment(mut self, auto_increment: bool) -> Self {
+        let has_marker = self
+            .column_type
+            .split_whitespace()
+            .any(|part| part.eq_ignore_ascii_case("auto_increment"));
+        if auto_increment && !has_marker {
+            self.column_type.push_str(" auto_increment");
+        }
+        self
+    }
 }
 
 /// TableConfig 运行期契约与数据库列不兼容的原因。
@@ -44,6 +59,8 @@ pub enum SchemaIssueKind {
     IncompatibleType,
     /// 必填字段在数据库中仍允许 NULL。
     NullabilityMismatch,
+    /// 声明要求自增，但数据库列没有自增属性，或反之。
+    AutoIncrementMismatch,
 }
 
 /// 一项 schema 兼容性问题。
@@ -109,6 +126,26 @@ impl TableConfig {
                     kind: SchemaIssueKind::NullabilityMismatch,
                     expected: "NOT NULL".to_string(),
                     actual: Some("NULL".to_string()),
+                });
+            }
+            let actual_auto_increment = column
+                .column_type
+                .split_whitespace()
+                .any(|part| part.eq_ignore_ascii_case("auto_increment"));
+            if field.auto_increment != actual_auto_increment {
+                issues.push(SchemaIssue {
+                    field: field.name.clone(),
+                    kind: SchemaIssueKind::AutoIncrementMismatch,
+                    expected: if field.auto_increment {
+                        "AUTO_INCREMENT".to_string()
+                    } else {
+                        "非 AUTO_INCREMENT".to_string()
+                    },
+                    actual: Some(if actual_auto_increment {
+                        "AUTO_INCREMENT".to_string()
+                    } else {
+                        "非 AUTO_INCREMENT".to_string()
+                    }),
                 });
             }
         }

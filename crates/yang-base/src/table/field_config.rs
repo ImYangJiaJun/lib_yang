@@ -78,6 +78,11 @@ pub struct FieldConfig {
     /// 当插入数据时未提供该字段值时使用的默认值
     pub default_value: Option<serde_json::Value>,
 
+    /// 是否由数据库自动生成递增值。
+    ///
+    /// 仅允许用于整数类型的主键字段；schema 同步器会在启动期校验该约束。
+    pub auto_increment: bool,
+
     /// 验证器列表
     ///
     /// 用于验证字段值的验证器，按顺序执行
@@ -132,6 +137,7 @@ impl FieldConfig {
             field_type,
             required: false,
             default_value: None,
+            auto_increment: false,
             validators: Vec::new(),
             permissions: FieldPermissions::default(),
             filterable: true,
@@ -210,6 +216,14 @@ impl FieldConfig {
     /// ```
     pub fn default_value(mut self, value: serde_json::Value) -> Self {
         self.default_value = Some(value);
+        self
+    }
+
+    /// 设置数据库自增标记。
+    ///
+    /// schema 同步器只接受整数类型主键使用此标记；其它组合会在启动期失败。
+    pub fn auto_increment(mut self, enabled: bool) -> Self {
+        self.auto_increment = enabled;
         self
     }
 

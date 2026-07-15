@@ -35,6 +35,7 @@ use crate::action::{ActionContext, ApiResponse};
 use crate::error::BaseError;
 use crate::router::ModuleRouter;
 use crate::router::{ApiCatalog, ModuleDescriptor};
+use crate::table::TableConfig;
 use std::collections::{HashMap, HashSet};
 
 /// AppRouter - 应用路由器
@@ -136,6 +137,19 @@ impl AppRouter {
         let mut names: Vec<String> = self.modules.keys().cloned().collect();
         names.sort();
         names
+    }
+
+    /// 返回各模块声明的表配置，按模块名称确定性排序。
+    ///
+    /// 没有关联表的模块会被跳过。返回借用而非克隆，供数据库初始化器在启动期
+    /// 汇总模块 schema；同一表名的重复/冲突声明由同步器统一校验。
+    pub fn table_configs(&self) -> Vec<&TableConfig> {
+        let mut names: Vec<&String> = self.modules.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .flat_map(|name| self.modules[name].schema_table_configs())
+            .collect()
     }
 
     /// 构建确定性排序的只读 API Catalog，并校验跨模块 route/operation 冲突。

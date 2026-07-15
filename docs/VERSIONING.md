@@ -7,7 +7,7 @@ yang-base 和 yang-db 当前处于 0.x。即使 semver 允许 0.x 更快演进�
 - 允许新增类型、feature、Result-returning 安全入口和结构化错误；已有入口保持可编译。
 - 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和至少一个兼容编译测试。
 - feature 默认值在 0.1.x 不做破坏性变化；新可选 feature 默认关闭且不得向关闭构建泄漏依赖。
-- 当前发布版本为 yang-db 0.1.4、yang-base 0.1.2。
+- 当前发布版本为 yang-db 0.1.4、yang-base 0.1.2；仓库中的 yang-base 0.1.3 / yang-base-derive 0.1.1 为待发布兼容增强。
 
 ### 迁移记录 API
 

@@ -17,8 +17,8 @@
 //!   通用/字符串 where 操作符 [`WhereOp`]、[`StringWhereOp`] 等
 //!
 //! 其中 `TableEntity` 依赖 sqlx 的 `FromRow`，仅在启用 `mysql` feature 时可用。
-//! `TableConfig` 是运行期访问、校验与权限契约，不是数据库 DDL 的唯一真相；
-//! schema 验证只报告声明字段的缺失/类型/NULL 兼容问题，不生成 ALTER。
+//! `TableConfig` 是运行期访问、校验与权限契约，也是可选 additive schema 同步的
+//! 声明来源；同步器只创建缺失表/列/主键/索引，绝不删除或改写已有结构。
 //!
 //! # 示例
 //!

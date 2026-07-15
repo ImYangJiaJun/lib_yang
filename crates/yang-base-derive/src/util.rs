@@ -44,6 +44,21 @@ pub fn is_string_type(ty: &Type) -> bool {
     }
 }
 
+/// 判断是否为可映射到 MySQL 整数列的 Rust 类型。
+pub fn is_integer_type(ty: &Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    if let Type::Path(TypePath { path, .. }) = inner {
+        path.segments.last().is_some_and(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "i32" | "u32" | "i64" | "u64"
+            )
+        })
+    } else {
+        false
+    }
+}
+
 /// 判断 `Option<T>`，返回 (实际类型, 是否 Option)。
 pub fn unwrap_option(ty: &Type) -> (&Type, bool) {
     if let Type::Path(TypePath { path, .. }) = ty {

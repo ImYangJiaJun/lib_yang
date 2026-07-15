@@ -1,6 +1,6 @@
 # yang-base — 后端基础库文档
 
-版本：0.1.2 | 许可：MIT OR Apache-2.0
+版本：0.1.3（待发布） | 许可：MIT OR Apache-2.0
 
 ## 概述
 
@@ -30,11 +30,11 @@ yang-base = { path = "../yang-base", features = ["token", "http", "mysql", "vali
 | `openapi` | — | 无新增依赖 | 从 `ApiCatalog` 投影 OpenAPI 3.1 JSON |
 | `admin-metadata` | — | 无新增依赖 | 后台展示元数据，不持有或修改 dispatch 对象 |
 
-### 0.1.2 当前公共契约
+### 0.1.3 当前公共契约
 
 - `RequestMeta` 独立承载 method、URI、remote address 与白名单 headers，Action 不依赖具体 Web 框架。
 - `ApiCatalog` 提供确定性的模块、路由与 Action schema 快照；启用 `openapi` 后可投影 OpenAPI 3.1。
-- `DatabaseInitializer` 提供 migration checksum、plan/dry-run、并发占位与漂移检测；`SchemaValidationReport` 只读比较 `TableConfig` 和真实 MySQL metadata，不自动执行 ALTER。
+- `DatabaseInitializer` 提供 migration checksum、plan/dry-run、并发占位与漂移检测；`SchemaValidationReport` 保留只读兼容报告，还可从 `AppRouter` 汇总模块表，执行只创建缺失项的启动期 additive schema 同步。
 - `admin-metadata` 仅保存稳定 ID 和展示信息；默认关闭、零新增依赖，不改变 Router/Action dispatch。
 
 ---
@@ -302,7 +302,7 @@ pipeline.set("k1", "v1").set("k2", "v2");
 let results = pipeline.execute().await?;
 ```
 
-### DatabaseInitializer（插件数据库初始化）
+### DatabaseInitializer（插件与模块表初始化）
 
 ```rust
 use yang_base::database::DatabaseInitializer;
@@ -314,7 +314,12 @@ let manager = PluginManager::new();
 
 let initializer = DatabaseInitializer::new(db, /* use_transaction= */ true);
 initializer.initialize_all(&manager).await?;
+
+// AppRouter 构建完成后、HTTP 监听前执行；无需 .sql 文件
+let report = initializer.sync_app_schema(&app_router).await?;
 ```
+
+模块主表通过 `with_table_config` 注册；同一模块的附属表通过 `with_schema_table` 注册。schema 同步使用数据库级 advisory lock 处理多服务器同时启动，只创建缺失表、列、主键和索引；已有结构冲突会阻止启动，绝不自动执行 `DROP` 或改写现有列。
 
 **初始化流程**：
 1. 创建 `_migrations` 迁移记录表（幂等）

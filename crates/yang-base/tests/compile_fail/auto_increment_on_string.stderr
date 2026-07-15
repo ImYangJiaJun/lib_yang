@@ -1,0 +1,5 @@
+error: auto_increment 仅允许用于整数主键字段
+ --> tests/compile_fail/auto_increment_on_string.rs:9:5
+  |
+9 |     id: String,
+  |     ^^

@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P6-01 模块表启动期 additive schema 同步
+
+- 范围：yang-base 0.1.3 / yang-base-derive 0.1.1；`TableEntity` 增加整数主键 `auto_increment` 元数据，`ModuleRouter` 支持一个 CRUD 主表与多张 schema 附属表，`AppRouter` 提供确定性表配置汇总，`DatabaseInitializer::sync_app_schema` 在 HTTP 监听前同步 MySQL。
+- RED：公共 API、模块表汇总和 planner 契约先产生缺模块/方法/字段编译错误；随后 6 项单测覆盖建表、补列/索引、类型与 NULL 冲突、同名索引冲突和已有表缺失自增主键拒绝。
+- 安全边界：只执行 `CREATE TABLE` 与缺失对象的 `ALTER TABLE ADD`；从不执行 `DROP` 或修改已有字段。已有数据的表拒绝增加无默认值必填列，类型/NULL/自增/主键/同名索引冲突均 fail-fast，`ForeignKey` 因缺本地物理类型而拒绝生成 DDL。
+- 多服务器：同步全过程在同一 MySQL 会话持有数据库级 advisory lock；先规划全部表再执行，已知冲突不会产生前序 DDL；执行中断后重新启动可按 `information_schema` 幂等续作，适配单体系统的多服务器负载均衡部署。
+- 对抗性验证：真实 MySQL 8 中两个独立连接并发同步只创建一次表，扩展配置只补一列，重复同步零 DDL，扩大现有 VARCHAR 容量拒绝启动（1 passed）；集成测试不依赖业务 `.sql` 文件。
+- 版本边界：yang-base 0.1.2 已发布且不原地改写；本点准备 0.1.3 / derive 0.1.1 待发布版本，不执行 registry publish。
+
 ## 2026-07-15 - P5-03 发布候选验证
 
 - 范围：从 P5-02 的 clean checkout 执行 stable/MSRV、17 组 feature matrix、doc、Clippy、RustSec、三包 package 与 MySQL 8/PostgreSQL 16/Redis 7 真实集成，并新增 `docs/RELEASE_CANDIDATE_REPORT.md`。

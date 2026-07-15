@@ -62,6 +62,9 @@ pub struct ModuleRouter {
     /// 表配置（如果模块关联表）
     table_config: Option<Arc<TableConfig>>,
 
+    /// 仅参与启动期 schema 汇总的附属表配置。
+    schema_tables: Vec<Arc<TableConfig>>,
+
     /// Action 注册表
     /// Key: action 名称, Value: 类型化擦除后的 DynAction 实例
     actions: HashMap<String, Arc<dyn DynAction>>,
@@ -115,6 +118,7 @@ impl ModuleRouter {
             module_name: module_name.into(),
             display_name: display_name.into(),
             table_config: None,
+            schema_tables: Vec::new(),
             actions: HashMap::new(),
             routes: HashMap::new(),
             default_permissions: Vec::new(),
@@ -147,6 +151,16 @@ impl ModuleRouter {
     /// ```
     pub fn with_table_config(mut self, config: Arc<TableConfig>) -> Self {
         self.table_config = Some(config);
+        self
+    }
+
+    /// 为模块注册一张附属 schema 表。
+    ///
+    /// 附属表会被 [`crate::router::AppRouter::table_configs`] 汇总并由数据库初始化器
+    /// 同步，但不会替换模块用于内置 CRUD 与 `ActionContext::table_query()` 的主表。
+    /// 一个业务模块因此可以声明会话、审计等多张内部表，同时保持主表语义明确。
+    pub fn with_schema_table(mut self, config: Arc<TableConfig>) -> Self {
+        self.schema_tables.push(config);
         self
     }
 
@@ -728,5 +742,19 @@ impl ModuleRouter {
     /// - `None`: 未设置表配置
     pub fn get_table_config(&self) -> Option<&Arc<TableConfig>> {
         self.table_config.as_ref()
+    }
+
+    /// 返回模块全部 schema 表，按表名确定性排序。
+    ///
+    /// 结果包含可选主表和通过 [`Self::with_schema_table`] 注册的附属表。
+    pub fn schema_table_configs(&self) -> Vec<&TableConfig> {
+        let mut tables: Vec<&TableConfig> = self
+            .table_config
+            .iter()
+            .chain(&self.schema_tables)
+            .map(AsRef::as_ref)
+            .collect();
+        tables.sort_by(|left, right| left.table_name.cmp(&right.table_name));
+        tables
     }
 }

@@ -1,6 +1,6 @@
 # yang-base
 
-YANG 基础库 v0.1.2，提供类型化 Action、插件管理、数据库访问、HTTP 客户端和 JWT Token 管理等核心功能。
+YANG 基础库 v0.1.3（待发布），提供类型化 Action、插件管理、数据库访问、HTTP 客户端和 JWT Token 管理等核心功能。
 
 ## Feature 选择
 
@@ -90,16 +90,16 @@ serde_json = "1.0"
 
 ```toml
 # 仅核心插件/路由/表元数据，不引入数据库与网络驱动
-yang-base = { version = "0.1.2", default-features = false }
+yang-base = { version = "0.1.3", default-features = false }
 
 # 仅 MySQL
-yang-base = { version = "0.1.2", default-features = false, features = ["mysql"] }
+yang-base = { version = "0.1.3", default-features = false, features = ["mysql"] }
 
 # 仅 Redis
-yang-base = { version = "0.1.2", default-features = false, features = ["redis"] }
+yang-base = { version = "0.1.3", default-features = false, features = ["redis"] }
 
 # Token 撤销依赖 Redis，因此 token 会自动启用 redis
-yang-base = { version = "0.1.2", default-features = false, features = ["token"] }
+yang-base = { version = "0.1.3", default-features = false, features = ["token"] }
 ```
 
 `yang-base` 通过 `default-features = false` 依赖 `yang-db`，只转发实际选中的后端 feature；docs.rs 使用 all-features 构建完整 API。
@@ -313,7 +313,12 @@ MIT OR Apache-2.0
 
 ## 📝 更新日志
 
-### v0.1.2（当前版本）
+### v0.1.3（待发布）
+- ✅ 模块主表/附属表汇总与启动期 additive schema 同步
+- ✅ MySQL 多实例 advisory lock、幂等续作与危险差异 fail-fast
+- ✅ `TableEntity` 整数主键 `auto_increment` 元数据
+
+### v0.1.2（已发布）
 - ✅ 插件管理系统
 - ✅ MySQL 数据库支持
 - ✅ Redis 缓存支持 ⭐ 新增

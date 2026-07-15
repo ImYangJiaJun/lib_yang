@@ -46,6 +46,10 @@ mod global;
 mod global_redis;
 #[cfg(feature = "mysql")]
 mod initializer;
+#[cfg(feature = "mysql")]
+mod schema_sync;
+#[cfg(all(test, feature = "mysql"))]
+mod schema_sync_tests;
 
 #[cfg(all(feature = "mysql", feature = "redis"))]
 pub use bundle::DatabaseBundle;
@@ -57,3 +61,5 @@ pub use global_redis::GlobalRedis;
 pub use initializer::{
     DatabaseInitializer, MigrationPlan, MigrationPlanEntry, MigrationPlanStatus,
 };
+#[cfg(feature = "mysql")]
+pub use schema_sync::{SchemaSyncChange, SchemaSyncChangeKind, SchemaSyncReport};

@@ -1,6 +1,8 @@
 //! `#[derive(TableEntity)]` 展开逻辑
 
-use crate::util::{is_string_type, pascal_case, rust_type_to_field_type, unwrap_option};
+use crate::util::{
+    is_integer_type, is_string_type, pascal_case, rust_type_to_field_type, unwrap_option,
+};
 use darling::{FromDeriveInput, FromField};
 use proc_macro2::TokenStream;
 use proc_macro_error::abort;
@@ -45,9 +47,12 @@ struct FieldOpts {
     /// 跳过此字段，不生成到枚举和 TableConfig 中（默认 false）。
     #[darling(default)]
     skip: bool,
-    /// 字段默认值（当前版本保留语法但暂不生成 SQL DEFAULT 子句，规划中的功能）。
+    /// 字段默认值（当前版本保留语法但暂不生成 `FieldConfig` 默认值）。
     #[darling(default)]
     default: Option<String>,
+    /// 是否由数据库生成自增值；仅允许整数主键。
+    #[darling(default)]
+    auto_increment: bool,
 }
 
 /// 展开 `#[derive(TableEntity)]`。
@@ -100,6 +105,15 @@ pub fn expand(input: DeriveInput) -> TokenStream {
         .clone()
         .unwrap_or_else(|| field_opts[pk_idx].0.clone());
     let pk_type = field_opts[pk_idx].1.ty.clone();
+
+    for (_, field) in &field_opts {
+        if field.auto_increment && (!field.primary_key || !is_integer_type(&field.ty)) {
+            match &field.ident {
+                Some(ident) => abort!(ident, "auto_increment 仅允许用于整数主键字段"),
+                None => abort!(input, "auto_increment 仅允许用于整数主键字段"),
+            }
+        }
+    }
 
     let table_name = opts.name.clone();
     let display_name = opts.display_name.unwrap_or_else(|| table_name.clone());
@@ -163,9 +177,12 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             let ft = rust_type_to_field_type(&o.ty, o.max_length.unwrap_or(255));
             let (_inner, is_option) = unwrap_option(&o.ty);
             let required = o.required.unwrap_or(!is_option);
+            let auto_increment = o.auto_increment;
             quote! {
                 config = config.field(
-                    ::yang_base::table::FieldConfig::new(#column, #ft).required(#required)
+                    ::yang_base::table::FieldConfig::new(#column, #ft)
+                        .required(#required)
+                        .auto_increment(#auto_increment)
                 ).expect("TableEntity 派生生成的字段配置应合法");
             }
         })

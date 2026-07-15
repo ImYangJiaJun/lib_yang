@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 )]
 #[table(name = "test_users")]
 pub struct TestUser {
-    #[entity(primary_key)]
+    #[entity(primary_key, auto_increment)]
     pub id: i64,
     #[entity(max_length = 50, unique)]
     pub username: String,
@@ -78,6 +78,10 @@ fn test_derived_table_config() {
     assert_eq!(cfg.primary_key, "id");
     assert!(cfg.fields.contains_key("id"), "应包含 id 字段");
     assert!(cfg.fields.contains_key("username"), "应包含 username 字段");
+    assert!(
+        cfg.fields["id"].auto_increment,
+        "id 标记 auto_increment，应进入 TableConfig"
+    );
     // unique 字段应该在 unique_indexes 中
     assert_eq!(
         cfg.unique_indexes.len(),

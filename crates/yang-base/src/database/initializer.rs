@@ -232,7 +232,7 @@ impl DatabaseInitializer {
     /// 返回底层数据库实例的引用
     ///
     /// 收敛 [`DbRef`] 的两个变体，初始化逻辑无需关心数据库来源（owned 或全局单例）。
-    fn db(&self) -> &Database {
+    pub(crate) fn db(&self) -> &Database {
         self.db.db()
     }
 
@@ -294,12 +294,13 @@ impl DatabaseInitializer {
             column_type: String,
             is_nullable: String,
             character_maximum_length: Option<i64>,
+            extra: String,
         }
 
         let rows: Vec<ColumnRow> = self
             .db()
             .query_with_params(
-                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
                 vec![serde_json::Value::String(table.table_name.clone())],
             )
             .await
@@ -314,6 +315,11 @@ impl DatabaseInitializer {
                     row.is_nullable.eq_ignore_ascii_case("YES"),
                     row.character_maximum_length
                         .and_then(|length| u64::try_from(length).ok()),
+                )
+                .with_auto_increment(
+                    row.extra
+                        .split_whitespace()
+                        .any(|part| part.eq_ignore_ascii_case("auto_increment")),
                 )
             })
             .collect();

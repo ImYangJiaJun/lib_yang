@@ -26,7 +26,7 @@ fn crate_readmes_publish_current_versions_and_features() {
         &base,
         "yang-base README",
         &[
-            "0.1.2",
+            "0.1.3",
             "`token`",
             "`http`",
             "`mysql`",
@@ -55,13 +55,15 @@ fn api_overviews_cover_current_public_contracts() {
         &base,
         "docs/yang-base.md",
         &[
-            "版本：0.1.2",
+            "版本：0.1.3",
             "RequestMeta",
             "ApiCatalog",
             "OpenAPI 3.1",
             "admin-metadata",
             "DatabaseInitializer",
             "SchemaValidationReport",
+            "sync_app_schema",
+            "with_schema_table",
         ],
     );
 

@@ -1,6 +1,6 @@
 [package]
 name = "yang-base-derive"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "yang-base 类型化派生宏（TableEntity / Action）"
 license.workspace = true
