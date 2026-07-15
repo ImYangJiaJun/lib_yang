@@ -33,6 +33,7 @@ pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select"
 
 use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode, User};
 use crate::error::BaseError;
+use crate::router::catalog::{ActionDescriptor, ModuleDescriptor, RouteDescriptor};
 use crate::router::middleware::{Middleware, Next};
 use crate::table::TableConfig;
 use std::collections::{HashMap, HashSet};
@@ -64,6 +65,9 @@ pub struct ModuleRouter {
     /// Action 注册表
     /// Key: action 名称, Value: 类型化擦除后的 DynAction 实例
     actions: HashMap<String, Arc<dyn DynAction>>,
+
+    /// Action 名称到传输路由的只读描述源。
+    routes: HashMap<String, RouteDescriptor>,
 
     /// 默认权限要求
     /// 所有 Action 都需要满足这些权限（除非 Action 是公开的）
@@ -112,6 +116,7 @@ impl ModuleRouter {
             display_name: display_name.into(),
             table_config: None,
             actions: HashMap::new(),
+            routes: HashMap::new(),
             default_permissions: Vec::new(),
             default_permission_mode: PermissionMode::default(),
             middlewares: Vec::new(),
@@ -292,6 +297,85 @@ impl ModuleRouter {
         }
         self.actions.insert(name, action);
         Ok(self)
+    }
+
+    /// 为已注册 Action 绑定传输路由描述。
+    pub fn register_route(
+        mut self,
+        action_name: impl Into<String>,
+        route: RouteDescriptor,
+    ) -> Result<Self, BaseError> {
+        route.validate()?;
+        let action_name = action_name.into();
+        if !self.actions.contains_key(&action_name) {
+            return Err(BaseError::ConfigError(format!(
+                "route 对应的 Action 未注册: {action_name}"
+            )));
+        }
+        if self.routes.contains_key(&action_name) {
+            return Err(BaseError::ConfigError(format!(
+                "Action route 已注册: {action_name}"
+            )));
+        }
+        if self
+            .routes
+            .values()
+            .any(|existing| existing.method == route.method && existing.path == route.path)
+        {
+            return Err(BaseError::ConfigError(format!(
+                "route 冲突: {} {}",
+                route.method, route.path
+            )));
+        }
+        if self
+            .routes
+            .values()
+            .any(|existing| existing.operation_id == route.operation_id)
+        {
+            return Err(BaseError::ConfigError(format!(
+                "operation_id 冲突: {}",
+                route.operation_id
+            )));
+        }
+        self.routes.insert(action_name, route);
+        Ok(self)
+    }
+
+    /// 构建与运行时注册表隔离的只读模块描述快照。
+    pub fn descriptor(&self) -> Result<ModuleDescriptor, BaseError> {
+        let mut action_names: Vec<&String> = self.actions.keys().collect();
+        action_names.sort();
+        let mut actions = Vec::with_capacity(action_names.len());
+        for name in action_names {
+            let action = &self.actions[name];
+            let meta = action.meta();
+            let route = self
+                .routes
+                .get(name)
+                .ok_or_else(|| BaseError::ConfigError(format!("Action 缺少 route: {name}")))?;
+            actions.push(ActionDescriptor {
+                name: meta.name.to_string(),
+                display_name: meta.display_name.to_string(),
+                description: meta.description.to_string(),
+                permissions: meta
+                    .permissions
+                    .iter()
+                    .map(|permission| permission.name().to_string())
+                    .collect(),
+                permission_mode: meta.permission_mode,
+                is_public: meta.is_public,
+                input_schema: meta.input_schema.clone(),
+                output_schema: meta.output_schema.clone(),
+                route: route.clone(),
+            });
+        }
+        Ok(ModuleDescriptor {
+            name: self.module_name.clone(),
+            display_name: self.display_name.clone(),
+            default_permissions: self.default_permissions.clone(),
+            default_permission_mode: self.default_permission_mode,
+            actions,
+        })
     }
 
     /// 注册一个中间件（builder setter）
@@ -631,7 +715,9 @@ impl ModuleRouter {
     ///
     /// - Action 名称列表
     pub fn action_names(&self) -> Vec<String> {
-        self.actions.keys().cloned().collect()
+        let mut names: Vec<String> = self.actions.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// 获取表配置（getter，返回借用）

@@ -6,6 +6,7 @@
 //!
 //! - `ModuleRouter`：模块路由器，管理单个模块的 Action 路由
 //! - `AppRouter`：应用路由器，聚合多个模块路由器，提供跨模块的统一分发入口
+//! - `ApiCatalog`：合并 ActionMeta 与 RouteDescriptor 的确定性只读快照
 //!
 //! # 示例
 //!
@@ -29,10 +30,12 @@
 //! ```
 
 mod app_router;
+mod catalog;
 pub mod middleware;
 mod module_router;
 
 pub use app_router::AppRouter;
+pub use catalog::{ActionDescriptor, ApiCatalog, ModuleDescriptor, RouteDescriptor};
 pub use middleware::{Middleware, Next, RequestIdMiddleware};
 pub use module_router::ModuleRouter;
 pub use module_router::BUILTIN_ACTION_NAMES;

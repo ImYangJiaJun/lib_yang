@@ -367,7 +367,7 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 - 为 method/URI/peer address 缺失和存在两种路径写测试。
 - 不加入 handle_time；由 dispatch span/metrics 记录。
 
-#### P2-02 建立 ApiCatalog — `PENDING` — effort L
+#### P2-02 建立 ApiCatalog — `DONE` — effort L
 
 - 为 AppRouter/ModuleRouter 提供只读 descriptor 枚举，不暴露可变注册表。
 - 新增 `RouteDescriptor` 和注册期冲突校验。

@@ -34,7 +34,8 @@
 use crate::action::{ActionContext, ApiResponse};
 use crate::error::BaseError;
 use crate::router::ModuleRouter;
-use std::collections::HashMap;
+use crate::router::{ApiCatalog, ModuleDescriptor};
+use std::collections::{HashMap, HashSet};
 
 /// AppRouter - 应用路由器
 ///
@@ -117,7 +118,7 @@ impl AppRouter {
     ///
     /// # 返回
     ///
-    /// - 所有已注册模块的名称列表（顺序不保证）
+    /// - 所有已注册模块的名称列表（按名称排序）
     ///
     /// # 示例
     ///
@@ -132,7 +133,38 @@ impl AppRouter {
     /// assert_eq!(names.len(), 2);
     /// ```
     pub fn module_names(&self) -> Vec<String> {
-        self.modules.keys().cloned().collect()
+        let mut names: Vec<String> = self.modules.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// 构建确定性排序的只读 API Catalog，并校验跨模块 route/operation 冲突。
+    pub fn catalog(&self) -> Result<ApiCatalog, BaseError> {
+        let mut names: Vec<&String> = self.modules.keys().collect();
+        names.sort();
+        let mut modules: Vec<ModuleDescriptor> = Vec::with_capacity(names.len());
+        let mut routes = HashSet::new();
+        let mut operations = HashSet::new();
+        for name in names {
+            let descriptor = self.modules[name].descriptor()?;
+            for action in &descriptor.actions {
+                let route_key = (action.route.method.clone(), action.route.path.clone());
+                if !routes.insert(route_key) {
+                    return Err(BaseError::ConfigError(format!(
+                        "route 冲突: {} {}",
+                        action.route.method, action.route.path
+                    )));
+                }
+                if !operations.insert(action.route.operation_id.clone()) {
+                    return Err(BaseError::ConfigError(format!(
+                        "operation_id 冲突: {}",
+                        action.route.operation_id
+                    )));
+                }
+            }
+            modules.push(descriptor);
+        }
+        Ok(ApiCatalog { modules })
     }
 
     /// 分发请求到对应模块的 Action

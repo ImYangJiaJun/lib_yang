@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P2-02 确定性 ApiCatalog
+
+- 范围：`yang-base::router` 的 `RouteDescriptor`、`ActionDescriptor`、`ModuleDescriptor`、`ApiCatalog`，ModuleRouter route 绑定/只读快照，AppRouter 全局 catalog 与文档。
+- 风险：ActionMeta 已持有运行时 Schema/权限/公开性，但 method/path 等传输信息没有唯一来源；HashMap 枚举不稳定，外部若直接接触注册表会破坏 dispatch 不变量，重复 route/operation 和漏绑 route 只能推迟到适配层暴露。
+- RED：两个真实 TypedAction 从公开注册入口构造 catalog，产生 10 个编译错误，确认 RouteDescriptor、register_route、module descriptor 与 app catalog 全部缺失。
+- 修复：RouteDescriptor 独立保存 method/path/operation id/content types/success status/tags，ActionMeta 不重复传输字段；ModuleRouter 私有保存 action-route 绑定，`descriptor()` 生成 owned snapshot 并合并 Schema、权限和公开性；AppRouter `catalog()` 跨模块校验并按模块/Action 名称排序，运行时注册表和 middleware 不暴露。
+- 对抗性验证：5 项 catalog 测试覆盖缺 route、模块内重复 route、重复 operation id、跨模块两类冲突、构造后恶意改写公开 descriptor 再注册、逆序注册稳定排序和 Schema 同源；无默认 feature 下同样通过。
+- 门禁：`cargo test -p yang-base --lib --all-features --locked`（474 passed，8 ignored）；doctest（74 passed，148 ignored）；all-target/all-feature Clippy `-D warnings` 与 Rust 1.80 all-feature check 均通过。
+
 ## 2026-07-15 - P2-01 transport-neutral RequestMeta
 
 - 范围：`yang-base` 的 `RequestMeta`、`ActionContext` 兼容构造/注入、`Request` Debug 与规范 header 助手，以及当前 API 文档。
