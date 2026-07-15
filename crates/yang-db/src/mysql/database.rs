@@ -560,20 +560,20 @@ mod tests {
 
     #[test]
     fn test_database_config_validate_rejects_invalid_pool_size() {
-        let err = DatabaseConfig::default()
-            .with_max_connections(0)
-            .validate()
-            .expect_err("max_connections 为 0 应被拒绝");
+        assert!(matches!(
+            DatabaseConfig::default()
+                .with_max_connections(0)
+                .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
 
-        assert!(matches!(err, DbError::InvalidArgument(_)));
-
-        let err = DatabaseConfig::default()
-            .with_max_connections(2)
-            .with_min_connections(3)
-            .validate()
-            .expect_err("min_connections 大于 max_connections 应被拒绝");
-
-        assert!(matches!(err, DbError::InvalidArgument(_)));
+        assert!(matches!(
+            DatabaseConfig::default()
+                .with_max_connections(2)
+                .with_min_connections(3)
+                .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
     }
 
     #[test]
@@ -583,18 +583,19 @@ mod tests {
             DatabaseConfig::default().with_idle_timeout(0),
             DatabaseConfig::default().with_max_lifetime(Some(0)),
         ] {
-            let err = config.validate().expect_err("非法超时配置应被拒绝");
-
-            assert!(matches!(err, DbError::InvalidArgument(_)));
+            assert!(matches!(
+                config.validate(),
+                Err(DbError::InvalidArgument(_))
+            ));
         }
 
-        let err = DatabaseConfig::default()
-            .with_connect_timeout(30)
-            .with_idle_timeout(30)
-            .validate()
-            .expect_err("idle_timeout 不大于 connect_timeout 应被拒绝");
-
-        assert!(matches!(err, DbError::InvalidArgument(_)));
+        assert!(matches!(
+            DatabaseConfig::default()
+                .with_connect_timeout(30)
+                .with_idle_timeout(30)
+                .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
     }
 
     #[tokio::test]

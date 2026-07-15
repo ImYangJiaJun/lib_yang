@@ -120,169 +120,6 @@ impl RetryConfig {
     }
 }
 
-#[cfg(test)]
-mod retry_config_tests {
-    use super::*;
-
-    #[test]
-    fn test_redact_url_for_log_removes_query_and_userinfo() {
-        let redacted = redact_url_for_log("https://user:secret@example.com/path?token=secret&x=1");
-
-        assert_eq!(redacted, "https://***:***@example.com/path");
-        assert!(!redacted.contains("token"));
-        assert!(!redacted.contains("secret"));
-        assert!(!redacted.contains("user"));
-    }
-
-    #[test]
-    fn test_retry_config_validate_rejects_unsafe_values() {
-        let invalid_configs = [
-            RetryConfig {
-                max_retries: 11,
-                ..RetryConfig::default()
-            },
-            RetryConfig {
-                max_retries: 1,
-                retry_on: Vec::new(),
-                ..RetryConfig::default()
-            },
-            RetryConfig {
-                max_retries: 1,
-                backoff_ms: 0,
-                ..RetryConfig::default()
-            },
-            RetryConfig {
-                max_retries: 1,
-                backoff_ms: 60_001,
-                ..RetryConfig::default()
-            },
-            RetryConfig {
-                max_retries: 1,
-                retry_on: vec![99],
-                ..RetryConfig::default()
-            },
-            RetryConfig {
-                max_retries: 1,
-                retry_on: vec![600],
-                ..RetryConfig::default()
-            },
-        ];
-
-        for config in invalid_configs {
-            let err = config
-                .validate()
-                .expect_err("不安全 retry 配置应被拒绝");
-
-            assert!(matches!(err, BaseError::ParamInvalid(_, _)));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_rejects_invalid_retry_config_before_network() {
-        let builder = RequestBuilder::new(
-            Client::new(),
-            Method::GET,
-            "http://127.0.0.1:1".to_string(),
-            Duration::from_secs(30),
-            None,
-            None,
-        )
-        .retry(RetryConfig {
-            max_retries: 11,
-            ..RetryConfig::default()
-        });
-
-        let err = match builder.send().await {
-            Ok(_) => panic!("无效 retry 配置应在网络请求前被拒绝"),
-            Err(err) => err,
-        };
-
-        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries"));
-    }
-
-    #[tokio::test]
-    async fn test_send_rejects_zero_request_timeout_before_network() {
-        let builder = RequestBuilder::new(
-            Client::new(),
-            Method::GET,
-            "http://127.0.0.1:1".to_string(),
-            Duration::from_secs(30),
-            None,
-            None,
-        )
-        .timeout(0);
-
-        let err = match builder.send().await {
-            Ok(_) => panic!("0 秒请求超时应在网络请求前被拒绝"),
-            Err(err) => err,
-        };
-
-        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
-    }
-
-    #[tokio::test]
-    async fn test_send_rejects_blank_query_key_before_network() {
-        let client = crate::http::HttpClient::new(30).expect("HTTP client should be valid");
-        let result = client
-            .get("https://api.example.com/users")
-            .query("   ", "value")
-            .send()
-            .await;
-
-        let err = match result {
-            Err(err) => err,
-            Ok(_) => panic!("空白 query key 应在发送前被拒绝"),
-        };
-
-        assert!(matches!(
-            err,
-            crate::error::BaseError::ParamInvalid(field, _) if field == "query"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_send_rejects_invalid_bearer_token_before_network() {
-        let builder = RequestBuilder::new(
-            Client::new(),
-            Method::GET,
-            "http://127.0.0.1:1".to_string(),
-            Duration::from_secs(30),
-            Some("bad\r\ntoken".to_string()),
-            None,
-        );
-
-        let err = match builder.send().await {
-            Ok(_) => panic!("非法 bearer token 应在网络请求前被拒绝"),
-            Err(err) => err,
-        };
-
-        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "authorization"));
-    }
-
-    #[tokio::test]
-    async fn test_send_rejects_invalid_url_before_network() {
-        let invalid_urls = ["not a url", "ftp://example.com/file"];
-
-        for url in invalid_urls {
-            let builder = RequestBuilder::new(
-                Client::new(),
-                Method::GET,
-                url.to_string(),
-                Duration::from_secs(30),
-                None,
-                None,
-            );
-
-            let err = match builder.send().await {
-                Ok(_) => panic!("非法 URL 应在网络请求前被拒绝"),
-                Err(err) => err,
-            };
-
-            assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "url"));
-        }
-    }
-}
-
 /// HTTP 请求构建器
 ///
 /// 提供链式调用接口构建 HTTP 请求。
@@ -937,5 +774,167 @@ impl RequestBuilder {
         let response = result.map_err(BaseError::HttpRequestFailed)?;
 
         Ok(Response::new(response))
+    }
+}
+
+#[cfg(test)]
+mod retry_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_url_for_log_removes_query_and_userinfo() {
+        let redacted = redact_url_for_log("https://user:secret@example.com/path?token=secret&x=1");
+
+        assert_eq!(redacted, "https://***:***@example.com/path");
+        assert!(!redacted.contains("token"));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("user"));
+    }
+
+    #[test]
+    fn test_retry_config_validate_rejects_unsafe_values() {
+        let invalid_configs = [
+            RetryConfig {
+                max_retries: 11,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: Vec::new(),
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                backoff_ms: 0,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                backoff_ms: 60_001,
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: vec![99],
+                ..RetryConfig::default()
+            },
+            RetryConfig {
+                max_retries: 1,
+                retry_on: vec![600],
+                ..RetryConfig::default()
+            },
+        ];
+
+        for config in invalid_configs {
+            assert!(matches!(
+                config.validate(),
+                Err(BaseError::ParamInvalid(_, _))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_retry_config_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            None,
+            None,
+        )
+        .retry(RetryConfig {
+            max_retries: 11,
+            ..RetryConfig::default()
+        });
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("无效 retry 配置应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries"));
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_zero_request_timeout_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            None,
+            None,
+        )
+        .timeout(0);
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("0 秒请求超时应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.timeout_secs"));
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_blank_query_key_before_network() {
+        let client = crate::http::HttpClient::new(30).expect("HTTP client should be valid");
+        let result = client
+            .get("https://api.example.com/users")
+            .query("   ", "value")
+            .send()
+            .await;
+
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => panic!("空白 query key 应在发送前被拒绝"),
+        };
+
+        assert!(matches!(
+            err,
+            crate::error::BaseError::ParamInvalid(field, _) if field == "query"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_bearer_token_before_network() {
+        let builder = RequestBuilder::new(
+            Client::new(),
+            Method::GET,
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(30),
+            Some("bad\r\ntoken".to_string()),
+            None,
+        );
+
+        let err = match builder.send().await {
+            Ok(_) => panic!("非法 bearer token 应在网络请求前被拒绝"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "authorization"));
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_invalid_url_before_network() {
+        let invalid_urls = ["not a url", "ftp://example.com/file"];
+
+        for url in invalid_urls {
+            let builder = RequestBuilder::new(
+                Client::new(),
+                Method::GET,
+                url.to_string(),
+                Duration::from_secs(30),
+                None,
+                None,
+            );
+
+            let err = match builder.send().await {
+                Ok(_) => panic!("非法 URL 应在网络请求前被拒绝"),
+                Err(err) => err,
+            };
+
+            assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "url"));
+        }
     }
 }

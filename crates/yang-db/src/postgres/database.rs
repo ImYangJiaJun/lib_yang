@@ -520,24 +520,24 @@ mod tests {
 
     #[test]
     fn test_database_config_validate_rejects_invalid_pool_size() {
-        let err = DatabaseConfig {
-            max_connections: 0,
-            ..DatabaseConfig::default()
-        }
-        .validate()
-        .expect_err("max_connections 为 0 应被拒绝");
+        assert!(matches!(
+            DatabaseConfig {
+                max_connections: 0,
+                ..DatabaseConfig::default()
+            }
+            .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
 
-        assert!(matches!(err, DbError::InvalidArgument(_)));
-
-        let err = DatabaseConfig {
-            max_connections: 2,
-            min_connections: 3,
-            ..DatabaseConfig::default()
-        }
-        .validate()
-        .expect_err("min_connections 大于 max_connections 应被拒绝");
-
-        assert!(matches!(err, DbError::InvalidArgument(_)));
+        assert!(matches!(
+            DatabaseConfig {
+                max_connections: 2,
+                min_connections: 3,
+                ..DatabaseConfig::default()
+            }
+            .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
     }
 
     #[test]
@@ -556,20 +556,21 @@ mod tests {
                 ..DatabaseConfig::default()
             },
         ] {
-            let err = config.validate().expect_err("非法超时配置应被拒绝");
-
-            assert!(matches!(err, DbError::InvalidArgument(_)));
+            assert!(matches!(
+                config.validate(),
+                Err(DbError::InvalidArgument(_))
+            ));
         }
 
-        let err = DatabaseConfig {
-            connect_timeout: 30,
-            idle_timeout: 30,
-            ..DatabaseConfig::default()
-        }
-        .validate()
-        .expect_err("idle_timeout 不大于 connect_timeout 应被拒绝");
-
-        assert!(matches!(err, DbError::InvalidArgument(_)));
+        assert!(matches!(
+            DatabaseConfig {
+                connect_timeout: 30,
+                idle_timeout: 30,
+                ..DatabaseConfig::default()
+            }
+            .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
     }
 
     #[tokio::test]

@@ -2,6 +2,19 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P0-03 all-target/all-feature Clippy 门禁
+
+- 范围：`crates/yang-db/src/mysql/database.rs`、`crates/yang-db/src/postgres/database.rs`、`crates/yang-db/src/redis/config.rs`、`crates/yang-base/src/http/request.rs`、`crates/yang-base/src/table/dynamic_row.rs`
+- 风险：all-target Clippy 因 12 个测试 `expect_err()` 和两个位于生产项之前的 test module 失败，导致 lint 门禁无法用于持续集成；绕过 lint 会让测试 target 与 workspace 的 panic 契约继续漂移。
+- 修复：把错误变体断言改为直接匹配 `Result::Err`，意外成功仍会使断言失败；把 HTTP request 与 DynamicRow 的测试模块移到文件末尾，不增加任何 crate/module 级 lint 豁免。
+- RED：`cargo clippy -p yang-db -p yang-base --all-targets --all-features -- -D warnings` 报告 12 个 `clippy::expect_used` 和 2 个 `clippy::items_after_test_module`。
+- 对抗性验证：保留所有非法池大小、超时、retry、URL、bearer token、空 query key 和空白动态列名断言，证明门禁修复没有删除或弱化负向测试。
+- 已运行验证：`cargo clippy -p yang-db -p yang-base --all-targets --all-features -- -D warnings`
+- 已运行验证：`cargo test -p yang-db --lib database_config_validate_rejects`
+- 已运行验证：`cargo test -p yang-db --lib test_validate_rejects`
+- 已运行验证：`cargo test -p yang-base --lib retry_config`
+- 已运行验证：`cargo test -p yang-base --lib get_rejects_blank_column_name`
+
 ## 2026-07-15 - P0-02 字段权限投影契约与确定性错误
 
 - 范围：`crates/yang-base/src/table/table_query.rs`、`crates/yang-base/src/table/__tests__/table_query_test.rs`

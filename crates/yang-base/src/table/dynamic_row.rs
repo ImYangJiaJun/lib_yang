@@ -92,24 +92,6 @@ impl Default for DynamicRow {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn get_rejects_blank_column_name() {
-        let mut row = DynamicRow::new();
-        row.columns.insert("".to_string(), json!(1));
-        row.columns.insert("   ".to_string(), json!(2));
-        row.columns.insert("name".to_string(), json!("Alice"));
-
-        assert_eq!(row.get("name").and_then(|value| value.as_str()), Some("Alice"));
-        assert_eq!(row.get(""), None);
-        assert_eq!(row.get("   "), None);
-    }
-}
-
 /// 将 DynamicRow 转换为 serde_json::Value（Object 类型）
 impl From<DynamicRow> for serde_json::Value {
     fn from(row: DynamicRow) -> Self {
@@ -258,4 +240,22 @@ fn decode_mysql_column(
     // 以及其他未知类型，尝试作为字符串读取
     let val: String = row.try_get(ordinal)?;
     Ok(serde_json::Value::String(val))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn get_rejects_blank_column_name() {
+        let mut row = DynamicRow::new();
+        row.columns.insert("".to_string(), json!(1));
+        row.columns.insert("   ".to_string(), json!(2));
+        row.columns.insert("name".to_string(), json!("Alice"));
+
+        assert_eq!(row.get("name").and_then(|value| value.as_str()), Some("Alice"));
+        assert_eq!(row.get(""), None);
+        assert_eq!(row.get("   "), None);
+    }
 }

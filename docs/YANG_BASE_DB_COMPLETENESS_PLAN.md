@@ -274,7 +274,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 - 权限测试同时覆盖全部可读、部分不可读、零可读、显式越权四种情况。
 - 不削弱底层字段权限。
 
-#### P0-03 清理 all-target Clippy 门禁 — `PENDING` — effort S
+#### P0-03 清理 all-target Clippy 门禁 — `DONE` — effort S
 
 **范围**
 

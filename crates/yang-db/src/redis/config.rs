@@ -280,23 +280,23 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_zero_max_connections() {
-        let err = RedisConfig::default()
-            .with_max_connections(0)
-            .validate()
-            .expect_err("max_connections 为 0 应被拒绝");
-
-        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+        assert!(matches!(
+            RedisConfig::default()
+                .with_max_connections(0)
+                .validate(),
+            Err(crate::DbError::InvalidArgument(_))
+        ));
     }
 
     #[test]
     fn test_validate_rejects_min_connections_above_max() {
-        let err = RedisConfig::default()
-            .with_max_connections(2)
-            .with_min_connections(3)
-            .validate()
-            .expect_err("min_connections 大于 max_connections 应被拒绝");
-
-        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+        assert!(matches!(
+            RedisConfig::default()
+                .with_max_connections(2)
+                .with_min_connections(3)
+                .validate(),
+            Err(crate::DbError::InvalidArgument(_))
+        ));
     }
 
     #[test]
@@ -307,21 +307,22 @@ mod tests {
             RedisConfig::default().with_idle_timeout(0),
             RedisConfig::default().with_max_lifetime(Some(0)),
         ] {
-            let err = config.validate().expect_err("零秒超时配置应被拒绝");
-
-            assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+            assert!(matches!(
+                config.validate(),
+                Err(crate::DbError::InvalidArgument(_))
+            ));
         }
     }
 
     #[test]
     fn test_validate_rejects_idle_timeout_not_greater_than_connect_timeout() {
-        let err = RedisConfig::default()
-            .with_connect_timeout(5)
-            .with_idle_timeout(5)
-            .validate()
-            .expect_err("idle_timeout 不大于 connect_timeout 应被拒绝");
-
-        assert!(matches!(err, crate::DbError::InvalidArgument(_)));
+        assert!(matches!(
+            RedisConfig::default()
+                .with_connect_timeout(5)
+                .with_idle_timeout(5)
+                .validate(),
+            Err(crate::DbError::InvalidArgument(_))
+        ));
     }
 
     #[test]
