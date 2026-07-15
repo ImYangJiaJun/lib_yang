@@ -2,6 +2,18 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P1-01 SQL 语义类型与唯一 checked renderer
+
+- 范围：`crates/yang-db/src/sql_types.rs`、MySQL/PostgreSQL 的 `identifier`、`condition` 与 `query_builder` 模块。
+- 风险：公开的 infallible 条件渲染器仍可能在后半棵条件树失败前写入参数，并存在 RAW SQL 回退；field/order/group/join ON 也用同一种 `String` 表示标识符和可信表达式，调用边界不清晰。
+- 修复：引入内部 `Identifier`、`QualifiedIdentifier`、`TrustedSqlExpr` 与 `RenderedCondition<T>`；两种方言只通过返回 `Result<RenderedCondition, DbError>` 的 checked renderer 生成条件，QueryBuilder 直接消费完整渲染结果。deprecated 兼容函数仅委托 checked 路径，失败统一返回 `/* invalid condition */ 1 = 0` 且不修改参数；新增 field/order/group/join ON 的显式 checked identifier API，原字符串 API 明确为可信表达式入口。
+- RED：混合“合法条件 + 恶意后置字段”的条件树会在返回错误前追加前缀参数；legacy API 会把拒绝的字段载荷作为 RAW SQL 输出；缺少显式安全 API 时，外部字段名只能进入可信表达式入口。
+- 对抗性验证：两方言对称覆盖空段、三段、SQL 注释、单双引号、反引号、Unicode、NUL、空白和函数表达式；属性测试证明所有被接受的标识符均符合严格 ASCII 一段/两段语法；验证失败渲染的参数事务性以及 PostgreSQL 从既有参数偏移继续编号。
+- 已运行验证：P1-01 定向测试（12 passed），包括 partial params、legacy fail-closed、PostgreSQL placeholder order、两方言 safe identifier API 与属性测试。
+- 已运行验证：`cargo test -p yang-db --lib --locked`（374 passed，0 failed，1 ignored）；`cargo test --doc -p yang-db --locked`（65 passed）。
+- 已运行验证：`cargo test -p yang-base --lib --locked`（461 passed，0 failed，8 ignored）。
+- 已运行验证：`cargo +1.80.0 check -p yang-db -p yang-base --all-features --locked`；`cargo clippy -p yang-db -p yang-base --all-targets --all-features --locked -- -D warnings`。
+
 ## 2026-07-15 - P0-04 stable/MSRV/feature/Docker 持续门禁
 
 - 范围：`.github/workflows/ci.yml`、`scripts/verify_ci_contract.py`、workspace 依赖锁定、两库 doctest、Redis 事务错误分类、`typed_action_integration` 的真实服务依赖。

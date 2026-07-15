@@ -22,6 +22,7 @@ pub mod query_builder;
 pub mod transaction;
 
 // 重新导出核心类型
+#[allow(deprecated)]
 pub use condition::{condition_to_sql_owned, condition_to_sql_owned_checked, Condition, SqlValue};
 pub use database::{Database, DatabaseConfig};
 pub use field::FieldType;

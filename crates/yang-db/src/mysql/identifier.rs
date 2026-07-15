@@ -16,18 +16,14 @@
 //! 输入的调用方，应先用本模块的 `pub` 助手自行校验。
 
 use crate::error::DbError;
+use crate::sql_types::{Identifier, QualifiedIdentifier};
 
 /// 校验是否为合法的 SQL 标识符：首字符为字母或下划线，其余为字母/数字/下划线。
 ///
 /// 空串、含空格/引号/分号/括号/点号等的字符串一律判为非法（点号限定名请用
 /// [`quote_qualified`]）。纯 `char` 迭代，零分配。
 pub fn is_valid_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    Identifier::parse(s).is_ok()
 }
 
 /// 校验并用反引号转义一个标识符（MySQL 方言）。
@@ -35,28 +31,14 @@ pub fn is_valid_identifier(s: &str) -> bool {
 /// 合法标识符返回 `` `ident` ``（内部反引号加倍）；非法返回
 /// [`DbError::InvalidArgument`]。
 pub fn quote_identifier(ident: &str) -> Result<String, DbError> {
-    if !is_valid_identifier(ident) {
-        return Err(DbError::InvalidArgument(format!(
-            "非法 SQL 标识符: {ident:?}"
-        )));
-    }
-    // is_valid_identifier 仅允许 [A-Za-z0-9_]，已排除反引号，无需 replace。
-    Ok(format!("`{ident}`"))
+    Ok(QualifiedIdentifier::Unqualified(Identifier::parse(ident)?).render('`'))
 }
 
 /// 校验并转义可能带限定前缀的标识符：`列` → `` `列` ``，`表.列` → `` `表`.`列` ``。
 ///
 /// 各段分别校验并加引号；段数超过 2 或任一段非法返回 [`DbError::InvalidArgument`]。
 pub fn quote_qualified(ident: &str) -> Result<String, DbError> {
-    // split_once 避免 Vec 分配；超 2 段时第二段含 '.' 会在 quote_identifier 中报错。
-    match ident.split_once('.') {
-        None => quote_identifier(ident),
-        Some((table, column)) => Ok(format!(
-            "{}.{}",
-            quote_identifier(table)?,
-            quote_identifier(column)?
-        )),
-    }
+    Ok(QualifiedIdentifier::parse(ident)?.render('`'))
 }
 
 #[cfg(test)]

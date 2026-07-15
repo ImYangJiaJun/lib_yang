@@ -1,7 +1,8 @@
+#![allow(deprecated)]
+
 use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
-use super::identifier::quote_identifier;
 use crate::error::DbError;
 
 /// SQL 值类型
@@ -146,10 +147,12 @@ where
 ///
 /// # 返回
 /// - SQL 字符串片段
+#[deprecated(
+    since = "0.1.3",
+    note = "使用 condition_to_sql_owned_checked 获取结构化错误"
+)]
 pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> String {
-    let mut out = String::new();
-    write_condition_to_sql(condition, &mut out, params);
-    out
+    condition_to_sql_owned(condition.clone(), params)
 }
 
 /// 以借用方式将条件树写入 SQL 字符串，仅在压参时 clone 单个 `SqlValue`
@@ -162,106 +165,17 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
 /// - `cond`: 要转换的条件引用
 /// - `out`: 输出 SQL 的可变字符串（追加模式，不清空已有内容）
 /// - `params`: 用于收集参数的可变向量
+#[deprecated(
+    since = "0.1.3",
+    note = "使用 condition_to_sql_owned_checked 获取结构化错误"
+)]
 pub fn write_condition_to_sql(cond: &Condition, out: &mut String, params: &mut Vec<SqlValue>) {
-    match cond {
-        Condition::Eq(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} = ?", safe_quote_identifier(field));
-        }
-        Condition::Ne(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} != ?", safe_quote_identifier(field));
-        }
-        Condition::Gt(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} > ?", safe_quote_identifier(field));
-        }
-        Condition::Lt(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} < ?", safe_quote_identifier(field));
-        }
-        Condition::Gte(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} >= ?", safe_quote_identifier(field));
-        }
-        Condition::Lte(field, value) => {
-            params.push(value.clone());
-            *out += &format!("{} <= ?", safe_quote_identifier(field));
-        }
-        Condition::In(field, values) => {
-            if values.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            *out += &format!("{} IN (", safe_quote_identifier(field));
-            for (i, v) in values.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                out.push('?');
-                params.push(v.clone());
-            }
-            out.push(')');
-        }
-        Condition::Between(field, start, end) => {
-            params.push(start.clone());
-            params.push(end.clone());
-            *out += &format!("{} BETWEEN ? AND ?", safe_quote_identifier(field));
-        }
-        Condition::Like(field, pattern) => {
-            params.push(SqlValue::String(pattern.clone()));
-            *out += &format!("{} LIKE ?", safe_quote_identifier(field));
-        }
-        Condition::IsNull(field) => {
-            *out += &format!("{} IS NULL", safe_quote_identifier(field));
-        }
-        Condition::IsNotNull(field) => {
-            *out += &format!("{} IS NOT NULL", safe_quote_identifier(field));
-        }
-        Condition::And(conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 1");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql(&conditions[0], out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" AND ");
-                }
-                write_condition_to_sql(c, out, params);
-            }
-            out.push(')');
-        }
-        Condition::Or(conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql(&conditions[0], out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" OR ");
-                }
-                write_condition_to_sql(c, out, params);
-            }
-            out.push(')');
-        }
-    }
+    out.push_str(&condition_to_sql_owned(cond.clone(), params));
 }
 
-/// 消费版本的条件转 SQL 函数，避免不必要的 clone 开销
+/// 消费版本的兼容条件渲染入口。
 ///
-/// 与 `condition_to_sql` 的借用版本相比，本函数消费传入的 `Condition`，
-/// 对 `SqlValue::String`、`SqlValue::Bytes`、`SqlValue::Json` 等堆分配类型
-/// 直接 push 到 params 中，无需 clone，从而减少堆分配次数。
+/// 内部只委托 checked renderer；校验失败时返回固定 fail-closed 条件，且不会修改参数。
 ///
 /// # 参数
 /// - `condition`: 要消费的条件（owned）
@@ -270,134 +184,21 @@ pub fn write_condition_to_sql(cond: &Condition, out: &mut String, params: &mut V
 /// # 返回
 /// - SQL 字符串片段
 ///
-/// 安全转义字段标识符，失败时回退到原始值并记录警告。
-///
-/// 这是对 `quote_identifier` 的 defense-in-depth 包装：合法标识符返回反引号包裹形式，
-/// 非法标识符（如 a.b 限定名或含特殊字符的表达式）回退到原始值并记录 `log::warn!`。
-/// 注意: `quote_identifier` 仅处理单段标识符，`a.b` 限定名需用 `quote_qualified`。
-fn safe_quote_identifier(field: &str) -> String {
-    quote_identifier(field).unwrap_or_else(|e| {
-        log::warn!("无法转义字段标识符 {field:?}: {e}，使用原始值");
-        field.to_string()
-    })
-}
+const FAIL_CLOSED_CONDITION: &str = "/* invalid condition */ 1 = 0";
 
-/// 将消费版本的条件直接写入 SQL 字符串，避免 And/Or 分支的中间 Vec 分配
-///
-/// 与 [`write_condition_to_sql`] 不同，本函数消费传入的 `Condition`，
-/// 对堆分配类型直接 push 到 params 中，无需 clone。
-/// And/Or 分支直接写入 `out`，消除了 `Vec<String>` 中间分配（PERF-8）。
-/// In 分支直接逐个 push `?`，消除了 `vec!["?"; count]` 临时 Vec（PERF-7）。
-fn write_condition_to_sql_owned(
-    condition: Condition,
-    out: &mut String,
-    params: &mut Vec<SqlValue>,
-) {
-    match condition {
-        Condition::Eq(field, value) => {
-            params.push(value);
-            *out += &format!("{} = ?", safe_quote_identifier(&field));
-        }
-        Condition::Ne(field, value) => {
-            params.push(value);
-            *out += &format!("{} != ?", safe_quote_identifier(&field));
-        }
-        Condition::Gt(field, value) => {
-            params.push(value);
-            *out += &format!("{} > ?", safe_quote_identifier(&field));
-        }
-        Condition::Lt(field, value) => {
-            params.push(value);
-            *out += &format!("{} < ?", safe_quote_identifier(&field));
-        }
-        Condition::Gte(field, value) => {
-            params.push(value);
-            *out += &format!("{} >= ?", safe_quote_identifier(&field));
-        }
-        Condition::Lte(field, value) => {
-            params.push(value);
-            *out += &format!("{} <= ?", safe_quote_identifier(&field));
-        }
-        Condition::In(field, values) => {
-            if values.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            let count = values.len();
-            params.extend(values);
-            *out += &format!("{} IN (", safe_quote_identifier(&field));
-            for i in 0..count {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                out.push('?');
-            }
-            out.push(')');
-        }
-        Condition::Between(field, start, end) => {
-            params.push(start);
-            params.push(end);
-            *out += &format!("{} BETWEEN ? AND ?", safe_quote_identifier(&field));
-        }
-        Condition::Like(field, pattern) => {
-            params.push(SqlValue::String(pattern));
-            *out += &format!("{} LIKE ?", safe_quote_identifier(&field));
-        }
-        Condition::IsNull(field) => {
-            *out += &format!("{} IS NULL", safe_quote_identifier(&field));
-        }
-        Condition::IsNotNull(field) => {
-            *out += &format!("{} IS NOT NULL", safe_quote_identifier(&field));
-        }
-        Condition::And(mut conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 1");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql_owned(conditions.remove(0), out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" AND ");
-                }
-                write_condition_to_sql_owned(c, out, params);
-            }
-            out.push(')');
-        }
-        Condition::Or(mut conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql_owned(conditions.remove(0), out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" OR ");
-                }
-                write_condition_to_sql_owned(c, out, params);
-            }
-            out.push(')');
-        }
-    }
-}
-
+/// 兼容的 infallible 入口只委托 checked renderer；失败时返回固定不可执行条件。
+#[deprecated(
+    since = "0.1.3",
+    note = "使用 condition_to_sql_owned_checked 获取结构化错误"
+)]
 pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
-    let mut out = String::new();
-    write_condition_to_sql_owned(condition, &mut out, params);
-    out
+    condition_to_sql_owned_checked(condition, params)
+        .unwrap_or_else(|_| FAIL_CLOSED_CONDITION.to_string())
 }
 
 /// 严格版条件转 SQL：非法标识符返回 [`DbError::InvalidArgument`] 而非 RAW 回退。
 ///
-/// 与 [`condition_to_sql_owned`] 行为一致，但字段标识符校验失败时**不**回退到原始值，
-/// 而是立即返回错误，供调用方自行决定是否允许特定表达式（如 `a.b` 限定名）。
+/// 字段标识符校验失败时立即返回错误；只接受单段或两段限定标识符，不接受表达式。
 ///
 /// # 返回
 ///
@@ -407,9 +208,20 @@ pub fn condition_to_sql_owned_checked(
     condition: Condition,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, DbError> {
-    let mut out = String::new();
-    write_condition_to_sql_owned_checked(condition, &mut out, params)?;
-    Ok(out)
+    let rendered = render_condition_checked(condition)?;
+    params.extend(rendered.params);
+    Ok(rendered.sql)
+}
+
+pub(crate) fn render_condition_checked(
+    condition: Condition,
+) -> Result<crate::sql_types::RenderedCondition<SqlValue>, DbError> {
+    let mut rendered = crate::sql_types::RenderedCondition {
+        sql: String::new(),
+        params: Vec::new(),
+    };
+    write_condition_to_sql_owned_checked(condition, &mut rendered.sql, &mut rendered.params)?;
+    Ok(rendered)
 }
 
 /// checked 版本的内部写入逻辑，使用 `quote_identifier(...)?` 传播错误。
@@ -525,7 +337,7 @@ fn write_condition_to_sql_owned_checked(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(deprecated, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use chrono::NaiveDate;
@@ -546,6 +358,32 @@ mod tests {
         let result = condition_to_sql_owned_checked(Condition::And(vec![]), &mut params);
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_checked_failure_does_not_partially_mutate_caller_params() {
+        let mut params = vec![SqlValue::Int(99)];
+        let condition = Condition::And(vec![
+            Condition::Eq("users.id".to_string(), SqlValue::Int(1)),
+            Condition::Eq("users.id --".to_string(), SqlValue::Int(2)),
+        ]);
+
+        assert!(condition_to_sql_owned_checked(condition, &mut params).is_err());
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0], SqlValue::Int(99)));
+    }
+
+    #[test]
+    fn test_legacy_renderer_fails_closed_without_raw_payload_or_params() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned(
+            Condition::Eq("id; DROP TABLE users".to_string(), SqlValue::Int(1)),
+            &mut params,
+        );
+
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
+        assert!(!sql.contains("DROP TABLE"));
         assert!(params.is_empty());
     }
 
@@ -846,7 +684,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::In("id".to_string(), vec![]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "1 = 0");
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
         assert_eq!(params.len(), 0);
     }
 
@@ -914,7 +752,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::And(vec![]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "1 = 1");
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
         assert_eq!(params.len(), 0);
     }
 
@@ -923,7 +761,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::Or(vec![]);
         let sql = super::condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "1 = 0");
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
         assert_eq!(params.len(), 0);
     }
 

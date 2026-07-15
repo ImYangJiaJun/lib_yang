@@ -307,7 +307,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 
 ### Phase 1：公共边界正确性和诊断能力
 
-#### P1-01 收敛 SQL 标识符与 checked renderer — `PENDING` — effort L
+#### P1-01 收敛 SQL 标识符与 checked renderer — `DONE` — effort L
 
 1. 引入 `Identifier`、`QualifiedIdentifier`、`TrustedSqlExpr` 内部类型。
 2. MySQL/PostgreSQL 条件渲染统一为 `Result<RenderedCondition, DbError>`。

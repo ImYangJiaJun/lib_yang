@@ -1,5 +1,6 @@
 use crate::postgres::condition::{Condition, SqlValue};
 use crate::postgres::field::{FieldType, JoinClause, OrderClause};
+use crate::sql_types::TrustedSqlExpr;
 use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 
@@ -107,6 +108,14 @@ impl SqlGenerator {
     /// 添加参数
     fn add_param(&mut self, param: SqlValue) {
         self.params.push(param);
+    }
+
+    fn append_condition(&mut self, condition: Condition) -> Result<(), crate::error::DbError> {
+        let rendered =
+            crate::postgres::condition::render_condition_checked(condition, self.params.len())?;
+        self.sql.push_str(&rendered.sql);
+        self.params.extend(rendered.params);
+        Ok(())
     }
 
     /// 清空生成器（保留已分配容量，避免重复分配）
@@ -227,11 +236,7 @@ impl SqlGenerator {
         self.append(" WHERE ");
 
         if conditions.len() == 1 {
-            let sql = crate::postgres::condition::condition_to_sql_owned_checked(
-                conditions[0].clone(),
-                &mut self.params,
-            )?;
-            self.append(&sql);
+            self.append_condition(conditions[0].clone())?;
         } else {
             // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
             // 避免 to_vec() 克隆全部条件 + Condition::And 包装 + parts Vec 中间分配。
@@ -240,11 +245,7 @@ impl SqlGenerator {
                 if i > 0 {
                     self.sql.push_str(" AND ");
                 }
-                let frag = crate::postgres::condition::condition_to_sql_owned_checked(
-                    cond.clone(),
-                    &mut self.params,
-                )?;
-                self.sql.push_str(&frag);
+                self.append_condition(cond.clone())?;
             }
             self.sql.push(')');
         }
@@ -321,11 +322,7 @@ impl SqlGenerator {
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
         self.append(" HAVING ");
         if conditions.len() == 1 {
-            let sql = crate::postgres::condition::condition_to_sql_owned_checked(
-                conditions[0].clone(),
-                &mut self.params,
-            )?;
-            self.append(&sql);
+            self.append_condition(conditions[0].clone())?;
         } else {
             // 直接 push_str 写入 self.sql，避免先 collect Vec<String> 再 join。
             // 先把片段存入局部变量结束对 self.params 的可变借用，再 push_str 到 self.sql。
@@ -334,11 +331,7 @@ impl SqlGenerator {
                 if i > 0 {
                     self.sql.push_str(" AND ");
                 }
-                let frag = crate::postgres::condition::condition_to_sql_owned_checked(
-                    c.clone(),
-                    &mut self.params,
-                )?;
-                self.sql.push_str(&frag);
+                self.append_condition(c.clone())?;
             }
         }
         Ok(())
@@ -979,18 +972,36 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
-    /// 选择字段
+    /// 选择可信 SQL 表达式。
+    ///
+    /// 本方法不校验输入；外部列名请使用 [`Self::field_identifier`]。
     pub fn field(mut self, field: &str) -> Self {
-        self.fields.push(field.to_string());
+        self.fields.push(TrustedSqlExpr::new(field).into_string());
         self
     }
 
-    /// 选择多个字段
+    /// 选择多个可信 SQL 表达式；外部列名请使用 [`Self::field_identifiers`]。
     pub fn fields(mut self, fields: &[&str]) -> Self {
         for field in fields {
-            self.fields.push(field.to_string());
+            self.fields.push(TrustedSqlExpr::new(field).into_string());
         }
         self
+    }
+
+    /// 选择一个受严格校验并按 PostgreSQL 方言转义的列名。
+    pub fn field_identifier(mut self, field: &str) -> Result<Self, crate::error::DbError> {
+        self.fields
+            .push(crate::postgres::identifier::quote_qualified(field)?);
+        Ok(self)
+    }
+
+    /// 选择多个受严格校验并按 PostgreSQL 方言转义的列名。
+    pub fn field_identifiers(mut self, fields: &[&str]) -> Result<Self, crate::error::DbError> {
+        for field in fields {
+            self.fields
+                .push(crate::postgres::identifier::quote_qualified(field)?);
+        }
+        Ok(self)
     }
 
     /// 标记字段为 JSON 类型
@@ -1230,13 +1241,15 @@ impl<'a> QueryBuilder<'a> {
         Ok(self)
     }
 
-    /// INNER JOIN
+    /// 使用可信表/ON 表达式的 INNER JOIN。
+    ///
+    /// 外部标识符的等值连接请使用 [`Self::join_on_identifiers`]。
     pub fn join(mut self, table: &str, on: &str) -> Self {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Inner,
-            table: table.to_string(),
-            on: on.to_string(),
+            table: TrustedSqlExpr::new(table).into_string(),
+            on: TrustedSqlExpr::new(on).into_string(),
         });
         self
     }
@@ -1246,8 +1259,8 @@ impl<'a> QueryBuilder<'a> {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Left,
-            table: table.to_string(),
-            on: on.to_string(),
+            table: TrustedSqlExpr::new(table).into_string(),
+            on: TrustedSqlExpr::new(on).into_string(),
         });
         self
     }
@@ -1257,25 +1270,65 @@ impl<'a> QueryBuilder<'a> {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Right,
-            table: table.to_string(),
-            on: on.to_string(),
+            table: TrustedSqlExpr::new(table).into_string(),
+            on: TrustedSqlExpr::new(on).into_string(),
         });
         self
     }
 
-    /// 排序
+    /// 按可信 SQL 表达式排序；外部列名请使用 [`Self::order_identifier`]。
     pub fn order(mut self, field: &str, asc: bool) -> Self {
         self.order_by.push(OrderClause {
-            field: field.to_string(),
+            field: TrustedSqlExpr::new(field).into_string(),
             asc,
         });
         self
     }
 
-    /// 分组
+    /// 按可信 SQL 表达式分组；外部列名请使用 [`Self::group_identifier`]。
     pub fn group(mut self, field: &str) -> Self {
-        self.group_by.push(field.to_string());
+        self.group_by.push(TrustedSqlExpr::new(field).into_string());
         self
+    }
+
+    /// 按受严格校验的列名排序。
+    pub fn order_identifier(
+        mut self,
+        field: &str,
+        asc: bool,
+    ) -> Result<Self, crate::error::DbError> {
+        self.order_by.push(OrderClause {
+            field: crate::postgres::identifier::quote_qualified(field)?,
+            asc,
+        });
+        Ok(self)
+    }
+
+    /// 按受严格校验的列名分组。
+    pub fn group_identifier(mut self, field: &str) -> Result<Self, crate::error::DbError> {
+        self.group_by
+            .push(crate::postgres::identifier::quote_qualified(field)?);
+        Ok(self)
+    }
+
+    /// 使用受严格校验的表名和两侧列名构造 INNER JOIN 等值条件。
+    pub fn join_on_identifiers(
+        mut self,
+        table: &str,
+        left: &str,
+        right: &str,
+    ) -> Result<Self, crate::error::DbError> {
+        use crate::postgres::field::JoinType;
+
+        let table = crate::postgres::identifier::quote_identifier(table)?;
+        let left = crate::postgres::identifier::quote_qualified(left)?;
+        let right = crate::postgres::identifier::quote_qualified(right)?;
+        self.joins.push(JoinClause {
+            join_type: JoinType::Inner,
+            table,
+            on: format!("{left} = {right}"),
+        });
+        Ok(self)
     }
 
     /// 限制返回数量
@@ -1992,6 +2045,63 @@ mod tests {
                     .expect("无法解析测试数据库 URL")
             })
         })
+    }
+
+    #[test]
+    fn test_identifier_apis_quote_every_structural_fragment() {
+        let pool = make_sync_test_pool();
+        let builder = QueryBuilder::new(pool, "users", false)
+            .field_identifier("users.id")
+            .expect("合法字段")
+            .field("COUNT(*) AS cnt")
+            .join_on_identifiers("profiles", "users.id", "profiles.user_id")
+            .expect("合法 JOIN 标识符")
+            .group_identifier("users.id")
+            .expect("合法分组字段")
+            .order_identifier("users.id", true)
+            .expect("合法排序字段");
+
+        let sql = builder.try_to_sql().expect("安全 API 应生成 SQL");
+        assert!(sql.contains("SELECT \"users\".\"id\", COUNT(*) AS cnt"));
+        assert!(
+            sql.contains("INNER JOIN \"profiles\" ON \"users\".\"id\" = \"profiles\".\"user_id\"")
+        );
+        assert!(sql.contains("GROUP BY \"users\".\"id\""));
+        assert!(sql.contains("ORDER BY \"users\".\"id\" ASC"));
+    }
+
+    #[test]
+    fn test_identifier_apis_reject_adversarial_fragments() {
+        let pool = make_sync_test_pool();
+        let payloads = [
+            "",
+            ".id",
+            "users.",
+            "a.b.c",
+            "users.id --",
+            "users/*x*/.id",
+            "用户.id",
+            "users.\"id\"",
+            "users.id\0",
+        ];
+
+        for payload in payloads {
+            assert!(QueryBuilder::new(pool, "users", false)
+                .field_identifier(payload)
+                .is_err());
+            assert!(QueryBuilder::new(pool, "users", false)
+                .group_identifier(payload)
+                .is_err());
+            assert!(QueryBuilder::new(pool, "users", false)
+                .order_identifier(payload, true)
+                .is_err());
+            assert!(QueryBuilder::new(pool, "users", false)
+                .join_on_identifiers("profiles", payload, "profiles.user_id")
+                .is_err());
+        }
+        assert!(QueryBuilder::new(pool, "users", false)
+            .join_on_identifiers("profiles p", "users.id", "profiles.user_id")
+            .is_err());
     }
 
     #[test]

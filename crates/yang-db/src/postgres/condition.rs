@@ -1,7 +1,8 @@
+#![allow(deprecated)]
+
 use chrono::NaiveDateTime;
 use serde_json::Value as JsonValue;
 
-use super::identifier::quote_identifier;
 use crate::DbError;
 
 /// SQL 值类型（PostgreSQL）
@@ -146,9 +147,9 @@ where
 /// 位置决定。本函数压入 `value` 后，返回 `params.len()` 作为编号，
 /// 保证占位符编号与绑定顺序严格一致。调用方自行拼接 `$N` 到输出字符串，
 /// 避免每次调用 `format!("${}", len)` 产生短命 String（PERF-9）。
-fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue) -> usize {
+fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue, parameter_offset: usize) -> usize {
     params.push(value);
-    params.len()
+    parameter_offset + params.len()
 }
 
 /// 将条件转换为 SQL 字符串和参数列表（借用版本）
@@ -159,144 +160,31 @@ fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue) -> usize {
 ///
 /// # 返回
 /// - SQL 字符串片段
+#[deprecated(
+    since = "0.1.3",
+    note = "使用 condition_to_sql_owned_checked 获取结构化错误"
+)]
 pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> String {
     // 借用版本是消费版本的薄委托：整树 clone 一次后交给 owned 实现，
     // 二者共享同一套 match 分支，避免逻辑重复。输出 SQL 与参数顺序完全一致。
     condition_to_sql_owned(condition.clone(), params)
 }
 
-/// 安全转义字段标识符，失败时回退到原始值并记录警告。
-///
-/// 这是对 `quote_identifier` 的 defense-in-depth 包装：合法标识符返回双引号包裹形式，
-/// 非法标识符（如 a.b 限定名或含特殊字符的表达式）回退到原始值并记录 `log::warn!`。
-/// 注意: `quote_identifier` 仅处理单段标识符，`a.b` 限定名需用 `quote_qualified`。
-fn safe_quote_identifier(field: &str) -> String {
-    quote_identifier(field).unwrap_or_else(|e| {
-        log::warn!("无法转义字段标识符 {field:?}: {e}，使用原始值");
-        field.to_string()
-    })
-}
+const FAIL_CLOSED_CONDITION: &str = "/* invalid condition */ 1 = 0";
 
-/// 将消费版本的条件直接写入 SQL 字符串，避免 And/Or 分支的中间 Vec 分配
-///
-/// 与 [`condition_to_sql`] 的借用版本不同，本函数消费传入的 `Condition`，
-/// 对堆分配类型直接 push 到 params 中，无需 clone。
-/// And/Or 分支直接写入 `out`，消除了 `Vec<String>` 中间分配（PERF-8）。
-/// In 分支直接逐个生成 `$N` 占位符，消除了 `Vec<String>` 中间收集（PERF-8）。
-fn write_condition_to_sql_owned(
-    condition: Condition,
-    out: &mut String,
-    params: &mut Vec<SqlValue>,
-) {
-    match condition {
-        Condition::Eq(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} = ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::Ne(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} != ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::Gt(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} > ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::Lt(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} < ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::Gte(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} >= ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::Lte(field, value) => {
-            let idx = push_placeholder(params, value);
-            *out += &format!("{} <= ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::In(field, values) => {
-            if values.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            *out += &format!("{} IN (", safe_quote_identifier(&field));
-            for (i, v) in values.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                let idx = push_placeholder(params, v);
-                *out += &format!("${}", idx);
-            }
-            out.push(')');
-        }
-        Condition::Between(field, start, end) => {
-            let idx_start = push_placeholder(params, start);
-            let idx_end = push_placeholder(params, end);
-            *out += &format!(
-                "{} BETWEEN ${} AND ${}",
-                safe_quote_identifier(&field),
-                idx_start,
-                idx_end
-            );
-        }
-        Condition::Like(field, pattern) => {
-            let idx = push_placeholder(params, SqlValue::String(pattern));
-            *out += &format!("{} LIKE ${}", safe_quote_identifier(&field), idx);
-        }
-        Condition::IsNull(field) => {
-            *out += &format!("{} IS NULL", safe_quote_identifier(&field));
-        }
-        Condition::IsNotNull(field) => {
-            *out += &format!("{} IS NOT NULL", safe_quote_identifier(&field));
-        }
-        Condition::And(mut conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 1");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql_owned(conditions.remove(0), out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" AND ");
-                }
-                write_condition_to_sql_owned(c, out, params);
-            }
-            out.push(')');
-        }
-        Condition::Or(mut conditions) => {
-            if conditions.is_empty() {
-                out.push_str("1 = 0");
-                return;
-            }
-            if conditions.len() == 1 {
-                write_condition_to_sql_owned(conditions.remove(0), out, params);
-                return;
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" OR ");
-                }
-                write_condition_to_sql_owned(c, out, params);
-            }
-            out.push(')');
-        }
-    }
-}
-
+/// 兼容的 infallible 入口只委托 checked renderer；失败时返回固定不可执行条件。
+#[deprecated(
+    since = "0.1.3",
+    note = "使用 condition_to_sql_owned_checked 获取结构化错误"
+)]
 pub fn condition_to_sql_owned(condition: Condition, params: &mut Vec<SqlValue>) -> String {
-    let mut out = String::new();
-    write_condition_to_sql_owned(condition, &mut out, params);
-    out
+    condition_to_sql_owned_checked(condition, params)
+        .unwrap_or_else(|_| FAIL_CLOSED_CONDITION.to_string())
 }
 
-/// 严格版条件转 SQL：非法标识符返回 [`DbError::InvalidArgument`] 而非 RAW 回退。
+/// 严格版条件转 SQL：非法标识符返回 [`DbError::InvalidArgument`]。
 ///
-/// 与 [`condition_to_sql_owned`] 行为一致，但字段标识符校验失败时**不**回退到原始值，
-/// 而是立即返回错误，供调用方自行决定是否允许特定表达式（如 `a.b` 限定名）。
+/// 只接受单段或两段限定标识符，不接受表达式；失败时调用方参数保持不变。
 ///
 /// # 返回
 ///
@@ -306,9 +194,26 @@ pub fn condition_to_sql_owned_checked(
     condition: Condition,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, DbError> {
-    let mut out = String::new();
-    write_condition_to_sql_owned_checked(condition, &mut out, params)?;
-    Ok(out)
+    let rendered = render_condition_checked(condition, params.len())?;
+    params.extend(rendered.params);
+    Ok(rendered.sql)
+}
+
+pub(crate) fn render_condition_checked(
+    condition: Condition,
+    parameter_offset: usize,
+) -> Result<crate::sql_types::RenderedCondition<SqlValue>, DbError> {
+    let mut rendered = crate::sql_types::RenderedCondition {
+        sql: String::new(),
+        params: Vec::new(),
+    };
+    write_condition_to_sql_owned_checked(
+        condition,
+        &mut rendered.sql,
+        &mut rendered.params,
+        parameter_offset,
+    )?;
+    Ok(rendered)
 }
 
 /// checked 版本的内部写入逻辑，使用 `quote_identifier(...)?` 传播错误。
@@ -316,36 +221,37 @@ fn write_condition_to_sql_owned_checked(
     condition: Condition,
     out: &mut String,
     params: &mut Vec<SqlValue>,
+    parameter_offset: usize,
 ) -> Result<(), DbError> {
     let quote_identifier = super::identifier::quote_qualified;
     match condition {
         Condition::Eq(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} = ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
         Condition::Ne(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} != ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
         Condition::Gt(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} > ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
         Condition::Lt(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} < ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
         Condition::Gte(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} >= ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
         Condition::Lte(field, value) => {
-            let idx = push_placeholder(params, value);
+            let idx = push_placeholder(params, value, parameter_offset);
             out.push_str(&format!("{} <= ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
@@ -360,15 +266,15 @@ fn write_condition_to_sql_owned_checked(
                 if i > 0 {
                     out.push_str(", ");
                 }
-                let idx = push_placeholder(params, v);
+                let idx = push_placeholder(params, v, parameter_offset);
                 out.push_str(&format!("${}", idx));
             }
             out.push(')');
             Ok(())
         }
         Condition::Between(field, start, end) => {
-            let idx_start = push_placeholder(params, start);
-            let idx_end = push_placeholder(params, end);
+            let idx_start = push_placeholder(params, start, parameter_offset);
+            let idx_end = push_placeholder(params, end, parameter_offset);
             out.push_str(&format!(
                 "{} BETWEEN ${} AND ${}",
                 quote_identifier(&field)?,
@@ -378,7 +284,7 @@ fn write_condition_to_sql_owned_checked(
             Ok(())
         }
         Condition::Like(field, pattern) => {
-            let idx = push_placeholder(params, SqlValue::String(pattern));
+            let idx = push_placeholder(params, SqlValue::String(pattern), parameter_offset);
             out.push_str(&format!("{} LIKE ${}", quote_identifier(&field)?, idx));
             Ok(())
         }
@@ -395,14 +301,19 @@ fn write_condition_to_sql_owned_checked(
                 return Err(DbError::InvalidArgument("AND 条件组不能为空".to_string()));
             }
             if conditions.len() == 1 {
-                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+                return write_condition_to_sql_owned_checked(
+                    conditions.remove(0),
+                    out,
+                    params,
+                    parameter_offset,
+                );
             }
             out.push('(');
             for (i, c) in conditions.into_iter().enumerate() {
                 if i > 0 {
                     out.push_str(" AND ");
                 }
-                write_condition_to_sql_owned_checked(c, out, params)?;
+                write_condition_to_sql_owned_checked(c, out, params, parameter_offset)?;
             }
             out.push(')');
             Ok(())
@@ -412,14 +323,19 @@ fn write_condition_to_sql_owned_checked(
                 return Err(DbError::InvalidArgument("OR 条件组不能为空".to_string()));
             }
             if conditions.len() == 1 {
-                return write_condition_to_sql_owned_checked(conditions.remove(0), out, params);
+                return write_condition_to_sql_owned_checked(
+                    conditions.remove(0),
+                    out,
+                    params,
+                    parameter_offset,
+                );
             }
             out.push('(');
             for (i, c) in conditions.into_iter().enumerate() {
                 if i > 0 {
                     out.push_str(" OR ");
                 }
-                write_condition_to_sql_owned_checked(c, out, params)?;
+                write_condition_to_sql_owned_checked(c, out, params, parameter_offset)?;
             }
             out.push(')');
             Ok(())
@@ -428,6 +344,7 @@ fn write_condition_to_sql_owned_checked(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -447,6 +364,59 @@ mod tests {
         let result = condition_to_sql_owned_checked(Condition::And(vec![]), &mut params);
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_checked_failure_does_not_partially_mutate_caller_params() {
+        let mut params = vec![SqlValue::Int(99)];
+        let condition = Condition::And(vec![
+            Condition::Eq("users.id".to_string(), SqlValue::Int(1)),
+            Condition::Eq("users.id --".to_string(), SqlValue::Int(2)),
+        ]);
+
+        assert!(condition_to_sql_owned_checked(condition, &mut params).is_err());
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0], SqlValue::Int(99)));
+    }
+
+    #[test]
+    fn test_checked_placeholder_order_starts_after_existing_params() {
+        let mut params = vec![SqlValue::Int(99)];
+        let condition = Condition::And(vec![
+            Condition::Eq("users.id".to_string(), SqlValue::Int(1)),
+            Condition::Between(
+                "users.score".to_string(),
+                SqlValue::Int(10),
+                SqlValue::Int(20),
+            ),
+        ]);
+
+        let sql = match condition_to_sql_owned_checked(condition, &mut params) {
+            Ok(sql) => sql,
+            Err(error) => panic!("合法条件不应渲染失败: {error}"),
+        };
+        assert_eq!(
+            sql,
+            "(\"users\".\"id\" = $2 AND \"users\".\"score\" BETWEEN $3 AND $4)"
+        );
+        assert_eq!(params.len(), 4);
+        assert!(matches!(params[0], SqlValue::Int(99)));
+        assert!(matches!(params[1], SqlValue::Int(1)));
+        assert!(matches!(params[2], SqlValue::Int(10)));
+        assert!(matches!(params[3], SqlValue::Int(20)));
+    }
+
+    #[test]
+    fn test_legacy_renderer_fails_closed_without_raw_payload_or_params() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned(
+            Condition::Eq("id; DROP TABLE users".to_string(), SqlValue::Int(1)),
+            &mut params,
+        );
+
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
+        assert!(!sql.contains("DROP TABLE"));
         assert!(params.is_empty());
     }
 
@@ -476,7 +446,7 @@ mod tests {
         let mut params = Vec::new();
         let cond = Condition::In("id".to_string(), vec![]);
         let sql = condition_to_sql(&cond, &mut params);
-        assert_eq!(sql, "1 = 0");
+        assert_eq!(sql, FAIL_CLOSED_CONDITION);
         assert_eq!(params.len(), 0);
     }
 
