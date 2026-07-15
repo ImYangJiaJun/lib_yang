@@ -154,6 +154,7 @@ impl DbError {
 }
 
 /// 从 sqlx::Error 转换为 DbError
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 impl From<sqlx::Error> for DbError {
     fn from(err: sqlx::Error) -> Self {
         match err {
@@ -207,6 +208,7 @@ impl From<sqlx::Error> for DbError {
 }
 
 /// 从 redis::RedisError 转换为 DbError
+#[cfg(feature = "redis")]
 impl From<redis::RedisError> for DbError {
     fn from(err: redis::RedisError) -> Self {
         // 用协议层稳定 API 分类，而非脆弱的 Display 子串匹配：
@@ -228,6 +230,7 @@ impl From<redis::RedisError> for DbError {
 }
 
 /// 从 deadpool_redis::PoolError 转换为 DbError
+#[cfg(feature = "redis")]
 impl From<deadpool_redis::PoolError> for DbError {
     fn from(err: deadpool_redis::PoolError) -> Self {
         match err {
@@ -317,6 +320,7 @@ mod tests {
 
     /// 对抗性验证：Redis 类型错误必须精确归类，普通响应错误不能混入类型转换错误。
     #[test]
+    #[cfg(feature = "redis")]
     fn test_redis_error_classification_distinguishes_type_and_command_errors() {
         let type_error = redis::RedisError::from((redis::ErrorKind::TypeError, "返回值类型不匹配"));
         let response_error =
@@ -407,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "redis")]
     fn test_pool_error_conversion() {
         // 测试 deadpool_redis::PoolError 转换
         let pool_err = deadpool_redis::PoolError::Closed;

@@ -7,7 +7,7 @@ pub mod transaction;
 pub mod value;
 
 // 重新导出核心类型
-pub use client::PoolStatus;
+pub use crate::PoolStatus;
 pub use client::RedisClient;
 pub use config::RedisConfig;
 pub use pipeline::RedisPipeline;

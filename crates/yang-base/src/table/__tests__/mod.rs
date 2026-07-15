@@ -15,8 +15,8 @@ mod table_config_test;
 #[cfg(test)]
 mod query_params_test;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mysql"))]
 mod table_query_test;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mysql"))]
 mod entity_test;

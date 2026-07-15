@@ -17,6 +17,7 @@
 //! - `token`：启用 JWT Token 管理功能（依赖 `jsonwebtoken`）
 //! - `http`：启用 HTTP 客户端功能（依赖 `reqwest`、`serde_urlencoded`）
 //! - `mysql`：启用 MySQL 数据库查询执行功能（依赖 `sqlx`）
+//! - `redis`：启用 Redis 全局访问功能（`token` 会自动启用它）
 //! - `validator`：启用正则表达式校验器（依赖 `regex`）
 //! - `plugin-schema`：启用插件 JSON Schema 配置验证（依赖 `jsonschema`）
 //!

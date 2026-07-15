@@ -2,6 +2,18 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P1-03 yang-db/yang-base 独立 feature 矩阵
+
+- 范围：workspace/两库 Cargo feature、后端模块 gate、跨后端 `PoolStatus`、无 feature 测试 gate、README/docs.rs、CI feature matrix 与依赖隔离校验器。
+- 风险：workspace `sqlx` 无条件启用 MySQL/PostgreSQL，`yang-db` 的 SQL/Redis 依赖和模块均不可裁剪，`yang-base` 又通过默认依赖静默拉入全部后端；原 CI 的 `yang-db-current` 无法证明单 feature 独立。关闭默认 feature 后，测试 target 还会调用不存在的 MySQL 方法或断言只在 validator feature 下成立的严格语义。
+- 修复：`yang-db` 建立 none/mysql/postgres/redis/all feature，驱动均改为 optional 并 gate 模块/转换；workspace `sqlx` 移除后端默认泄漏。`yang-base` 关闭 `yang-db` 默认 feature，精确转发 mysql/redis，token 显式依赖 redis；DatabaseBundle 仅在 mysql+redis 下公开。把 `PoolStatus` 上移为后端中立根类型，解除 SQL 对 Redis 模块的反向依赖；docs.rs 固定 all-features，README 给出最小组合。
+- RED：首次 `yang-base --no-default-features --lib` 出现 65 个缺方法编译错误；修正测试 gate 后又暴露 5 个 validator fallback 断言错误。首次 mysql-only `yang-db` 因 SQL pool status 引用已关闭的 Redis 模块失败；mysql-only doctest 又因缺少 `sqlx/derive` 失败 5 项。
+- 对抗性验证：新增 validator 关闭时 Regex fail-closed、Email/Phone 文档化 fallback 测试；`verify_feature_isolation.py` 对每条 required/forbidden 依赖做恶意删改自测，并用 `cargo tree -e normal` 证明 none/单后端不会夹带 sqlx-mysql、sqlx-postgres、Redis、HTTP 或 JWT 的无关组合。
+- 已运行验证：yang-db none/mysql/postgres/redis/all 五组均在 `-Dwarnings` 下通过 check、lib test、doctest；all 为 374 passed/1 ignored，65 doctests，其余组合按实际 gate 运行 27/273/75/84 项单测与 0/25/7/33 项 doctest。
+- 已运行验证：yang-base none/token/http/mysql/redis/validator/plugin-schema/metrics/default/all 十组均在 `RUSTFLAGS=-Dwarnings`、`RUSTDOCFLAGS=-Dwarnings` 下通过 check、lib test、doctest；none 为 231 passed，default/all 为 465 passed/8 ignored、74 doctests/148 ignored。
+- 已运行验证：`python scripts/verify_feature_isolation.py --self-test`；CI contract 自测/实测与 workflow YAML 解析。
+- 已运行验证：`cargo +1.80.0 check -p yang-db -p yang-base --all-features --locked`；`cargo clippy -p yang-db -p yang-base --all-targets --all-features --locked -- -D warnings`。
+
 ## 2026-07-15 - P1-02 基础设施结构化错误链
 
 - 范围：`yang-base` 的 `BaseError`、`GlobalRedis`、`DatabaseInitializer`、插件生命周期接口及其示例/测试。

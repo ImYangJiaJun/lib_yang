@@ -1,6 +1,6 @@
 # yang-db
 
-YANG 数据库操作库，提供类型安全的 MySQL 查询构建器。
+YANG 数据库操作库，提供类型安全的 MySQL/PostgreSQL 查询构建器与 Redis 客户端。
 
 ## 功能特性
 
@@ -11,9 +11,27 @@ YANG 数据库操作库，提供类型安全的 MySQL 查询构建器。
 - 支持事务管理
 - 完善的错误处理和中文错误消息
 
+## Feature 选择
+
+默认启用 `mysql`、`postgres`、`redis`。只使用单一后端时应关闭默认 feature，避免编译和链接无关驱动：
+
+```toml
+# 仅 MySQL
+yang-db = { version = "0.1.3", default-features = false, features = ["mysql"] }
+
+# 仅 PostgreSQL
+yang-db = { version = "0.1.3", default-features = false, features = ["postgres"] }
+
+# 仅 Redis
+yang-db = { version = "0.1.3", default-features = false, features = ["redis"] }
+```
+
+无 feature 组合仍提供 `DbError`、`DbErrorCategory`、`IsolationLevel` 与 `PoolStatus` 等后端无关契约。docs.rs 使用 all-features 构建完整 API。
+
 ## 依赖
 
-- `sqlx`: 异步 SQL 工具包，支持 MySQL
+- `sqlx`: 可选异步 SQL 工具包，按 feature 启用 MySQL/PostgreSQL
+- `redis` / `deadpool-redis`: 仅 `redis` feature 启用
 - `tokio`: 异步运行时
 - `serde`: 序列化/反序列化
 - `thiserror`: 错误处理

@@ -3131,7 +3131,7 @@ impl SqlParam {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mysql"))]
 mod tests {
     use super::*;
     use std::collections::HashSet;

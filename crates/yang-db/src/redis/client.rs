@@ -1,20 +1,6 @@
 use crate::redis::{RedisPipeline, RedisTransaction};
-use crate::{DbError, RedisConfig, RedisValue, Result};
+use crate::{DbError, PoolStatus, RedisConfig, RedisValue, Result};
 use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
-
-/// 连接池状态信息
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct PoolStatus {
-    /// 连接池最大连接数
-    pub max_size: usize,
-    /// 当前连接总数
-    pub size: usize,
-    /// 当前可用（空闲）连接数
-    pub available: usize,
-    /// 正在等待获取连接的请求数
-    pub waiting: usize,
-}
 
 /// Redis 客户端
 ///

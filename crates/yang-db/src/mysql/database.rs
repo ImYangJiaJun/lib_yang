@@ -1,7 +1,7 @@
 use crate::error::DbError;
 use crate::mysql::query_builder::QueryBuilder;
 use crate::mysql::transaction::Transaction;
-use crate::redis::PoolStatus;
+use crate::PoolStatus;
 use sqlx::mysql::MySqlPool;
 
 /// 数据库配置

@@ -25,6 +25,7 @@ jobs:
         run: |
           python scripts/verify_ci_contract.py --self-test
           python scripts/verify_ci_contract.py .github/workflows/ci.yml
+          python scripts/verify_feature_isolation.py --self-test
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: yang-db library tests
@@ -57,33 +58,66 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -Dwarnings
+      RUSTDOCFLAGS: -Dwarnings
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: yang-db-none
+            package: yang-db
+            args: --no-default-features
+          - name: yang-db-mysql
+            package: yang-db
+            args: --no-default-features --features mysql
+          - name: yang-db-postgres
+            package: yang-db
+            args: --no-default-features --features postgres
+          - name: yang-db-redis
+            package: yang-db
+            args: --no-default-features --features redis
+          - name: yang-db-all
+            package: yang-db
+            args: --all-features
           - name: yang-base-none
-            command: cargo check -p yang-base --no-default-features --locked
+            package: yang-base
+            args: --no-default-features
           - name: yang-base-token
-            command: cargo check -p yang-base --no-default-features --features token --locked
+            package: yang-base
+            args: --no-default-features --features token
           - name: yang-base-http
-            command: cargo check -p yang-base --no-default-features --features http --locked
+            package: yang-base
+            args: --no-default-features --features http
           - name: yang-base-mysql
-            command: cargo check -p yang-base --no-default-features --features mysql --locked
+            package: yang-base
+            args: --no-default-features --features mysql
+          - name: yang-base-redis
+            package: yang-base
+            args: --no-default-features --features redis
           - name: yang-base-validator
-            command: cargo check -p yang-base --no-default-features --features validator --locked
+            package: yang-base
+            args: --no-default-features --features validator
           - name: yang-base-plugin-schema
-            command: cargo check -p yang-base --no-default-features --features plugin-schema --locked
+            package: yang-base
+            args: --no-default-features --features plugin-schema
           - name: yang-base-metrics
-            command: cargo check -p yang-base --no-default-features --features metrics --locked
+            package: yang-base
+            args: --no-default-features --features metrics
+          - name: yang-base-default
+            package: yang-base
+            args: ""
           - name: yang-base-all
-            command: cargo check -p yang-base --all-features --locked
-          - name: yang-db-current
-            command: cargo check -p yang-db --all-targets --locked
+            package: yang-base
+            args: --all-features
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: ${{ matrix.command }}
+      - name: Check feature combination
+        run: cargo check -p ${{ matrix.package }} ${{ matrix.args }} --locked
+      - name: Test feature combination
+        run: cargo test --lib -p ${{ matrix.package }} ${{ matrix.args }} --locked
+      - name: Test documentation feature combination
+        run: cargo test --doc -p ${{ matrix.package }} ${{ matrix.args }} --locked
 
   docker-mysql:
     name: MySQL 8.0 integration

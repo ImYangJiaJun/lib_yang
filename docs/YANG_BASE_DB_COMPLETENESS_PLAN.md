@@ -324,7 +324,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 4. 增加 `Error::source()` 链测试和错误码稳定性测试。
 5. 日志展示仍可格式化，但不能替代结构化错误值。
 
-#### P1-03 建立 yang-db feature 矩阵 — `PENDING` — effort L
+#### P1-03 建立 yang-db feature 矩阵 — `DONE` — effort L
 
 **目标 feature**
 

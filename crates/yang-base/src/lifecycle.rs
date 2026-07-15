@@ -79,8 +79,11 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
     }
 
     // 2. 关闭 Redis（与启动顺序逆序）
-    crate::database::GlobalRedis::close();
-    log::info!("Redis 连接池已关闭");
+    #[cfg(feature = "redis")]
+    {
+        crate::database::GlobalRedis::close();
+        log::info!("Redis 连接池已关闭");
+    }
 
     // 3. drain MySQL（最后关，等待在途归还）；仅 mysql feature 启用时可用
     #[cfg(feature = "mysql")]

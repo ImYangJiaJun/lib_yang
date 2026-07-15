@@ -1,6 +1,6 @@
 use crate::error::DbError;
 use crate::postgres::{QueryBuilder, Transaction};
-use crate::redis::PoolStatus;
+use crate::PoolStatus;
 use sqlx::postgres::PgPool;
 
 /// 数据库配置

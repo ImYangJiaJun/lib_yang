@@ -46,7 +46,7 @@ uuid = { version = "=1.12.1", features = ["v4"] }
 regex = "1.12.3"
 
 # 数据库
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql", "postgres", "chrono", "json"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "chrono", "json"] }
 
 # HTTP 客户端
 reqwest = { version = "=0.12.12", features = ["json"] }

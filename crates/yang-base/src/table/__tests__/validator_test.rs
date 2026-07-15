@@ -224,6 +224,7 @@ fn test_email_success() {
 }
 
 #[test]
+#[cfg(feature = "validator")]
 fn test_email_invalid_format() {
     let validator = Validator::Email;
 
@@ -268,6 +269,7 @@ fn test_phone_success() {
 }
 
 #[test]
+#[cfg(feature = "validator")]
 fn test_phone_invalid_format() {
     let validator = Validator::Phone;
 
@@ -350,6 +352,7 @@ fn test_url_invalid_type() {
 // ==================== Regex 验证器测试 ====================
 
 #[test]
+#[cfg(feature = "validator")]
 fn test_regex_success() {
     let validator = Validator::Regex(r"^\d{6}$".to_string());
 
@@ -359,6 +362,7 @@ fn test_regex_success() {
 }
 
 #[test]
+#[cfg(feature = "validator")]
 fn test_regex_invalid_format() {
     let validator = Validator::Regex(r"^\d{6}$".to_string());
 
@@ -381,6 +385,7 @@ fn test_regex_invalid_format() {
 }
 
 #[test]
+#[cfg(feature = "validator")]
 fn test_regex_invalid_pattern() {
     let validator = Validator::Regex(r"[invalid(".to_string());
 
@@ -511,6 +516,34 @@ fn test_validator_serialization() {
     } else {
         panic!("期望 Regex 验证器");
     }
+}
+
+#[cfg(not(feature = "validator"))]
+#[test]
+fn test_regex_reports_feature_requirement_without_validator() {
+    let error = match Validator::Regex("^[0-9]+$".to_string()).validate("code", &json!("123")) {
+        Err(error) => error,
+        Ok(()) => panic!("未启用 validator 时 Regex 必须 fail-closed"),
+    };
+
+    assert!(error.to_string().contains("需要启用 'validator' feature"));
+}
+
+#[cfg(not(feature = "validator"))]
+#[test]
+fn test_email_and_phone_use_documented_fallback_without_validator() {
+    assert!(Validator::Email
+        .validate("email", &json!("user@example"))
+        .is_ok());
+    assert!(Validator::Email
+        .validate("email", &json!("missing-at"))
+        .is_err());
+    assert!(Validator::Phone
+        .validate("phone", &json!("+86-13800138000"))
+        .is_ok());
+    assert!(Validator::Phone
+        .validate("phone", &json!("13800x"))
+        .is_err());
 }
 
 #[test]

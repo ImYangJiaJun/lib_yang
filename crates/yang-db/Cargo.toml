@@ -17,6 +17,12 @@ exclude = [
     "INSTALL.md",
 ]
 
+[features]
+default = ["mysql", "postgres", "redis"]
+mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/derive"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/derive"]
+redis = ["dep:deadpool-redis", "dep:redis"]
+
 # yang-db lint 配置：
 # - unsafe_code 已升级为 deny，测试中的 MaybeUninit unsafe 已全部替换为 connect_lazy
 # - unwrap_used/expect_used 升级为 warn；测试代码中的 unwrap 暂不清理（M-1 范围）
@@ -33,11 +39,11 @@ large_enum_variant = "warn"
 
 [dependencies]
 # Redis 连接池
-deadpool-redis = "=0.22.0"
+deadpool-redis = { version = "=0.22.0", optional = true }
 # Redis 客户端
-redis = "0.32"
+redis = { version = "0.32", optional = true }
 # MySQL 异步驱动
-sqlx = { workspace = true }
+sqlx = { workspace = true, optional = true }
 # 异步运行时
 tokio = { workspace = true }
 # 序列化
@@ -55,3 +61,6 @@ base64 = { workspace = true }
 [dev-dependencies]
 proptest = "1.11.0"
 testcontainers = "=0.22.0"
+
+[package.metadata.docs.rs]
+all-features = true

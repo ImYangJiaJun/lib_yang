@@ -38,18 +38,20 @@
 //! initializer.initialize_all(&manager).await?;
 //! ```
 
-#[cfg(feature = "mysql")]
+#[cfg(all(feature = "mysql", feature = "redis"))]
 mod bundle;
 #[cfg(feature = "mysql")]
 mod global;
+#[cfg(feature = "redis")]
 mod global_redis;
 #[cfg(feature = "mysql")]
 mod initializer;
 
-#[cfg(feature = "mysql")]
+#[cfg(all(feature = "mysql", feature = "redis"))]
 pub use bundle::DatabaseBundle;
 #[cfg(feature = "mysql")]
 pub use global::GlobalDatabase;
+#[cfg(feature = "redis")]
 pub use global_redis::GlobalRedis;
 #[cfg(feature = "mysql")]
 pub use initializer::DatabaseInitializer;
