@@ -31,6 +31,7 @@
 use crate::database::GlobalDatabase;
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
+use crate::table::{SchemaColumn, SchemaValidationReport, TableConfig};
 use std::sync::Arc;
 use yang_db::Database;
 
@@ -277,6 +278,46 @@ impl DatabaseInitializer {
                 .extend(self.plan_migrations(plugin.as_ref()).await?.entries);
         }
         Ok(plan)
+    }
+
+    /// 从 MySQL information_schema 读取当前列并验证 TableConfig 的运行期字段契约。
+    ///
+    /// 本方法只读，不生成或执行 ALTER；数据库额外列不视为问题。
+    pub async fn validate_table_config(
+        &self,
+        table: &TableConfig,
+    ) -> Result<SchemaValidationReport, BaseError> {
+        #[derive(sqlx::FromRow)]
+        struct ColumnRow {
+            column_name: String,
+            data_type: String,
+            column_type: String,
+            is_nullable: String,
+            character_maximum_length: Option<i64>,
+        }
+
+        let rows: Vec<ColumnRow> = self
+            .db()
+            .query_with_params(
+                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+                vec![serde_json::Value::String(table.table_name.clone())],
+            )
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        let columns: Vec<_> = rows
+            .into_iter()
+            .map(|row| {
+                SchemaColumn::new(
+                    row.column_name,
+                    row.data_type,
+                    row.column_type,
+                    row.is_nullable.eq_ignore_ascii_case("YES"),
+                    row.character_maximum_length
+                        .and_then(|length| u64::try_from(length).ok()),
+                )
+            })
+            .collect();
+        Ok(table.validate_schema(&columns))
     }
 
     async fn load_migration_record(

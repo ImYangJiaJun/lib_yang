@@ -444,7 +444,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 并发启动时用数据库约束/锁防止同一迁移重复执行。
 - 初始化 SQL 的分号切割旧 API deprecated；复杂脚本以逐 migration 语句或专用执行器处理。
 
-#### P4-02 TableConfig 与 Schema 的关系 — `PENDING` — effort M
+#### P4-02 TableConfig 与 Schema 的关系 — `DONE` — effort M
 
 - 明确 TableConfig 是运行期访问/权限契约，不自动声称是数据库 DDL 的唯一真相。
 - 增加“TableConfig 字段是否能由当前迁移提供”的可选验证接口。

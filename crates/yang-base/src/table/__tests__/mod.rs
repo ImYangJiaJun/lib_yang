@@ -13,6 +13,9 @@ mod field_config_test;
 mod table_config_test;
 
 #[cfg(test)]
+mod schema_validation_test;
+
+#[cfg(test)]
 mod query_params_test;
 
 #[cfg(all(test, feature = "mysql"))]

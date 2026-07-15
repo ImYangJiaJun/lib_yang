@@ -4,6 +4,7 @@
 use yang_base::database::{DatabaseInitializer, MigrationPlanStatus};
 use yang_base::error::BaseError;
 use yang_base::plugin::Plugin;
+use yang_base::table::{FieldConfig, FieldType, SchemaIssueKind, TableConfig};
 use yang_db::Database;
 
 struct MigrationPlugin {
@@ -144,4 +145,60 @@ async fn dry_run_drift_and_concurrent_reservation_are_verifiable() {
         .await
         .expect("统计并发执行");
     assert_eq!(rows[0].count, 1, "唯一预留必须阻止重复执行");
+}
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn table_config_validation_reads_schema_without_altering_it() {
+    let db = Database::connect(&mysql_url()).await.expect("连接 MySQL");
+    #[allow(deprecated)]
+    {
+        db.execute("DROP TABLE IF EXISTS p4_schema_users")
+            .await
+            .expect("清理表");
+        db.execute("CREATE TABLE p4_schema_users (id BIGINT NOT NULL PRIMARY KEY, name VARCHAR(32) NULL, database_only JSON NULL)")
+            .await
+            .expect("创建表");
+    }
+    let initializer = DatabaseInitializer::new(
+        Database::connect(&mysql_url()).await.expect("连接验证器"),
+        false,
+    );
+    let config = TableConfig::new("p4_schema_users")
+        .field(FieldConfig::new("id", FieldType::BigInt).required(true))
+        .expect("合法字段")
+        .field(FieldConfig::new("name", FieldType::String { max_length: 64 }).required(true))
+        .expect("合法字段")
+        .field(FieldConfig::new("age", FieldType::Integer))
+        .expect("合法字段");
+
+    let report = initializer
+        .validate_table_config(&config)
+        .await
+        .expect("验证 schema");
+    assert_eq!(report.issues.len(), 3);
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.kind == SchemaIssueKind::MissingColumn && issue.field == "age"));
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.kind == SchemaIssueKind::IncompatibleType && issue.field == "name"));
+    assert!(report.issues.iter().any(|issue| {
+        issue.kind == SchemaIssueKind::NullabilityMismatch && issue.field == "name"
+    }));
+
+    #[derive(sqlx::FromRow)]
+    struct CountRow {
+        count: i64,
+    }
+    let rows: Vec<CountRow> = db
+        .query_with_params(
+            "SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?",
+            vec![serde_json::Value::String("p4_schema_users".to_string())],
+        )
+        .await
+        .expect("统计列");
+    assert_eq!(rows[0].count, 3, "验证接口不得自动 ALTER");
 }

@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P4-02 TableConfig 与数据库 Schema
+
+- 范围：新增 `SchemaColumn`、`SchemaIssue`/`SchemaIssueKind`、`SchemaValidationReport`、`TableConfig::validate_schema`，以及 MySQL `DatabaseInitializer::validate_table_config` 只读 introspection 入口。
+- RED：两项纯契约测试产生 3 个缺类型/方法错误；实现后覆盖缺列、VARCHAR 容量不足、必填列允许 NULL、宽类型兼容与数据库额外列忽略。
+- 关系边界：TableConfig 明确定义为运行期访问/校验/权限契约，不是 DDL 唯一真相；验证只检查声明字段能否由当前 schema 承载，不比较额外列、索引、默认值、触发器或存储选项，不生成 ALTER/回滚。
+- 对抗性验证：真实 MySQL 首轮暴露 information_schema 大写列标签，第二轮暴露元数据 BLOB 解码；通过显式稳定别名与 CAST 修复后，真实 schema 精确报告 3 个问题，且验证前后列数保持 3，证明零写入（1 passed）。
+- 文档：新增 `docs/TABLE_CONFIG_SCHEMA.md`，明确 ForeignKey 的可验证边界及自动 diff/ALTER 需独立 RFC 和灾难恢复设计。
+- 门禁：yang-base lib 481 passed/8 ignored，doctest 74 passed/148 ignored，all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P4-01 迁移可验证性
 
 - 范围：`DatabaseInitializer` 迁移表新增 checksum/status，公开 `MigrationPlan`/`MigrationPlanEntry`/`MigrationPlanStatus` 与只读 `plan_migrations`/`plan_all`，新增 checksum mismatch/in-progress 结构化错误和 `docs/MIGRATIONS.md`。

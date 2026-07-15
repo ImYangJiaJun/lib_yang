@@ -12,10 +12,13 @@
 //! - 查询请求模型：[`QueryParams`]、[`PaginatedResult`]、[`WhereCondition`]
 //! - 查询执行：[`TableQuery`]
 //! - 动态行：[`DynamicRow`]
+//! - 可选数据库列兼容验证：[`SchemaColumn`]、[`SchemaValidationReport`]
 //! - 类型化实体（受 `mysql` feature gate）：`TableEntity`、[`SqlCondition`]、[`SqlOp`]、
 //!   通用/字符串 where 操作符 [`WhereOp`]、[`StringWhereOp`] 等
 //!
 //! 其中 `TableEntity` 依赖 sqlx 的 `FromRow`，仅在启用 `mysql` feature 时可用。
+//! `TableConfig` 是运行期访问、校验与权限契约，不是数据库 DDL 的唯一真相；
+//! schema 验证只报告声明字段的缺失/类型/NULL 兼容问题，不生成 ALTER。
 //!
 //! # 示例
 //!
@@ -48,6 +51,7 @@ mod entity;
 mod field_config;
 mod field_type;
 mod query_params;
+mod schema_validation;
 mod table_config;
 mod table_query;
 mod validator;
@@ -64,6 +68,7 @@ pub use entity::{
 pub use field_config::{FieldConfig, FieldPermissions, RelationConfig, RelationType};
 pub use field_type::FieldType;
 pub use query_params::{PaginatedResult, QueryParams, WhereCondition, MAX_QUERY_PAGE_SIZE};
+pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaValidationReport};
 pub use table_config::{IndexConfig, SortOrder, TableConfig, TimestampFields};
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
 pub use validator::{Validator, ValidatorFn};
