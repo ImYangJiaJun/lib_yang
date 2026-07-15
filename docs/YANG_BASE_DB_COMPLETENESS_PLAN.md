@@ -359,7 +359,7 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 
 ### Phase 2：请求契约、API Catalog 与 OpenAPI
 
-#### P2-01 引入 RequestMeta — `PENDING` — effort M
+#### P2-01 引入 RequestMeta — `DONE` — effort M
 
 - 新增 transport-neutral `RequestMeta`，不直接依赖具体 Web 框架类型。
 - 提供兼容构造器，现有 `Request::new(body)` 行为不变。

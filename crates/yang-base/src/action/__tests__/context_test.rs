@@ -1,7 +1,7 @@
 //! ActionContext 和 User 单元测试
 #![cfg(feature = "token")]
 
-use crate::action::{ActionContext, GlobalTools, Request, User};
+use crate::action::{ActionContext, GlobalTools, Request, RequestMeta, User};
 use crate::error::BaseError;
 use crate::token::TokenManager;
 use jsonwebtoken::Algorithm;
@@ -526,4 +526,18 @@ fn test_action_context_new_with_global_tools() {
     // 验证上下文创建成功
     assert!(context.user.is_none());
     assert!(context.table_config.is_none());
+}
+
+#[test]
+fn test_action_context_request_meta_default_and_builder_paths() {
+    let context = ActionContext::new(Request::new(json!({})), create_test_tools());
+    assert_eq!(context.request_meta, RequestMeta::default());
+
+    let meta = RequestMeta::new()
+        .with_method("PATCH")
+        .with_original_uri("/users/42")
+        .with_peer_addr("127.0.0.1:43120".parse().expect("peer 地址应合法"));
+    let context = context.with_request_meta(meta.clone());
+
+    assert_eq!(context.request_meta, meta);
 }

@@ -896,7 +896,20 @@ Action 系统是请求处理的核心抽象，类似于 MVC 中的 Controller，
 > - **`#[derive(Action)]`**：生成 `TypedAction` impl + `ActionMeta`（含 name、permissions、is_public 等元数据）。
 > - **六个内置 Action**（`add`/`put`/`del`/`get`/`select`/`table`）已泛型化为 `XxxAction<T: TableEntity>`，`ModuleRouter::table_typed::<T>()` 一行注册全套 CRUD。
 > - **认证内置 Action**（`token` feature）：`LoginAction<V>`（凭证校验委托 `CredentialVerifier`）、`RefreshAction`、`LogoutAction`。
+> - **`RequestMeta`**：作为 `ActionContext` 的独立 transport-neutral sidecar 保存 method、original URI、scheme、peer/local address 和可选 extensions；旧的 `Request::new(body)` / `ActionContext::new(request, tools)` 默认得到空元数据，行为不变。URI、地址、headers 与 extension values 的 Debug 输出会脱敏；耗时继续由 tracing/metrics 记录。
 > - 详细设计文档见 `docs/superpowers/plans/2026-05-27-action-typed-system.md`。
+
+```rust
+use yang_base::action::RequestMeta;
+
+let request_meta = RequestMeta::new()
+    .with_method("POST")
+    .with_original_uri("https://api.example.test/users?trace=...")
+    .with_scheme("https")
+    .with_peer_addr("203.0.113.10:43120".parse()?);
+
+let context = ActionContext::new(request, tools).with_request_meta(request_meta);
+```
 
 ---
 

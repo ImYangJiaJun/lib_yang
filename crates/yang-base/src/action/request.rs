@@ -3,6 +3,7 @@
 //! 提供 Action 系统的请求封装，包含请求体、请求头、查询参数和路径参数。
 
 use std::collections::HashMap;
+use std::fmt;
 
 fn parse_bearer_token(value: &str) -> Option<&str> {
     let mut parts = value.split_whitespace();
@@ -56,7 +57,7 @@ fn parse_bearer_token(value: &str) -> Option<&str> {
 ///     println!("Token: {}", token);
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Request {
     /// 请求体（JSON）
     pub body: serde_json::Value,
@@ -316,6 +317,16 @@ impl Request {
             .and_then(parse_bearer_token)
     }
 
+    /// 获取规范化 headers 中的 `User-Agent`。
+    pub fn user_agent(&self) -> Option<&str> {
+        self.get_header("user-agent")
+    }
+
+    /// 获取规范化 headers 中的 `Cookie`。
+    pub fn cookie(&self) -> Option<&str> {
+        self.get_header("cookie")
+    }
+
     /// 获取请求头值
     ///
     /// # 参数
@@ -414,6 +425,30 @@ impl Request {
         }
 
         self.path_params.get(key).map(|s| s.as_str())
+    }
+}
+
+struct RedactedMap<'a>(&'a HashMap<String, String>);
+
+impl fmt::Debug for RedactedMap<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut map = formatter.debug_map();
+        for key in self.0.keys() {
+            map.entry(key, &"[REDACTED]");
+        }
+        map.finish()
+    }
+}
+
+impl fmt::Debug for Request {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Request")
+            .field("body", &self.body)
+            .field("headers", &RedactedMap(&self.headers))
+            .field("query", &RedactedMap(&self.query))
+            .field("path_params", &RedactedMap(&self.path_params))
+            .finish()
     }
 }
 

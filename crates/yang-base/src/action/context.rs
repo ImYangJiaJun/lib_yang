@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use super::Request;
 use super::RequestId;
+use super::RequestMeta;
 
 /// 全局 GlobalTools 单例
 /// 使用 OnceLock 保证线程安全的一次性初始化
@@ -236,7 +237,7 @@ impl GlobalTools {
 
 /// Action 执行上下文
 ///
-/// 包含 Action 执行所需的所有信息，包括请求数据、用户信息、全局工具和表配置。
+/// 包含 Action 执行所需的所有信息，包括请求数据、传输元数据、用户信息、全局工具和表配置。
 ///
 /// 标注 `#[non_exhaustive]`：未来新增运行期字段（如 trace_id）不构成破坏性变更，
 /// 调用方请用 [`ActionContext::new`] / [`ActionContext::new_with_global_tools`]
@@ -246,6 +247,8 @@ impl GlobalTools {
 pub struct ActionContext {
     /// 请求数据
     pub request: Request,
+    /// 与具体 Web 框架无关的传输元数据。
+    pub request_meta: RequestMeta,
     /// 当前用户（已认证）
     // SAFETY: 此字段为 pub(crate)，仅 crate 内中间件（如 TokenAuthMiddleware）可注入。
     // 外部 crate 无法直接设置此字段，防止绕过认证。
@@ -275,6 +278,7 @@ impl ActionContext {
     pub fn new(request: Request, tools: Arc<GlobalTools>) -> Self {
         Self {
             request,
+            request_meta: RequestMeta::default(),
             user: None,
             tools,
             table_config: None,
@@ -305,6 +309,7 @@ impl ActionContext {
         let tools = GlobalTools::get_arc()?;
         Ok(Self {
             request,
+            request_meta: RequestMeta::default(),
             user: None,
             tools,
             table_config: None,
@@ -338,6 +343,12 @@ impl ActionContext {
     /// 业务侧一般无需手动设置。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = request_id;
+        self
+    }
+
+    /// 注入由传输适配器构造的请求元数据（链式调用）。
+    pub fn with_request_meta(mut self, request_meta: RequestMeta) -> Self {
+        self.request_meta = request_meta;
         self
     }
 

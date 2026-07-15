@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P2-01 transport-neutral RequestMeta
+
+- 范围：`yang-base` 的 `RequestMeta`、`ActionContext` 兼容构造/注入、`Request` Debug 与规范 header 助手，以及当前 API 文档。
+- 风险：Action 上下文只能携带 body/headers/query/path params，传输适配器无法稳定传递 method、原始 URI、scheme、peer/local address；派生 Debug 会直接输出 Authorization、Cookie、User-Agent 等 header 值，新增 URI/地址后还会扩大日志泄漏面。
+- RED：从公开入口新增缺失/存在/注入/Debug 测试后产生 4 个编译错误，分别确认 `RequestMeta` 未导出、`ActionContext.request_meta` 不存在、兼容构造未提供默认元数据、builder 注入方法缺失。
+- 修复：新增不依赖 Web 框架的 `RequestMeta`，可选字段覆盖 method、original URI、scheme、`SocketAddr` peer/local address 和确定性 extensions；作为 `ActionContext` sidecar 默认构造并通过 `with_request_meta` 注入，保持 `Request::new(body)` 行为与公开字段不变。`Request` 自定义 Debug 对 headers/query/path values 脱敏，`RequestMeta` 对 URI、地址和 extension values 脱敏；User-Agent/Cookie 只从规范 headers 提供只读助手，不重复存储；未加入 handle time。
+- 对抗性验证：缺失/存在/sidecar 注入 3 条路径及 8 种敏感载荷泄漏负例通过；默认 feature request 回归 45 项通过，无默认 feature RequestMeta 3 项通过。
+- 门禁：`cargo test -p yang-base --lib --all-features --locked`（469 passed，8 ignored）；doctest（74 passed，148 ignored）；all-target/all-feature Clippy `-D warnings` 与 Rust 1.80 all-feature check 均通过。
+
 ## 2026-07-15 - P1-04 后端能力与统一管理面契约
 
 - 范围：`yang-db` 的 MySQL/PostgreSQL QueryBuilder/Transaction/Redis 能力表、三后端 `capabilities/health_check/close/is_closed/pool_status` 管理面、`yang-base` Redis 停机编排，以及 `docs/BACKEND_CAPABILITIES.md`。

@@ -5,6 +5,7 @@
 //! # 主要组件
 //!
 //! - `Request`：Action 请求结构，封装 HTTP 请求信息
+//! - `RequestMeta`：独立、transport-neutral 的 method/URI/address 元数据
 //! - `ApiResponse`：统一的 API 响应格式
 //! - `ActionContext`：Action 执行上下文
 //! - Action 行为契约：已迁移到 `typed.rs` 的 `TypedHandler` / `TypedAction` / `DynAction`
@@ -56,6 +57,7 @@ mod context;
 pub mod meta;
 mod request;
 mod request_id;
+mod request_meta;
 mod response;
 pub mod sql_bridge;
 pub mod typed;
@@ -70,6 +72,7 @@ pub use context::{ActionContext, GlobalTools, User};
 pub use meta::ActionMeta;
 pub use request::Request;
 pub use request_id::RequestId;
+pub use request_meta::RequestMeta;
 pub use response::ApiResponse;
 pub use typed::{DynAction, TypedAction, TypedHandler};
 
