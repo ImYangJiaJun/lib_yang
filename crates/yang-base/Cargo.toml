@@ -45,6 +45,9 @@ plugin-schema = ["dep:jsonschema"]
 # 运行期指标埋点（门面，默认关闭；运行期由调用方挂 exporter）
 metrics = ["dep:metrics"]
 
+# 从 ApiCatalog 投影 OpenAPI 3.1 JSON（默认关闭）
+openapi = []
+
 [dependencies]
 # 内部依赖
 yang-db = { path = "../yang-db", version = "0.1.3", default-features = false }

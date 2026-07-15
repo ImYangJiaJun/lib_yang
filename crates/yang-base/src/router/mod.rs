@@ -33,12 +33,16 @@ mod app_router;
 mod catalog;
 pub mod middleware;
 mod module_router;
+#[cfg(feature = "openapi")]
+mod openapi;
 
 pub use app_router::AppRouter;
 pub use catalog::{ActionDescriptor, ApiCatalog, ModuleDescriptor, RouteDescriptor};
 pub use middleware::{Middleware, Next, RequestIdMiddleware};
 pub use module_router::ModuleRouter;
 pub use module_router::BUILTIN_ACTION_NAMES;
+#[cfg(feature = "openapi")]
+pub use openapi::OpenApiInfo;
 
 #[cfg(test)]
 mod __tests__;

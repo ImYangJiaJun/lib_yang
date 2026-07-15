@@ -375,7 +375,7 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 - Catalog 构建必须确定性排序，便于 snapshot 和缓存。
 - Catalog 生成不依赖 `openapi` feature，可供 CLI、后台管理和测试复用。
 
-#### P2-03 OpenAPI 投影 — `PENDING` — effort L
+#### P2-03 OpenAPI 投影 — `DONE` — effort L
 
 - 可选 `openapi` feature，从 ApiCatalog 生成 OpenAPI 3.x 文档。
 - 映射 request/response schema、bearer security、public/private、tags、operation id、错误响应。

@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P2-03 OpenAPI 3.1 投影
+
+- 范围：`yang-base/openapi` 可选 feature、`OpenApiInfo`、`ApiCatalog::to_openapi`、完整 JSON snapshot 和 ApiCatalog 文档。
+- 风险：运行时 Schema、路由与权限虽已汇合，但缺少可发布契约；若投影重新读取 Action 或复制 method/path，会产生第二真相，公开 catalog 被修改后还可能让重复 operation/route 静默覆盖。
+- RED：在仅启用 openapi 的最小组合中从 ApiCatalog 投影，产生 2 个编译错误，确认 OpenApiInfo 与 to_openapi 公共边界缺失。
+- 修复：feature-gated 纯投影生成 OpenAPI 3.1 JSON，不新增依赖；input/output RootSchema 直接取自 ActionDescriptor，映射 operation/tags/content types/success status、ApiResponse 成功/错误 envelope、bearer security、公开性与权限扩展。投影前重新校验 route、method 与 operation id，并自行确定性排序。
+- 对抗性验证：完整 OpenAPI JSON snapshot 覆盖公开/私有 Action、Schema、安全、权限和 400/401/403/500；另验证手工篡改 catalog 为不支持的 CONNECT method 或重复 operation id 均失败。仅 openapi 的 no-default 测试 2 项通过，完全关闭 openapi 的 no-default check 通过。
+- 门禁：`cargo test -p yang-base --lib --all-features --locked`（476 passed，8 ignored）；doctest（74 passed，148 ignored）；all-target/all-feature Clippy `-D warnings` 与 Rust 1.80 all-feature check 均通过。
+
 ## 2026-07-15 - P2-02 确定性 ApiCatalog
 
 - 范围：`yang-base::router` 的 `RouteDescriptor`、`ActionDescriptor`、`ModuleDescriptor`、`ApiCatalog`，ModuleRouter route 绑定/只读快照，AppRouter 全局 catalog 与文档。

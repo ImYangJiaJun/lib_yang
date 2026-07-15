@@ -29,3 +29,23 @@ let catalog = AppRouter::new().register_module(users)?.catalog()?;
 
 `ModuleRouter::descriptor()` 和 `AppRouter::catalog()` 返回 owned snapshot。调用方可以处理快照，
 但无法借此修改运行时 Action、route 或 middleware 注册表。
+
+## OpenAPI 3.1 投影
+
+启用 `yang-base/openapi` feature 后，可从同一个 catalog 生成 OpenAPI JSON；关闭 feature 时投影
+模块不参与编译，也不增加依赖。
+
+```rust
+use yang_base::router::OpenApiInfo;
+
+let document = catalog.to_openapi(
+    OpenApiInfo::new("YANG API", "1.0.0").with_description("服务 API"),
+)?;
+let json = serde_json::to_string_pretty(&document)?;
+```
+
+投影使用 OpenAPI `3.1.0`：input/output RootSchema 直接来自 ActionMeta 快照；成功响应按
+`ApiResponse { code, message, data }` 包装；400/401/403/500 复用统一错误 Schema。私有 Action
+声明 `bearerAuth`，公开 Action 显式声明空 security；权限和公开性同时写入 `x-permissions`、
+`x-permission-mode`、`x-public`。投影阶段会重新验证 route 和 operation 唯一性，公开快照被修改
+后也不会静默覆盖文档节点。
