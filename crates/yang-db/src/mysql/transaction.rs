@@ -1,6 +1,7 @@
 use crate::error::DbError;
 use crate::mysql::condition::{Condition, SqlValue};
 use crate::mysql::field::FieldType;
+use crate::mysql::query_builder::QueryBuilder;
 use log;
 use sqlx::Transaction as SqlxTransaction;
 use std::collections::HashMap;
@@ -162,6 +163,65 @@ impl Transaction {
         } else {
             Err(DbError::TransactionError("事务已提交或回滚".to_string()))
         }
+    }
+
+    /// 在当前事务中执行普通 QueryBuilder SELECT。
+    pub async fn select<T>(&mut self, query: QueryBuilder<'_>) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        self.select_with_optional_lock(query, None).await
+    }
+
+    /// 在当前事务中执行 `FOR UPDATE` SELECT。
+    pub async fn select_for_update<T>(&mut self, query: QueryBuilder<'_>) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        self.select_locked(query, crate::RowLock::ForUpdate).await
+    }
+
+    /// 在当前事务中执行 `FOR SHARE` SELECT。
+    pub async fn select_for_share<T>(&mut self, query: QueryBuilder<'_>) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        self.select_locked(query, crate::RowLock::ForShare).await
+    }
+
+    /// 在当前事务中按指定模式执行行锁 SELECT。
+    pub async fn select_locked<T>(
+        &mut self,
+        query: QueryBuilder<'_>,
+        lock: crate::RowLock,
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        self.select_with_optional_lock(query, Some(lock)).await
+    }
+
+    async fn select_with_optional_lock<T>(
+        &mut self,
+        query: QueryBuilder<'_>,
+        lock: Option<crate::RowLock>,
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
+    {
+        let (sql, params) = query.render_for_transaction(lock)?;
+        if self.enable_logging {
+            log::debug!("事务中执行 SELECT: {}, 参数: {:?}", sql, params);
+        }
+        let tx = self
+            .tx
+            .as_mut()
+            .ok_or_else(|| DbError::TransactionError("事务已提交或回滚".to_string()))?;
+        let mut sql_query = sqlx::query_as::<_, T>(&sql);
+        for param in &params {
+            sql_query = crate::mysql::query_builder::bind_param(sql_query, param);
+        }
+        Ok(sql_query.fetch_all(&mut **tx).await?)
     }
 
     /// 选择表，返回事务中的查询构建器

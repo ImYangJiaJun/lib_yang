@@ -1537,6 +1537,29 @@ impl<'a> QueryBuilder<'a> {
         Ok(generator.get_sql().to_string())
     }
 
+    pub(crate) fn render_for_transaction(
+        &self,
+        lock: Option<crate::RowLock>,
+    ) -> Result<(String, Vec<SqlValue>), crate::error::DbError> {
+        if lock.is_some()
+            && (self.distinct
+                || !self.group_by.is_empty()
+                || !self.having_clause.is_empty()
+                || !self.unions.is_empty())
+        {
+            return Err(crate::error::DbError::InvalidArgument(
+                "行锁不支持 DISTINCT、GROUP BY、HAVING 或 UNION 查询".to_string(),
+            ));
+        }
+        let mut generator = SqlGenerator::new();
+        generator.build_select(self)?;
+        if let Some(lock) = lock {
+            generator.sql.push(' ');
+            generator.sql.push_str(lock.as_sql());
+        }
+        Ok((generator.sql, generator.params))
+    }
+
     /// 获取生成的 SQL（用于调试）
     ///
     /// # 返回
@@ -2895,7 +2918,7 @@ fn bind_execute_param<'q>(
 ///
 /// # 返回
 /// - 绑定参数后的查询对象
-fn bind_param<'q, T>(
+pub(crate) fn bind_param<'q, T>(
     query: sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>,
     param: &SqlValue,
 ) -> sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>
@@ -3131,6 +3154,49 @@ mod tests {
         let mut generator = SqlGenerator::new();
         assert!(generator.build_select(&builder).is_err());
         assert!(generator.get_params().is_empty());
+    }
+
+    #[test]
+    fn test_transaction_row_lock_rendering_is_typed_and_parameterized() {
+        let builder = QueryBuilder::new(make_sync_test_pool(), "accounts", false)
+            .field_identifier("balance")
+            .expect("合法投影")
+            .where_and("id", "=", 42)
+            .expect("合法条件")
+            .limit(1);
+        let (sql, params) = builder
+            .render_for_transaction(Some(crate::RowLock::ForUpdate))
+            .expect("事务锁查询应可渲染");
+        assert_eq!(
+            sql,
+            "SELECT `balance` FROM `accounts` WHERE `id` = ? LIMIT 1 FOR UPDATE"
+        );
+        assert!(matches!(params.as_slice(), [SqlValue::Int(42)]));
+    }
+
+    #[test]
+    fn test_transaction_row_lock_rejects_unsupported_query_shapes() {
+        let pool = make_sync_test_pool();
+        let grouped = QueryBuilder::new(pool, "accounts", false)
+            .field("COUNT(*)")
+            .group_identifier("tenant_id")
+            .expect("合法分组");
+        assert!(grouped
+            .render_for_transaction(Some(crate::RowLock::ForShare))
+            .is_err());
+
+        let union = QueryBuilder::new(pool, "accounts", false)
+            .field_identifier("id")
+            .expect("合法投影")
+            .union(
+                QueryBuilder::new(pool, "archived_accounts", false)
+                    .field_identifier("id")
+                    .expect("合法投影"),
+            )
+            .expect("列数一致");
+        assert!(union
+            .render_for_transaction(Some(crate::RowLock::ForUpdate))
+            .is_err());
     }
 
     #[tokio::test]

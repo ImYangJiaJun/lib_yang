@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P3-03 行锁与事务查询
+
+- 范围：新增跨后端 `RowLock::{ForUpdate, ForShare}`；MySQL/PostgreSQL Transaction 对称提供 `select`、`select_locked`、`select_for_update`、`select_for_share`，普通 QueryBuilder 不公开锁入口。
+- 复用边界：QueryBuilder 唯一负责 checked SELECT 与 typed params 渲染，Transaction 唯一负责在底层事务连接执行及附加受控锁子句；未给 TransactionQueryBuilder 增加第三套 SELECT 生成逻辑。
+- RED：双方言锁渲染/拒绝测试产生 14 个类型或方法缺失错误；实现后 4 项定向测试精确覆盖 MySQL `?`、PostgreSQL `$1`、LIMIT 后锁位置与不支持形态。
+- 对抗性约束：锁查询拒绝 DISTINCT/GROUP BY/HAVING/UNION，避免依赖方言差异或数据库运行时才报错；参数继续由原 typed binder 绑定，不开放锁 SQL 字符串。
+- 真实并发：MySQL 8/PostgreSQL 16 中持锁事务读取余额后，竞争更新均在 250ms 超时并被取消；等待事务随后可回滚，持锁事务回滚释放锁，新事务更新/提交成功（双方言各 1 passed），覆盖阻塞、取消、回滚语义。
+- 门禁：`yang-db` lib 393 passed/1 ignored，doctest 65 passed，all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P3-02 UNION / UNION ALL
 
 - 范围：MySQL/PostgreSQL QueryBuilder 对称增加 `union`/`union_all`，复用原 `SqlGenerator` 递归渲染复合 SELECT，不引入 raw SQL 或第三套生成器。

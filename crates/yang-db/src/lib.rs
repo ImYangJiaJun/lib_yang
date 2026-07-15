@@ -10,6 +10,8 @@ pub mod isolation;
 // 跨后端管理面类型
 mod pool;
 
+mod row_lock;
+
 // MySQL 数据库模块
 #[cfg(feature = "mysql")]
 pub mod mysql;
@@ -35,6 +37,7 @@ pub use error::{DbError, DbErrorCategory};
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
 pub use pool::PoolStatus;
+pub use row_lock::RowLock;
 
 // 重新导出 MySQL 核心类型
 #[allow(deprecated)]
