@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P5-02 文档统一
+
+- 范围：同步 yang-base 0.1.2/yang-db 0.1.4 的 crate README、API 总览、feature 表与 examples 编译契约；新增 `docs/BASE_DB_CAPABILITY_MATRIX.md`，并在 `docs/BACKLOG.md` 添加只追加、不改写历史审计的日期化完成度对账。
+- RED：跨文档契约 3 项全失败，分别捕获能力矩阵缺失、两份 API 总览版本过期、yang-base README feature 缺失及 `v0.0.1` 仍被标为当前版本。
+- 纠偏：删除 yang-db 文档中已失效的 MySqlPool 裸指针 unsafe 描述；补齐 PostgreSQL、`BackendCapabilities`、Subquery/UNION/RowLock/原子更新，以及 `RequestMeta`、`ApiCatalog`、OpenAPI、迁移/schema 治理和后台元数据边界。
+- 设计差异：明确 br-addon/br-db 只作能力盘点参考；本项目按真实消费者与已验证风险演进，默认使用 checked identifier、绑定参数和受控 SQL，不承诺逐方法兼容。
+- non-goal：SQLite/MSSQL、数据库备份恢复/建库、通用 ORM/任意 SQL AST/自动 schema migration 均不属于当前职责；只有真实消费者与独立 RFC 才能改变边界。
+- 对抗性验证：跨文档契约 3 passed；yang-base/yang-db 全部 examples 在 all-features 下编译通过；doctest 分别 74 passed/148 ignored 与 65 passed；两库 all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P5-01 版本与兼容策略
 
 - 范围：发布版本提升为 yang-db 0.1.4/yang-base 0.1.2，公开 `VERSION` 常量，同步 README 依赖示例；新增 `docs/VERSIONING.md` 定义 0.1.x 兼容增强与 0.2.0 breaking 收口规则。

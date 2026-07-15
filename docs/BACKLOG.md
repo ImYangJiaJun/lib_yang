@@ -8,6 +8,17 @@
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
 > 最近更新：2026-06-27，对 yang-base/yang-db 进行生产就绪度再审（综合评分 71/100，判定 CONDITIONAL），新增 NEW-35~NEW-44 共 10 项发现，含 clippy 门禁修复回归（高优先）等；yang-pcg 不在本轮范围。
 
+## 2026-07-15 完成度对账
+
+本节只对账，不重写下方历史审计。判定来源为 `docs/YANG_BASE_DB_COMPLETENESS_PLAN.md` 与对应实现/测试提交，日期均为 2026-07-15。
+
+- [已完成] NEW-35、NEW-36、NEW-37、NEW-38、NEW-39、NEW-40、NEW-41、NEW-42、NEW-43、NEW-44：已分别由安全边界、错误链、敏感信息脱敏、方言对称性、feature/MSRV/CI 门禁及设计约束条目覆盖。
+- [已完成] yang-base/yang-db 完整度计划 P0-01 至 P5-01：以计划内逐点 `DONE` 状态、对抗性测试和独立 Git 提交为准。
+- [已失效] “yang-db 包含 MySqlPool 裸指针 unsafe”的旧描述：当前生产源码不再存在该实现，保留历史条目仅用于说明审计来源。
+- [已失效] 将 SQLite、MSSQL、备份/恢复视作本轮缺失：这些能力已在支持矩阵中明确列为 non-goal，需要真实消费者与独立 RFC 才会进入范围。
+
+yang-pcg 的 NEW-20~NEW-34 不属于本次 yang-base/yang-db 对账，状态保持不变。
+
 ---
 
 ## 🔴 Critical — 生产风险

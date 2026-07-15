@@ -1,17 +1,18 @@
 # yang-db — 数据库基础库文档
 
-版本：0.1.3 | 许可：MIT OR Apache-2.0
+版本：0.1.4 | 许可：MIT OR Apache-2.0
 
 ## 概述
 
-`yang-db` 是底层数据库抽象库，提供两个独立子系统：
+`yang-db` 是底层数据库抽象库，提供三个可独立选择的后端：
 
 | 子系统 | 入口类型 | 说明 |
 |--------|----------|------|
 | **MySQL** | `Database` → `QueryBuilder` | 链式查询构建器，封装 sqlx |
+| **PostgreSQL 16** | `postgres::Database` → `QueryBuilder` | 与 MySQL 对称的参数化查询与事务 API |
 | **Redis** | `RedisClient` | 连接池客户端，封装 deadpool-redis |
 
-两个子系统通过统一的 `DbError` 错误类型汇聚错误。
+三个后端通过统一的 `DbError` 错误类型汇聚错误，并通过 `BackendCapabilities` 暴露可机读能力、占位符风格与安全约束。
 
 ```toml
 [dependencies]
@@ -34,7 +35,12 @@ yang-db
 └── base64 (BLOB 编解码)
 ```
 
-> **注意**：`yang-db` 包含 `unsafe` 代码（MySqlPool 裸指针操作），lints 配置中已显式允许。
+### 0.1.4 查询能力摘要
+
+- MySQL 8 与 PostgreSQL 16 均提供受控 `Subquery`（EXISTS/NOT EXISTS/IN）、`UNION`/`UNION ALL` 和显式 `RowLock`。
+- `increment`/`decrement` 使用绑定的 `i64` 数值完成原子字段更新，并复用写操作的 WHERE 防护。
+- `BackendCapabilities` 是后端能力的公开机读契约；应用不得仅凭方法名假定不同后端完全等价。
+- checked identifier 与绑定参数是外部输入路径的默认边界；原生 SQL API 是显式逃生舱。
 
 ---
 
@@ -537,4 +543,4 @@ let results: Vec<RedisValue> = tx.execute().await?;
 |------|------|------|
 | `insert_batch` 无自动分批（**已修复**，现有 `insert_batch_with_size`） | 大数据集可能超过 max_allowed_packet | 已修复 |
 | `having_cond` 中操作符验证 | `having_cond_unchecked` 不检查操作符合法性 | 低优先级 |
-| `unsafe` 代码 | MySqlPool 裸指针操作，需定期审查 | 持续关注 |
+| 原生 SQL 逃生舱 | 调用方必须自行保证 SQL 来源可信并完成审计 | 明确边界 |

@@ -1,6 +1,6 @@
 # yang-base — 后端基础库文档
 
-版本：0.1.1 | 许可：MIT OR Apache-2.0
+版本：0.1.2 | 许可：MIT OR Apache-2.0
 
 ## 概述
 
@@ -23,9 +23,19 @@ yang-base = { path = "../yang-base", features = ["token", "http", "mysql", "vali
 | `token` | ✓ | jsonwebtoken | JWT Token 管理 |
 | `http` | ✓ | reqwest, serde_urlencoded | HTTP 客户端 |
 | `mysql` | ✓ | sqlx | MySQL 查询执行（TableQuery 执行层） |
+| `redis` | ✓ | yang-db/redis | Redis 全局访问与 Token 撤销存储 |
 | `validator` | ✓ | regex | 字段正则校验器 |
 | `plugin-schema` | ✓ | jsonschema | 插件配置 JSON Schema 验证 |
 | `metrics` | — | metrics | 运行期指标埋点门面（默认关闭，运行期由调用方挂 exporter） |
+| `openapi` | — | 无新增依赖 | 从 `ApiCatalog` 投影 OpenAPI 3.1 JSON |
+| `admin-metadata` | — | 无新增依赖 | 后台展示元数据，不持有或修改 dispatch 对象 |
+
+### 0.1.2 当前公共契约
+
+- `RequestMeta` 独立承载 method、URI、remote address 与白名单 headers，Action 不依赖具体 Web 框架。
+- `ApiCatalog` 提供确定性的模块、路由与 Action schema 快照；启用 `openapi` 后可投影 OpenAPI 3.1。
+- `DatabaseInitializer` 提供 migration checksum、plan/dry-run、并发占位与漂移检测；`SchemaValidationReport` 只读比较 `TableConfig` 和真实 MySQL metadata，不自动执行 ALTER。
+- `admin-metadata` 仅保存稳定 ID 和展示信息；默认关闭、零新增依赖，不改变 Router/Action dispatch。
 
 ---
 

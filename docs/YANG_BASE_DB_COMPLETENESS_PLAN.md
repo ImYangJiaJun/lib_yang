@@ -471,7 +471,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 0.2.0：删除 RAW fallback，启用明确的 identifier/expr 类型边界，完成 feature 拆分。
 - 每个 breaking change 提供迁移示例和替代 API。
 
-#### P5-02 文档统一 — `PENDING` — effort M
+#### P5-02 文档统一 — `DONE` — effort M
 
 - README、`docs/yang-base.md`、`docs/yang-db.md`、示例和 feature 表与代码同步。
 - `docs/BACKLOG.md` 中已完成或已失效条目标记来源和日期，不重写历史审计。

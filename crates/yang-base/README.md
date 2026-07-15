@@ -1,6 +1,22 @@
 # yang-base
 
-YANG 基础库，提供插件管理、数据库访问（MySQL + Redis）、HTTP 客户端和 JWT Token 管理等核心功能。
+YANG 基础库 v0.1.2，提供类型化 Action、插件管理、数据库访问、HTTP 客户端和 JWT Token 管理等核心功能。
+
+## Feature 选择
+
+| Feature | 默认 | 能力 |
+|---|---:|---|
+| `token` | 是 | JWT 签发、刷新与 Redis 撤销列表 |
+| `http` | 是 | 带超时、重试和熔断的 HTTP 客户端 |
+| `mysql` | 是 | `GlobalDatabase`、`TableQuery`、迁移与 schema 校验 |
+| `redis` | 是 | `GlobalRedis` 与 Redis 数据结构 API |
+| `validator` | 是 | Email、Phone、Regex 严格验证 |
+| `plugin-schema` | 是 | 插件配置 JSON Schema 验证 |
+| `metrics` | 否 | 可选指标门面，不绑定 exporter |
+| `openapi` | 否 | 从 `ApiCatalog` 投影 OpenAPI 3.1 JSON |
+| `admin-metadata` | 否 | 后台展示元数据；不改变 dispatch，不增加依赖 |
+
+`default-features = false` 保留插件、Action、Router 和表元数据核心；各 feature 的依赖边界由 CI 独立编译验证。
 
 ## ✨ 功能特性
 
@@ -177,7 +193,7 @@ yang-base/
 ## 📦 依赖项
 
 ### 核心依赖
-- `yang-db` - YANG 数据库库（支持 MySQL 和 Redis）
+- `yang-db` - YANG 数据库库（支持 MySQL、PostgreSQL 和 Redis）
 - `tokio` - 异步运行时
 - `async-trait` - 异步 trait 支持
 - `serde`/`serde_json` - 序列化支持
@@ -297,7 +313,7 @@ MIT OR Apache-2.0
 
 ## 📝 更新日志
 
-### v0.0.1 (当前版本)
+### v0.1.2（当前版本）
 - ✅ 插件管理系统
 - ✅ MySQL 数据库支持
 - ✅ Redis 缓存支持 ⭐ 新增
@@ -306,6 +322,9 @@ MIT OR Apache-2.0
 - ✅ 错误处理系统
 - ✅ 表配置系统
 - ✅ Action 系统
+- ✅ transport-neutral `RequestMeta`、确定性 `ApiCatalog` 与可选 OpenAPI 3.1
+- ✅ 迁移 checksum/dry-run/并发治理与只读 schema 兼容验证
+- ✅ 可选 `admin-metadata`，不污染核心 dispatch
 - ✅ 完整文档和示例
 
 ## 💡 最佳实践
