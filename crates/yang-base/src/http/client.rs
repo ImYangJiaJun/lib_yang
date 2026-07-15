@@ -121,9 +121,7 @@ mod config_tests {
         ];
 
         for config in invalid_configs {
-            let err = config
-                .validate()
-                .expect_err("HTTP 客户端零值配置应被拒绝");
+            let err = config.validate().expect_err("HTTP 客户端零值配置应被拒绝");
 
             assert!(matches!(err, BaseError::ParamInvalid(_, _)));
         }

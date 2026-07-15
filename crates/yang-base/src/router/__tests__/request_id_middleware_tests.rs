@@ -114,7 +114,8 @@ async fn test_request_id_middleware_lowercase_tolerant() {
 #[tokio::test]
 async fn test_request_id_middleware_rejects_zero_header() {
     let default_rid = RequestId::from_u128(0xcafe_babe_0000_0000_0000_0000_0000_0001);
-    let request = Request::new(json!({})).header("X-Request-Id", "00000000000000000000000000000000");
+    let request =
+        Request::new(json!({})).header("X-Request-Id", "00000000000000000000000000000000");
     let captured = run_test(request, default_rid).await;
     assert_eq!(captured, Some(default_rid));
 }

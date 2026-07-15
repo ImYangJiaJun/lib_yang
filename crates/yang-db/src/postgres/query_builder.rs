@@ -2076,8 +2076,7 @@ mod tests {
     #[test]
     fn test_try_to_sql_rejects_empty_in_condition() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false)
-            .where_in("id", Vec::<i64>::new());
+        let builder = QueryBuilder::new(pool, "users", false).where_in("id", Vec::<i64>::new());
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));

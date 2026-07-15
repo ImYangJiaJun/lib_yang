@@ -111,16 +111,20 @@ async fn setup_test_data(db: &Database) -> Result<(), Box<dyn std::error::Error>
 fn create_test_table_config() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "name",
                 FieldType::String { max_length: 50 },
-            )).expect("有效字段配置应注册成功")
+            ))
+            .expect("有效字段配置应注册成功")
             .field(FieldConfig::new(
                 "email",
                 FieldType::String { max_length: 100 },
-            )).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer)).expect("有效字段配置应注册成功"),
+            ))
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("age", FieldType::Integer))
+            .expect("有效字段配置应注册成功"),
     )
 }
 

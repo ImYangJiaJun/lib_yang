@@ -346,9 +346,11 @@ impl Request {
 
         self.headers
             .get(name)
-            .or_else(|| self.headers.iter().find_map(|(key, value)| {
-                key.eq_ignore_ascii_case(name).then_some(value)
-            }))
+            .or_else(|| {
+                self.headers
+                    .iter()
+                    .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
+            })
             .map(|s| s.as_str())
     }
 
@@ -444,7 +446,10 @@ mod tests {
             .header("authorization", "Bearer new");
 
         assert_eq!(request.headers.len(), 1);
-        assert_eq!(request.headers.get("authorization").map(String::as_str), Some("Bearer new"));
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer new")
+        );
         assert_eq!(request.get_header("Authorization"), Some("Bearer new"));
         assert_eq!(request.token(), Some("new"));
     }
@@ -455,7 +460,10 @@ mod tests {
 
         assert_eq!(request.headers.len(), 1);
         assert_eq!(request.get_header("authorization"), Some("Bearer token123"));
-        assert_eq!(request.get_header(" Authorization "), Some("Bearer token123"));
+        assert_eq!(
+            request.get_header(" Authorization "),
+            Some("Bearer token123")
+        );
         assert_eq!(request.token(), Some("token123"));
     }
 
@@ -475,7 +483,9 @@ mod tests {
     fn test_get_header_rejects_blank_names() {
         let mut request = Request::new(json!({}));
         request.headers.insert("".to_string(), "empty".to_string());
-        request.headers.insert("   ".to_string(), "blank".to_string());
+        request
+            .headers
+            .insert("   ".to_string(), "blank".to_string());
         request
             .headers
             .insert("x-request-id".to_string(), "abc".to_string());
@@ -584,7 +594,9 @@ mod tests {
         request
             .path_params
             .insert("   ".to_string(), "blank".to_string());
-        request.path_params.insert("id".to_string(), "42".to_string());
+        request
+            .path_params
+            .insert("id".to_string(), "42".to_string());
 
         assert_eq!(request.get_path_param("id"), Some("42"));
         assert_eq!(request.get_path_param(""), None);

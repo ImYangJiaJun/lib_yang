@@ -21,8 +21,8 @@ pub use isolation::IsolationLevel;
 
 // 重新导出 MySQL 核心类型
 pub use mysql::{
-    condition_to_sql_owned, condition_to_sql_owned_checked, Condition, Database, DatabaseConfig,
-    FieldType, QueryBuilder, SqlValue, Transaction, quote_identifier, quote_qualified,
+    condition_to_sql_owned, condition_to_sql_owned_checked, quote_identifier, quote_qualified,
+    Condition, Database, DatabaseConfig, FieldType, QueryBuilder, SqlValue, Transaction,
 };
 
 // 重新导出 PostgreSQL 核心类型（以 Pg 前缀避免与 MySQL 同名类型冲突）。
@@ -30,8 +30,7 @@ pub use mysql::{
 // 其内部类型名与 `yang_db::mysql::*` 一致，调用方式保持统一。
 pub use postgres::{
     condition_to_sql_owned as pg_condition_to_sql_owned,
-    condition_to_sql_owned_checked as pg_condition_to_sql_owned_checked,
-    Condition as PgCondition,
+    condition_to_sql_owned_checked as pg_condition_to_sql_owned_checked, Condition as PgCondition,
     Database as PgDatabase, DatabaseConfig as PgDatabaseConfig, FieldType as PgFieldType,
     QueryBuilder as PgQueryBuilder, SqlValue as PgSqlValue, Transaction as PgTransaction,
 };

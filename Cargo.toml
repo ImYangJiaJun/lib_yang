@@ -40,7 +40,7 @@ metrics = "0.24.2"
 
 # 时间与唯一标识
 chrono = "0.4.44"
-uuid = { version = "1.23.1", features = ["v4"] }
+uuid = { version = "=1.12.1", features = ["v4"] }
 
 # 正则表达式
 regex = "1.12.3"
@@ -49,10 +49,10 @@ regex = "1.12.3"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "mysql", "postgres", "chrono", "json"] }
 
 # HTTP 客户端
-reqwest = { version = "0.13.2", features = ["json", "query"] }
+reqwest = { version = "=0.12.12", features = ["json"] }
 
 # JWT Token
-jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+jsonwebtoken = "=9.3.1"
 
 # JSON Schema 验证
 jsonschema = { version = "0.29", default-features = false }
@@ -68,8 +68,8 @@ darling = "0.20"
 proc-macro-error = "1.0"
 
 # 测试基础设施
-trybuild = "1.0"
-insta = { version = "1.39", features = ["json"] }
+trybuild = "=1.0.104"
+insta = { version = "=1.42.2", features = ["json"] }
 
 # Workspace 统一 lint 配置
 [workspace.lints.rust]

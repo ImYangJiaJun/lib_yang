@@ -379,7 +379,9 @@ fn test_action_context_path_param_trims_lookup_key() {
 #[test]
 fn test_action_context_path_param_rejects_blank_key() {
     let mut request = Request::new(json!({}));
-    request.path_params.insert("".to_string(), "123".to_string());
+    request
+        .path_params
+        .insert("".to_string(), "123".to_string());
     let tools = create_test_tools();
     let context = ActionContext::new(request, tools);
 

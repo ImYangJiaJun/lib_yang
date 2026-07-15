@@ -104,9 +104,7 @@ mod config_tests {
         ];
 
         for (expected_field, config) in invalid_configs {
-            let err = config
-                .validate()
-                .expect_err("熔断器零值配置应被拒绝");
+            let err = config.validate().expect_err("熔断器零值配置应被拒绝");
 
             assert!(matches!(
                 err,

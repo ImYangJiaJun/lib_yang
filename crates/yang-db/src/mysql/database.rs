@@ -561,9 +561,7 @@ mod tests {
     #[test]
     fn test_database_config_validate_rejects_invalid_pool_size() {
         assert!(matches!(
-            DatabaseConfig::default()
-                .with_max_connections(0)
-                .validate(),
+            DatabaseConfig::default().with_max_connections(0).validate(),
             Err(DbError::InvalidArgument(_))
         ));
 
@@ -601,7 +599,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_with_config_rejects_invalid_config_before_connecting() {
         let config = DatabaseConfig::default().with_max_connections(0);
-        let result = Database::connect_with_config("mysql://root:bad@127.0.0.1:1/test", config).await;
+        let result =
+            Database::connect_with_config("mysql://root:bad@127.0.0.1:1/test", config).await;
 
         assert!(matches!(result, Err(DbError::InvalidArgument(_))));
     }

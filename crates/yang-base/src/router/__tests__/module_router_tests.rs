@@ -1,9 +1,9 @@
 //! ModuleRouter 集成测试（H-1 类型化迁移后重写）
 #![cfg(all(feature = "mysql", feature = "token"))]
 
-use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::action::builtin::TableAction;
 use crate::action::meta::ActionMeta;
+use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::action::{Permission, PermissionMode, TypedAction, TypedHandler};
 use crate::error::BaseError;
 use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
@@ -238,10 +238,8 @@ fn test_table_typed_without_table_config() {
 
 #[test]
 fn test_default_permissions_rejects_blank_permission_name() {
-    let result = ModuleRouter::new("user", "用户管理").default_permissions(vec![
-        "user:read".to_string(),
-        "   ".to_string(),
-    ]);
+    let result = ModuleRouter::new("user", "用户管理")
+        .default_permissions(vec!["user:read".to_string(), "   ".to_string()]);
 
     assert!(matches!(
         result,
@@ -251,10 +249,8 @@ fn test_default_permissions_rejects_blank_permission_name() {
 
 #[test]
 fn test_default_permissions_rejects_duplicate_permission_name() {
-    let result = ModuleRouter::new("user", "用户管理").default_permissions(vec![
-        "user:read".to_string(),
-        "user:read".to_string(),
-    ]);
+    let result = ModuleRouter::new("user", "用户管理")
+        .default_permissions(vec!["user:read".to_string(), "user:read".to_string()]);
 
     assert!(matches!(
         result,

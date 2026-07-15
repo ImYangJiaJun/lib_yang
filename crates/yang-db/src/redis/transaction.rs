@@ -52,6 +52,14 @@ fn is_watch_conflict(raw: &redis::Value, has_watched_keys: bool) -> bool {
     has_watched_keys && matches!(raw, redis::Value::Nil)
 }
 
+/// 判定 Redis 是否明确报告 EXECABORT。
+///
+/// 枚举是主判据；字符串只兼容少数代理或旧服务端把错误降级为普通响应错误的情况。
+fn is_exec_abort_error(error: &redis::RedisError) -> bool {
+    matches!(error.kind(), redis::ErrorKind::ExecAbortError)
+        || error.to_string().contains("EXECABORT")
+}
+
 impl RedisTransaction {
     /// 创建新的事务
     ///
@@ -344,17 +352,14 @@ impl RedisTransaction {
                         continue;
                     }
                     // 非冲突：解码为调用方期望的类型 T
-                    return T::from_redis_value(raw).map_err(|e| {
+                    return T::from_redis_value(&raw).map_err(|e| {
                         DbError::RedisCommandError(format!("事务结果解码失败: {}", e))
                     });
                 }
                 Err(e) => {
                     // 检查是否是 WATCH 冲突导致的失败（EXECABORT）
                     // 优先使用枚举匹配，避免依赖错误消息字符串（版本升级/i18n 可能改变文案）
-                    let is_exec_abort = matches!(
-                        e.kind(),
-                        redis::ErrorKind::Server(redis::ServerErrorKind::ExecAbort)
-                    ) || e.to_string().contains("EXECABORT");
+                    let is_exec_abort = is_exec_abort_error(&e);
                     // 仅在存在监视键时才把 EXECABORT 判为 WATCH 冲突；
                     // 无监视键时 EXECABORT 可能源于其他原因（如脚本中止），直接透传错误。
                     if is_exec_abort && !self.watched_keys.is_empty() {
@@ -426,7 +431,7 @@ impl RedisTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::is_watch_conflict;
+    use super::{is_exec_abort_error, is_watch_conflict};
 
     #[test]
     fn test_transaction_creation() {
@@ -447,5 +452,16 @@ mod tests {
             &redis::Value::Array(vec![redis::Value::Int(1)]),
             true
         ));
+    }
+
+    /// 对抗性验证：只有 EXECABORT（或明确包含该协议码）才进入重试分支，类型错误不能误判。
+    #[test]
+    fn test_is_exec_abort_error_distinguishes_error_kinds() {
+        let exec_abort =
+            redis::RedisError::from((redis::ErrorKind::ExecAbortError, "事务因先前错误被丢弃"));
+        let type_error = redis::RedisError::from((redis::ErrorKind::TypeError, "返回值类型不匹配"));
+
+        assert!(is_exec_abort_error(&exec_abort));
+        assert!(!is_exec_abort_error(&type_error));
     }
 }

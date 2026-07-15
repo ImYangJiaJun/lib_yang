@@ -853,7 +853,9 @@ mod retry_config_tests {
             Err(err) => err,
         };
 
-        assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries"));
+        assert!(
+            matches!(err, BaseError::ParamInvalid(field, _) if field == "http.retry.max_retries")
+        );
     }
 
     #[tokio::test]

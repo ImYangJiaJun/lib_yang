@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  stable:
+    name: Stable quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify CI contract
+        run: |
+          python scripts/verify_ci_contract.py --self-test
+          python scripts/verify_ci_contract.py .github/workflows/ci.yml
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: yang-db library tests
+        run: cargo test --lib -p yang-db --locked
+      - name: yang-base library tests
+        run: cargo test --lib -p yang-base --locked
+      - name: Clippy all targets and features
+        run: cargo clippy -p yang-db -p yang-base --all-targets --all-features --locked -- -D warnings
+      - name: yang-db documentation tests
+        run: cargo test --doc -p yang-db --locked
+      - name: yang-base documentation tests
+        run: cargo test --doc -p yang-base --locked
+
+  msrv:
+    name: MSRV 1.80
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.80"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.80
+      - name: Check public crates on MSRV
+        run: cargo check -p yang-db -p yang-base --all-features --locked
+
+  feature-matrix:
+    name: Feature matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: yang-base-none
+            command: cargo check -p yang-base --no-default-features --locked
+          - name: yang-base-token
+            command: cargo check -p yang-base --no-default-features --features token --locked
+          - name: yang-base-http
+            command: cargo check -p yang-base --no-default-features --features http --locked
+          - name: yang-base-mysql
+            command: cargo check -p yang-base --no-default-features --features mysql --locked
+          - name: yang-base-validator
+            command: cargo check -p yang-base --no-default-features --features validator --locked
+          - name: yang-base-plugin-schema
+            command: cargo check -p yang-base --no-default-features --features plugin-schema --locked
+          - name: yang-base-metrics
+            command: cargo check -p yang-base --no-default-features --features metrics --locked
+          - name: yang-base-all
+            command: cargo check -p yang-base --all-features --locked
+          - name: yang-db-current
+            command: cargo check -p yang-db --all-targets --locked
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ${{ matrix.command }}
+
+  docker-mysql:
+    name: MySQL 8.0 integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Pin service images
+        run: |
+          docker pull mysql:8.0
+          docker pull redis:7-alpine
+      - name: Typed Action integration
+        run: cargo test -p yang-base --test typed_action_integration --locked -- --ignored --test-threads=1
+      - name: TableQuery CRUD integration
+        run: cargo test -p yang-base --test table_query_crud_test --locked -- --ignored --test-threads=1
+      - name: TableQuery pagination integration
+        run: cargo test -p yang-base --test table_query_paginate_test --locked -- --ignored --test-threads=1
+      - name: TableQuery transaction integration
+        run: cargo test -p yang-base --test table_query_transaction_test --locked -- --ignored --test-threads=1
+
+  docker-postgres:
+    name: PostgreSQL 16 integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PG_TEST_URL: postgres://postgres:postgres@localhost:5432/test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: PostgreSQL CRUD integration
+        run: cargo test -p yang-db --test integration_pg_crud_simple --locked -- --ignored --test-threads=1
+      - name: PostgreSQL transaction integration
+        run: cargo test -p yang-db --test integration_pg_transaction --locked -- --ignored --test-threads=1
+
+  docker-redis:
+    name: Redis 7 integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Pin Redis image
+        run: docker pull redis:7-alpine
+      - name: Redis pipeline integration
+        run: cargo test -p yang-db --test integration_redis_pipeline --locked -- --test-threads=1
+      - name: Redis script integration
+        run: cargo test -p yang-db --test integration_redis_script --locked -- --test-threads=1

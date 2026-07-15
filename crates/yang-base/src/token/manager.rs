@@ -484,10 +484,21 @@ impl TokenManager {
         note = "此方法跳过所有 JWT 安全验证（签名/过期/签发者），仅可用于调试日志和单元测试。鉴权路径必须使用 verify_token 或 verify_token_checked。"
     )]
     pub fn parse_token_unsafe(&self, token: &str) -> Result<TokenClaims, BaseError> {
-        // 使用 dangerous::insecure_decode 进行不安全解析
-        // 注意：此方法不验证签名、过期时间等，仅用于调试
-        let token_data = jsonwebtoken::dangerous::insecure_decode::<TokenClaims>(token)
-            .map_err(BaseError::TokenParseFailed)?;
+        // 先读取 token 自带算法，再显式关闭所有鉴权相关校验。这样仍由 jsonwebtoken
+        // 负责 JWT 结构和 claims 反序列化，同时不会把本调试 API 误装成鉴权入口。
+        let header = jsonwebtoken::decode_header(token).map_err(BaseError::TokenParseFailed)?;
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
+        validation.insecure_disable_signature_validation();
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.validate_aud = false;
+        validation.required_spec_claims.clear();
+        let token_data = jsonwebtoken::decode::<TokenClaims>(
+            token,
+            &jsonwebtoken::DecodingKey::from_secret(&[]),
+            &validation,
+        )
+        .map_err(BaseError::TokenParseFailed)?;
 
         Ok(token_data.claims)
     }

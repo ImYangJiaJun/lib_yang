@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::action::{ActionContext, GlobalTools, Request, TokenAuthMiddleware, User};
-use yang_base::database::GlobalDatabase;
+use yang_base::database::{GlobalDatabase, GlobalRedis};
 use yang_base::router::ModuleRouter;
 use yang_base::token::TokenManager;
 use yang_base_derive::TableEntity;
-use yang_db::{Database, DatabaseConfig};
+use yang_db::{redis::RedisConfig, Database, DatabaseConfig};
 
 /// 端到端测试实体。
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow, TableEntity)]
@@ -56,8 +56,11 @@ fn logged_in_ctx(body: serde_json::Value, tools: Arc<GlobalTools>) -> ActionCont
     ActionContext::new(req, tools)
 }
 
-/// 启动 MySQL 容器并初始化 GlobalDatabase；无 Docker 时返回 None。
-async fn setup() -> Option<testcontainers::ContainerAsync<GenericImage>> {
+/// 启动 MySQL/Redis 容器并初始化全局连接；无 Docker 时返回 None。
+async fn setup() -> Option<(
+    testcontainers::ContainerAsync<GenericImage>,
+    testcontainers::ContainerAsync<GenericImage>,
+)> {
     let image = GenericImage::new("mysql", "8.0")
         .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
         .with_env_var("MYSQL_DATABASE", "test_db");
@@ -104,14 +107,31 @@ async fn setup() -> Option<testcontainers::ContainerAsync<GenericImage>> {
         .await
         .ok()?;
 
-    Some(container)
+    // TokenAuthMiddleware 使用黑名单校验，因此完整 dispatch 路径还需要 Redis。
+    let redis_image = GenericImage::new("redis", "7-alpine").with_wait_for(
+        testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
+    );
+    let redis_container = match redis_image.start().await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("跳过测试：无法启动 Redis 容器: {}", e);
+            return None;
+        }
+    };
+    let redis_port = redis_container.get_host_port_ipv4(6379).await.ok()?;
+    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    GlobalRedis::init(&redis_url, RedisConfig::default())
+        .await
+        .ok()?;
+
+    Some((container, redis_container))
 }
 
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn full_crud_cycle() {
-    let _container = match setup().await {
-        Some(c) => c,
+    let (_mysql_container, _redis_container) = match setup().await {
+        Some(containers) => containers,
         None => return,
     };
     let tools = test_tools();

@@ -290,7 +290,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 
 - `cargo clippy -p yang-db -p yang-base --all-targets --all-features -- -D warnings` 通过。
 
-#### P0-04 建立持续门禁 — `PENDING` — effort M
+#### P0-04 建立持续门禁 — `DONE` — effort M
 
 **内容**
 

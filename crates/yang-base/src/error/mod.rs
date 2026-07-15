@@ -426,19 +426,15 @@ impl From<jsonwebtoken::errors::Error> for BaseError {
             | ErrorKind::MissingAlgorithm
             | ErrorKind::ImmatureSignature
             | ErrorKind::MissingRequiredClaim(_)
-            | ErrorKind::InvalidClaimFormat(_)
             | ErrorKind::InvalidEcdsaKey
-            | ErrorKind::InvalidEddsaKey
             | ErrorKind::InvalidRsaKey(_)
             | ErrorKind::InvalidKeyFormat
-            | ErrorKind::Signing(_)
             | ErrorKind::RsaFailedSigning
             | ErrorKind::InvalidAlgorithmName => BaseError::TokenVerifyFailed(err),
             // 真正解析/IO 错误 → TokenParseFailed
-            ErrorKind::Base64(_)
-            | ErrorKind::Json(_)
-            | ErrorKind::Utf8(_)
-            | ErrorKind::Provider(_) => BaseError::TokenParseFailed(err),
+            ErrorKind::Base64(_) | ErrorKind::Json(_) | ErrorKind::Utf8(_) => {
+                BaseError::TokenParseFailed(err)
+            }
             // 防非穷尽: 未显式列出的验证类错误 → TokenVerifyFailed
             _ => BaseError::TokenVerifyFailed(err),
         }

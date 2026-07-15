@@ -128,19 +128,23 @@ async fn create_test_products_table(db: &Database) -> Result<(), Box<dyn std::er
 fn create_test_users_table_config() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("name", FieldType::String { max_length: 50 })
                     .required(true)
                     .validator(Validator::MinLength(2))
                     .validator(Validator::MaxLength(50)),
-            ).expect("有效字段配置应注册成功")
+            )
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("email", FieldType::String { max_length: 100 })
                     .required(true)
                     .validator(Validator::Email),
-            ).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer).required(true)).expect("有效字段配置应注册成功")
+            )
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("age", FieldType::Integer).required(true))
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new(
                     "status",
@@ -149,7 +153,8 @@ fn create_test_users_table_config() -> Arc<TableConfig> {
                     },
                 )
                 .required(true),
-            ).expect("有效字段配置应注册成功"),
+            )
+            .expect("有效字段配置应注册成功"),
     )
 }
 
@@ -157,10 +162,14 @@ fn create_test_users_table_config() -> Arc<TableConfig> {
 fn create_test_products_table_config() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("test_products")
-            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("name", FieldType::String { max_length: 100 }).required(true)).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("price", FieldType::Double).required(true)).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("deleted_at", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("name", FieldType::String { max_length: 100 }).required(true))
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("price", FieldType::Double).required(true))
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("deleted_at", FieldType::BigInt))
+            .expect("有效字段配置应注册成功")
             .soft_delete_field("deleted_at"),
     )
 }
@@ -169,7 +178,8 @@ fn create_test_products_table_config() -> Arc<TableConfig> {
 fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
     Arc::new(
         TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("id", FieldType::BigInt))
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("name", FieldType::String { max_length: 50 })
                     .required(true)
@@ -179,7 +189,8 @@ fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
                         filterable_roles: HashSet::from(["user".to_string(), "admin".to_string()]),
                         sortable_roles: HashSet::from(["user".to_string(), "admin".to_string()]),
                     }),
-            ).expect("有效字段配置应注册成功")
+            )
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new("email", FieldType::String { max_length: 100 })
                     .required(true)
@@ -189,8 +200,10 @@ fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
                         filterable_roles: HashSet::from(["admin".to_string()]),
                         sortable_roles: HashSet::from(["admin".to_string()]),
                     }),
-            ).expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer).required(true)).expect("有效字段配置应注册成功")
+            )
+            .expect("有效字段配置应注册成功")
+            .field(FieldConfig::new("age", FieldType::Integer).required(true))
+            .expect("有效字段配置应注册成功")
             .field(
                 FieldConfig::new(
                     "status",
@@ -199,7 +212,8 @@ fn create_test_users_table_config_with_permissions() -> Arc<TableConfig> {
                     },
                 )
                 .required(true),
-            ).expect("有效字段配置应注册成功"),
+            )
+            .expect("有效字段配置应注册成功"),
     )
 }
 

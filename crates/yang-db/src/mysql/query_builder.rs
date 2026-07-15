@@ -1217,7 +1217,7 @@ impl<'a> QueryBuilder<'a> {
     /// # use yang_db::Database;
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct User;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct User { id: i64 }
     /// let users = db.table("users")
     ///     .where_null("deleted_at")
     ///     .select::<User>()
@@ -1258,12 +1258,12 @@ impl<'a> QueryBuilder<'a> {
     /// # use yang_db::Database;
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct OrderSummary;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct OrderSummary { user_id: i64, cnt: i64 }
     /// let result = db.table("orders")
     ///     .field("user_id")
     ///     .field("COUNT(*) as cnt")
     ///     .group("user_id")
-    ///     .having_cond("cnt", ">", 5i64)
+    ///     .having_cond("cnt", ">", 5i64)?
     ///     .select::<OrderSummary>()
     ///     .await?;
     /// # Ok(())
@@ -1302,7 +1302,7 @@ impl<'a> QueryBuilder<'a> {
     /// # use yang_db::Database;
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct Row;
+    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct Row { user_id: i64 }
     /// let result = db.table("orders")
     ///     .group("user_id")
     ///     .having_cond("cnt", ">", 5i64)?  // 返回 Result，而非 panic
@@ -1454,7 +1454,7 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// let user: Option<User> = db.table("users")
-    ///     .where_and("id", "=", 1)
+    ///     .where_and("id", "=", 1)?
     ///     .find()
     ///     .await?;
     ///
@@ -1539,7 +1539,7 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// let users: Vec<User> = db.table("users")
-    ///     .where_and("status", "=", 1)
+    ///     .where_and("status", "=", 1)?
     ///     .order("name", true)
     ///     .select()
     ///     .await?;
@@ -1665,7 +1665,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询用户名
     /// let name: Option<String> = db.table("users")
-    ///     .where_and("id", "=", 1)
+    ///     .where_and("id", "=", 1)?
     ///     .value("name")
     ///     .await?;
     ///
@@ -1676,7 +1676,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询用户数量
     /// let count: Option<i64> = db.table("users")
-    ///     .where_and("status", "=", 1)
+    ///     .where_and("status", "=", 1)?
     ///     .value("COUNT(*)")
     ///     .await?;
     ///
@@ -1721,7 +1721,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 统计活跃用户数量
     /// let active_users = db.table("users")
-    ///     .where_and("status", "=", 1)
+    ///     .where_and("status", "=", 1)?
     ///     .count()
     ///     .await?;
     /// println!("活跃用户数: {}", active_users);
@@ -1776,7 +1776,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 计算已完成订单的总金额
     /// let completed_amount = db.table("orders")
-    ///     .where_and("status", "=", "completed")
+    ///     .where_and("status", "=", "completed")?
     ///     .sum("amount")
     ///     .await?;
     ///
@@ -1842,7 +1842,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 计算已完成订单的平均金额
     /// let avg_amount = db.table("orders")
-    ///     .where_and("status", "=", "completed")
+    ///     .where_and("status", "=", "completed")?
     ///     .avg("amount")
     ///     .await?;
     ///
@@ -1913,7 +1913,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询最小库存数量（整数）
     /// let min_stock: Option<i32> = db.table("products")
-    ///     .where_and("status", "=", 1)
+    ///     .where_and("status", "=", 1)?
     ///     .min("stock")
     ///     .await?;
     ///
@@ -1995,7 +1995,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询最高分数（整数）
     /// let max_score: Option<i32> = db.table("scores")
-    ///     .where_and("exam_id", "=", 1)
+    ///     .where_and("exam_id", "=", 1)?
     ///     .max("score")
     ///     .await?;
     ///
@@ -2451,7 +2451,7 @@ impl<'a> QueryBuilder<'a> {
     /// });
     ///
     /// let rows_affected = db.table("users")
-    ///     .where_and("id", "=", 1)
+    ///     .where_and("id", "=", 1)?
     ///     .update(&update_data)
     ///     .await?;
     ///
@@ -2536,7 +2536,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 删除指定用户
     /// let rows_affected = db.table("users")
-    ///     .where_and("id", "=", 1)
+    ///     .where_and("id", "=", 1)?
     ///     .delete()
     ///     .await?;
     ///
@@ -3324,8 +3324,7 @@ mod tests {
     #[test]
     fn test_try_to_sql_rejects_empty_in_condition() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false)
-            .where_in("id", Vec::<i64>::new());
+        let builder = QueryBuilder::new(pool, "users", false).where_in("id", Vec::<i64>::new());
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));

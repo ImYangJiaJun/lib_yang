@@ -212,14 +212,14 @@ impl From<redis::RedisError> for DbError {
         // 用协议层稳定 API 分类，而非脆弱的 Display 子串匹配：
         // - 超时优先（is_timeout 涵盖连接超时与响应超时）
         // - 连接断开 / IO / 连接拒绝 → 连接错误
-        // - 类型不匹配（UnexpectedReturnType）→ 类型转换错误
+        // - 类型不匹配（TypeError）→ 类型转换错误
         // - 其余 → 命令错误（兜底）
         use redis::ErrorKind;
         if err.is_timeout() {
             DbError::RedisTimeoutError(format!("超时错误: {}", err))
         } else if err.is_connection_dropped() || err.is_io_error() || err.is_connection_refusal() {
             DbError::RedisConnectionError(format!("连接错误: {}", err))
-        } else if matches!(err.kind(), ErrorKind::UnexpectedReturnType) {
+        } else if matches!(err.kind(), ErrorKind::TypeError) {
             DbError::RedisTypeConversionError(format!("类型错误: {}", err))
         } else {
             DbError::RedisCommandError(format!("Redis 错误: {}", err))
@@ -313,6 +313,23 @@ mod tests {
     fn test_type_conversion_error() {
         let err = DbError::TypeConversionError("无法转换类型".to_string());
         assert_eq!(format!("{}", err), "类型转换错误: 无法转换类型");
+    }
+
+    /// 对抗性验证：Redis 类型错误必须精确归类，普通响应错误不能混入类型转换错误。
+    #[test]
+    fn test_redis_error_classification_distinguishes_type_and_command_errors() {
+        let type_error = redis::RedisError::from((redis::ErrorKind::TypeError, "返回值类型不匹配"));
+        let response_error =
+            redis::RedisError::from((redis::ErrorKind::ResponseError, "命令执行失败"));
+
+        assert!(matches!(
+            DbError::from(type_error),
+            DbError::RedisTypeConversionError(_)
+        ));
+        assert!(matches!(
+            DbError::from(response_error),
+            DbError::RedisCommandError(_)
+        ));
     }
 
     #[test]

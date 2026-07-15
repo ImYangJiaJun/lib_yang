@@ -33,9 +33,9 @@ large_enum_variant = "warn"
 
 [dependencies]
 # Redis 连接池
-deadpool-redis = "0.23.0"
+deadpool-redis = "=0.22.0"
 # Redis 客户端
-redis = "1.2.0"
+redis = "0.32"
 # MySQL 异步驱动
 sqlx = { workspace = true }
 # 异步运行时
@@ -54,4 +54,4 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.11.0"
-testcontainers = "0.27.3"
+testcontainers = "=0.22.0"

@@ -519,10 +519,7 @@ impl TableConfig {
 /// ```rust
 /// use yang_base::table::IndexConfig;
 ///
-/// let index = IndexConfig {
-///     name: Some("idx_username".to_string()),
-///     fields: vec!["username".to_string()],
-/// };
+/// let index = IndexConfig::new(Some("idx_username".to_string()), vec!["username".to_string()]);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -536,6 +533,13 @@ pub struct IndexConfig {
     ///
     /// 组成索引的字段名列表，支持复合索引
     pub fields: Vec<String>,
+}
+
+impl IndexConfig {
+    /// 创建索引配置；`name` 为 `None` 时由迁移层生成索引名。
+    pub fn new(name: Option<String>, fields: Vec<String>) -> Self {
+        Self { name, fields }
+    }
 }
 
 /// 排序方向
@@ -558,11 +562,11 @@ pub enum SortOrder {
 /// ```rust
 /// use yang_base::table::TimestampFields;
 ///
-/// let timestamps = TimestampFields {
-///     created_at: Some("created_at".to_string()),
-///     updated_at: Some("updated_at".to_string()),
-///     deleted_at: Some("deleted_at".to_string()),
-/// };
+/// let timestamps = TimestampFields::new(
+///     Some("created_at".to_string()),
+///     Some("updated_at".to_string()),
+///     Some("deleted_at".to_string()),
+/// );
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -581,4 +585,19 @@ pub struct TimestampFields {
     ///
     /// 软删除时设置的时间戳字段
     pub deleted_at: Option<String>,
+}
+
+impl TimestampFields {
+    /// 创建时间戳字段配置；不使用的字段传入 `None`。
+    pub fn new(
+        created_at: Option<String>,
+        updated_at: Option<String>,
+        deleted_at: Option<String>,
+    ) -> Self {
+        Self {
+            created_at,
+            updated_at,
+            deleted_at,
+        }
+    }
 }

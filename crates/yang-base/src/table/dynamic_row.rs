@@ -254,7 +254,10 @@ mod tests {
         row.columns.insert("   ".to_string(), json!(2));
         row.columns.insert("name".to_string(), json!("Alice"));
 
-        assert_eq!(row.get("name").and_then(|value| value.as_str()), Some("Alice"));
+        assert_eq!(
+            row.get("name").and_then(|value| value.as_str()),
+            Some("Alice")
+        );
         assert_eq!(row.get(""), None);
         assert_eq!(row.get("   "), None);
     }

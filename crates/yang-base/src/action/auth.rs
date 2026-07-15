@@ -87,8 +87,14 @@ pub struct TokenPairResponse {
 impl core::fmt::Debug for TokenPairResponse {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TokenPairResponse")
-            .field("access_token", &format!("***({} chars)", self.access_token.len()))
-            .field("refresh_token", &format!("***({} chars)", self.refresh_token.len()))
+            .field(
+                "access_token",
+                &format!("***({} chars)", self.access_token.len()),
+            )
+            .field(
+                "refresh_token",
+                &format!("***({} chars)", self.refresh_token.len()),
+            )
             .finish()
     }
 }
@@ -105,7 +111,10 @@ pub struct RefreshInput {
 impl core::fmt::Debug for RefreshInput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RefreshInput")
-            .field("refresh_token", &format!("***({} chars)", self.refresh_token.len()))
+            .field(
+                "refresh_token",
+                &format!("***({} chars)", self.refresh_token.len()),
+            )
             .finish()
     }
 }
@@ -121,7 +130,10 @@ pub struct AccessTokenResponse {
 impl core::fmt::Debug for AccessTokenResponse {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AccessTokenResponse")
-            .field("access_token", &format!("***({} chars)", self.access_token.len()))
+            .field(
+                "access_token",
+                &format!("***({} chars)", self.access_token.len()),
+            )
             .finish()
     }
 }
@@ -150,7 +162,10 @@ impl core::fmt::Debug for LogoutInput {
             .field("token", &format!("***({} chars)", self.token.len()))
             .field(
                 "refresh_token",
-                &self.refresh_token.as_ref().map(|s| format!("***({} chars)", s.len())),
+                &self
+                    .refresh_token
+                    .as_ref()
+                    .map(|s| format!("***({} chars)", s.len())),
             )
             .finish()
     }

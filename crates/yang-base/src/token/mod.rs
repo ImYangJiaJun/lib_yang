@@ -81,20 +81,20 @@ pub enum TokenType {
 /// use yang_base::token::{TokenClaims, TokenType};
 /// use serde_json::json;
 ///
-/// let claims = TokenClaims {
-///     iss: "yang-base".to_string(),
-///     sub: "user_123".to_string(),
-///     aud: "yang-app".to_string(),
-///     exp: 1234567890,
-///     nbf: 1234567800,
-///     iat: 1234567800,
-///     jti: "unique-token-id".to_string(),
-///     token_type: TokenType::Access,
-///     custom: json!({
+/// let claims = TokenClaims::new(
+///     "yang-base",
+///     "user_123",
+///     "yang-app",
+///     1234567890,
+///     1234567800,
+///     1234567800,
+///     "unique-token-id",
+///     TokenType::Access,
+///     json!({
 ///         "role": "admin",
 ///         "permissions": ["read", "write"]
 ///     }),
-/// };
+/// );
 /// ```
 /// 标注 `#[non_exhaustive]`：未来新增字段不构成破坏性变更。
 /// 请使用 [`TokenClaims::new`] 构造。

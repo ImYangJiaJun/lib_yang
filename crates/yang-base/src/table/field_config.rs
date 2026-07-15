@@ -22,6 +22,7 @@ use std::collections::HashSet;
 /// ```rust
 /// use yang_base::table::{FieldConfig, FieldType, Validator, FieldPermissions};
 /// use serde_json::json;
+/// use std::collections::HashSet;
 ///
 /// // 创建一个必填的用户名字段
 /// let username_field = FieldConfig::new("username", FieldType::String { max_length: 50 })
@@ -251,6 +252,7 @@ impl FieldConfig {
     ///
     /// ```rust
     /// use yang_base::table::{FieldConfig, FieldType, FieldPermissions};
+    /// use std::collections::HashSet;
     ///
     /// let permissions = FieldPermissions {
     ///     readable_roles: HashSet::from(["admin".to_string()]),
@@ -419,6 +421,7 @@ impl FieldConfig {
 ///
 /// ```rust
 /// use yang_base::table::FieldPermissions;
+/// use std::collections::HashSet;
 ///
 /// // 创建一个只有管理员可以读写的字段权限
 /// let admin_only = FieldPermissions {
@@ -429,8 +432,8 @@ impl FieldConfig {
 /// };
 ///
 /// // 检查权限
-/// let admin_roles = vec!["admin".to_string()];
-/// let user_roles = vec!["user".to_string()];
+/// let admin_roles = HashSet::from(["admin".to_string()]);
+/// let user_roles = HashSet::from(["user".to_string()]);
 ///
 /// assert!(admin_only.can_read(&admin_roles));
 /// assert!(!admin_only.can_read(&user_roles));
@@ -493,9 +496,7 @@ impl FieldPermissions {
     /// assert!(!permissions.can_read(&HashSet::from(["guest".to_string()])));
     /// ```
     pub fn can_read(&self, user_roles: &HashSet<String>) -> bool {
-        self.readable_roles
-            .is_empty()
-            || user_roles.iter().any(|r| self.readable_roles.contains(r))
+        self.readable_roles.is_empty() || user_roles.iter().any(|r| self.readable_roles.contains(r))
     }
 
     /// 检查用户是否有写入权限

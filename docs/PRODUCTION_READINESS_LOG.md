@@ -2,6 +2,20 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P0-04 stable/MSRV/feature/Docker 持续门禁
+
+- 范围：`.github/workflows/ci.yml`、`scripts/verify_ci_contract.py`、workspace 依赖锁定、两库 doctest、Redis 事务错误分类、`typed_action_integration` 的真实服务依赖。
+- 风险：仓库没有 CI，锁文件已漂移到要求 Rust 1.82-1.88/Edition 2024 的依赖，声明的 MSRV 1.80 无法编译；doc tests 存在 19 个过期示例；MySQL typed-action job 未初始化鉴权黑名单所需 Redis，配置出来的 job 实际为红。
+- 修复：建立 stable fmt/lib/clippy/doc、Rust 1.80、九组 feature matrix，以及 MySQL 8/PostgreSQL 16/Redis 7 串行集成 job；全部 Cargo 命令使用 `--locked`。把 Redis/testcontainers/JWT/HTTP 等依赖收敛到支持 1.80 的兼容版本，并按真实旧版 API 修正 Redis/JWT 边界；同步修复 doctest 示例和 `non_exhaustive` 配置构造入口；typed-action 集成测试同时启动 MySQL 8 与 Redis 7。
+- RED：真实 `cargo +1.80.0 check` 依次暴露 Edition 2024 manifest、高于 1.80 的 `rust-version` 及 JWT/Redis API 差异；首次 doctest 为 `yang-db` 13 失败、`yang-base` 6 失败；首次 typed-action Docker 运行返回 `RedisNotInitialized`。
+- 对抗性验证：CI contract self-test 逐一删除每个必需 job/命令/镜像/串行参数并确认校验器拒绝；Redis 错误测试区分 EXECABORT/TypeError/ResponseError；过期 JWT 证明安全验证失败而显式 unsafe 解析仍成功；真实容器验证 Redis pipeline 100+ 批量/并发/错误恢复、Lua 脚本和 typed-action 全 CRUD 链路。
+- 已运行验证：`python scripts/verify_ci_contract.py --self-test`；workflow contract 校验与 YAML 解析。
+- 已运行验证：`cargo +1.80.0 check -p yang-db -p yang-base --all-features --locked`。
+- 已运行验证：`cargo test --lib -p yang-db --locked`（363 tests，0 failed，1 ignored）；`cargo test --lib -p yang-base --locked`（461 passed，0 failed，8 ignored）。
+- 已运行验证：`cargo clippy -p yang-db -p yang-base --all-targets --all-features --locked -- -D warnings`；两库 doc tests（65 passed；74 passed、148 ignored）；九组 feature matrix 均在 `RUSTFLAGS=-Dwarnings` 下通过。
+- 已运行验证：Redis pipeline（9 passed）、Redis script（13 passed）、typed-action MySQL 8 + Redis 7（1 passed）真实 Docker 集成。
+- 说明：三个 TableQuery Docker 测试文件按测试逐个启动容器，整文件串行执行超过本地工具 120 秒上限；CI job 已保留无超时的串行执行，发布候选阶段再记录完整结果。
+
 ## 2026-07-15 - P0-03 all-target/all-feature Clippy 门禁
 
 - 范围：`crates/yang-db/src/mysql/database.rs`、`crates/yang-db/src/postgres/database.rs`、`crates/yang-db/src/redis/config.rs`、`crates/yang-base/src/http/request.rs`、`crates/yang-base/src/table/dynamic_row.rs`

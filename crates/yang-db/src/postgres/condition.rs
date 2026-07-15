@@ -444,8 +444,7 @@ mod tests {
     #[test]
     fn test_checked_rejects_empty_boolean_condition() {
         let mut params = Vec::new();
-        let result =
-            condition_to_sql_owned_checked(Condition::And(vec![]), &mut params);
+        let result = condition_to_sql_owned_checked(Condition::And(vec![]), &mut params);
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
         assert!(params.is_empty());

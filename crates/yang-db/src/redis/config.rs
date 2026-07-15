@@ -281,9 +281,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_zero_max_connections() {
         assert!(matches!(
-            RedisConfig::default()
-                .with_max_connections(0)
-                .validate(),
+            RedisConfig::default().with_max_connections(0).validate(),
             Err(crate::DbError::InvalidArgument(_))
         ));
     }

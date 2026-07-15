@@ -345,10 +345,7 @@ impl TableQuery {
     /// ```
     fn validate_read_field(&self, field_name: &str) -> Result<(), BaseError> {
         let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
-            BaseError::FieldNotFound(
-                self.table_config.table_name.clone(),
-                field_name.to_string(),
-            )
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), field_name.to_string())
         })?;
 
         if !field_config.permissions.can_read(&self.user_roles_set) {
@@ -384,6 +381,7 @@ impl TableQuery {
         Ok(())
     }
 
+    #[cfg(feature = "mysql")]
     fn validate_all_fields_readable(&self) -> Result<(), BaseError> {
         self.validate_all_fields_readable_for_roles(&self.user_roles_set)
     }
@@ -3142,7 +3140,11 @@ mod tests {
     fn test_query() -> TableQuery {
         let config = Arc::new(
             crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)).expect("有效字段配置应注册成功"),
+                .field(crate::table::FieldConfig::new(
+                    "id",
+                    crate::table::FieldType::Integer,
+                ))
+                .expect("有效字段配置应注册成功"),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         TableQuery::new(config, roles, None)
@@ -3164,7 +3166,8 @@ mod tests {
                 .field(
                     crate::table::FieldConfig::new("secret_rank", crate::table::FieldType::Integer)
                         .sortable(false),
-                ).expect("有效字段配置应注册成功")
+                )
+                .expect("有效字段配置应注册成功")
                 .default_order(vec![(
                     "secret_rank".to_string(),
                     crate::table::SortOrder::Desc,
@@ -3190,13 +3193,19 @@ mod tests {
         };
         let config = Arc::new(
             crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new("id", crate::table::FieldType::Integer)).expect("有效字段配置应注册成功")
+                .field(crate::table::FieldConfig::new(
+                    "id",
+                    crate::table::FieldType::Integer,
+                ))
+                .expect("有效字段配置应注册成功")
                 .field(
-                    crate::table::FieldConfig::new("secret", crate::table::FieldType::String {
-                        max_length: 64,
-                    })
+                    crate::table::FieldConfig::new(
+                        "secret",
+                        crate::table::FieldType::String { max_length: 64 },
+                    )
                     .permissions(protected_permissions),
-                ).expect("有效字段配置应注册成功"),
+                )
+                .expect("有效字段配置应注册成功"),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         let query = TableQuery::new(config, roles, None);
@@ -3252,13 +3261,10 @@ mod tests {
                 )
                 .expect("受限字段配置应有效"),
         );
-        let partial_err = TableQuery::new(
-            Arc::clone(&partially_readable),
-            Arc::clone(&roles),
-            None,
-        )
-        .build_select_sql(None)
-        .expect_err("部分字段不可读时 SELECT * 应 fail-closed");
+        let partial_err =
+            TableQuery::new(Arc::clone(&partially_readable), Arc::clone(&roles), None)
+                .build_select_sql(None)
+                .expect_err("部分字段不可读时 SELECT * 应 fail-closed");
         assert!(
             matches!(partial_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "secret")
         );
@@ -3354,7 +3360,10 @@ mod tests {
             .expect("默认分页参数应合法");
 
         assert_eq!(page, 1);
-        assert_eq!(page_size, crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE);
+        assert_eq!(
+            page_size,
+            crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE
+        );
 
         let (sql, _) = query
             .build_select_sql(None)
