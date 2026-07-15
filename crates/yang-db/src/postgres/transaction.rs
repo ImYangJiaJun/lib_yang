@@ -552,6 +552,55 @@ impl<'a> TransactionQueryBuilder<'a> {
         }
     }
 
+    /// 在当前事务中原子增加字段值。
+    pub async fn increment(self, field: &str, amount: i64) -> Result<u64, DbError> {
+        self.execute_arithmetic_update(
+            field,
+            amount,
+            crate::postgres::query_builder::ArithmeticOperator::Add,
+        )
+        .await
+    }
+
+    /// 在当前事务中原子减少字段值。
+    pub async fn decrement(self, field: &str, amount: i64) -> Result<u64, DbError> {
+        self.execute_arithmetic_update(
+            field,
+            amount,
+            crate::postgres::query_builder::ArithmeticOperator::Subtract,
+        )
+        .await
+    }
+
+    async fn execute_arithmetic_update(
+        self,
+        field: &str,
+        amount: i64,
+        operator: crate::postgres::query_builder::ArithmeticOperator,
+    ) -> Result<u64, DbError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let mut generator = crate::postgres::query_builder::SqlGenerator::new();
+        generator.build_arithmetic_update(
+            &self.table,
+            field,
+            operator,
+            amount,
+            &self.conditions,
+        )?;
+        let mut query = sqlx::query(generator.get_sql());
+        for param in generator.get_params() {
+            query = bind_execute_param(query, param);
+        }
+        let tx = self
+            .tx
+            .tx
+            .as_mut()
+            .ok_or_else(|| DbError::TransactionError("事务已提交或回滚".to_string()))?;
+        Ok(query.execute(&mut **tx).await?.rows_affected())
+    }
+
     /// 删除数据
     ///
     /// 在事务中执行 DELETE 操作

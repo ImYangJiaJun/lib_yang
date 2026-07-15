@@ -416,7 +416,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 扩展 TransactionQueryBuilder 前先定义与普通 QueryBuilder 的最小复用边界，避免第三套 SQL 生成器。
 - 使用真实 MySQL/PostgreSQL 并发测试验证阻塞、回滚和取消行为。
 
-#### P3-04 原子字段更新 — `PENDING` — effort M
+#### P3-04 原子字段更新 — `DONE` — effort M
 
 - `increment` / `decrement` / 受控 column expression。
 - 字段必须是受验证标识符，增量必须走绑定参数。

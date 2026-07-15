@@ -319,3 +319,129 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     );
     retry.commit().await.expect("提交重试事务");
 }
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
+    let db = mysql::Database::connect(&mysql_url())
+        .await
+        .expect("连接 MySQL");
+    db.execute("DROP TABLE IF EXISTS p3_counters")
+        .await
+        .expect("清理计数表");
+    db.execute("CREATE TABLE p3_counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+        .await
+        .expect("创建计数表");
+    db.execute("INSERT INTO p3_counters VALUES (1, 10), (2, 9223372036854775807)")
+        .await
+        .expect("写入计数");
+
+    assert_eq!(
+        db.table("p3_counters")
+            .where_and("id", "=", 1)
+            .expect("合法条件")
+            .increment("value", -3)
+            .await
+            .expect("负增量"),
+        1
+    );
+    assert_eq!(
+        db.table("p3_counters")
+            .where_and("id", "=", 1)
+            .expect("合法条件")
+            .decrement("value", 2)
+            .await
+            .expect("原子递减"),
+        1
+    );
+    let mut tx = db.transaction().await.expect("开始事务");
+    assert_eq!(
+        tx.table("p3_counters")
+            .where_and("id", "=", 1)
+            .increment("value", 5)
+            .await
+            .expect("事务内原子增加"),
+        1
+    );
+    tx.commit().await.expect("提交事务");
+    let rows: Vec<(i64,)> = db
+        .table("p3_counters")
+        .field_identifier("value")
+        .expect("合法投影")
+        .where_and("id", "=", 1)
+        .expect("合法条件")
+        .select()
+        .await
+        .expect("读取结果");
+    assert_eq!(rows, vec![(10,)]);
+    assert!(db
+        .table("p3_counters")
+        .where_and("id", "=", 2)
+        .expect("合法条件")
+        .increment("value", 1)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+#[ignore = "需要真实 PostgreSQL；通过 PG_TEST_URL 配置"]
+async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
+    let db = postgres::Database::connect(&postgres_url())
+        .await
+        .expect("连接 PostgreSQL");
+    db.execute("DROP TABLE IF EXISTS p3_counters")
+        .await
+        .expect("清理计数表");
+    db.execute("CREATE TABLE p3_counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+        .await
+        .expect("创建计数表");
+    db.execute("INSERT INTO p3_counters VALUES (1, 10), (2, 9223372036854775807)")
+        .await
+        .expect("写入计数");
+
+    assert_eq!(
+        db.table("p3_counters")
+            .where_and("id", "=", 1)
+            .expect("合法条件")
+            .increment("value", -3)
+            .await
+            .expect("负增量"),
+        1
+    );
+    assert_eq!(
+        db.table("p3_counters")
+            .where_and("id", "=", 1)
+            .expect("合法条件")
+            .decrement("value", 2)
+            .await
+            .expect("原子递减"),
+        1
+    );
+    let mut tx = db.transaction().await.expect("开始事务");
+    assert_eq!(
+        tx.table("p3_counters")
+            .where_and("id", "=", 1)
+            .increment("value", 5)
+            .await
+            .expect("事务内原子增加"),
+        1
+    );
+    tx.commit().await.expect("提交事务");
+    let rows: Vec<(i64,)> = db
+        .table("p3_counters")
+        .field_identifier("value")
+        .expect("合法投影")
+        .where_and("id", "=", 1)
+        .expect("合法条件")
+        .select()
+        .await
+        .expect("读取结果");
+    assert_eq!(rows, vec![(10,)]);
+    assert!(db
+        .table("p3_counters")
+        .where_and("id", "=", 2)
+        .expect("合法条件")
+        .increment("value", 1)
+        .await
+        .is_err());
+}

@@ -544,6 +544,34 @@ impl SqlGenerator {
         Ok(())
     }
 
+    /// 生成受控的字段原子加减 UPDATE。
+    pub(crate) fn build_arithmetic_update(
+        &mut self,
+        table: &str,
+        field: &str,
+        operator: ArithmeticOperator,
+        amount: i64,
+        conditions: &[Condition],
+    ) -> Result<(), crate::error::DbError> {
+        self.clear();
+        if conditions.is_empty() {
+            return Err(crate::error::DbError::MissingWhereClause);
+        }
+        let table = super::identifier::quote_identifier(table)?;
+        let field = super::identifier::quote_identifier(field)?;
+        self.sql.push_str("UPDATE ");
+        self.sql.push_str(&table);
+        self.sql.push_str(" SET ");
+        self.sql.push_str(&field);
+        self.sql.push_str(" = ");
+        self.sql.push_str(&field);
+        self.sql.push(' ');
+        self.sql.push_str(operator.as_sql());
+        self.sql.push_str(" ?");
+        self.params.push(SqlValue::Int(amount));
+        self.build_where(conditions)
+    }
+
     /// 生成 DELETE 语句
     ///
     /// # 参数
@@ -927,6 +955,21 @@ fn map_comparison_condition(field: &str, op: &str, value: SqlValue) -> Result<Co
 enum UnionOperator {
     Distinct,
     All,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ArithmeticOperator {
+    Add,
+    Subtract,
+}
+
+impl ArithmeticOperator {
+    const fn as_sql(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Subtract => "-",
+        }
+    }
 }
 
 /// 查询构建器
@@ -2670,6 +2713,39 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
+    /// 原子增加字段值；增量使用绑定参数，且必须提供 WHERE。
+    pub async fn increment(self, field: &str, amount: i64) -> Result<u64, crate::error::DbError> {
+        self.execute_arithmetic_update(field, amount, ArithmeticOperator::Add)
+            .await
+    }
+
+    /// 原子减少字段值；增量使用绑定参数，且必须提供 WHERE。
+    pub async fn decrement(self, field: &str, amount: i64) -> Result<u64, crate::error::DbError> {
+        self.execute_arithmetic_update(field, amount, ArithmeticOperator::Subtract)
+            .await
+    }
+
+    async fn execute_arithmetic_update(
+        self,
+        field: &str,
+        amount: i64,
+        operator: ArithmeticOperator,
+    ) -> Result<u64, crate::error::DbError> {
+        let mut generator = SqlGenerator::new();
+        generator.build_arithmetic_update(
+            &self.table,
+            field,
+            operator,
+            amount,
+            &self.conditions,
+        )?;
+        let mut query = sqlx::query(generator.get_sql());
+        for param in generator.get_params() {
+            query = bind_execute_param(query, param);
+        }
+        Ok(query.execute(self.pool).await?.rows_affected())
+    }
+
     /// 删除数据
     ///
     /// 执行 DELETE 操作，删除表中的数据。
@@ -3197,6 +3273,47 @@ mod tests {
         assert!(union
             .render_for_transaction(Some(crate::RowLock::ForUpdate))
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_atomic_update_rejects_missing_where_and_adversarial_field_before_io() {
+        let pool = create_test_pool().await;
+        let missing_where = QueryBuilder::new(&pool, "accounts", false)
+            .increment("balance", 1)
+            .await;
+        assert!(matches!(
+            missing_where,
+            Err(crate::DbError::MissingWhereClause)
+        ));
+
+        let bad_field = QueryBuilder::new(&pool, "accounts", false)
+            .where_and("id", "=", 1)
+            .expect("合法条件")
+            .decrement("balance = 0; DROP TABLE accounts --", 1)
+            .await;
+        assert!(matches!(bad_field, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn test_atomic_update_renderer_binds_negative_amount_before_where_params() {
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_arithmetic_update(
+                "accounts",
+                "balance",
+                ArithmeticOperator::Add,
+                -3,
+                &[Condition::Eq("id".to_string(), SqlValue::Int(9))],
+            )
+            .expect("原子更新应可渲染");
+        assert_eq!(
+            generator.get_sql(),
+            "UPDATE `accounts` SET `balance` = `balance` + ? WHERE `id` = ?"
+        );
+        assert!(matches!(
+            generator.get_params(),
+            [SqlValue::Int(-3), SqlValue::Int(9)]
+        ));
     }
 
     #[tokio::test]

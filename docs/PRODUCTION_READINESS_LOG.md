@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P3-04 原子字段更新
+
+- 范围：MySQL/PostgreSQL 普通 QueryBuilder 与 TransactionQueryBuilder 对称增加 `increment`/`decrement`；两条执行路径共享同一个 `SqlGenerator::build_arithmetic_update`。
+- RED：双方言公共边界测试产生 4 个缺方法错误，确认原子更新能力不存在；实现后 4 项定向测试覆盖缺 WHERE、恶意字段、负增量及参数顺序。
+- 安全语义：更新字段只接受单段标识符，表名和 WHERE 继续走 checked renderer；增量固定为 `i64` 并绑定，MySQL 为 `?` 后接 WHERE 参数，PostgreSQL 精确为增量 `$1`、条件 `$2`；普通与事务路径均 fail-closed 禁止无 WHERE 全表更新。
+- 真实数据库：MySQL 8/PostgreSQL 16 均验证 `increment(-3)`、`decrement(2)`、事务内 `increment(5)` 并提交，最终值回到 10；对 `BIGINT::MAX + 1` 均返回数据库错误而非静默环绕（双方言各 1 passed）。
+- 门禁：`yang-db` lib 397 passed/1 ignored，doctest 65 passed，all-target/all-feature Clippy `-D warnings` 通过。
+
 ## 2026-07-15 - P3-03 行锁与事务查询
 
 - 范围：新增跨后端 `RowLock::{ForUpdate, ForShare}`；MySQL/PostgreSQL Transaction 对称提供 `select`、`select_locked`、`select_for_update`、`select_for_share`，普通 QueryBuilder 不公开锁入口。
