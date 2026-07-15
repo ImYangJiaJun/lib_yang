@@ -135,9 +135,14 @@ impl SqlGenerator {
     /// - Ok(()): 成功生成 SQL
     /// - Err(DbError): 生成失败
     fn build_select(&mut self, builder: &QueryBuilder) -> Result<(), crate::error::DbError> {
-        // 清空之前的内容
         self.clear();
+        self.build_compound_select(builder)
+    }
 
+    fn build_compound_select(
+        &mut self,
+        builder: &QueryBuilder,
+    ) -> Result<(), crate::error::DbError> {
         // SELECT 子句
         self.append("SELECT ");
 
@@ -181,7 +186,17 @@ impl SqlGenerator {
             self.build_having(&builder.having_clause)?;
         }
 
-        // ORDER BY 子句
+        for (operator, branch) in &builder.unions {
+            match operator {
+                UnionOperator::Distinct => self.append(" UNION "),
+                UnionOperator::All => self.append(" UNION ALL "),
+            }
+            self.append("(");
+            self.build_compound_select(branch)?;
+            self.append(")");
+        }
+
+        // 当前构建器的 ORDER/LIMIT 作用于整个复合查询；分支自己的作用域保留在括号内。
         if !builder.order_by.is_empty() {
             self.build_order_by(&builder.order_by);
         }
@@ -908,6 +923,12 @@ fn map_comparison_condition(field: &str, op: &str, value: SqlValue) -> Result<Co
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum UnionOperator {
+    Distinct,
+    All,
+}
+
 /// 查询构建器
 pub struct QueryBuilder<'a> {
     #[allow(dead_code)]
@@ -927,6 +948,7 @@ pub struct QueryBuilder<'a> {
     limit: Option<u64>,
     offset: Option<u64>,
     distinct: bool,
+    unions: Vec<(UnionOperator, Box<QueryBuilder<'a>>)>,
     field_types: HashMap<String, FieldType>,
     #[allow(dead_code)]
     enable_logging: bool,
@@ -947,6 +969,7 @@ impl<'a> QueryBuilder<'a> {
             limit: None,
             offset: None,
             distinct: false,
+            unions: Vec::new(),
             field_types: HashMap::new(),
             enable_logging,
         }
@@ -1033,6 +1056,37 @@ impl<'a> QueryBuilder<'a> {
     pub fn distinct(mut self) -> Self {
         self.distinct = true;
         self
+    }
+
+    /// 使用 UNION 组合一个显式投影且输出列数相同的查询。
+    pub fn union(self, other: QueryBuilder<'a>) -> Result<Self, crate::error::DbError> {
+        self.add_union(other, UnionOperator::Distinct)
+    }
+
+    /// 使用 UNION ALL 组合一个显式投影且输出列数相同的查询。
+    pub fn union_all(self, other: QueryBuilder<'a>) -> Result<Self, crate::error::DbError> {
+        self.add_union(other, UnionOperator::All)
+    }
+
+    fn add_union(
+        mut self,
+        other: QueryBuilder<'a>,
+        operator: UnionOperator,
+    ) -> Result<Self, crate::error::DbError> {
+        if self.fields.is_empty() || other.fields.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "UNION 各分支必须显式声明输出字段，不能使用未知列数的 *".to_string(),
+            ));
+        }
+        if self.fields.len() != other.fields.len() {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "UNION 输出列数不一致：左侧 {} 列，右侧 {} 列",
+                self.fields.len(),
+                other.fields.len()
+            )));
+        }
+        self.unions.push((operator, Box::new(other)));
+        Ok(self)
     }
 
     /// 添加 AND 条件
@@ -3009,6 +3063,74 @@ mod tests {
                 Subquery::new("orders", "user_id").expect("合法子查询"),
             )
             .is_err());
+    }
+
+    #[test]
+    fn test_union_all_keeps_branch_scope_and_parameter_order() {
+        let pool = make_sync_test_pool();
+        let branch = QueryBuilder::new(pool, "archived_users", false)
+            .field_identifier("id")
+            .expect("合法字段")
+            .field_identifier("kind")
+            .expect("合法字段")
+            .where_and("tenant_id", "=", 8)
+            .expect("合法条件")
+            .order_identifier("id", false)
+            .expect("合法排序")
+            .limit(2);
+        let builder = QueryBuilder::new(pool, "users", false)
+            .field_identifier("id")
+            .expect("合法字段")
+            .field_identifier("kind")
+            .expect("合法字段")
+            .where_and("tenant_id", "=", 7)
+            .expect("合法条件")
+            .union_all(branch)
+            .expect("输出列数一致")
+            .order_identifier("id", true)
+            .expect("合法排序")
+            .limit(5);
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_select(&builder)
+            .expect("UNION ALL 应可渲染");
+
+        assert_eq!(generator.get_sql(), "SELECT `id`, `kind` FROM `users` WHERE `tenant_id` = ? UNION ALL (SELECT `id`, `kind` FROM `archived_users` WHERE `tenant_id` = ? ORDER BY `id` DESC LIMIT 2) ORDER BY `id` ASC LIMIT 5");
+        assert!(matches!(
+            generator.get_params(),
+            [SqlValue::Int(7), SqlValue::Int(8)]
+        ));
+    }
+
+    #[test]
+    fn test_union_rejects_unknown_or_mismatched_output_and_bad_branch_table() {
+        let pool = make_sync_test_pool();
+        assert!(QueryBuilder::new(pool, "users", false)
+            .union(QueryBuilder::new(pool, "archive", false))
+            .is_err());
+        assert!(QueryBuilder::new(pool, "users", false)
+            .field_identifier("id")
+            .expect("合法字段")
+            .union(
+                QueryBuilder::new(pool, "archive", false)
+                    .field_identifier("id")
+                    .expect("合法字段")
+                    .field_identifier("kind")
+                    .expect("合法字段"),
+            )
+            .is_err());
+        let builder = QueryBuilder::new(pool, "users", false)
+            .field_identifier("id")
+            .expect("合法字段")
+            .union(
+                QueryBuilder::new(pool, "archive; DROP TABLE users", false)
+                    .field_identifier("id")
+                    .expect("合法字段"),
+            )
+            .expect("列数一致");
+        let mut generator = SqlGenerator::new();
+        assert!(generator.build_select(&builder).is_err());
+        assert!(generator.get_params().is_empty());
     }
 
     #[tokio::test]

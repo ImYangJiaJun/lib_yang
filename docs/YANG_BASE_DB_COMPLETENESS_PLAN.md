@@ -404,7 +404,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - 子查询使用 QuerySpec/受控 builder，不接收外部裸 SQL。
 - 验证两方言占位符编号和参数顺序。
 
-#### P3-02 UNION / UNION ALL — `PENDING` — effort L
+#### P3-02 UNION / UNION ALL — `DONE` — effort L
 
 - 校验列数量/输出契约，组合查询各自持有参数。
 - limit/order 的作用域必须明确并覆盖方言差异测试。

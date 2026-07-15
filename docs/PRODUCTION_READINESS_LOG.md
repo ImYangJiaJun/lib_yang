@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P3-02 UNION / UNION ALL
+
+- 范围：MySQL/PostgreSQL QueryBuilder 对称增加 `union`/`union_all`，复用原 `SqlGenerator` 递归渲染复合 SELECT，不引入 raw SQL 或第三套生成器。
+- RED：双方言 4 项新测试产生 8 个缺方法编译错误，确认公共能力不存在；覆盖 `UNION ALL`、参数顺序、分支/根 ORDER-LIMIT 作用域及拒绝路径。
+- 输出契约：所有 UNION 分支必须显式声明投影，拒绝列数未知的 `*`；左右输出列数不一致立即返回 `InvalidArgument`。分支 ORDER/LIMIT 位于分支括号内，根 ORDER/LIMIT 在全部 UNION 后生效。
+- 对抗性验证：恶意分支表名在 checked renderer 中失败且不生成绑定参数；双方言精确 SQL/参数测试通过，PostgreSQL 跨分支占位符连续为 `$1/$2`。`yang-db` lib 389 passed/1 ignored，doctest 65 passed，all-target/all-feature Clippy 通过。
+- 真实数据库：MySQL 8/PostgreSQL 16 分别执行带分支 DESC LIMIT 与根 ASC ORDER 的 UNION ALL，结果均为 `[(1), (4)]`（各 1 passed），证明两种方言作用域语法和绑定参数可执行。
+
 ## 2026-07-15 - P3-01 受控子查询与 EXISTS
 
 - 范围：MySQL/PostgreSQL 对称提供 `Subquery`、`where_exists`、`where_not_exists`、`where_in_subquery`，支持绑定值条件与受控列对列关联，不接收外部裸 SQL。
