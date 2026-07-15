@@ -2,6 +2,19 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P0-01 MySQL/PostgreSQL 限定条件字段回归
+
+- 范围：`crates/yang-db/src/mysql/condition.rs`、`crates/yang-db/src/mysql/query_builder.rs`、`crates/yang-db/src/postgres/condition.rs`、`crates/yang-db/src/postgres/query_builder.rs`
+- 风险：QueryBuilder 先用仅支持单段字段的 `quote_identifier()` 校验 WHERE/HAVING，再交给可回退原始字符串的 legacy renderer；合法 `table.field` 被错误拒绝，校验和渲染也不是同一条安全路径。
+- 修复：MySQL/PostgreSQL QueryBuilder 的 WHERE/HAVING 直接委托 checked renderer；checked renderer 使用 `quote_qualified()` 对单段或两段标识符逐段校验并按方言转义，不再执行“前置校验 + RAW 渲染”的双轨逻辑。
+- RED：`cargo test -p yang-db --lib test_try_to_sql_accepts_qualified_where_and_having_identifiers`，两方言测试均以 `InvalidArgument("非法 SQL 标识符: \"users.status\"")` 失败。
+- 对抗性验证：两方言对称覆盖合法 `field`/`table.field`，以及空段、三段、分号、注释、引号、函数表达式；同时验证 `try_to_sql()` 返回真实错误且 `to_sql()` 只返回固定不可执行哨兵。
+- 已运行验证：`cargo test -p yang-db --lib test_try_to_sql_accepts_qualified_where_and_having_identifiers`
+- 已运行验证：`cargo test -p yang-db --lib test_try_to_sql_rejects_malicious_qualified_where_and_having_identifiers`
+- 已运行验证：`cargo test -p yang-db --lib test_select_complex_query`
+- 已运行验证：`cargo test -p yang-db --lib test_sql_generator_complex_query`
+- 已运行验证：`cargo test -p yang-db --lib`（360 passed，0 failed，1 ignored）
+
 ## 2026-07-06 - yang-db QueryBuilder SQL 调试接口错误暴露
 
 - 范围：`crates/yang-db/src/mysql/query_builder.rs`、`crates/yang-db/src/postgres/query_builder.rs`

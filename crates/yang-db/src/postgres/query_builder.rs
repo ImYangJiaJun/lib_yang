@@ -115,49 +115,6 @@ impl SqlGenerator {
         self.params.clear();
     }
 
-    fn validate_conditions(conditions: &[Condition]) -> Result<(), crate::error::DbError> {
-        for condition in conditions {
-            Self::validate_condition(condition)?;
-        }
-        Ok(())
-    }
-
-    fn validate_condition_field(field: &str) -> Result<(), crate::error::DbError> {
-        super::identifier::quote_identifier(field).map(|_| ())
-    }
-
-    fn validate_condition(condition: &Condition) -> Result<(), crate::error::DbError> {
-        match condition {
-            Condition::Eq(field, _)
-            | Condition::Ne(field, _)
-            | Condition::Gt(field, _)
-            | Condition::Lt(field, _)
-            | Condition::Gte(field, _)
-            | Condition::Lte(field, _)
-            | Condition::Between(field, _, _)
-            | Condition::Like(field, _)
-            | Condition::IsNull(field)
-            | Condition::IsNotNull(field) => Self::validate_condition_field(field),
-            Condition::In(field, values) => {
-                Self::validate_condition_field(field)?;
-                if values.is_empty() {
-                    return Err(crate::error::DbError::InvalidArgument(format!(
-                        "IN 条件 `{field}` 的值列表不能为空"
-                    )));
-                }
-                Ok(())
-            }
-            Condition::And(conditions) | Condition::Or(conditions) if conditions.is_empty() => {
-                Err(crate::error::DbError::InvalidArgument(
-                    "AND/OR 条件组不能为空".to_string(),
-                ))
-            }
-            Condition::And(conditions) | Condition::Or(conditions) => {
-                Self::validate_conditions(conditions)
-            }
-        }
-    }
-
     /// 测试专用：暴露 clear 方法供测试模块调用
     #[cfg(test)]
     pub(crate) fn clear_for_test(&mut self) {
@@ -267,13 +224,13 @@ impl SqlGenerator {
             return Ok(());
         }
 
-        Self::validate_conditions(conditions)?;
-
         self.append(" WHERE ");
 
         if conditions.len() == 1 {
-            let sql =
-                crate::postgres::condition::condition_to_sql(&conditions[0], &mut self.params);
+            let sql = crate::postgres::condition::condition_to_sql_owned_checked(
+                conditions[0].clone(),
+                &mut self.params,
+            )?;
             self.append(&sql);
         } else {
             // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
@@ -283,7 +240,10 @@ impl SqlGenerator {
                 if i > 0 {
                     self.sql.push_str(" AND ");
                 }
-                let frag = crate::postgres::condition::condition_to_sql(cond, &mut self.params);
+                let frag = crate::postgres::condition::condition_to_sql_owned_checked(
+                    cond.clone(),
+                    &mut self.params,
+                )?;
                 self.sql.push_str(&frag);
             }
             self.sql.push(')');
@@ -359,12 +319,12 @@ impl SqlGenerator {
 
     /// 生成 HAVING 子句
     fn build_having(&mut self, conditions: &[Condition]) -> Result<(), crate::error::DbError> {
-        Self::validate_conditions(conditions)?;
-
         self.append(" HAVING ");
         if conditions.len() == 1 {
-            let sql =
-                crate::postgres::condition::condition_to_sql(&conditions[0], &mut self.params);
+            let sql = crate::postgres::condition::condition_to_sql_owned_checked(
+                conditions[0].clone(),
+                &mut self.params,
+            )?;
             self.append(&sql);
         } else {
             // 直接 push_str 写入 self.sql，避免先 collect Vec<String> 再 join。
@@ -374,7 +334,10 @@ impl SqlGenerator {
                 if i > 0 {
                     self.sql.push_str(" AND ");
                 }
-                let frag = crate::postgres::condition::condition_to_sql(c, &mut self.params);
+                let frag = crate::postgres::condition::condition_to_sql_owned_checked(
+                    c.clone(),
+                    &mut self.params,
+                )?;
                 self.sql.push_str(&frag);
             }
         }
@@ -2048,6 +2011,56 @@ mod tests {
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn test_try_to_sql_accepts_qualified_where_and_having_identifiers() {
+        let pool = make_sync_test_pool();
+        let builder = QueryBuilder::new(pool, "users", false)
+            .where_and_unchecked("users.status", "=", 1i64)
+            .group("users.id")
+            .having_cond_unchecked("users.score", ">", 10i64);
+
+        let sql = builder
+            .try_to_sql()
+            .expect("合法的两段限定条件字段应生成 SQL");
+
+        assert!(sql.contains("WHERE \"users\".\"status\" = $1"));
+        assert!(sql.contains("HAVING \"users\".\"score\" > $2"));
+    }
+
+    #[test]
+    fn test_try_to_sql_rejects_malicious_qualified_where_and_having_identifiers() {
+        let pool = make_sync_test_pool();
+        let invalid_fields = [
+            "",
+            ".id",
+            "users.",
+            "a.b.c",
+            "users.id;DROP",
+            "users.id --",
+            "users.\"id\"",
+            "COUNT(users.id)",
+        ];
+
+        for field in invalid_fields {
+            let where_builder =
+                QueryBuilder::new(pool, "users", false).where_and_unchecked(field, "=", 1i64);
+            assert!(matches!(
+                where_builder.try_to_sql(),
+                Err(crate::DbError::InvalidArgument(_))
+            ));
+            assert_eq!(where_builder.to_sql(), "/* SQL generation failed */");
+
+            let having_builder = QueryBuilder::new(pool, "users", false)
+                .group("users.id")
+                .having_cond_unchecked(field, "=", 1i64);
+            assert!(matches!(
+                having_builder.try_to_sql(),
+                Err(crate::DbError::InvalidArgument(_))
+            ));
+            assert_eq!(having_builder.to_sql(), "/* SQL generation failed */");
+        }
     }
 
     #[test]

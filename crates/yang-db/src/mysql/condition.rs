@@ -418,6 +418,7 @@ fn write_condition_to_sql_owned_checked(
     out: &mut String,
     params: &mut Vec<SqlValue>,
 ) -> Result<(), DbError> {
+    let quote_identifier = super::identifier::quote_qualified;
     match condition {
         Condition::Eq(field, value) => {
             params.push(value);
