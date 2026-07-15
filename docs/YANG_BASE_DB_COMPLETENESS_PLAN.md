@@ -477,7 +477,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 - `docs/BACKLOG.md` 中已完成或已失效条目标记来源和日期，不重写历史审计。
 - 增加“支持能力矩阵”和“与 br-addon/br-db 的设计差异”，说明哪些缺口是明确 non-goal。
 
-#### P5-03 发布候选验证 — `PENDING` — effort M
+#### P5-03 发布候选验证 — `DONE` — effort M
 
 - clean checkout 全门禁。
 - MSRV/stable、feature matrix、doc tests、真实数据库集成、依赖审计。

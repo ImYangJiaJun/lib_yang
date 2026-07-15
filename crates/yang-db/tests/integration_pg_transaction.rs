@@ -39,7 +39,7 @@ async fn test_pg_transaction_rollback_on_drop() {
     let _ = db.drop_table(table).await;
     db.create_table(&format!(
         "CREATE TABLE {} (
-            id SERIAL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             value BIGINT NOT NULL
         )",
         table
@@ -99,7 +99,7 @@ async fn test_pg_transaction_concurrent_isolation() {
     let _ = db.drop_table(table).await;
     db.create_table(&format!(
         "CREATE TABLE {} (
-            id SERIAL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             value BIGINT NOT NULL
         )",
         table

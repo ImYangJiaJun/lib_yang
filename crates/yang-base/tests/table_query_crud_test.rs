@@ -115,7 +115,7 @@ async fn create_test_products_table(db: &Database) -> Result<(), Box<dyn std::er
         CREATE TABLE IF NOT EXISTS test_products (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
-            price DECIMAL(10, 2) NOT NULL,
+            price DOUBLE NOT NULL,
             deleted_at BIGINT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         "#,
@@ -239,7 +239,7 @@ macro_rules! setup_test_env {
         // 创建数据库连接
         let db = Database::connect(&db_url).await.unwrap();
 
-        (pool, db)
+        (pool, db, _container)
     }};
 }
 
@@ -251,7 +251,7 @@ macro_rules! setup_test_env {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_crud_complete_flow() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -365,7 +365,7 @@ async fn test_crud_complete_flow() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_validation_required() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -394,7 +394,7 @@ async fn test_field_validation_required() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_validation_type() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -427,7 +427,7 @@ async fn test_field_validation_type() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_validation_custom_validators() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -475,7 +475,7 @@ async fn test_field_validation_custom_validators() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_permission_read() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -519,7 +519,7 @@ async fn test_field_permission_read() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_permission_write() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -595,7 +595,7 @@ async fn test_field_permission_write() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_permission_filter() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -639,7 +639,7 @@ async fn test_field_permission_filter() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_field_permission_sort() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -685,7 +685,7 @@ async fn test_field_permission_sort() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_soft_delete() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表（带软删除字段）
     create_test_products_table(&db).await.unwrap();
@@ -733,12 +733,29 @@ async fn test_soft_delete() {
 
     assert_eq!(affected, 1, "软删除应该影响 1 行");
 
-    // 4. 验证软删除结果：记录仍然存在，但 deleted_at 不为 null
+    // 4. 默认读取必须隐藏软删除记录
+    let query = TableQuery::new(
+        table_config.clone(),
+        vec!["admin".to_string()].into(),
+        Some(Arc::new(pool.clone())),
+    );
+
+    let products: Vec<TestProduct> = query
+        .where_eq("id", serde_json::json!(product_id))
+        .unwrap()
+        .select()
+        .await
+        .unwrap();
+
+    assert!(products.is_empty(), "默认读取应该隐藏软删除记录");
+
+    // 5. with_trashed 可证明记录仍存在且 deleted_at 已设置
     let query = TableQuery::new(
         table_config,
         vec!["admin".to_string()].into(),
         Some(Arc::new(pool)),
-    );
+    )
+    .with_trashed();
 
     let products: Vec<TestProduct> = query
         .where_eq("id", serde_json::json!(product_id))
@@ -761,7 +778,7 @@ async fn test_soft_delete() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_physical_delete() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表（不配置软删除字段）
     create_test_users_table(&db).await.unwrap();
@@ -833,7 +850,7 @@ async fn test_physical_delete() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_paginate_query() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();
@@ -903,7 +920,7 @@ async fn test_paginate_query() {
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_paginate_query_with_conditions() {
-    let (pool, db) = setup_test_env!();
+    let (pool, db, _container) = setup_test_env!();
 
     // 创建测试表
     create_test_users_table(&db).await.unwrap();

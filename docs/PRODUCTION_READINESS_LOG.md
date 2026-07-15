@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P5-03 发布候选验证
+
+- 范围：从 P5-02 的 clean checkout 执行 stable/MSRV、17 组 feature matrix、doc、Clippy、RustSec、三包 package 与 MySQL 8/PostgreSQL 16/Redis 7 真实集成，并新增 `docs/RELEASE_CANDIDATE_REPORT.md`。
+- RED：发布契约先以“报告不存在 + 计划仍含 PENDING”双重失败；强化 CI 契约后又准确拒绝缺失的 openapi 单 feature 行，补齐 workflow 后转绿。
+- 依赖审计：升级 rustls-webpki 0.103.12→0.103.13；rsa Marvin advisory 因上游无补丁且项目无私钥解密路径、time RFC2822 DoS 因修复版要求 Rust 1.88 且仓库无对应调用，均以具名理由显式豁免。审计为 0 个未豁免漏洞，并在报告保留 5 个上游 warning。
+- package：yang-base-derive/yang-db/yang-base 分别生成 9/84/144 files，workspace 多包临时 registry 按依赖顺序完成全部 verify；证明独立 base 需先发布内部依赖是顺序约束而非内容失败。
+- 真实库对抗：69 项通过。门禁首轮额外捕获忽略测试中的容器 guard 提前 drop、分页默认 20→10 漂移、MySQL DECIMAL/f64、PostgreSQL SERIAL/i64 类型不匹配；修复 fixture 后完整重跑，并强化软删除默认隐藏/with_trashed 可见断言。
+- 门禁：stable 两库 lib 397/1 ignored 与 481/8 ignored，doctest 65 与 74/148 ignored，all-target/all-feature Clippy 通过；17 组 feature 的 check/lib/doc 共 51 个子门禁、Rust 1.80 `-Dwarnings` 与 CI/feature isolation 契约均通过。
+
 ## 2026-07-15 - P5-02 文档统一
 
 - 范围：同步 yang-base 0.1.2/yang-db 0.1.4 的 crate README、API 总览、feature 表与 examples 编译契约；新增 `docs/BASE_DB_CAPABILITY_MATRIX.md`，并在 `docs/BACKLOG.md` 添加只追加、不改写历史审计的日期化完成度对账。

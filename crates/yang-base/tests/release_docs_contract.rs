@@ -7,8 +7,7 @@ fn workspace_file(relative: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("无法读取 {}: {error}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|error| panic!("无法读取 {}: {error}", path.display()))
 }
 
 fn assert_contains_all(document: &str, name: &str, expected: &[&str]) {
@@ -89,13 +88,7 @@ fn capability_matrix_and_backlog_reconciliation_are_present() {
     assert_contains_all(
         &matrix,
         "能力矩阵",
-        &[
-            "br-addon",
-            "br-db",
-            "non-goal",
-            "受控 SQL",
-            "真实消费者",
-        ],
+        &["br-addon", "br-db", "non-goal", "受控 SQL", "真实消费者"],
     );
 
     let backlog = workspace_file("docs/BACKLOG.md");

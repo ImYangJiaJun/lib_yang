@@ -502,10 +502,10 @@ async fn test_paginate_with_default_params() {
     // 执行分页查询：不设置分页参数，使用默认值
     let result: PaginatedResult<TestUser> = query.paginate().await.unwrap();
 
-    // 验证结果：默认应该是第 1 页，每页 20 条
+    // 验证结果：默认应该是第 1 页，每页 10 条
     assert_eq!(result.total, 50);
     assert_eq!(result.page, 1, "默认页码应该是 1");
-    assert_eq!(result.page_size, 20, "默认每页大小应该是 20");
-    assert_eq!(result.total_pages, 3, "总页数应该是 3");
-    assert_eq!(result.data.len(), 20, "当前页数据条数应该是 20");
+    assert_eq!(result.page_size, 10, "默认每页大小应该是 10");
+    assert_eq!(result.total_pages, 5, "总页数应该是 5");
+    assert_eq!(result.data.len(), 10, "当前页数据条数应该是 10");
 }
