@@ -175,9 +175,9 @@ impl GlobalRedis {
     ///
     /// 供编排式停机（[`crate::lifecycle`]）调用。`OnceLock` 单例不重置，仅原地关闭
     /// 连接池——停机后不应再使用。未初始化时为 no-op。
-    pub fn close() {
+    pub async fn close() {
         if let Some(client) = GLOBAL_REDIS.get() {
-            client.close();
+            client.close().await;
         }
     }
 

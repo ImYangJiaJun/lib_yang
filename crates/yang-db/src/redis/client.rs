@@ -1,5 +1,7 @@
 use crate::redis::{RedisPipeline, RedisTransaction};
-use crate::{DbError, PoolStatus, RedisConfig, RedisValue, Result};
+use crate::{
+    BackendCapabilities, DbError, PoolStatus, RedisConfig, RedisValue, Result, REDIS_CAPABILITIES,
+};
 use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
 
 /// Redis 客户端
@@ -12,6 +14,11 @@ pub struct RedisClient {
 }
 
 impl RedisClient {
+    /// 返回 Redis 后端的静态能力契约。
+    pub const fn capabilities() -> &'static BackendCapabilities {
+        &REDIS_CAPABILITIES
+    }
+
     /// 连接到 Redis 服务器
     ///
     /// # 参数
@@ -116,13 +123,9 @@ impl RedisClient {
     /// 与 `Database::close` 对称，供编排式停机调用。幂等；close 后再用会返回连接池
     /// 错误而非 panic（deadpool `Pool::get` 在关闭后返回错误）。
     ///
-    /// # API 一致性说明 (A-H1)
-    ///
-    /// 本方法为**同步**（`deadpool::Pool::close()` 即发即忘），而
-    /// [`Database::close`] 为 **async**（sqlx `MySqlPool::close()` 需 await
-    /// drain 在途连接）。这是底层连接池库的差异。编排式停机代码需注意：
-    /// `db.close().await` 需要 `.await`，`redis.close()` 不需要。
-    pub fn close(&self) {
+    /// 为了让编排层可以用同一调用形态关闭所有后端，本方法与 SQL 后端一样为 async；
+    /// deadpool 的实际关闭动作仍在当前调用内同步完成。
+    pub async fn close(&self) {
         self.pool.close();
     }
 
@@ -1765,18 +1768,17 @@ impl RedisClient {
 
     /// 健康检查 - 验证 Redis 连接是否正常
     ///
-    /// 执行 PING 命令检查 Redis 服务可达性。**任何异常（PING 失败或无法获取连接）
-    /// 均不抛错，统一返回 `Ok(false)`**——`Err` 分支不可达。
+    /// 执行 PING 命令检查 Redis 服务可达性。连接池或命令错误原样返回，避免把基础设施
+    /// 故障降格成不可诊断的布尔值。
     ///
     /// # 返回
     /// - `Ok(true)`: PING 成功，Redis 连接正常
-    /// - `Ok(false)`: PING 响应异常 **或** 无法获取连接（底层错误被吞）
+    /// - `Ok(false)`: PING 返回空响应
+    /// - `Err(DbError)`: 无法获取连接或命令执行失败
     pub async fn health_check(&self) -> Result<bool> {
         let cmd = redis::cmd("PING");
-        match self.execute(&cmd).await {
-            Ok(result) => Ok(!result.is_nil()),
-            Err(_) => Ok(false),
-        }
+        let result = self.execute(&cmd).await?;
+        Ok(!result.is_nil())
     }
 
     /// 获取连接池当前状态
@@ -2145,6 +2147,28 @@ mod tests {
         let client = RedisClient { pool };
 
         assert_eq!(client.pool_status().max_size, 25);
+    }
+
+    #[tokio::test]
+    async fn health_check_propagates_closed_pool_error() {
+        let config = Config::from_url("redis://127.0.0.1:6379");
+        let pool = config
+            .create_pool(Some(Runtime::Tokio1))
+            .expect("应能创建无需立即连接的测试池");
+        let client = RedisClient { pool };
+
+        client.close().await;
+
+        assert!(client.is_closed());
+        let result = client.health_check().await;
+        assert!(
+            matches!(
+                &result,
+                Err(DbError::RedisPoolError(message))
+                    if message.starts_with("获取连接失败:") && message.contains("closed")
+            ),
+            "关闭后的健康检查应保留连接池错误，实际为: {result:?}"
+        );
     }
 
     #[tokio::test]

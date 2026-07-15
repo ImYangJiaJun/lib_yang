@@ -1,7 +1,7 @@
 use crate::error::DbError;
 use crate::mysql::query_builder::QueryBuilder;
 use crate::mysql::transaction::Transaction;
-use crate::PoolStatus;
+use crate::{BackendCapabilities, PoolStatus, MYSQL_CAPABILITIES};
 use sqlx::mysql::MySqlPool;
 
 /// 数据库配置
@@ -181,6 +181,11 @@ pub struct Database {
 }
 
 impl Database {
+    /// 返回 MySQL 后端的静态能力契约。
+    pub const fn capabilities() -> &'static BackendCapabilities {
+        &MYSQL_CAPABILITIES
+    }
+
     /// 创建数据库连接
     ///
     /// # 参数
@@ -254,18 +259,11 @@ impl Database {
     /// 的这一层，使 yang-db 直接消费者也能探活。
     ///
     /// # 返回
-    /// - `Ok(())`：连接正常
+    /// - `Ok(true)`：连接正常
     /// - `Err(DbError)`：查询失败（连接不可用）
-    ///
-    /// # API 一致性说明 (A-C2)
-    ///
-    /// 本方法返回 `Result<(), DbError>`，而 [`RedisClient::health_check`] 返回
-    /// `Result<bool>`。这是历史遗留的不一致：MySQL 侧将失败直接暴露为 `Err`，
-    /// Redis 侧将异常吞掉统一返回 `Ok(false)`。两端语义不同，在统一重构前调用方
-    /// 需分别处理。
-    pub async fn health_check(&self) -> Result<(), DbError> {
+    pub async fn health_check(&self) -> Result<bool, DbError> {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
-        Ok(())
+        Ok(true)
     }
 
     /// 优雅关闭连接池（I3）：停止发放新连接、等待在途连接归还后关闭。
@@ -603,5 +601,24 @@ mod tests {
             Database::connect_with_config("mysql://root:bad@127.0.0.1:1/test", config).await;
 
         assert!(matches!(result, Err(DbError::InvalidArgument(_))));
+    }
+
+    #[tokio::test]
+    async fn health_check_propagates_closed_pool_error() -> Result<(), sqlx::Error> {
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://root:test@127.0.0.1:3306/test")?;
+        let db = Database {
+            pool,
+            config: DatabaseConfig::default(),
+        };
+
+        db.close().await;
+
+        assert!(db.is_closed());
+        assert!(matches!(
+            db.health_check().await,
+            Err(DbError::ConnectionError(message)) if message.contains("连接池已关闭")
+        ));
+        Ok(())
     }
 }

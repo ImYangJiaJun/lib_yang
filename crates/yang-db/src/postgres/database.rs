@@ -1,6 +1,6 @@
 use crate::error::DbError;
 use crate::postgres::{QueryBuilder, Transaction};
-use crate::PoolStatus;
+use crate::{BackendCapabilities, PoolStatus, POSTGRES_CAPABILITIES};
 use sqlx::postgres::PgPool;
 
 /// 数据库配置
@@ -149,6 +149,11 @@ pub struct Database {
 }
 
 impl Database {
+    /// 返回 PostgreSQL 后端的静态能力契约。
+    pub const fn capabilities() -> &'static BackendCapabilities {
+        &POSTGRES_CAPABILITIES
+    }
+
     /// 创建数据库连接
     ///
     /// # 参数
@@ -218,11 +223,11 @@ impl Database {
     /// 健康检查：执行 `SELECT 1` 验证连接可用（与 MySQL 后端对称；NEW-12）。
     ///
     /// # 返回
-    /// - `Ok(())`：连接正常
+    /// - `Ok(true)`：连接正常
     /// - `Err(DbError)`：查询失败（连接不可用）
-    pub async fn health_check(&self) -> Result<(), DbError> {
+    pub async fn health_check(&self) -> Result<bool, DbError> {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
-        Ok(())
+        Ok(true)
     }
 
     /// 优雅关闭连接池（I3）：停止发放新连接、等待在途连接归还后关闭。与 MySQL 对称。
@@ -583,5 +588,24 @@ mod tests {
             Database::connect_with_config("postgres://postgres:bad@127.0.0.1:1/test", config).await;
 
         assert!(matches!(result, Err(DbError::InvalidArgument(_))));
+    }
+
+    #[tokio::test]
+    async fn health_check_propagates_closed_pool_error() -> Result<(), sqlx::Error> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:test@127.0.0.1:5432/test")?;
+        let db = Database {
+            pool,
+            config: DatabaseConfig::default(),
+        };
+
+        db.close().await;
+
+        assert!(db.is_closed());
+        assert!(matches!(
+            db.health_check().await,
+            Err(DbError::ConnectionError(message)) if message.contains("连接池已关闭")
+        ));
+        Ok(())
     }
 }

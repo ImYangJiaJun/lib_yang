@@ -2,6 +2,15 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P1-04 后端能力与统一管理面契约
+
+- 范围：`yang-db` 的 MySQL/PostgreSQL QueryBuilder/Transaction/Redis 能力表、三后端 `capabilities/health_check/close/is_closed/pool_status` 管理面、`yang-base` Redis 停机编排，以及 `docs/BACKEND_CAPABILITIES.md`。
+- 风险：后端能力只能靠实现细节推断，PostgreSQL 方言能力可能被误认为跨后端可用；SQL 健康检查返回 `Result<()>`，Redis 关闭为同步调用且健康检查把连接池/命令故障吞成 `Ok(false)`，导致统一编排和故障诊断失真。
+- RED：编译期管理面契约产生 6 个错误，确认三后端均缺少 `capabilities()`、MySQL/PostgreSQL `health_check` 返回类型不符、Redis `close` 不是 Future；关闭 Redis 池的对抗测试进一步确认旧实现会吞掉实际连接池错误。
+- 修复：新增可机读 `BackendCapabilities`、`BackendCapability`、`BackendKind`、`PlaceholderStyle`、`SafetyConstraint` 及三后端静态常量；显式区分 PostgreSQL `RETURNING`/冲突目标、MySQL 原生 upsert 和 Redis 原生 Pipeline/WATCH/Lua。三后端统一为 `health_check().await -> Result<bool, DbError>`、`close().await`、`is_closed() -> bool`、`pool_status() -> PoolStatus`，Redis 基础设施错误改为结构化传播。
+- 对抗性验证：能力正反例与编译期签名测试 4 项通过；关闭后的 MySQL/PostgreSQL/Redis 健康检查 3 项均验证为具体连接池错误；`cargo test -p yang-db --lib --all-features --locked`（381 passed，1 ignored），`cargo test -p yang-base --lib --all-features --locked`（465 passed，8 ignored），无 feature 能力测试 4 项通过。
+- 门禁：`cargo test --doc -p yang-db --all-features --locked`（65 passed），`cargo test --doc -p yang-base --all-features --locked`（74 passed，148 ignored）；两库 all-target/all-feature Clippy `-D warnings` 通过；Rust 1.80 all-feature check 通过。
+
 ## 2026-07-15 - P1-03 yang-db/yang-base 独立 feature 矩阵
 
 - 范围：workspace/两库 Cargo feature、后端模块 gate、跨后端 `PoolStatus`、无 feature 测试 gate、README/docs.rs、CI feature matrix 与依赖隔离校验器。

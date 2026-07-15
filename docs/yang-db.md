@@ -479,8 +479,10 @@ let result: String = client.eval_script(&script, &["mykey".into()], &[]).await?;
 // 原始命令
 client.execute(&redis::cmd("PING")) -> Result<RedisValue>
 
-// 健康检查
-client.health_check() -> Result<bool>
+// 统一管理面：错误不会被吞成 Ok(false)
+client.health_check().await -> Result<bool, DbError>
+client.close().await;
+client.is_closed() -> bool
 
 // 连接池状态
 let status: PoolStatus = client.pool_status();

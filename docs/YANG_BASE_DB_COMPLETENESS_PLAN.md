@@ -344,7 +344,7 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 - yang-base：none、token、http、mysql、redis、默认 all。
 - docs.rs 所需组合和 README 示例组合。
 
-#### P1-04 定义后端能力契约 — `PENDING` — effort M
+#### P1-04 定义后端能力契约 — `DONE` — effort M
 
 - 建立 MySQL/PostgreSQL QueryBuilder/Transaction capability 表。
 - 同义操作统一名称、错误和安全约束。

@@ -81,7 +81,7 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
     // 2. 关闭 Redis（与启动顺序逆序）
     #[cfg(feature = "redis")]
     {
-        crate::database::GlobalRedis::close();
+        crate::database::GlobalRedis::close().await;
         log::info!("Redis 连接池已关闭");
     }
 

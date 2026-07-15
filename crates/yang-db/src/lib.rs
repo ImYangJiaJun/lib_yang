@@ -1,3 +1,6 @@
+// 后端能力契约
+pub mod capability;
+
 // 错误类型模块
 pub mod error;
 
@@ -23,6 +26,10 @@ pub mod redis;
 mod sql_types;
 
 // 重新导出错误类型
+pub use capability::{
+    BackendCapabilities, BackendCapability, BackendKind, PlaceholderStyle, SafetyConstraint,
+    MYSQL_CAPABILITIES, POSTGRES_CAPABILITIES, REDIS_CAPABILITIES,
+};
 pub use error::{DbError, DbErrorCategory};
 
 // 重新导出事务隔离级别
