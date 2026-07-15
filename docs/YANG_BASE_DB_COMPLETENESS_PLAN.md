@@ -316,7 +316,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 5. 为 field/order/group/join ON 明确“标识符 API”和“可信表达式 API”。
 6. 属性测试覆盖注释、引号、Unicode 边界、空段、限定段数和占位符顺序。
 
-#### P1-02 保留基础设施错误链 — `PENDING` — effort M
+#### P1-02 保留基础设施错误链 — `DONE` — effort M
 
 1. 为 Redis 连接与操作统一使用持有 `yang_db::DbError` 的 BaseError 变体。
 2. 迁移执行错误保留 module/version/checksum 和底层 source。

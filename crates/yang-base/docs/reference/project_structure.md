@@ -252,7 +252,7 @@ impl Plugin for UserPlugin {
         ]
     }
     
-    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("用户插件初始化完成");
         Ok(())
     }

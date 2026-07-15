@@ -114,7 +114,7 @@ mod tests {
             &self.name
         }
 
-        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.order.lock().unwrap().push(self.name.clone());
             Ok(())
         }
@@ -133,7 +133,7 @@ mod tests {
             &["plugin_a"]
         }
 
-        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.0.lock().unwrap().push("plugin_b".to_string());
             Ok(())
         }
@@ -152,7 +152,7 @@ mod tests {
             &["plugin_b"]
         }
 
-        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             self.0.lock().unwrap().push("plugin_c".to_string());
             Ok(())
         }
@@ -167,7 +167,7 @@ mod tests {
             "shutdown_failer"
         }
 
-        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err("intentional shutdown failure".into())
         }
     }
@@ -197,16 +197,18 @@ mod tests {
         );
 
         if let Err(e) = result {
-            match e {
-                BaseError::PluginShutdownFailed(name, reason) => {
-                    assert_eq!(name, "shutdown_failer", "错误应指向 shutdown_failer");
-                    assert_eq!(
-                        reason, "intentional shutdown failure",
-                        "错误原因应透传插件的失败信息"
-                    );
+            match &e {
+                BaseError::PluginLifecycleFailed {
+                    plugin,
+                    stage: crate::plugin::PluginLifecycleStage::Shutdown,
+                    source,
+                } => {
+                    assert_eq!(plugin, "shutdown_failer", "错误应指向 shutdown_failer");
+                    assert_eq!(source.to_string(), "intentional shutdown failure");
                 }
-                other => panic!("期望 PluginShutdownFailed，得到: {:?}", other),
+                other => panic!("期望 PluginLifecycleFailed，得到: {:?}", other),
             }
+            assert_eq!(e.code(), 100008, "shutdown 阶段错误码不得漂移");
         }
     }
 

@@ -2,6 +2,19 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-15 - P1-02 基础设施结构化错误链
+
+- 范围：`yang-base` 的 `BaseError`、`GlobalRedis`、`DatabaseInitializer`、插件生命周期接口及其示例/测试。
+- 风险：GlobalRedis 的连接与 44 个操作入口把 `yang_db::DbError` 提前转为字符串；迁移执行只保留 module/version/reason，无法关联具体 SQL 内容；插件 register/init/shutdown 回调也立即把动态错误扁平化，导致 `Error::source()` 在基础设施边界中断。
+- 修复：`RedisConnectionFailed` 与 `RedisOperationFailed` 直接持有 `#[source] DbError`，所有 GlobalRedis 入口统一传递结构化错误；新增带 module/version/FNV-1a checksum/source 的 `MigrationExecutionFailed`；新增 `PluginError`、`PluginLifecycleStage` 与 `PluginLifecycleFailed`，真实生命周期路径保留插件名、阶段和原始 error object。旧错误码按阶段复用，现有兼容变体与错误码不删除。
+- RED：新增 source 链测试首次无法编译，明确暴露 Redis 变体仍要求 `String`、迁移/插件结构化变体不存在；调用链检查同时确认 44 个 Redis 操作、两条迁移执行路径和四条插件生命周期路径存在 `to_string()` 扁平化。
+- 对抗性验证：覆盖 Redis 连接/命令错误、迁移 module/version/checksum/source、插件 register/init/shutdown 阶段；真实 manager/builder/registry 路径验证回调失败未注册、逆序 shutdown 继续执行且首个错误仍保留 source；`code()`/`code_str()` 对新旧结构化变体保持一致。
+- 已运行验证：错误链、迁移 checksum、register/shutdown 定向单测与 `plugin_test` 失败路径均通过。
+- 已运行验证：`cargo test -p yang-base --lib --locked`（465 passed，0 failed，8 ignored）；`cargo test -p yang-base --test plugin_test --locked`（17 passed）。
+- 已运行验证：`cargo test --doc -p yang-base --locked`（74 passed，148 ignored）；`cargo clippy -p yang-base --all-targets --all-features --locked -- -D warnings`。
+- 已运行验证：`cargo +1.80.0 check -p yang-base --all-features --locked`。
+- 后续基线：额外运行 `cargo test -p yang-base --no-default-features --lib --locked` 暴露 65 个测试 target 缺少 feature gating，已留给 P1-03 处理；默认特性与 all-feature 门禁不受影响。
+
 ## 2026-07-15 - P1-01 SQL 语义类型与唯一 checked renderer
 
 - 范围：`crates/yang-db/src/sql_types.rs`、MySQL/PostgreSQL 的 `identifier`、`condition` 与 `query_builder` 模块。

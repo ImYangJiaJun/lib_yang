@@ -30,10 +30,36 @@
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::error::BaseError;
+
+/// 插件生命周期回调的结构化错误类型。
+pub type PluginError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// 插件生命周期阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PluginLifecycleStage {
+    /// 注册回调。
+    Register,
+    /// 初始化 SQL 或初始化回调。
+    Initialize,
+    /// 关闭回调。
+    Shutdown,
+}
+
+impl fmt::Display for PluginLifecycleStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Register => "register",
+            Self::Initialize => "initialize",
+            Self::Shutdown => "shutdown",
+        })
+    }
+}
 
 fn normalize_plugin_name(name: &str) -> Result<&str, BaseError> {
     let name = name.trim();
@@ -152,7 +178,7 @@ pub trait Plugin: Send + Sync {
     /// # 返回
     /// - Ok(()): 注册成功
     /// - Err: 注册失败
-    async fn on_register(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_register(&self) -> Result<(), PluginError> {
         Ok(())
     }
 
@@ -164,7 +190,7 @@ pub trait Plugin: Send + Sync {
     /// # 返回
     /// - Ok(()): 初始化成功
     /// - Err: 初始化失败
-    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_init(&self) -> Result<(), PluginError> {
         Ok(())
     }
 
@@ -175,7 +201,7 @@ pub trait Plugin: Send + Sync {
     /// # 返回
     /// - Ok(()): 关闭成功
     /// - Err: 关闭失败
-    async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_shutdown(&self) -> Result<(), PluginError> {
         Ok(())
     }
 }
@@ -273,7 +299,11 @@ impl PluginManager {
         plugin
             .on_register()
             .await
-            .map_err(|e| BaseError::PluginRegisterFailed(name.clone(), e.to_string()))?;
+            .map_err(|source| BaseError::PluginLifecycleFailed {
+                plugin: name.clone(),
+                stage: PluginLifecycleStage::Register,
+                source,
+            })?;
 
         // 第二阶段：写锁 + 二次校验（防止 TOCTOU 竞态）
         {
@@ -552,20 +582,24 @@ impl PluginManager {
         let mut plugins = self.get_all().await;
         plugins.reverse(); // 逆序关闭
 
-        let mut errors: Vec<(String, String)> = Vec::new();
+        let mut errors: Vec<(String, PluginError)> = Vec::new();
 
         for plugin in plugins {
             let name = plugin.name();
             if let Err(e) = plugin.on_shutdown().await {
                 log::error!("插件 {} 关闭失败: {}", name, e);
-                errors.push((name.to_string(), e.to_string()));
+                errors.push((name.to_string(), e));
             } else {
                 log::info!("插件已关闭: {}", name);
             }
         }
 
-        if let Some((name, reason)) = errors.into_iter().next() {
-            Err(BaseError::PluginShutdownFailed(name, reason))
+        if let Some((plugin, source)) = errors.into_iter().next() {
+            Err(BaseError::PluginLifecycleFailed {
+                plugin,
+                stage: PluginLifecycleStage::Shutdown,
+                source,
+            })
         } else {
             Ok(())
         }
@@ -669,7 +703,11 @@ impl PluginManagerBuilder {
         plugin
             .on_register()
             .await
-            .map_err(|e| BaseError::PluginRegisterFailed(name.clone(), e.to_string()))?;
+            .map_err(|source| BaseError::PluginLifecycleFailed {
+                plugin: name.clone(),
+                stage: PluginLifecycleStage::Register,
+                source,
+            })?;
 
         // 插入 HashMap
         self.plugins.insert(name.clone(), plugin);
@@ -873,20 +911,24 @@ impl PluginRegistry {
     /// ```
     pub async fn shutdown(&self) -> Result<(), BaseError> {
         // 逆序遍历缓存的排序结果，确保依赖插件最后关闭
-        let mut errors: Vec<(String, String)> = Vec::new();
+        let mut errors: Vec<(String, PluginError)> = Vec::new();
 
         for plugin in self.sorted_plugins.iter().rev() {
             let name = plugin.name();
             if let Err(e) = plugin.on_shutdown().await {
                 log::error!("插件 {} 关闭失败: {}", name, e);
-                errors.push((name.to_string(), e.to_string()));
+                errors.push((name.to_string(), e));
             } else {
                 log::info!("插件已关闭: {}", name);
             }
         }
 
-        if let Some((name, reason)) = errors.into_iter().next() {
-            Err(BaseError::PluginShutdownFailed(name, reason))
+        if let Some((plugin, source)) = errors.into_iter().next() {
+            Err(BaseError::PluginLifecycleFailed {
+                plugin,
+                stage: PluginLifecycleStage::Shutdown,
+                source,
+            })
         } else {
             Ok(())
         }
@@ -1023,7 +1065,7 @@ mod tests {
             "plugin_failing"
         }
 
-        async fn on_register(&self) -> Result<(), Box<dyn std::error::Error>> {
+        async fn on_register(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err("注册失败".into())
         }
     }
@@ -1230,12 +1272,24 @@ mod tests {
     /// 验证需求: 9.3 - 注册回调失败时应返回错误
     #[tokio::test]
     async fn test_builder_register_callback_failure_returns_error() {
+        use std::error::Error;
+
         let mut builder = PluginManagerBuilder::new();
         let result = builder.register(PluginFailing).await;
-        assert!(
-            matches!(result, Err(BaseError::PluginRegisterFailed(_, _))),
-            "注册回调失败应返回 PluginRegisterFailed 错误"
-        );
+        let error = match result {
+            Err(error) => error,
+            Ok(()) => panic!("注册回调失败时不应成功"),
+        };
+        assert!(matches!(
+            &error,
+            BaseError::PluginLifecycleFailed {
+                plugin,
+                stage: PluginLifecycleStage::Register,
+                ..
+            } if plugin == "plugin_failing"
+        ));
+        assert_eq!(error.code(), 100003);
+        assert!(error.source().is_some(), "注册回调底层错误链不得丢失");
     }
 
     /// 验证需求: 9.4 - build() 消费构建器并返回 PluginRegistry
@@ -1302,7 +1356,7 @@ mod tests {
             fn name(&self) -> &str {
                 "plugin_a"
             }
-            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 SHUTDOWN_ORDER.lock().unwrap().push("plugin_a".to_string());
                 Ok(())
             }
@@ -1318,7 +1372,7 @@ mod tests {
             fn dependencies(&self) -> &[&str] {
                 &["plugin_a"]
             }
-            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 SHUTDOWN_ORDER.lock().unwrap().push("plugin_b".to_string());
                 Ok(())
             }
@@ -1334,7 +1388,7 @@ mod tests {
             fn dependencies(&self) -> &[&str] {
                 &["plugin_b"]
             }
-            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+            async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 SHUTDOWN_ORDER.lock().unwrap().push("plugin_c".to_string());
                 Ok(())
             }

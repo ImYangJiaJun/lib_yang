@@ -68,6 +68,18 @@ pub enum BaseError {
     #[error("插件关闭失败 [{0}]: {1}")]
     PluginShutdownFailed(String, String),
 
+    /// 插件生命周期回调失败，保留插件名、阶段与底层错误链。
+    #[error("插件生命周期失败 [{plugin}] ({stage}): {source}")]
+    PluginLifecycleFailed {
+        /// 插件名称。
+        plugin: String,
+        /// 失败阶段。
+        stage: crate::plugin::PluginLifecycleStage,
+        /// 插件回调或初始化操作返回的底层错误。
+        #[source]
+        source: crate::plugin::PluginError,
+    },
+
     // ==================== 数据库错误 ====================
     /// 数据库连接失败，持有底层 DbError 以保留错误链
     #[error("数据库连接失败 [DbError]: {0}")]
@@ -104,6 +116,20 @@ pub enum BaseError {
     #[error("迁移失败 [{0}] v{1}: {2}")]
     MigrationFailed(String, String, String),
 
+    /// 迁移 SQL 执行失败，保留迁移身份、内容校验和与底层数据库错误链。
+    #[error("迁移执行失败 [{module}] v{version} checksum={checksum}: {source}")]
+    MigrationExecutionFailed {
+        /// 模块或插件名称。
+        module: String,
+        /// 迁移版本。
+        version: String,
+        /// 迁移 SQL 的稳定校验和。
+        checksum: String,
+        /// 底层数据库错误。
+        #[source]
+        source: yang_db::DbError,
+    },
+
     /// 数据库未初始化
     #[error("数据库未初始化")]
     DatabaseNotInitialized,
@@ -121,9 +147,9 @@ pub enum BaseError {
     MissingWhereClause(String),
 
     // ==================== Redis 错误 ====================
-    /// Redis 连接失败
+    /// Redis 连接失败，持有底层 DbError 以保留错误链。
     #[error("Redis 连接失败: {0}")]
-    RedisConnectionFailed(String),
+    RedisConnectionFailed(#[source] yang_db::DbError),
 
     /// Redis 已初始化
     #[error("Redis 已初始化")]
@@ -133,9 +159,9 @@ pub enum BaseError {
     #[error("Redis 未初始化")]
     RedisNotInitialized,
 
-    /// Redis 操作失败
+    /// Redis 操作失败，持有底层 DbError 以保留错误链。
     #[error("Redis 操作失败: {0}")]
-    RedisOperationFailed(String),
+    RedisOperationFailed(#[source] yang_db::DbError),
 
     /// Redis 操作失败，持有底层 DbError 以保留错误链
     #[error("Redis 操作失败: {0}")]
@@ -331,7 +357,8 @@ pub enum BaseError {
 /// - 执行类 → DatabaseExecuteFailed
 /// - 事务类 → DatabaseTransactionFailed
 /// - 连接类 → DatabaseConnectionFailed（包装 DbError 保留错误链）
-/// - Redis 类 → RedisOperationFailed
+/// - Redis 连接类 → RedisConnectionFailed
+/// - Redis 其他操作类 → RedisOperationFailed
 #[allow(unreachable_patterns)]
 impl From<yang_db::DbError> for BaseError {
     fn from(err: yang_db::DbError) -> Self {
@@ -359,12 +386,14 @@ impl From<yang_db::DbError> for BaseError {
             // 连接类：连接错误（保留底层 DbError 错误链）→ DatabaseConnectionDbError (200011)
             D::ConnectionError(_) => BaseError::DatabaseConnectionDbError(err),
 
-            // Redis 类：所有 Redis 相关错误（保留底层 DbError 错误链）
-            D::RedisConnectionError(_)
-            | D::RedisCommandError(_)
+            // Redis 连接类：保留底层 DbError 错误链
+            D::RedisConnectionError(_) => BaseError::RedisConnectionFailed(err),
+
+            // Redis 操作类：保留底层 DbError 错误链
+            D::RedisCommandError(_)
             | D::RedisPoolError(_)
             | D::RedisTypeConversionError(_)
-            | D::RedisTimeoutError(_) => BaseError::RedisOperationDbError(err),
+            | D::RedisTimeoutError(_) => BaseError::RedisOperationFailed(err),
 
             // 未来新增变体（DbError 标注 #[non_exhaustive]）统一按查询失败处理
             _ => BaseError::DatabaseQueryFailed(err),
@@ -508,6 +537,11 @@ impl BaseError {
             BaseError::PluginCircularDependency(_) => 100006,
             BaseError::PluginConfigInvalid(_, _) => 100007,
             BaseError::PluginShutdownFailed(_, _) => 100008,
+            BaseError::PluginLifecycleFailed { stage, .. } => match stage {
+                crate::plugin::PluginLifecycleStage::Register => 100003,
+                crate::plugin::PluginLifecycleStage::Initialize => 100004,
+                crate::plugin::PluginLifecycleStage::Shutdown => 100008,
+            },
 
             // ==================== 数据库错误 (2xxxxx) ====================
             BaseError::DatabaseConnectionFailed(_) => 200001,
@@ -518,6 +552,7 @@ impl BaseError {
             BaseError::DatabaseInitFailed(_) => 200005,
             BaseError::DatabaseMigrationFailed(_, _) => 200006,
             BaseError::MigrationFailed(_, _, _) => 200007,
+            BaseError::MigrationExecutionFailed { .. } => 200007,
             BaseError::DatabaseNotInitialized => 200008,
             BaseError::DatabaseTransactionFailed(_) => 200009,
             BaseError::MissingWhereClause(_) => 200010,
@@ -596,6 +631,11 @@ impl BaseError {
             BaseError::PluginCircularDependency(_) => "100006",
             BaseError::PluginConfigInvalid(_, _) => "100007",
             BaseError::PluginShutdownFailed(_, _) => "100008",
+            BaseError::PluginLifecycleFailed { stage, .. } => match stage {
+                crate::plugin::PluginLifecycleStage::Register => "100003",
+                crate::plugin::PluginLifecycleStage::Initialize => "100004",
+                crate::plugin::PluginLifecycleStage::Shutdown => "100008",
+            },
             // 数据库错误 (2xxxxx)
             BaseError::DatabaseConnectionFailed(_) => "200001",
             BaseError::DatabaseConnectionDbError(_) => "200011",
@@ -605,6 +645,7 @@ impl BaseError {
             BaseError::DatabaseInitFailed(_) => "200005",
             BaseError::DatabaseMigrationFailed(_, _) => "200006",
             BaseError::MigrationFailed(_, _, _) => "200007",
+            BaseError::MigrationExecutionFailed { .. } => "200007",
             BaseError::DatabaseNotInitialized => "200008",
             BaseError::DatabaseTransactionFailed(_) => "200009",
             BaseError::MissingWhereClause(_) => "200010",
@@ -679,7 +720,8 @@ impl BaseError {
             BaseError::PluginNotFound(_)
             | BaseError::PluginRegisterFailed(_, _)
             | BaseError::PluginInitFailed(_, _)
-            | BaseError::PluginShutdownFailed(_, _) => C::Server,
+            | BaseError::PluginShutdownFailed(_, _)
+            | BaseError::PluginLifecycleFailed { .. } => C::Server,
             // 数据库错误：连接失败/超时/连接池为瞬时（可重试），
             // 已包装的 DbError 同理（底层连接/超时语义已由 From<DbError> 正确分桶）
             BaseError::DatabaseConnectionFailed(_) | BaseError::DatabaseConnectionDbError(_) => {
@@ -687,7 +729,8 @@ impl BaseError {
             }
             BaseError::MissingWhereClause(_)
             | BaseError::DatabaseMigrationFailed(_, _)
-            | BaseError::MigrationFailed(_, _, _) => C::Client,
+            | BaseError::MigrationFailed(_, _, _)
+            | BaseError::MigrationExecutionFailed { .. } => C::Client,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
             | BaseError::DatabaseInitFailed(_) => C::Server,
@@ -696,11 +739,18 @@ impl BaseError {
             | BaseError::DatabaseExecuteFailed(_)
             | BaseError::DatabaseTransactionFailed(_) => C::Server,
             // Redis 错误：连接失败/超时/连接池为瞬时
-            BaseError::RedisConnectionFailed(_) | BaseError::RedisOperationDbError(_) => {
-                C::Transient
-            }
+            BaseError::RedisConnectionFailed(_) => C::Transient,
             BaseError::RedisAlreadyInitialized | BaseError::RedisNotInitialized => C::Server,
-            BaseError::RedisOperationFailed(_) => C::Server,
+            BaseError::RedisOperationFailed(source) | BaseError::RedisOperationDbError(source) => {
+                match source.category() {
+                    yang_db::DbErrorCategory::Transient => C::Transient,
+                    yang_db::DbErrorCategory::Conflict => C::Conflict,
+                    yang_db::DbErrorCategory::Client => C::Client,
+                    yang_db::DbErrorCategory::NotFound => C::NotFound,
+                    yang_db::DbErrorCategory::Server => C::Server,
+                    _ => C::Server,
+                }
+            }
             // HTTP 客户端错误
             BaseError::HttpClientCreateFailed(_)
             | BaseError::HttpClientNotInitialized
@@ -1045,16 +1095,82 @@ mod tests {
         assert!(matches!(base_err, BaseError::DatabaseQueryFailed(_)));
     }
 
+    #[test]
+    fn test_redis_connection_and_operation_errors_preserve_db_source() {
+        use std::error::Error;
+
+        let connection = BaseError::RedisConnectionFailed(yang_db::DbError::RedisConnectionError(
+            "connection refused".into(),
+        ));
+        let operation = BaseError::RedisOperationFailed(yang_db::DbError::RedisCommandError(
+            "WRONGTYPE".into(),
+        ));
+
+        assert_eq!(connection.code(), 210001);
+        assert_eq!(operation.code(), 210004);
+        assert!(connection.source().is_some());
+        assert!(operation.source().is_some());
+    }
+
+    #[test]
+    fn test_migration_execution_error_preserves_context_and_source() {
+        use std::error::Error;
+
+        let error = BaseError::MigrationExecutionFailed {
+            module: "accounts".into(),
+            version: "202607150001".into(),
+            checksum: "0123456789abcdef".into(),
+            source: yang_db::DbError::SqlSyntaxError("bad ddl".into()),
+        };
+
+        assert_eq!(error.code(), 200007);
+        assert_eq!(error.code_str(), "200007");
+        assert!(error.to_string().contains("accounts"));
+        assert!(error.to_string().contains("202607150001"));
+        assert!(error.to_string().contains("0123456789abcdef"));
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_plugin_lifecycle_error_preserves_stage_and_source() {
+        use std::error::Error;
+
+        let error = BaseError::PluginLifecycleFailed {
+            plugin: "audit".into(),
+            stage: crate::plugin::PluginLifecycleStage::Shutdown,
+            source: Box::new(std::io::Error::other("flush failed")),
+        };
+
+        assert_eq!(error.code(), 100008);
+        assert_eq!(error.code_str(), "100008");
+        assert!(error.to_string().contains("audit"));
+        assert!(error.to_string().contains("shutdown"));
+        assert!(error.source().is_some());
+    }
+
     /// code_str() 必须与 code() 一致（metrics label 与数值码同源，防漂移）
     #[test]
     fn test_code_str_matches_code() {
         // 覆盖各域代表变体；新增变体时若两处不同步，此处会失败
         let samples: Vec<BaseError> = vec![
             BaseError::PluginNotFound("p".into()),
+            BaseError::PluginLifecycleFailed {
+                plugin: "p".into(),
+                stage: crate::plugin::PluginLifecycleStage::Initialize,
+                source: Box::new(std::io::Error::other("init")),
+            },
             BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())),
             BaseError::DatabaseConnectionDbError(yang_db::DbError::ConnectionError("c".into())),
+            BaseError::MigrationExecutionFailed {
+                module: "m".into(),
+                version: "v1".into(),
+                checksum: "c".into(),
+                source: yang_db::DbError::QueryError("q".into()),
+            },
             BaseError::DatabaseNotInitialized,
             BaseError::RedisNotInitialized,
+            BaseError::RedisConnectionFailed(yang_db::DbError::RedisConnectionError("c".into())),
+            BaseError::RedisOperationFailed(yang_db::DbError::RedisCommandError("o".into())),
             BaseError::RedisOperationDbError(yang_db::DbError::RedisConnectionError("c".into())),
             BaseError::HttpTimeout,
             BaseError::TokenExpired,

@@ -115,17 +115,17 @@ impl Plugin for LifecyclePlugin {
         "lifecycle_plugin"
     }
 
-    async fn on_register(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_register(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         *self.register_called.lock().unwrap() = true;
         Ok(())
     }
 
-    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         *self.init_called.lock().unwrap() = true;
         Ok(())
     }
 
-    async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         *self.shutdown_called.lock().unwrap() = true;
         Ok(())
     }
@@ -140,7 +140,7 @@ impl Plugin for FailingPlugin {
         "failing_plugin"
     }
 
-    async fn on_register(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn on_register(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("注册失败".into())
     }
 }
@@ -358,6 +358,8 @@ async fn test_lifecycle_hooks() {
 /// 测试注册失败的插件
 #[tokio::test]
 async fn test_register_failing_plugin() {
+    use std::error::Error;
+
     let manager = PluginManager::new();
 
     // 注册会失败的插件
@@ -366,11 +368,19 @@ async fn test_register_failing_plugin() {
 
     // 验证错误类型
     match result {
-        Err(BaseError::PluginRegisterFailed(name, msg)) => {
-            assert_eq!(name, "failing_plugin");
-            assert!(msg.contains("注册失败"));
+        Err(error @ BaseError::PluginLifecycleFailed { .. }) => {
+            assert!(matches!(
+                &error,
+                BaseError::PluginLifecycleFailed {
+                    plugin,
+                    stage: yang_base::plugin::PluginLifecycleStage::Register,
+                    ..
+                } if plugin == "failing_plugin"
+            ));
+            assert!(error.to_string().contains("注册失败"));
+            assert!(error.source().is_some());
         }
-        _ => panic!("应该返回 PluginRegisterFailed 错误"),
+        _ => panic!("应该返回 PluginLifecycleFailed 错误"),
     }
 
     // 验证插件未被注册

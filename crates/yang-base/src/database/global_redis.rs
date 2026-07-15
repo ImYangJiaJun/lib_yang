@@ -102,9 +102,7 @@ impl GlobalRedis {
         // 使用 yang-db::RedisClient::connect_with_config 创建 Redis 连接
         let client = RedisClient::connect_with_config(url, config)
             .await
-            // TODO(P1-4): 待 BaseError 添加 RedisConnectionDbError(#[source] yang_db::DbError)
-            // 变体后，改为 .map_err(BaseError::RedisConnectionDbError)? 以保留错误链
-            .map_err(|e| BaseError::RedisConnectionFailed(e.to_string()))?;
+            .map_err(BaseError::RedisConnectionFailed)?;
 
         // 设置全局 Redis 实例
         GLOBAL_REDIS
@@ -154,7 +152,7 @@ impl GlobalRedis {
         Self::client()?
             .health_check()
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取 Redis 连接池状态
@@ -217,13 +215,13 @@ impl GlobalRedis {
             Self::client()?
                 .setex(key_str, seconds, value_str)
                 .await
-                .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+                .map_err(BaseError::RedisOperationFailed)
         } else {
             // 使用 SET 设置不过期的值
             Self::client()?
                 .set(key_str, value_str)
                 .await
-                .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+                .map_err(BaseError::RedisOperationFailed)
         }
     }
 
@@ -256,7 +254,7 @@ impl GlobalRedis {
         Self::client()?
             .set_nx_ex(key, value, ttl)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取字符串值
@@ -279,7 +277,7 @@ impl GlobalRedis {
         Self::client()?
             .get(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 删除键
@@ -303,7 +301,7 @@ impl GlobalRedis {
         Self::client()?
             .del(&keys_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 检查键是否存在
@@ -327,7 +325,7 @@ impl GlobalRedis {
         Self::client()?
             .exists(&keys_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 设置键的过期时间
@@ -350,7 +348,7 @@ impl GlobalRedis {
         Self::client()?
             .expire(key, seconds)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取键的剩余生存时间
@@ -372,7 +370,7 @@ impl GlobalRedis {
         Self::client()?
             .ttl(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 移除键的过期时间
@@ -394,7 +392,7 @@ impl GlobalRedis {
         Self::client()?
             .persist(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 查找所有匹配给定模式的键
@@ -416,7 +414,7 @@ impl GlobalRedis {
         Self::client()?
             .keys(pattern)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== Hash 操作 ====================
@@ -446,7 +444,7 @@ impl GlobalRedis {
         Self::client()?
             .hset(key, field, value)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取 Hash 字段值
@@ -473,7 +471,7 @@ impl GlobalRedis {
         Self::client()?
             .hget(key, field)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 删除 Hash 字段
@@ -501,7 +499,7 @@ impl GlobalRedis {
         Self::client()?
             .hdel(key, &fields_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取 Hash 所有字段和值
@@ -523,7 +521,7 @@ impl GlobalRedis {
         Self::client()?
             .hgetall(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 检查 Hash 字段是否存在
@@ -549,7 +547,7 @@ impl GlobalRedis {
         Self::client()?
             .hexists(key, field)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取 Hash 字段数量
@@ -571,7 +569,7 @@ impl GlobalRedis {
         Self::client()?
             .hlen(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== List 操作 ====================
@@ -601,7 +599,7 @@ impl GlobalRedis {
         Self::client()?
             .lpush(key, &values_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 从列表右侧推入元素
@@ -629,7 +627,7 @@ impl GlobalRedis {
         Self::client()?
             .rpush(key, &values_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 从列表左侧弹出元素
@@ -652,7 +650,7 @@ impl GlobalRedis {
         Self::client()?
             .lpop(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 从列表右侧弹出元素
@@ -675,7 +673,7 @@ impl GlobalRedis {
         Self::client()?
             .rpop(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取列表长度
@@ -697,7 +695,7 @@ impl GlobalRedis {
         Self::client()?
             .llen(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取列表指定范围的元素
@@ -725,7 +723,7 @@ impl GlobalRedis {
         Self::client()?
             .lrange(key, start, stop)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== Set 操作 ====================
@@ -755,7 +753,7 @@ impl GlobalRedis {
         Self::client()?
             .sadd(key, &members_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 从集合移除成员
@@ -783,7 +781,7 @@ impl GlobalRedis {
         Self::client()?
             .srem(key, &members_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 检查成员是否在集合中
@@ -809,7 +807,7 @@ impl GlobalRedis {
         Self::client()?
             .sismember(key, member)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取集合所有成员
@@ -831,7 +829,7 @@ impl GlobalRedis {
         Self::client()?
             .smembers(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取集合成员数量
@@ -853,7 +851,7 @@ impl GlobalRedis {
         Self::client()?
             .scard(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== Sorted Set 操作 ====================
@@ -878,7 +876,7 @@ impl GlobalRedis {
         Self::client()?
             .zadd(key, members)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 从有序集合移除成员
@@ -906,7 +904,7 @@ impl GlobalRedis {
         Self::client()?
             .zrem(key, &members_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取有序集合成员数量
@@ -928,7 +926,7 @@ impl GlobalRedis {
         Self::client()?
             .zcard(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 获取有序集合指定范围的成员（按分数从小到大）
@@ -956,7 +954,7 @@ impl GlobalRedis {
         Self::client()?
             .zrange(key, start, stop)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== 新增 API：String 计数器操作 ====================
@@ -980,7 +978,7 @@ impl GlobalRedis {
         Self::client()?
             .incr(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将键的整数值减少 1（DECR）
@@ -1002,7 +1000,7 @@ impl GlobalRedis {
         Self::client()?
             .decr(key)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将键的整数值增加指定数量（INCRBY）
@@ -1025,7 +1023,7 @@ impl GlobalRedis {
         Self::client()?
             .incrby(key, increment)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将键的整数值减少指定数量（DECRBY）
@@ -1048,7 +1046,7 @@ impl GlobalRedis {
         Self::client()?
             .decrby(key, decrement)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将键的浮点数值增加指定数量（INCRBYFLOAT）
@@ -1071,7 +1069,7 @@ impl GlobalRedis {
         Self::client()?
             .incrbyfloat(key, increment)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== 新增 API：Hash 计数器操作 ====================
@@ -1101,7 +1099,7 @@ impl GlobalRedis {
         Self::client()?
             .hincrby(key, field, increment)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将 Hash 字段的浮点数值增加指定数量（HINCRBYFLOAT）
@@ -1129,7 +1127,7 @@ impl GlobalRedis {
         Self::client()?
             .hincrbyfloat(key, field, increment)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== 新增 API：批量 String 操作 ====================
@@ -1155,7 +1153,7 @@ impl GlobalRedis {
         Self::client()?
             .mget(&keys_vec)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 批量设置多个键值对（MSET）
@@ -1177,7 +1175,7 @@ impl GlobalRedis {
         Self::client()?
             .mset(pairs)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== 新增 API：有序集合扩展操作 ====================
@@ -1207,7 +1205,7 @@ impl GlobalRedis {
         Self::client()?
             .zrange_with_scores(key, start, stop)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 按索引范围从高到低获取有序集合的成员（ZREVRANGE）
@@ -1235,7 +1233,7 @@ impl GlobalRedis {
         Self::client()?
             .zrevrange(key, start, stop)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 将有序集合成员的分数增加指定数量（ZINCRBY）
@@ -1263,7 +1261,7 @@ impl GlobalRedis {
         Self::client()?
             .zincrby(key, increment, member)
             .await
-            .map_err(|e| BaseError::RedisOperationFailed(e.to_string()))
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     // ==================== Pipeline / Transaction 入口 ====================

@@ -30,9 +30,33 @@
 
 use crate::database::GlobalDatabase;
 use crate::error::BaseError;
-use crate::plugin::{Plugin, PluginManager};
+use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
 use std::sync::Arc;
 use yang_db::Database;
+
+/// 计算迁移 SQL 的稳定 FNV-1a 64 位校验和。
+fn migration_checksum(sql: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in sql.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn migration_execution_error(
+    module: &str,
+    version: &str,
+    sql: &str,
+    source: yang_db::DbError,
+) -> BaseError {
+    BaseError::MigrationExecutionFailed {
+        module: module.to_string(),
+        version: version.to_string(),
+        checksum: migration_checksum(sql),
+        source,
+    }
+}
 
 /// 数据库引用
 ///
@@ -243,7 +267,11 @@ impl DatabaseInitializer {
             for sql in plugin.init_sql() {
                 if let Err(e) = tx.execute(&sql).await {
                     log::error!("插件 {} 初始化失败: {}", name, e);
-                    return Err(BaseError::PluginInitFailed(name.to_string(), e.to_string()));
+                    return Err(BaseError::PluginLifecycleFailed {
+                        plugin: name.to_string(),
+                        stage: PluginLifecycleStage::Initialize,
+                        source: Box::new(e),
+                    });
                 }
             }
 
@@ -253,7 +281,11 @@ impl DatabaseInitializer {
             // 调用初始化回调
             if let Err(e) = plugin.on_init().await {
                 log::error!("插件 {} 初始化回调失败: {}", name, e);
-                return Err(BaseError::PluginInitFailed(name.to_string(), e.to_string()));
+                return Err(BaseError::PluginLifecycleFailed {
+                    plugin: name.to_string(),
+                    stage: PluginLifecycleStage::Initialize,
+                    source: e,
+                });
             }
         }
 
@@ -291,7 +323,11 @@ impl DatabaseInitializer {
             for sql in plugin.init_sql() {
                 if let Err(e) = self.db().execute(&sql).await {
                     log::error!("插件 {} 初始化失败: {}", name, e);
-                    return Err(BaseError::PluginInitFailed(name.to_string(), e.to_string()));
+                    return Err(BaseError::PluginLifecycleFailed {
+                        plugin: name.to_string(),
+                        stage: PluginLifecycleStage::Initialize,
+                        source: Box::new(e),
+                    });
                 }
             }
 
@@ -301,7 +337,11 @@ impl DatabaseInitializer {
             // 调用初始化回调
             if let Err(e) = plugin.on_init().await {
                 log::error!("插件 {} 初始化回调失败: {}", name, e);
-                return Err(BaseError::PluginInitFailed(name.to_string(), e.to_string()));
+                return Err(BaseError::PluginLifecycleFailed {
+                    plugin: name.to_string(),
+                    stage: PluginLifecycleStage::Initialize,
+                    source: e,
+                });
             }
         }
 
@@ -367,9 +407,10 @@ impl DatabaseInitializer {
             log::info!("执行迁移: {} v{}", module_name, version);
 
             // 执行迁移 SQL（使用 yang-db::Database::execute）
-            self.db().execute(&sql).await.map_err(|e| {
-                BaseError::MigrationFailed(module_name.to_string(), version.clone(), e.to_string())
-            })?;
+            self.db()
+                .execute(&sql)
+                .await
+                .map_err(|source| migration_execution_error(module_name, &version, &sql, source))?;
 
             // 记录迁移
             self.record_migration(module_name, &version).await?;
@@ -411,9 +452,9 @@ impl DatabaseInitializer {
             log::info!("执行迁移: {} v{}", module_name, version);
 
             // 执行迁移 SQL（使用 yang-db::Transaction::execute）
-            tx.execute(&sql).await.map_err(|e| {
-                BaseError::MigrationFailed(module_name.to_string(), version.clone(), e.to_string())
-            })?;
+            tx.execute(&sql)
+                .await
+                .map_err(|source| migration_execution_error(module_name, &version, &sql, source))?;
 
             // 记录迁移（使用参数化查询，防止 SQL 注入）
             let record_sql = "INSERT INTO _migrations (module_name, version) VALUES (?, ?)";
@@ -505,5 +546,38 @@ impl DatabaseInitializer {
             .map_err(BaseError::DatabaseExecuteFailed)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn migration_execution_error_preserves_identity_checksum_and_source() {
+        let sql = "ALTER TABLE users ADD COLUMN status INT";
+        let error = migration_execution_error(
+            "accounts",
+            "202607150001",
+            sql,
+            yang_db::DbError::SqlSyntaxError("bad ddl".into()),
+        );
+
+        match &error {
+            BaseError::MigrationExecutionFailed {
+                module,
+                version,
+                checksum,
+                ..
+            } => {
+                assert_eq!(module, "accounts");
+                assert_eq!(version, "202607150001");
+                assert_eq!(checksum, &migration_checksum(sql));
+                assert_ne!(checksum, &migration_checksum("ALTER TABLE users"));
+            }
+            other => panic!("期望 MigrationExecutionFailed，得到: {other:?}"),
+        }
+        assert!(error.source().is_some());
     }
 }
