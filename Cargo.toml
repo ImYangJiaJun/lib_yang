@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = ["crates/*"]
+exclude = ["project/yang-system"]
 
 # 各 crate 共享的包元数据，crate 内通过 `xxx.workspace = true` 引用
 [workspace.package]

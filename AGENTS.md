@@ -1,11 +1,11 @@
 # lib_yang — Project Knowledge Base
 
-**Generated:** 2026-05-27
-**Commit:** 6e3cda0
+**Generated:** 2026-07-16
+**Commit:** b65a50b
 **Branch:** master
 
 ## OVERVIEW
-YANG 后端框架 — Rust workspace with four crates: `yang-db` database abstraction, `yang-base` backend service primitives, `yang-base-derive` proc-macro crate (providing `#[derive(TableEntity)]` and `#[derive(Action)]`), and `yang-pcg` UE5/Roguelike procedural map generation.
+YANG Rust workspace：包含 `yang-db`、`yang-base`、`yang-base-derive`、`yang-pcg` 四个基础库 crate，以及用于联合调试基础库的 `yang-system` 应用。
 
 ## STRUCTURE
 ```text
@@ -15,6 +15,8 @@ lib_yang/
 │   ├── yang-db/            # MySQL query builder + Redis client
 │   ├── yang-base/          # plugins, actions, tables, router, token, HTTP, global DB
 │   └── yang-pcg/           # deterministic PCG map generator + UE5 adapter
+├── project/
+│   └── yang-system/        # independent nested Git/Cargo application for local integration
 ├── .kiro/                  # requirements/design/tasks specs + steering hooks
 └── docs/                   # workspace API references and backlog
 ```
@@ -31,6 +33,7 @@ lib_yang/
 | Router | `crates/yang-base/src/router/` | `ModuleRouter`, `AppRouter` |
 | Tokens | `crates/yang-base/src/token/` | JWT `TokenManager`, feature-gated |
 | HTTP client | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
+| 基础系统联调 | `project/yang-system/` | 独立嵌套仓库；固定 Git revision，临时 Cargo patch 联调本地库 |
 | PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |
 | PCG terrain | `crates/yang-pcg/src/terrain/` | child AGENTS.md covers strategies, fallback, known connectivity gaps |
 | Specs/backlog | `.kiro/specs/`, `docs/BACKLOG.md` | requirements/design/tasks; some root summary docs are historical artifacts |
@@ -55,6 +58,7 @@ lib_yang/
 
 ## CONVENTIONS
 - Edition is `2021` for all crates.
+- `project/yang-system` 从根 workspace 排除；应进入该目录独立运行 Cargo 命令。
 - Comments and public docs are mostly Chinese; preserve that style in Rust code and tests.
 - `yang-base` inherits workspace lints and has `#![warn(missing_docs)]`.
 - `yang-db` and `yang-pcg` override clippy to allow `unwrap_used`/`expect_used`; do not treat that as permission for new production panics.

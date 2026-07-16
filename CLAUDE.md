@@ -10,12 +10,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库总览
 
-`lib_yang` 是一个 Rust workspace（`resolver = "2"`，edition `2021`，共享依赖集中在根 `Cargo.toml` 的 `[workspace.dependencies]`），包含四个 crate：
+`lib_yang` 是一个 Rust workspace（`resolver = "2"`，edition `2021`，共享依赖集中在根 `Cargo.toml` 的 `[workspace.dependencies]`），包含四个基础库 crate 和一个联合调试应用：
 
 - `crates/yang-db/` — MySQL 查询构建器 + Redis 客户端，下游 crate 的数据访问基础。
 - `crates/yang-base/` — 在 `yang-db` 之上的后端服务原语：插件、全局 DB/Redis、表配置/查询、Action 调度、路由，以及可选的 HTTP 客户端和 JWT Token。
 - `crates/yang-base-derive/` — `yang-base` 的 proc-macro crate，提供 `#[derive(TableEntity)]` 与 `#[derive(Action)]`（类型化 Action 系统的派生基础设施）。仅被 `yang-base` 依赖。
 - `crates/yang-pcg/` — UE5 / Roguelike 程序化地图生成库（确定性 PCG 管线）。与 db/base 解耦：PCG 不依赖它们。
+- `project/yang-system/` — 独立嵌套 Git/Cargo 项目，根 workspace 显式排除；当前固定依赖 `lib_yang` Git revision，联合调试时通过临时 Cargo patch 覆盖为本地源码。
 
 每个 crate 根目录都有一份 `AGENTS.md`，部分子模块（`yang-base/src/action`、`yang-base/src/table`、`yang-pcg/src/terrain`）还有更细粒度的 `AGENTS.md`。**修改对应模块前先读那份 AGENTS.md**，里面记录了该模块的 hotspot、anti-pattern 和约定，本文件不重复展开。
 
@@ -42,6 +43,13 @@ cargo test --test <name> -- --ignored --test-threads=1
 
 # 示例
 cargo run --example <name> -p <crate>
+```
+
+启动基础系统时先进入其独立项目目录，并设置 `DATABASE_URL`、`REDIS_URL`、`TOKEN_SECRET`：
+
+```powershell
+Set-Location project/yang-system
+cargo run
 ```
 
 工具链上没有 `rust-toolchain.toml` / `rustfmt.toml` / `clippy.toml` / Makefile / justfile / Dockerfile / docker-compose / CI 配置 — 这是有意的现状，不要新增除非用户明确要求。
