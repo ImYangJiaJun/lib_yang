@@ -1,4 +1,6 @@
 mod catalog_tests;
+#[cfg(feature = "mysql")]
+mod crud_catalog_tests;
 mod module_router_tests;
 #[cfg(feature = "openapi")]
 mod openapi_tests;

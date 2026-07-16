@@ -12,20 +12,20 @@
 //!
 //! ```rust,ignore
 //! use yang_base::router::{AppRouter, ModuleRouter};
-//! use yang_base::table::TableConfig;
-//! use std::sync::Arc;
+//! use yang_base::table::{Field, Table};
 //!
-//! // 创建表配置
-//! let table_config = Arc::new(TableConfig::new("users"));
+//! let users = Table::new("users")
+//!     .fields(vec![Field::id("id"), Field::string("username", 64).required()])
+//!     .build()?;
 //!
 //! // 创建模块路由器
 //! let user_router = ModuleRouter::new("user", "用户管理")
-//!     .with_table_config(table_config.clone())
-//!     .table_typed::<User>()?;
+//!     .table(users)
+//!     .crud()?;
 //!
 //! // 创建应用路由器并注册模块
 //! let app_router = AppRouter::new()
-//!     .register_module(user_router)?;
+//!     .module(user_router)?;
 //!
 //! // 分发请求
 //! let response = app_router.dispatch("user", "add", context).await?;
@@ -33,9 +33,10 @@
 
 use crate::action::{ActionContext, ApiResponse};
 use crate::error::BaseError;
+use crate::router::catalog::RoutePatternRegistry;
 use crate::router::ModuleRouter;
 use crate::router::{ApiCatalog, ModuleDescriptor};
-use crate::table::TableConfig;
+use crate::table::TableDefinition;
 use std::collections::{HashMap, HashSet};
 
 /// AppRouter - 应用路由器
@@ -97,10 +98,12 @@ impl AppRouter {
     /// use yang_base::router::{AppRouter, ModuleRouter};
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"))?
-    ///     .register_module(ModuleRouter::new("order", "订单管理"))?;
+    ///     .modules([
+    ///         ModuleRouter::new("user", "用户管理"),
+    ///         ModuleRouter::new("order", "订单管理"),
+    ///     ])?;
     /// ```
-    pub fn register_module(mut self, router: ModuleRouter) -> Result<Self, BaseError> {
+    pub fn module(mut self, router: ModuleRouter) -> Result<Self, BaseError> {
         let module_name = router.module_name().to_string();
         if module_name.trim().is_empty() {
             return Err(BaseError::ConfigError("模块名称不能为空".to_string()));
@@ -112,6 +115,17 @@ impl AppRouter {
             )));
         }
         self.modules.insert(module_name, router);
+        Ok(self)
+    }
+
+    /// 批量注册模块，最终只需处理一次构建错误。
+    pub fn modules<I>(mut self, modules: I) -> Result<Self, BaseError>
+    where
+        I: IntoIterator<Item = ModuleRouter>,
+    {
+        for module in modules {
+            self = self.module(module)?;
+        }
         Ok(self)
     }
 
@@ -127,8 +141,10 @@ impl AppRouter {
     /// use yang_base::router::{AppRouter, ModuleRouter};
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"))?
-    ///     .register_module(ModuleRouter::new("order", "订单管理"))?;
+    ///     .modules([
+    ///         ModuleRouter::new("user", "用户管理"),
+    ///         ModuleRouter::new("order", "订单管理"),
+    ///     ])?;
     ///
     /// let names = app_router.module_names();
     /// assert_eq!(names.len(), 2);
@@ -143,12 +159,12 @@ impl AppRouter {
     ///
     /// 没有关联表的模块会被跳过。返回借用而非克隆，供数据库初始化器在启动期
     /// 汇总模块 schema；同一表名的重复/冲突声明由同步器统一校验。
-    pub fn table_configs(&self) -> Vec<&TableConfig> {
+    pub fn table_definitions(&self) -> Vec<&TableDefinition> {
         let mut names: Vec<&String> = self.modules.keys().collect();
         names.sort();
         names
             .into_iter()
-            .flat_map(|name| self.modules[name].schema_table_configs())
+            .flat_map(|name| self.modules[name].schema_definitions())
             .collect()
     }
 
@@ -157,18 +173,12 @@ impl AppRouter {
         let mut names: Vec<&String> = self.modules.keys().collect();
         names.sort();
         let mut modules: Vec<ModuleDescriptor> = Vec::with_capacity(names.len());
-        let mut routes = HashSet::new();
+        let mut routes = RoutePatternRegistry::default();
         let mut operations = HashSet::new();
         for name in names {
             let descriptor = self.modules[name].descriptor()?;
             for action in &descriptor.actions {
-                let route_key = (action.route.method.clone(), action.route.path.clone());
-                if !routes.insert(route_key) {
-                    return Err(BaseError::ConfigError(format!(
-                        "route 冲突: {} {}",
-                        action.route.method, action.route.path
-                    )));
-                }
+                routes.insert(&action.route)?;
                 if !operations.insert(action.route.operation_id.clone()) {
                     return Err(BaseError::ConfigError(format!(
                         "operation_id 冲突: {}",
@@ -210,7 +220,7 @@ impl AppRouter {
     /// use yang_base::action::ActionContext;
     ///
     /// let app_router = AppRouter::new()
-    ///     .register_module(ModuleRouter::new("user", "用户管理"))?;
+    ///     .module(ModuleRouter::new("user", "用户管理"))?;
     ///
     /// // 模块不存在时返回错误
     /// let result = app_router.dispatch("unknown", "add", context).await;
@@ -245,12 +255,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_register_module_rejects_duplicate_module_name() {
+    fn test_module_rejects_duplicate_module_name() {
         let router = AppRouter::new()
-            .register_module(ModuleRouter::new("user", "用户管理"))
+            .module(ModuleRouter::new("user", "用户管理"))
             .expect("首次注册 user 模块应成功");
 
-        let result = router.register_module(ModuleRouter::new("user", "重复用户模块"));
+        let result = router.module(ModuleRouter::new("user", "重复用户模块"));
 
         assert!(matches!(
             result,
@@ -259,8 +269,8 @@ mod tests {
     }
 
     #[test]
-    fn test_register_module_rejects_blank_module_name() {
-        let result = AppRouter::new().register_module(ModuleRouter::new("   ", "空白模块"));
+    fn test_module_rejects_blank_module_name() {
+        let result = AppRouter::new().module(ModuleRouter::new("   ", "空白模块"));
 
         assert!(matches!(
             result,

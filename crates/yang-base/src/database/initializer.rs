@@ -31,7 +31,7 @@
 use crate::database::GlobalDatabase;
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
-use crate::table::{SchemaColumn, SchemaValidationReport, TableConfig};
+use crate::table::{SchemaColumn, SchemaValidationReport, TableDefinition};
 use std::sync::Arc;
 use yang_db::Database;
 
@@ -280,12 +280,12 @@ impl DatabaseInitializer {
         Ok(plan)
     }
 
-    /// 从 MySQL information_schema 读取当前列并验证 TableConfig 的运行期字段契约。
+    /// 从 MySQL information_schema 读取当前列并验证表定义的运行期字段契约。
     ///
     /// 本方法只读，不生成或执行 ALTER；数据库额外列不视为问题。
-    pub async fn validate_table_config(
+    pub async fn validate_table_definition(
         &self,
-        table: &TableConfig,
+        table: &TableDefinition,
     ) -> Result<SchemaValidationReport, BaseError> {
         #[derive(sqlx::FromRow)]
         struct ColumnRow {
@@ -294,14 +294,15 @@ impl DatabaseInitializer {
             column_type: String,
             is_nullable: String,
             character_maximum_length: Option<i64>,
+            column_default: Option<String>,
             extra: String,
         }
 
         let rows: Vec<ColumnRow> = self
             .db()
             .query_with_params(
-                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-                vec![serde_json::Value::String(table.table_name.clone())],
+                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(COLUMN_DEFAULT AS CHAR) AS column_default, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+                vec![serde_json::Value::String(table.name().to_string())],
             )
             .await
             .map_err(BaseError::DatabaseQueryFailed)?;
@@ -315,6 +316,7 @@ impl DatabaseInitializer {
                     row.is_nullable.eq_ignore_ascii_case("YES"),
                     row.character_maximum_length
                         .and_then(|length| u64::try_from(length).ok()),
+                    row.column_default,
                 )
                 .with_auto_increment(
                     row.extra
@@ -849,32 +851,6 @@ impl DatabaseInitializer {
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
 
-        Ok(())
-    }
-
-    /// 兼容旧版的迁移记录入口。
-    ///
-    /// 此方法无法提供 SQL 内容，因此写入的记录不可做 checksum 验证；新代码必须使用
-    /// [`Self::record_migration_with_checksum`] 或直接使用 `run_migrations`。
-    #[deprecated(
-        since = "0.1.2",
-        note = "使用 record_migration_with_checksum 或 run_migrations，旧入口无法验证 SQL 内容"
-    )]
-    pub async fn record_migration(
-        &self,
-        module_name: &str,
-        version: &str,
-    ) -> Result<(), BaseError> {
-        self.db()
-            .execute_with_params(
-                "INSERT INTO _migrations (module_name, version, checksum, status) VALUES (?, ?, NULL, 'applied')",
-                vec![
-                    serde_json::Value::String(module_name.to_string()),
-                    serde_json::Value::String(version.to_string()),
-                ],
-            )
-            .await
-            .map_err(BaseError::DatabaseExecuteFailed)?;
         Ok(())
     }
 

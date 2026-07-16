@@ -1,9 +1,0 @@
-error: TableEntity 必须有一个字段标注 #[entity(primary_key)]
-  --> tests/compile_fail/missing_primary_key.rs:14:1
-   |
-14 | / #[table(name = "u")]
-15 | | struct U {
-16 | |     id: i64,
-17 | |     name: String,
-18 | | }
-   | |_^

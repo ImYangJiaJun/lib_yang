@@ -1,6 +1,6 @@
 //! 表查询构建器
 //!
-//! 提供基于 TableConfig 的类型安全查询构建器，支持字段权限验证和 CRUD 操作。
+//! 提供由 [`super::TableDefinition`] 约束的查询构建器，支持字段权限验证和 CRUD。
 //!
 //! # 主要组件
 //!
@@ -9,23 +9,19 @@
 //! # 示例
 //!
 //! ```rust,ignore
-//! use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
+//! use yang_base::table::{Field, SortOrder, Table};
+//! use serde_json::json;
 //! use std::sync::Arc;
 //!
-//! // 创建表配置
-//! let table_config = Arc::new(
-//!     TableConfig::new("users")
-//!         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-//!         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-//!         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-//! );
+//! let table = Table::new("users")
+//!     .fields(vec![
+//!         Field::id("id"),
+//!         Field::string("name", 50),
+//!         Field::string("email", 100),
+//!     ])
+//!     .build()?;
 //!
-//! // 创建查询构建器
-//! let query = TableQuery::new(
-//!     table_config,
-//!     vec!["user".to_string()],
-//!     pool,
-//! );
+//! let query = table.bind(Arc::new(pool)).query(["user"]);
 //!
 //! // 链式调用构建查询
 //! let result = query
@@ -33,7 +29,7 @@
 //!     .where_eq("status", json!("active"))?
 //!     .order_by("created_at", SortOrder::Desc)?
 //!     .page(1, 20)?
-//!     .execute()
+//!     .all()
 //!     .await?;
 //! ```
 
@@ -54,7 +50,7 @@ pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE
 
 /// 表查询构建器
 ///
-/// 基于 TableConfig 创建类型安全的查询构建器，支持：
+/// 基于不可变表定义创建受保护的查询构建器，支持：
 /// - 字段选择和权限验证
 /// - WHERE 条件构建
 /// - 排序规则
@@ -62,7 +58,7 @@ pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE
 ///
 /// # 字段
 ///
-/// - `table_config`：表配置引用，包含字段定义和权限配置
+/// - 内部表契约：由 [`super::TableDefinition`] 提供字段定义和权限配置
 /// - `user_roles`：用户角色列表，用于权限检查
 /// - `query_params`：查询参数，包含字段选择、WHERE 条件、排序规则和分页参数
 /// - `pool`：数据库连接池引用（预留，暂未使用）
@@ -70,21 +66,14 @@ pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE
 /// # 示例
 ///
 /// ```rust,ignore
-/// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
+/// use yang_base::table::{Field, SortOrder, Table};
 /// use std::sync::Arc;
 /// use serde_json::json;
 ///
-/// let table_config = Arc::new(
-///     TableConfig::new("users")
-///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-/// );
-///
-/// let query = TableQuery::new(
-///     table_config,
-///     vec!["admin".to_string()],
-///     pool,
-/// );
+/// let table = Table::new("users")
+///     .fields(vec![Field::id("id"), Field::string("name", 50)])
+///     .build()?;
+/// let query = table.bind(Arc::new(pool)).query(["admin"]);
 ///
 /// // 选择字段
 /// let query = query.select_fields(&["id", "name"])?;
@@ -229,7 +218,7 @@ impl TableQuery {
     ///
     /// 返回新的 TableQuery 实例
     #[cfg(feature = "mysql")]
-    pub fn new(
+    pub(crate) fn new(
         table_config: Arc<TableConfig>,
         user_roles: Arc<[String]>,
         pool: Option<Arc<sqlx::MySqlPool>>,
@@ -252,7 +241,7 @@ impl TableQuery {
     ///
     /// 当未启用 `mysql` feature 时使用此方法。
     #[cfg(not(feature = "mysql"))]
-    pub fn new(
+    pub(crate) fn new(
         table_config: Arc<TableConfig>,
         user_roles: Arc<[String]>,
         _pool: Option<()>,
@@ -285,64 +274,7 @@ impl TableQuery {
         self
     }
 
-    /// 选择查询字段
-    ///
-    /// 设置要查询的字段列表，并验证：
-    /// 1. 字段是否存在于表配置中
-    /// 2. 用户是否有字段的读取权限
-    ///
-    /// # 参数
-    ///
-    /// - `fields`：字段名列表
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(Self)`：验证通过，返回 self 支持链式调用
-    /// - `Err(BaseError)`：验证失败，返回错误
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::FieldNotFound`：字段不存在
-    /// - `BaseError::FieldPermissionDenied`：用户无读取权限
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
-    /// use std::sync::Arc;
-    ///
-    /// // 创建表配置
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-    /// );
-    ///
-    /// // 创建查询构建器（不需要数据库连接）
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     Arc::from(vec!["admin".to_string()]),
-    ///     None,
-    /// );
-    ///
-    /// // 选择存在的字段，应成功
-    /// let result = query.select_fields(&["id", "name", "email"]);
-    /// assert!(result.is_ok());
-    ///
-    /// // 选择不存在的字段，应返回错误
-    /// let table_config2 = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    /// );
-    /// let query2 = TableQuery::new(
-    ///     table_config2,
-    ///     Arc::from(vec!["admin".to_string()]),
-    ///     None,
-    /// );
-    /// let result2 = query2.select_fields(&["nonexistent_field"]);
-    /// assert!(result2.is_err());
-    /// ```
+    /// 校验字段存在，并且当前角色具有读取权限。
     fn validate_read_field(&self, field_name: &str) -> Result<(), BaseError> {
         let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field_name.to_string())
@@ -359,31 +291,31 @@ impl TableQuery {
         Ok(())
     }
 
-    fn validate_all_fields_readable_for_roles(
-        &self,
-        roles: &HashSet<String>,
-    ) -> Result<(), BaseError> {
-        if let Some(field_name) = self
+    #[cfg(feature = "mysql")]
+    fn default_read_fields(&self) -> Result<Vec<&str>, BaseError> {
+        let mut fields: Vec<&str> = self
             .table_config
             .fields
             .iter()
-            .filter_map(|(field_name, field_config)| {
-                (!field_config.permissions.can_read(roles)).then_some(field_name)
+            .filter_map(|(name, field)| {
+                (!field.hidden && field.permissions.can_read(&self.user_roles_set))
+                    .then_some(name.as_str())
             })
-            .min()
-        {
+            .collect();
+        fields.sort_unstable();
+        if fields.is_empty() {
             return Err(BaseError::FieldPermissionDenied(
                 self.table_config.table_name.clone(),
-                field_name.clone(),
-                "用户无读取权限".to_string(),
+                "*".to_string(),
+                "当前角色没有可读字段".to_string(),
             ));
         }
-        Ok(())
+        Ok(fields)
     }
 
     #[cfg(feature = "mysql")]
-    fn validate_all_fields_readable(&self) -> Result<(), BaseError> {
-        self.validate_all_fields_readable_for_roles(&self.user_roles_set)
+    pub(crate) fn ensure_readable_projection(&self) -> Result<(), BaseError> {
+        self.default_read_fields().map(|_| ())
     }
 
     /// 选择要查询的字段。
@@ -406,26 +338,6 @@ impl TableQuery {
         self.query_params.fields = Some(fields.iter().map(|s| s.to_string()).collect());
 
         Ok(self)
-    }
-
-    /// 强制校验当前用户对表内所有字段的读权限
-    ///
-    /// 内置 Get/Select Action 读取整实体（`SELECT *`）时，在执行查询前调用本方法，
-    /// 确保不会把用户无权读取的字段一并返回。遍历表配置中的每个字段，对
-    /// `readable_roles` 非空且用户不具备任一可读角色的字段返回
-    /// [`BaseError::FieldPermissionDenied`]。与 [`TableQuery::select_fields`] 的
-    /// `can_read` 判定机制保持一致。
-    ///
-    /// # 参数
-    ///
-    /// - `user`：当前用户（其 `roles` 用于权限判定）
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(())`：用户对全部字段可读
-    /// - `Err(BaseError::FieldPermissionDenied)`：存在不可读字段
-    pub fn ensure_fields_readable(&self, user: &crate::action::User) -> Result<(), BaseError> {
-        self.validate_all_fields_readable_for_roles(&user.roles)
     }
 
     /// 添加等于条件 (WHERE field = value)
@@ -456,17 +368,11 @@ impl TableQuery {
     ///
     /// let query = query.where_eq("status", json!("active"))?;
     /// ```
-    pub fn where_eq(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        // 验证字段和权限
-        self.validate_filter_field(field)?;
-
-        // 添加 WHERE 条件
-        self.query_params.where_conditions.push(WhereCondition::Eq {
+    pub fn where_eq(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Eq {
             field: field.to_string(),
             value,
-        });
-
-        Ok(self)
+        })
     }
 
     /// 添加包含条件 (WHERE field IN (values))
@@ -497,7 +403,7 @@ impl TableQuery {
     ///
     /// let query = query.where_in("status", vec![json!(1), json!(2), json!(3)])?;
     /// ```
-    pub fn where_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+    pub fn where_in(self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
         if values.is_empty() {
             return Err(BaseError::ParamInvalid(
                 "values".to_string(),
@@ -517,16 +423,10 @@ impl TableQuery {
             ));
         }
 
-        // 验证字段和权限
-        self.validate_filter_field(field)?;
-
-        // 添加 WHERE 条件
-        self.query_params.where_conditions.push(WhereCondition::In {
+        self.push_where_condition(WhereCondition::In {
             field: field.to_string(),
             values,
-        });
-
-        Ok(self)
+        })
     }
 
     /// 添加模糊匹配条件 (WHERE field LIKE pattern)
@@ -555,7 +455,7 @@ impl TableQuery {
     /// ```rust,ignore
     /// let query = query.where_like("name", "%alice%")?;
     /// ```
-    pub fn where_like(mut self, field: &str, pattern: String) -> Result<Self, BaseError> {
+    pub fn where_like(self, field: &str, pattern: String) -> Result<Self, BaseError> {
         // QRY-1: LIKE pattern 长度上限
         if pattern.len() > Self::MAX_LIKE_PATTERN_LEN {
             return Err(BaseError::ParamInvalid(
@@ -568,18 +468,10 @@ impl TableQuery {
             ));
         }
 
-        // 验证字段和权限
-        self.validate_filter_field(field)?;
-
-        // 添加 WHERE 条件
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::Like {
-                field: field.to_string(),
-                pattern,
-            });
-
-        Ok(self)
+        self.push_where_condition(WhereCondition::Like {
+            field: field.to_string(),
+            pattern,
+        })
     }
 
     /// 添加模糊匹配条件 (WHERE field LIKE '%keyword%')
@@ -643,13 +535,11 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_ne(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params.where_conditions.push(WhereCondition::Ne {
+    pub fn where_ne(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Ne {
             field: field.to_string(),
             value,
-        });
-        Ok(self)
+        })
     }
 
     /// 添加小于条件 (WHERE field < value)
@@ -672,13 +562,11 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_lt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params.where_conditions.push(WhereCondition::Lt {
+    pub fn where_lt(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Lt {
             field: field.to_string(),
             value,
-        });
-        Ok(self)
+        })
     }
 
     /// 添加小于等于条件 (WHERE field <= value)
@@ -701,15 +589,11 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_lte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::Lte {
-                field: field.to_string(),
-                value,
-            });
-        Ok(self)
+    pub fn where_lte(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Lte {
+            field: field.to_string(),
+            value,
+        })
     }
 
     /// 添加大于条件 (WHERE field > value)
@@ -732,13 +616,11 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_gt(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params.where_conditions.push(WhereCondition::Gt {
+    pub fn where_gt(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Gt {
             field: field.to_string(),
             value,
-        });
-        Ok(self)
+        })
     }
 
     /// 添加大于等于条件 (WHERE field >= value)
@@ -761,15 +643,11 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_gte(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::Gte {
-                field: field.to_string(),
-                value,
-            });
-        Ok(self)
+    pub fn where_gte(self, field: &str, value: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Gte {
+            field: field.to_string(),
+            value,
+        })
     }
 
     /// 添加区间条件 (WHERE field BETWEEN lo AND hi)
@@ -795,16 +673,12 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_between(mut self, field: &str, lo: Value, hi: Value) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::Between {
-                field: field.to_string(),
-                lo,
-                hi,
-            });
-        Ok(self)
+    pub fn where_between(self, field: &str, lo: Value, hi: Value) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::Between {
+            field: field.to_string(),
+            lo,
+            hi,
+        })
     }
 
     /// 添加空值判断 (WHERE field IS NULL)
@@ -826,14 +700,10 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_null(mut self, field: &str) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::IsNull {
-                field: field.to_string(),
-            });
-        Ok(self)
+    pub fn where_null(self, field: &str) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::IsNull {
+            field: field.to_string(),
+        })
     }
 
     /// 添加非空值判断 (WHERE field IS NOT NULL)
@@ -855,14 +725,10 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_not_null(mut self, field: &str) -> Result<Self, BaseError> {
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::IsNotNull {
-                field: field.to_string(),
-            });
-        Ok(self)
+    pub fn where_not_null(self, field: &str) -> Result<Self, BaseError> {
+        self.push_where_condition(WhereCondition::IsNotNull {
+            field: field.to_string(),
+        })
     }
 
     /// 添加不在列表条件 (WHERE field NOT IN (values))
@@ -885,7 +751,7 @@ impl TableQuery {
     ///
     /// - `BaseError::FieldNotFound`：字段不存在
     /// - `BaseError::FieldPermissionDenied`：用户无筛选权限
-    pub fn where_not_in(mut self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
+    pub fn where_not_in(self, field: &str, values: Vec<Value>) -> Result<Self, BaseError> {
         if values.is_empty() {
             return Err(BaseError::ParamInvalid(
                 "values".to_string(),
@@ -905,14 +771,10 @@ impl TableQuery {
             ));
         }
 
-        self.validate_filter_field(field)?;
-        self.query_params
-            .where_conditions
-            .push(WhereCondition::NotIn {
-                field: field.to_string(),
-                values,
-            });
-        Ok(self)
+        self.push_where_condition(WhereCondition::NotIn {
+            field: field.to_string(),
+            values,
+        })
     }
 
     /// 添加排序规则 (ORDER BY field direction)
@@ -1092,6 +954,94 @@ impl TableQuery {
         Ok(())
     }
 
+    /// 通过同一校验边界追加任意 WHERE 条件，避免各链式入口出现校验差异。
+    fn push_where_condition(mut self, condition: WhereCondition) -> Result<Self, BaseError> {
+        self.validate_condition_tree(&condition, 0)?;
+        self.query_params.where_conditions.push(condition);
+        Ok(self)
+    }
+
+    /// 校验叶子条件的操作符与字段类型兼容，并验证每一个参与比较的值。
+    fn validate_condition_values(
+        &self,
+        condition: &WhereCondition,
+        field: &str,
+    ) -> Result<(), BaseError> {
+        let field_config = self.table_config.get_field(field).ok_or_else(|| {
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
+        })?;
+        let field_type = &field_config.field_type;
+
+        let reject_operator = |operator: &str| {
+            BaseError::ParamInvalid(
+                field.to_string(),
+                format!("字段类型 {field_type:?} 不支持 {operator} 条件"),
+            )
+        };
+        let validate = |value: &Value| field_type.validate(field, value);
+        let is_orderable = matches!(
+            field_type,
+            crate::table::FieldType::String { .. }
+                | crate::table::FieldType::Integer
+                | crate::table::FieldType::BigInt
+                | crate::table::FieldType::Float
+                | crate::table::FieldType::Double
+                | crate::table::FieldType::Date
+                | crate::table::FieldType::DateTime
+                | crate::table::FieldType::Timestamp
+                | crate::table::FieldType::Text
+                | crate::table::FieldType::Enum { .. }
+        );
+        let is_textual = matches!(
+            field_type,
+            crate::table::FieldType::String { .. }
+                | crate::table::FieldType::Text
+                | crate::table::FieldType::Enum { .. }
+        );
+
+        match condition {
+            WhereCondition::Eq { value, .. } | WhereCondition::Ne { value, .. } => {
+                // NULL 比较由渲染器规范化为 IS NULL / IS NOT NULL，不作为字段值校验。
+                if value.is_null() {
+                    Ok(())
+                } else {
+                    validate(value)
+                }
+            }
+            WhereCondition::In { values, .. } | WhereCondition::NotIn { values, .. } => {
+                values.iter().try_for_each(validate)
+            }
+            WhereCondition::Like { .. } => {
+                if is_textual {
+                    Ok(())
+                } else {
+                    Err(reject_operator("LIKE"))
+                }
+            }
+            WhereCondition::Gt { value, .. }
+            | WhereCondition::Gte { value, .. }
+            | WhereCondition::Lt { value, .. }
+            | WhereCondition::Lte { value, .. } => {
+                if !is_orderable {
+                    return Err(reject_operator("范围比较"));
+                }
+                validate(value)
+            }
+            WhereCondition::Between { lo, hi, .. } => {
+                if !is_orderable {
+                    return Err(reject_operator("BETWEEN"));
+                }
+                validate(lo)?;
+                validate(hi)
+            }
+            WhereCondition::IsNull { .. } | WhereCondition::IsNotNull { .. } => Ok(()),
+            WhereCondition::And { .. } | WhereCondition::Or { .. } => Err(BaseError::ParamInvalid(
+                "condition".to_string(),
+                "逻辑组不能作为叶子条件校验".to_string(),
+            )),
+        }
+    }
+
     /// 嵌套布尔条件的最大递归深度，防止深层嵌套（或恶意构造）爆栈。
     ///
     /// 校验期（`validate_condition_tree`）与渲染期（`render_condition`）共用同一上限。
@@ -1192,7 +1142,7 @@ impl TableQuery {
                         ));
                     }
                 }
-                Ok(())
+                self.validate_condition_values(leaf, field)
             }
         }
     }
@@ -1203,7 +1153,7 @@ impl TableQuery {
     /// 顶层条件列表，与既有条件以隐式 AND 连接。空组等价于恒假（`1=0`）。
     ///
     /// 子条件可由 [`WhereCondition`] 直接构造，亦可嵌套 `And`/`Or` 组（深度上限
-    /// [`Self::MAX_WHERE_DEPTH`]）。
+    /// `MAX_WHERE_DEPTH`）。
     ///
     /// # 参数
     ///
@@ -1259,8 +1209,8 @@ impl TableQuery {
 
     /// 追加一棵任意 WHERE 条件（叶子或 `And`/`Or` 组），递归校验后并入顶层条件。
     ///
-    /// 这是类型化布尔树（[`Filter`](crate::table::Filter)）桥接到受保护层的统一入口：
-    /// 整棵树先经 [`Self::validate_condition_tree`] 递归校验字段存在性、筛选权限与
+    /// 这是以 [`WhereCondition`] 表示的类型化布尔树桥接到受保护层的统一入口：
+    /// 整棵树先经 `validate_condition_tree` 递归校验字段存在性、筛选权限与
     /// 嵌套深度，通过后作为单个条件追加（与既有条件隐式 AND 连接）。
     ///
     /// # 参数
@@ -1297,7 +1247,7 @@ impl TableQuery {
     ///
     /// 返回表配置的引用
     #[allow(dead_code)]
-    pub fn get_table_config(&self) -> &Arc<TableConfig> {
+    pub(crate) fn get_table_config(&self) -> &Arc<TableConfig> {
         &self.table_config
     }
 
@@ -1317,7 +1267,7 @@ impl TableQuery {
     ///
     /// 使用空的用户角色列表，适合访问无权限限制字段的单元测试。
     #[cfg(test)]
-    pub fn new_without_pool(table_config: Arc<TableConfig>) -> Self {
+    pub(crate) fn new_without_pool(table_config: Arc<TableConfig>) -> Self {
         Self::new(table_config, Arc::from(vec![]), None)
     }
 }
@@ -1348,49 +1298,6 @@ impl TableQuery {
     /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
     ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType, PaginatedResult};
-    /// use std::sync::Arc;
-    /// use serde::{Deserialize, Serialize};
-    ///
-    /// #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-    /// struct User {
-    ///     id: i64,
-    ///     name: String,
-    ///     email: String,
-    /// }
-    ///
-    /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-    /// );
-    ///
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["user".to_string()],
-    ///     Some(pool),
-    /// );
-    ///
-    /// // 执行分页查询
-    /// let result: PaginatedResult<User> = query
-    ///     .select_fields(&["id", "name", "email"])?
-    ///     .where_eq("status", serde_json::json!("active"))?
-    ///     .order_by("created_at", SortOrder::Desc)?
-    ///     .page(1, 20)?
-    ///     .paginate()
-    ///     .await?;
-    ///
-    /// println!("总记录数: {}", result.total);
-    /// println!("当前页: {}/{}", result.page, result.total_pages);
-    /// println!("数据条数: {}", result.data.len());
-    /// # Ok(())
-    /// # }
-    /// ```
     fn with_effective_pagination(self) -> Result<(Self, usize, usize), BaseError> {
         let page = self.query_params.page.unwrap_or(1);
         let page_size = self
@@ -1405,7 +1312,7 @@ impl TableQuery {
     /// 执行分页查询。
     ///
     /// 未显式设置分页时会使用默认页码和默认每页大小，并确保数据查询带有 `LIMIT/OFFSET`。
-    pub async fn paginate<T>(self) -> Result<crate::table::PaginatedResult<T>, BaseError>
+    pub(crate) async fn paginate<T>(self) -> Result<crate::table::PaginatedResult<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin + Serialize,
     {
@@ -1435,6 +1342,13 @@ impl TableQuery {
         ))
     }
 
+    /// 执行分页查询并返回 schema-first [`Record`](crate::table::Record)。
+    pub async fn paginate_records(
+        self,
+    ) -> Result<crate::table::PaginatedResult<crate::table::Record>, BaseError> {
+        self.paginate::<crate::table::Record>().await
+    }
+
     /// 执行 COUNT 查询获取总记录数（内部方法，供 paginate 使用）
     ///
     /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
@@ -1451,6 +1365,9 @@ impl TableQuery {
     /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
     async fn count_internal(&self) -> Result<usize, BaseError> {
+        // COUNT 会泄露表基数，因此与 SELECT 使用相同的可读权限守卫。
+        self.ensure_readable_projection()?;
+
         // 1. 检查数据库连接池是否存在
         let pool = self
             .pool
@@ -1590,8 +1507,12 @@ impl TableQuery {
         match condition {
             WhereCondition::Eq { field, value } => {
                 let quoted = self.quote_identifier(field)?;
-                sql.push_str(&format!("{} = ?", quoted));
-                params.push(SqlParam::from_json(value)?);
+                if value.is_null() {
+                    sql.push_str(&format!("{} IS NULL", quoted));
+                } else {
+                    sql.push_str(&format!("{} = ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
             }
             WhereCondition::In { field, values } => {
                 // QRY-2 安全网：渲染期再次校验 IN 列表元素数上限
@@ -1663,8 +1584,12 @@ impl TableQuery {
             }
             WhereCondition::Ne { field, value } => {
                 let quoted = self.quote_identifier(field)?;
-                sql.push_str(&format!("{} <> ?", quoted));
-                params.push(SqlParam::from_json(value)?);
+                if value.is_null() {
+                    sql.push_str(&format!("{} IS NOT NULL", quoted));
+                } else {
+                    sql.push_str(&format!("{} <> ?", quoted));
+                    params.push(SqlParam::from_json(value)?);
+                }
             }
             WhereCondition::Between { field, lo, hi } => {
                 let quoted = self.quote_identifier(field)?;
@@ -1747,6 +1672,7 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
     fn build_count_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
+        self.ensure_readable_projection()?;
         let mut sql = format!("SELECT COUNT(*) FROM {}", self.quoted_table_name()?);
         let mut params = Vec::new();
 
@@ -1802,47 +1728,7 @@ impl TableQuery {
     /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
     ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
-    /// use std::sync::Arc;
-    /// use serde::{Deserialize, Serialize};
-    ///
-    /// #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-    /// struct User {
-    ///     id: i64,
-    ///     name: String,
-    ///     email: String,
-    /// }
-    ///
-    /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-    /// );
-    ///
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["user".to_string()],
-    ///     Some(pool),
-    /// );
-    ///
-    /// // 执行查询
-    /// let users: Vec<User> = query
-    ///     .select_fields(&["id", "name", "email"])?
-    ///     .where_eq("status", serde_json::json!("active"))?
-    ///     .order_by("created_at", SortOrder::Desc)?
-    ///     .select()
-    ///     .await?;
-    ///
-    /// println!("找到 {} 个用户", users.len());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn select<T>(self) -> Result<Vec<T>, BaseError>
+    pub(crate) async fn select<T>(self) -> Result<Vec<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
@@ -1866,6 +1752,11 @@ impl TableQuery {
         .await
     }
 
+    /// 查询全部匹配记录。
+    pub async fn all(self) -> Result<Vec<crate::table::Record>, BaseError> {
+        self.select::<crate::table::Record>().await
+    }
+
     /// 在事务中执行 SELECT 查询并返回多条记录
     ///
     /// 与 [`TableQuery::select`] 完全一致的建句与权限/软删逻辑，但在调用方提供的
@@ -1881,7 +1772,10 @@ impl TableQuery {
     ///
     /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚，连接不可用
     /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    pub async fn select_in_tx<T>(self, tx: &mut yang_db::Transaction) -> Result<Vec<T>, BaseError>
+    pub(crate) async fn select_in_tx<T>(
+        self,
+        tx: &mut yang_db::Transaction,
+    ) -> Result<Vec<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
@@ -1905,6 +1799,14 @@ impl TableQuery {
         .await
     }
 
+    /// 在事务中查询全部匹配记录。
+    pub async fn all_in_tx(
+        self,
+        tx: &mut yang_db::Transaction,
+    ) -> Result<Vec<crate::table::Record>, BaseError> {
+        self.select_in_tx::<crate::table::Record>(tx).await
+    }
+
     /// 构建 SELECT SQL 语句
     ///
     /// # 返回值
@@ -1924,8 +1826,12 @@ impl TableQuery {
         // 1. 字段列表（通过 quote_identifier 转义字段名）
         if let Some(fields) = &self.query_params.fields {
             if fields.is_empty() {
-                self.validate_all_fields_readable()?;
-                sql.push('*');
+                let quoted_fields = self
+                    .default_read_fields()?
+                    .into_iter()
+                    .map(|field| self.quote_identifier(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                sql.push_str(&quoted_fields.join(", "));
             } else {
                 // 对每个字段名进行反引号转义
                 let quoted_fields: Result<Vec<String>, BaseError> = fields
@@ -1938,8 +1844,12 @@ impl TableQuery {
                 sql.push_str(&quoted_fields?.join(", "));
             }
         } else {
-            self.validate_all_fields_readable()?;
-            sql.push('*');
+            let quoted_fields = self
+                .default_read_fields()?
+                .into_iter()
+                .map(|field| self.quote_identifier(field))
+                .collect::<Result<Vec<_>, _>>()?;
+            sql.push_str(&quoted_fields.join(", "));
         }
 
         // 2. FROM 子句（表名走统一转义路径）
@@ -2041,11 +1951,11 @@ impl TableQuery {
     /// # 示例
     ///
     /// ```rust,ignore
-    /// use yang_base::table::DynamicRow;
+    /// use yang_base::table::Record;
     ///
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
     /// // 按主键查询单条记录
-    /// let row: Option<DynamicRow> = query
+    /// let row: Option<Record> = query
     ///     .where_eq("id", serde_json::json!(1))?
     ///     .fetch_optional()
     ///     .await?;
@@ -2057,7 +1967,7 @@ impl TableQuery {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn fetch_optional<T>(self) -> Result<Option<T>, BaseError>
+    pub(crate) async fn fetch_optional<T>(self) -> Result<Option<T>, BaseError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
@@ -2092,10 +2002,23 @@ impl TableQuery {
         Ok(result)
     }
 
+    /// 查询可选单条记录。
+    pub async fn optional(self) -> Result<Option<crate::table::Record>, BaseError> {
+        self.fetch_optional::<crate::table::Record>().await
+    }
+
+    /// 查询单条记录；没有匹配记录时返回 [`BaseError::RecordNotFound`]。
+    pub async fn one(self) -> Result<crate::table::Record, BaseError> {
+        let table_name = self.table_config.table_name.clone();
+        self.optional()
+            .await?
+            .ok_or_else(|| BaseError::RecordNotFound(format!("表 {table_name} 中没有匹配记录")))
+    }
+
     /// 执行 INSERT 操作
     ///
     /// 插入数据到表中，包括以下步骤：
-    /// 1. 验证所有字段值的合法性（使用 FieldConfig::validate）
+    /// 1. 按表定义验证所有字段值
     /// 2. 检查用户是否有字段的写入权限
     /// 3. 构建 INSERT SQL 语句
     /// 4. 执行插入操作
@@ -2103,7 +2026,7 @@ impl TableQuery {
     ///
     /// # 参数
     ///
-    /// - `data`：要插入的数据，格式为 HashMap<String, Value>
+    /// - `data`：要插入的 [`crate::table::Record`]
     ///
     /// # 返回值
     ///
@@ -2121,29 +2044,12 @@ impl TableQuery {
     /// # 示例
     ///
     /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
-    /// use std::sync::Arc;
-    /// use std::collections::HashMap;
-    /// use serde_json::json;
+    /// use yang_base::table::Record;
     ///
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-    /// );
-    ///
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["user".to_string()],
-    ///     Some(pool),
-    /// );
-    ///
-    /// // 准备插入数据
-    /// let mut data = HashMap::new();
-    /// data.insert("name".to_string(), json!("张三"));
-    /// data.insert("email".to_string(), json!("zhangsan@example.com"));
+    /// let data = Record::new()
+    ///     .set("name", "张三")
+    ///     .set("email", "zhangsan@example.com");
     ///
     /// // 执行插入
     /// let affected = query.insert(data).await?;
@@ -2151,10 +2057,7 @@ impl TableQuery {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn insert(
-        self,
-        data: std::collections::HashMap<String, Value>,
-    ) -> Result<u64, BaseError> {
+    pub async fn insert(self, data: crate::table::Record) -> Result<u64, BaseError> {
         // 1. 检查数据库连接池是否存在
         let pool = self
             .pool
@@ -2162,7 +2065,7 @@ impl TableQuery {
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
         // 2. 填充默认值/时间戳并校验（顺序：写权限→填充默认值→必填/类型校验）
-        let data = self.prepare_and_validate_insert(data)?;
+        let data = self.prepare_and_validate_insert(data.into_columns())?;
 
         // 3. 构建 INSERT SQL 语句
         let (sql, params) = self.build_insert_sql(&data)?;
@@ -2192,9 +2095,9 @@ impl TableQuery {
     pub async fn insert_in_tx(
         self,
         tx: &mut yang_db::Transaction,
-        data: std::collections::HashMap<String, Value>,
+        data: crate::table::Record,
     ) -> Result<u64, BaseError> {
-        let data = self.prepare_and_validate_insert(data)?;
+        let data = self.prepare_and_validate_insert(data.into_columns())?;
         let (sql, params) = self.build_insert_sql(&data)?;
 
         let executor = tx.executor().ok_or_else(|| {
@@ -2237,14 +2140,14 @@ impl TableQuery {
     /// - `BaseError::DatabaseExecuteFailed`：数据库执行失败
     pub async fn insert_returning_id(
         self,
-        data: std::collections::HashMap<String, Value>,
+        data: crate::table::Record,
     ) -> Result<(u64, u64), BaseError> {
         let pool = self
             .pool
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
-        let data = self.prepare_and_validate_insert(data)?;
+        let data = self.prepare_and_validate_insert(data.into_columns())?;
         let (sql, params) = self.build_insert_sql(&data)?;
 
         let result = Self::timed(
@@ -2266,9 +2169,9 @@ impl TableQuery {
     pub async fn insert_returning_id_in_tx(
         self,
         tx: &mut yang_db::Transaction,
-        data: std::collections::HashMap<String, Value>,
+        data: crate::table::Record,
     ) -> Result<(u64, u64), BaseError> {
-        let data = self.prepare_and_validate_insert(data)?;
+        let data = self.prepare_and_validate_insert(data.into_columns())?;
         let (sql, params) = self.build_insert_sql(&data)?;
 
         let executor = tx.executor().ok_or_else(|| {
@@ -2291,9 +2194,9 @@ impl TableQuery {
     /// 填充默认值/时间戳并验证插入数据
     ///
     /// 处理顺序（修复 required+default 字段被误报 FieldRequired 的问题）：
-    /// 1. 写权限校验：对调用方显式提供了非 null 值、但用户无写权限的字段拒绝
+    /// 1. 字段与写权限校验：显式提交只读字段时拒绝；null 自增主键视为未提供
     /// 2. 规范化数据库生成字段：未提供或为 null 的自增字段交给数据库生成
-    /// 3. 填充默认值：data 中缺失或为 null 且配置了 `default_value` 的字段补默认值
+    /// 3. 填充默认值：data 中缺失且配置了 `default_value` 的字段补默认值
     /// 4. 填充时间戳：`timestamp_fields` 配置且列存在、调用方未提供时，写入当前时间
     /// 5. 必填/类型/验证器校验：在补齐后的数据上执行
     ///
@@ -2311,18 +2214,20 @@ impl TableQuery {
     ) -> Result<std::collections::HashMap<String, Value>, BaseError> {
         let mut prepared = data;
 
-        // 1. 写权限校验：仅拦截"无权限却显式赋了非 null 值"的字段
-        for (field_name, field_config) in &self.table_config.fields {
-            if !field_config.permissions.can_write(&self.user_roles_set) {
-                if let Some(v) = prepared.get(field_name) {
-                    if !v.is_null() {
-                        return Err(BaseError::FieldPermissionDenied(
-                            self.table_config.table_name.clone(),
-                            field_name.clone(),
-                            "用户无写入权限".to_string(),
-                        ));
-                    }
-                }
+        // 1. 校验调用方显式提交的字段和写权限。只有 null 自增主键可视为“未提供”，
+        // 其余只读字段即使提交 null 也必须拒绝，避免绕过字段边界并覆盖数据库默认值。
+        for (field_name, value) in &prepared {
+            let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), field_name.clone())
+            })?;
+            let omitted_auto_increment = field_config.auto_increment && value.is_null();
+            if !omitted_auto_increment && !field_config.permissions.can_write(&self.user_roles_set)
+            {
+                return Err(BaseError::FieldPermissionDenied(
+                    self.table_config.table_name.clone(),
+                    field_name.clone(),
+                    "用户无写入权限".to_string(),
+                ));
             }
         }
 
@@ -2338,17 +2243,13 @@ impl TableQuery {
             }
         }
 
-        // 3. 填充默认值（缺失或为 null 且配置了 default_value）
+        // 3. 填充默认值（仅缺失时；显式 null 仍受 nullable/required 约束）
         for (field_name, field_config) in &self.table_config.fields {
             if field_config.auto_increment {
                 continue;
             }
             if let Some(default) = &field_config.default_value {
-                let missing = prepared
-                    .get(field_name)
-                    .map(|v| v.is_null())
-                    .unwrap_or(true);
-                if missing {
+                if !prepared.contains_key(field_name) {
                     prepared.insert(field_name.clone(), default.clone());
                 }
             }
@@ -2413,8 +2314,8 @@ impl TableQuery {
                 ));
             }
 
-            // 写入权限已在 validate_insert_data 集中校验（无权限且赋非 null 值会
-            // 直接报错），此处不再二次跳过，保证 data 中所有字段一致入列。
+            // 写入权限已在 prepare_and_validate_insert 集中校验，此处不再二次跳过，
+            // 保证 data 中所有字段一致入列。
 
             // 对字段名进行反引号转义，防止 SQL 注入
             let quoted = self.quote_identifier(field_name)?;
@@ -2437,7 +2338,7 @@ impl TableQuery {
     /// 执行 UPDATE 操作
     ///
     /// 更新表中的数据，包括以下步骤：
-    /// 1. 验证所有字段值的合法性（使用 FieldConfig::validate）
+    /// 1. 按表定义验证所有字段值
     /// 2. 检查用户是否有字段的写入权限
     /// 3. 构建 UPDATE SQL 语句
     /// 4. 应用已配置的 WHERE 条件
@@ -2446,7 +2347,7 @@ impl TableQuery {
     ///
     /// # 参数
     ///
-    /// - `data`：要更新的数据，格式为 HashMap<String, Value>
+    /// - `data`：要更新的 [`crate::table::Record`]
     ///
     /// # 返回值
     ///
@@ -2464,29 +2365,13 @@ impl TableQuery {
     /// # 示例
     ///
     /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
-    /// use std::sync::Arc;
-    /// use std::collections::HashMap;
+    /// use yang_base::table::Record;
     /// use serde_json::json;
     ///
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("email", FieldType::String { max_length: 100 })).expect("有效字段配置应注册成功")
-    /// );
-    ///
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["user".to_string()],
-    ///     Some(pool),
-    /// );
-    ///
-    /// // 准备更新数据
-    /// let mut data = HashMap::new();
-    /// data.insert("name".to_string(), json!("李四"));
-    /// data.insert("email".to_string(), json!("lisi@example.com"));
+    /// let data = Record::new()
+    ///     .set("name", "李四")
+    ///     .set("email", "lisi@example.com");
     ///
     /// // 执行更新（需要先设置 WHERE 条件）
     /// let affected = query
@@ -2497,10 +2382,7 @@ impl TableQuery {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn update(
-        self,
-        data: std::collections::HashMap<String, Value>,
-    ) -> Result<u64, BaseError> {
+    pub async fn update(self, data: crate::table::Record) -> Result<u64, BaseError> {
         // 1. 检查数据库连接池是否存在
         let pool = self
             .pool
@@ -2508,6 +2390,7 @@ impl TableQuery {
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
         // 2. 验证所有字段值的合法性和权限
+        let data = data.into_columns();
         self.validate_update_data(&data)?;
 
         // 3. 构建 UPDATE SQL 语句
@@ -2538,8 +2421,9 @@ impl TableQuery {
     pub async fn update_in_tx(
         self,
         tx: &mut yang_db::Transaction,
-        data: std::collections::HashMap<String, Value>,
+        data: crate::table::Record,
     ) -> Result<u64, BaseError> {
+        let data = data.into_columns();
         self.validate_update_data(&data)?;
         let (sql, params) = self.build_update_sql(&data)?;
 
@@ -2600,6 +2484,12 @@ impl TableQuery {
         &self,
         data: &std::collections::HashMap<String, Value>,
     ) -> Result<(), BaseError> {
+        if data.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "data".to_string(),
+                "至少需要一个更新字段".to_string(),
+            ));
+        }
         // 只验证提供的字段（与 INSERT 不同，UPDATE 不需要验证所有字段）
         for (field_name, value) in data {
             // 1. 检查字段是否存在于表配置中
@@ -2616,9 +2506,8 @@ impl TableQuery {
                 ));
             }
 
-            // 3. 验证字段值（包括类型检查和验证器检查）
-            // 注意：UPDATE 操作中，字段不一定是必填的，因为我们只更新部分字段
-            // 所以这里不检查 required 约束，只检查类型和验证器
+            // 3. 验证显式提供的字段值。部分更新不要求提交其它必填字段，但若本字段
+            // 被显式设为 null，仍执行 required 约束。
             field_config.validate(value)?;
         }
 
@@ -2748,53 +2637,26 @@ impl TableQuery {
     /// # 示例
     ///
     /// ```rust,ignore
-    /// use yang_base::table::{TableQuery, TableConfig, FieldConfig, FieldType};
-    /// use std::sync::Arc;
     /// use serde_json::json;
+    /// use yang_base::table::{Field, Table};
     ///
     /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// // 配置了软删除字段的表
-    /// let table_config = Arc::new(
-    ///     TableConfig::new("users")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("name", FieldType::String { max_length: 50 })).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("deleted_at", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .soft_delete_field("deleted_at")  // 配置软删除字段
-    /// );
-    ///
-    /// let query = TableQuery::new(
-    ///     table_config,
-    ///     vec!["admin".to_string()],
-    ///     Some(pool),
-    /// );
+    /// let users = Table::new("users")
+    ///     .fields(vec![
+    ///         Field::id("id"),
+    ///         Field::string("name", 50).required(),
+    ///         Field::soft_delete("deleted_at"),
+    ///     ])
+    ///     .build()?;
     ///
     /// // 执行软删除（实际上是 UPDATE deleted_at = <timestamp>）
-    /// let affected = query
+    /// let affected = users
+    ///     .bind(pool)
+    ///     .query(["admin"])
     ///     .where_eq("id", json!(1))?
     ///     .delete()
     ///     .await?;
     /// println!("删除成功，影响行数: {}", affected);
-    ///
-    /// // 未配置软删除字段的表将执行物理删除
-    /// let table_config2 = Arc::new(
-    ///     TableConfig::new("logs")
-    ///         .field(FieldConfig::new("id", FieldType::BigInt)).expect("有效字段配置应注册成功")
-    ///         .field(FieldConfig::new("message", FieldType::Text)).expect("有效字段配置应注册成功")
-    ///         // 未配置 soft_delete_field
-    /// );
-    ///
-    /// let query2 = TableQuery::new(
-    ///     table_config2,
-    ///     vec!["admin".to_string()],
-    ///     Some(pool),
-    /// );
-    ///
-    /// // 执行物理删除（实际上是 DELETE FROM logs WHERE ...）
-    /// let affected2 = query2
-    ///     .where_eq("id", json!(1))?
-    ///     .delete()
-    ///     .await?;
-    /// println!("物理删除成功，影响行数: {}", affected2);
     /// # Ok(())
     /// # }
     /// ```
@@ -3153,17 +3015,16 @@ impl SqlParam {
 #[cfg(all(test, feature = "mysql"))]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
+    fn test_config(table: crate::table::Table) -> Arc<TableConfig> {
+        table.build().expect("测试表定义应有效").shared_config()
+    }
+
     fn test_query() -> TableQuery {
-        let config = Arc::new(
-            crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new(
-                    "id",
-                    crate::table::FieldType::Integer,
-                ))
-                .expect("有效字段配置应注册成功"),
+        let config = test_config(
+            crate::table::Table::new("users")
+                .fields([crate::table::Field::integer("id").required().primary_key()]),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         TableQuery::new(config, roles, None)
@@ -3171,24 +3032,10 @@ mod tests {
 
     #[test]
     fn test_insert_omits_database_generated_auto_increment_field() {
-        let config = Arc::new(
-            crate::table::TableConfig::new("accounts")
-                .primary_key("id")
-                .field(
-                    crate::table::FieldConfig::new("id", crate::table::FieldType::BigInt)
-                        .required(true)
-                        .auto_increment(true),
-                )
-                .expect("自增主键配置应有效")
-                .field(
-                    crate::table::FieldConfig::new(
-                        "username",
-                        crate::table::FieldType::String { max_length: 64 },
-                    )
-                    .required(true),
-                )
-                .expect("用户名字段配置应有效"),
-        );
+        let config = test_config(crate::table::Table::new("accounts").fields([
+            crate::table::Field::id("id"),
+            crate::table::Field::string("username", 64).required(),
+        ]));
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         let query = TableQuery::new(config, roles, None);
         let data = std::collections::HashMap::from([(
@@ -3214,6 +3061,31 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_rejects_explicit_null_for_non_writable_field() {
+        let config = test_config(crate::table::Table::new("accounts").fields([
+            crate::table::Field::id("id"),
+            crate::table::Field::string("username", 64).required(),
+            crate::table::Field::string("internal_note", 255).not_writable(),
+        ]));
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let query = TableQuery::new(config, roles, None);
+        let data = std::collections::HashMap::from([
+            ("username".to_string(), Value::String("alice".to_string())),
+            ("internal_note".to_string(), Value::Null),
+        ]);
+
+        let error = query
+            .prepare_and_validate_insert(data)
+            .expect_err("显式提交只读字段时，即使值为 null 也必须拒绝");
+
+        assert!(matches!(
+            error,
+            BaseError::FieldPermissionDenied(table, field, _)
+                if table == "accounts" && field == "internal_note"
+        ));
+    }
+
+    #[test]
     fn test_page_rejects_page_size_above_production_limit() {
         let err = test_query()
             .page(1, 101)
@@ -3224,17 +3096,13 @@ mod tests {
 
     #[test]
     fn test_default_order_rejects_unsortable_field() {
-        let config = Arc::new(
-            crate::table::TableConfig::new("users")
-                .field(
-                    crate::table::FieldConfig::new("secret_rank", crate::table::FieldType::Integer)
-                        .sortable(false),
-                )
-                .expect("有效字段配置应注册成功")
-                .default_order(vec![(
-                    "secret_rank".to_string(),
-                    crate::table::SortOrder::Desc,
-                )]),
+        let config = test_config(
+            crate::table::Table::new("users")
+                .fields([
+                    crate::table::Field::id("id"),
+                    crate::table::Field::integer("secret_rank").not_sortable(),
+                ])
+                .default_order(crate::table::col("secret_rank").desc()),
         );
         let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
         let query = TableQuery::new(config, roles, None);
@@ -3249,170 +3117,104 @@ mod tests {
     }
 
     #[test]
-    fn test_select_star_rejects_unreadable_field() {
-        let protected_permissions = crate::table::FieldPermissions {
-            readable_roles: HashSet::from(["admin".to_string()]),
-            ..crate::table::FieldPermissions::default()
-        };
-        let config = Arc::new(
-            crate::table::TableConfig::new("users")
-                .field(crate::table::FieldConfig::new(
-                    "id",
-                    crate::table::FieldType::Integer,
-                ))
-                .expect("有效字段配置应注册成功")
-                .field(
-                    crate::table::FieldConfig::new(
-                        "secret",
-                        crate::table::FieldType::String { max_length: 64 },
-                    )
-                    .permissions(protected_permissions),
-                )
-                .expect("有效字段配置应注册成功"),
+    fn test_default_projection_excludes_unreadable_and_secret_fields() {
+        let config = test_config(
+            crate::table::Table::new("users").fields([
+                crate::table::Field::integer("id").required().primary_key(),
+                crate::table::Field::string("name", 64),
+                crate::table::Field::string("restricted", 64).readable_by(["admin"]),
+                crate::table::Field::string("password_hash", 255)
+                    .secret()
+                    .readable_by(["user"]),
+            ]),
         );
-        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
         let query = TableQuery::new(config, roles, None);
 
-        let err = query
+        query
+            .ensure_readable_projection()
+            .expect("存在可读且非 secret 字段时默认投影应可用");
+        let (sql, _) = query
             .build_select_sql(None)
-            .expect_err("SELECT * 不应返回用户无权读取的字段");
+            .expect("默认查询应只投影当前角色可读且非 secret 的字段");
 
-        assert!(
-            matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret")
-        );
+        assert_eq!(sql, "SELECT `id`, `name` FROM `users`");
+        assert!(!sql.contains("restricted"));
+        assert!(!sql.contains("password_hash"));
     }
 
     #[test]
     fn test_select_projection_permission_matrix() {
-        let protected = crate::table::FieldPermissions {
-            readable_roles: HashSet::from(["admin".to_string()]),
-            ..crate::table::FieldPermissions::default()
-        };
-
-        let all_readable = Arc::new(
-            crate::table::TableConfig::new("public_rows")
-                .field(crate::table::FieldConfig::new(
-                    "id",
-                    crate::table::FieldType::Integer,
-                ))
-                .expect("公开字段配置应有效")
-                .field(crate::table::FieldConfig::new(
-                    "name",
-                    crate::table::FieldType::String { max_length: 64 },
-                ))
-                .expect("公开字段配置应有效"),
-        );
+        let all_readable = test_config(crate::table::Table::new("public_rows").fields([
+            crate::table::Field::integer("id").required().primary_key(),
+            crate::table::Field::string("name", 64),
+        ]));
         let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
         let (sql, _) = TableQuery::new(all_readable, Arc::clone(&roles), None)
             .build_select_sql(None)
-            .expect("全部字段可读时 SELECT * 应成功");
-        assert!(sql.starts_with("SELECT * FROM `public_rows`"));
+            .expect("全部字段可读时默认投影应成功");
+        assert_eq!(sql, "SELECT `id`, `name` FROM `public_rows`");
 
-        let partially_readable = Arc::new(
-            crate::table::TableConfig::new("mixed_rows")
-                .field(crate::table::FieldConfig::new(
-                    "id",
-                    crate::table::FieldType::Integer,
-                ))
-                .expect("公开字段配置应有效")
-                .field(
-                    crate::table::FieldConfig::new(
-                        "secret",
-                        crate::table::FieldType::String { max_length: 64 },
-                    )
-                    .permissions(protected.clone()),
-                )
-                .expect("受限字段配置应有效"),
+        let partially_readable = test_config(
+            crate::table::Table::new("mixed_rows").fields([
+                crate::table::Field::integer("id").required().primary_key(),
+                crate::table::Field::string("restricted", 64).readable_by(["admin"]),
+                crate::table::Field::string("password_hash", 255)
+                    .secret()
+                    .readable_by(["user"]),
+            ]),
         );
-        let partial_err =
+        let (partial_sql, _) =
             TableQuery::new(Arc::clone(&partially_readable), Arc::clone(&roles), None)
                 .build_select_sql(None)
-                .expect_err("部分字段不可读时 SELECT * 应 fail-closed");
-        assert!(
-            matches!(partial_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "secret")
-        );
+                .expect("部分字段受限时默认投影应保留可读字段");
+        assert_eq!(partial_sql, "SELECT `id` FROM `mixed_rows`");
 
         let explicit_err = TableQuery::new(partially_readable, Arc::clone(&roles), None)
-            .select_fields(&["id", "secret"])
+            .select_fields(&["id", "restricted"])
             .expect_err("显式请求受限字段应被拒绝");
         assert!(
-            matches!(explicit_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "secret")
+            matches!(explicit_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "restricted")
         );
 
-        let none_readable = Arc::new(
-            crate::table::TableConfig::new("private_rows")
-                .field(
-                    crate::table::FieldConfig::new("alpha", crate::table::FieldType::Integer)
-                        .permissions(protected.clone()),
-                )
-                .expect("受限字段配置应有效")
-                .field(
-                    crate::table::FieldConfig::new("beta", crate::table::FieldType::Integer)
-                        .permissions(protected),
-                )
-                .expect("受限字段配置应有效"),
+        let none_readable = test_config(
+            crate::table::Table::new("private_rows").fields([
+                crate::table::Field::integer("alpha")
+                    .required()
+                    .primary_key()
+                    .readable_by(["admin"]),
+                crate::table::Field::integer("beta").readable_by(["admin"]),
+            ]),
         );
         let none_err = TableQuery::new(none_readable, roles, None)
             .build_select_sql(None)
-            .expect_err("零字段可读时 SELECT * 应 fail-closed");
+            .expect_err("零字段可读时默认投影应 fail-closed");
         assert!(matches!(
             none_err,
-            BaseError::FieldPermissionDenied(table, _, _) if table == "private_rows"
+            BaseError::FieldPermissionDenied(table, field, _) if table == "private_rows" && field == "*"
         ));
     }
 
     #[test]
-    fn test_unreadable_field_errors_are_deterministic() {
-        let protected = crate::table::FieldPermissions {
-            readable_roles: HashSet::from(["admin".to_string()]),
-            ..crate::table::FieldPermissions::default()
-        };
-        let user = crate::action::User::new(1, "reader").with_roles(["user"]);
-
+    fn test_default_projection_is_deterministic_and_excludes_hidden_fields() {
         for _ in 0..64 {
-            let config = Arc::new(
-                crate::table::TableConfig::new("secrets")
-                    .field(
-                        crate::table::FieldConfig::new(
-                            "z_secret",
-                            crate::table::FieldType::Integer,
-                        )
-                        .permissions(protected.clone()),
-                    )
-                    .expect("受限字段配置应有效")
-                    .field(
-                        crate::table::FieldConfig::new(
-                            "a_secret",
-                            crate::table::FieldType::Integer,
-                        )
-                        .permissions(protected.clone()),
-                    )
-                    .expect("受限字段配置应有效")
-                    .field(
-                        crate::table::FieldConfig::new(
-                            "m_secret",
-                            crate::table::FieldType::Integer,
-                        )
-                        .permissions(protected.clone()),
-                    )
-                    .expect("受限字段配置应有效"),
+            let config = test_config(
+                crate::table::Table::new("secrets").fields([
+                    crate::table::Field::id("id"),
+                    crate::table::Field::integer("z_secret").readable_by(["admin"]),
+                    crate::table::Field::integer("a_secret").readable_by(["admin"]),
+                    crate::table::Field::integer("m_secret")
+                        .secret()
+                        .readable_by(["user"]),
+                ]),
             );
             let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
             let query = TableQuery::new(config, roles, None);
 
-            let sql_err = query
+            let (sql, _) = query
                 .build_select_sql(None)
-                .expect_err("SELECT * 应拒绝受限字段");
-            assert!(
-                matches!(sql_err, BaseError::FieldPermissionDenied(_, field, _) if field == "a_secret")
-            );
-
-            let action_err = query
-                .ensure_fields_readable(&user)
-                .expect_err("整实体 Action 应拒绝受限字段");
-            assert!(
-                matches!(action_err, BaseError::FieldPermissionDenied(_, field, _) if field == "a_secret")
-            );
+                .expect("默认投影应保留公开字段");
+            assert_eq!(sql, "SELECT `id` FROM `secrets`");
         }
     }
 

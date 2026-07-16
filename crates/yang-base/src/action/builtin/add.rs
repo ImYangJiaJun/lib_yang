@@ -3,11 +3,9 @@
 
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::TableEntity;
+use crate::table::Record;
 use async_trait::async_trait;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::marker::PhantomData;
 use yang_base_derive::Action;
 
 /// 通用受影响行数返回值。
@@ -29,50 +27,35 @@ pub struct InsertResult {
     pub id: u64,
 }
 
-/// 插入一条记录。Input 是整个实体（用户决定 Pk 字段是否 Option/自增）。
+/// 插入一条动态记录。
 #[derive(Action)]
 #[action(
     name = "add",
     display_name = "新增数据",
     description = "向表中插入一条记录"
 )]
-pub struct AddAction<T: TableEntity> {
-    _phantom: PhantomData<T>,
-}
+pub struct AddAction;
 
-impl<T: TableEntity> AddAction<T> {
+impl AddAction {
     /// 创建 AddAction 实例。
     pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
+        Self
     }
 }
 
-impl<T: TableEntity> Default for AddAction<T> {
+impl Default for AddAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl<T: TableEntity> TypedHandler for AddAction<T> {
-    type Input = T;
+impl TypedHandler for AddAction {
+    type Input = Record;
     type Output = InsertResult;
 
-    async fn handle(&self, ctx: ActionContext, input: T) -> Result<InsertResult, BaseError> {
-        let value = serde_json::to_value(&input)
-            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
-        let map: HashMap<String, serde_json::Value> = match value {
-            serde_json::Value::Object(m) => m.into_iter().collect(),
-            _ => {
-                return Err(BaseError::ParamInvalid(
-                    "body".into(),
-                    "实体必须序列化为对象".into(),
-                ))
-            }
-        };
-        let (affected, id) = ctx.table_query()?.insert_returning_id(map).await?;
+    async fn handle(&self, ctx: ActionContext, input: Record) -> Result<InsertResult, BaseError> {
+        let (affected, id) = ctx.table_query()?.insert_returning_id(input).await?;
         Ok(InsertResult { affected, id })
     }
 }

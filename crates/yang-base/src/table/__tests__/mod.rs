@@ -7,10 +7,7 @@ mod validator_test;
 mod validator_concurrency_test;
 
 #[cfg(test)]
-mod field_config_test;
-
-#[cfg(test)]
-mod table_config_test;
+mod definition_test;
 
 #[cfg(test)]
 mod schema_validation_test;
@@ -20,6 +17,3 @@ mod query_params_test;
 
 #[cfg(all(test, feature = "mysql"))]
 mod table_query_test;
-
-#[cfg(all(test, feature = "mysql"))]
-mod entity_test;

@@ -37,7 +37,7 @@
 
 use crate::action::{ActionContext, ApiResponse, TypedHandler, User};
 use crate::error::BaseError;
-use crate::router::middleware::{Middleware, Next};
+use crate::router::middleware::{Middleware, MiddlewareScope, Next};
 use crate::token::TokenClaims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -444,7 +444,7 @@ impl RefreshClaimsResolver for DefaultRefreshClaims {
 ///
 /// 仅调用一次 [`TokenManager::verify_token_checked`](crate::token::TokenManager::verify_token_checked)
 /// 完成验证（签名 + 过期 + 黑名单），随后将已验证的 [`TokenClaims`] 直接传给
-/// [`TokenManager::rotate_refresh_token_from_claims`]，跳过内部二次验证，
+/// [`TokenManager::rotate_refresh_token_from_claims`](crate::token::TokenManager::rotate_refresh_token_from_claims)，跳过内部二次验证，
 /// 节省 2 次 Redis RTT。自定义声明由注入的 [`RefreshClaimsResolver`] 决定，
 /// 默认 [`DefaultRefreshClaims`] 不附加声明，零配置即可使用。
 ///
@@ -692,7 +692,9 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 
 /// Token 鉴权中间件：在 Action 派发前完成 JWT 三重校验并注入当前用户。
 ///
-/// 挂到 [`ModuleRouter`](crate::router::ModuleRouter) 后，对该模块的每个请求：
+/// 挂到 [`ModuleRouter`](crate::router::ModuleRouter) 后，只对非公开 Action 执行；
+/// 标记为 `public` 的 Action 会绕过本认证中间件，但仍会经过日志、限流、追踪等
+/// 通用中间件。对受保护 Action：
 ///
 /// 1. 从 [`Request::token`](crate::action::Request::token) 取 `Authorization: Bearer <token>`；
 ///    缺失则短路返回 [`BaseError::Unauthorized`]。
@@ -700,7 +702,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 ///    完成 **签名 + 过期 + 黑名单** 三重校验；失败短路（`TokenVerifyFailed` /
 ///    `TokenExpired` / `TokenRevoked` 等原样上抛）。
 /// 3. 用注入的 `claims -> User` 闭包，从已验证的 [`TokenClaims`] 构造
-///    [`User`](crate::action::User) 并填入 `ActionContext.user`，随后 `next.run(ctx)`。
+///    [`User`] 并填入 `ActionContext.user`，随后 `next.run(ctx)`。
 ///
 /// 用户如何从声明映射（角色/权限放在哪个自定义字段）因项目而异，故由闭包 `F` 注入。
 ///
@@ -743,6 +745,10 @@ impl<F> Middleware for TokenAuthMiddleware<F>
 where
     F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
 {
+    fn scope(&self) -> MiddlewareScope {
+        MiddlewareScope::ProtectedActions
+    }
+
     async fn handle(
         &self,
         mut ctx: ActionContext,
@@ -780,6 +786,11 @@ where
 mod tests {
     use super::*;
     use crate::action::{DynAction, TypedAction};
+    use crate::router::{Api, Middleware, ModuleRouter, Next};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     struct DummyVerifier;
 
@@ -792,6 +803,62 @@ mod tests {
         ) -> Result<VerifiedSubject, BaseError> {
             Ok(VerifiedSubject::new(format!("user:{}", input.username)))
         }
+    }
+
+    #[derive(Debug, Default, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct EmptyInput {}
+
+    #[derive(Debug, Serialize, JsonSchema)]
+    struct ProbeOutput {
+        authenticated: bool,
+    }
+
+    #[derive(Action)]
+    #[action(name = "protected_probe", display_name = "受保护探针")]
+    struct ProtectedProbe;
+
+    #[async_trait]
+    impl TypedHandler for ProtectedProbe {
+        type Input = EmptyInput;
+        type Output = ProbeOutput;
+
+        async fn handle(
+            &self,
+            ctx: ActionContext,
+            _input: Self::Input,
+        ) -> Result<Self::Output, BaseError> {
+            Ok(ProbeOutput {
+                authenticated: ctx.authenticated_user().is_some(),
+            })
+        }
+    }
+
+    struct CountingMiddleware(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Middleware for CountingMiddleware {
+        async fn handle(
+            &self,
+            ctx: ActionContext,
+            next: Next<'_>,
+        ) -> Result<ApiResponse, BaseError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            next.run(ctx).await
+        }
+    }
+
+    fn test_tools() -> Arc<crate::action::GlobalTools> {
+        Arc::new(crate::action::GlobalTools::new(
+            crate::token::TokenManager::new_symmetric(
+                "mixed-public-protected-actions-test-secret",
+                jsonwebtoken::Algorithm::HS256,
+                "test-issuer".to_string(),
+                "test-audience".to_string(),
+                3600,
+                7200,
+            ),
+        ))
     }
 
     #[test]
@@ -807,6 +874,50 @@ mod tests {
         let logout = LogoutAction::new();
         assert_eq!(logout.name(), "logout");
         assert!(logout.is_public());
+    }
+
+    #[tokio::test]
+    async fn public_and_protected_actions_share_auth_enabled_module() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = ModuleRouter::new("user", "用户")
+            .middleware(CountingMiddleware(Arc::clone(&calls)))
+            .middleware(TokenAuthMiddleware::new(|claims| {
+                User::new(1, claims.sub.clone())
+            }))
+            .apis([
+                Api::post("/api/v1/users/login", LoginAction::new(DummyVerifier)),
+                Api::get("/api/v1/users/me", ProtectedProbe),
+            ])
+            .expect("同一模块应能注册公开与受保护 Action");
+
+        let public_context = ActionContext::new(
+            crate::action::Request::new(serde_json::json!({
+                "username": "alice",
+                "password": "correct-password"
+            })),
+            test_tools(),
+        );
+        let public_response = router.dispatch("login", public_context).await;
+        assert!(
+            public_response.is_ok(),
+            "公开 Action 不应被 TokenAuthMiddleware 拦截: {public_response:?}"
+        );
+
+        let protected_context = ActionContext::new(
+            crate::action::Request::new(serde_json::json!({})),
+            test_tools(),
+        );
+        let protected_response = router.dispatch("protected_probe", protected_context).await;
+        assert!(matches!(
+            protected_response,
+            Err(BaseError::Unauthorized(message))
+                if message.contains("Authorization Bearer Token")
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "通用中间件应覆盖公开与受保护 Action"
+        );
     }
 
     /// token 指纹稳定且不含原文（同输入同指纹，异输入异指纹）。

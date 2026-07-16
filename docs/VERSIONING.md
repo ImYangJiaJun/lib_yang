@@ -1,50 +1,82 @@
 # 版本与兼容策略
 
-yang-base 和 yang-db 当前处于 0.x。即使 semver 允许 0.x 更快演进，本仓库仍把 patch 版本用于兼容增强，把有意删除或收紧公共契约的变更集中到 0.2.0。
+当前仓库基线：
 
-## 0.1.x 规则
+- `yang-base` 0.2.0
+- `yang-base-derive` 0.2.0
+- `yang-db` 0.1.4
 
-- 允许新增类型、feature、Result-returning 安全入口和结构化错误；已有入口保持可编译。
-- 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和至少一个兼容编译测试。
-- feature 默认值在 0.1.x 不做破坏性变化；新可选 feature 默认关闭且不得向关闭构建泄漏依赖。
-- 当前发布版本为 yang-db 0.1.4、yang-base 0.1.2；仓库中的 yang-base 0.1.3 / yang-base-derive 0.1.1 为待发布兼容增强。
+0.x 仍允许在次版本中发布 breaking change，但本仓库继续把 patch 版本用于兼容增强；任何有意删除、重命名或收紧公共契约的变化必须集中到明确的升级版本，并提供迁移说明和契约测试。
+
+## yang-base 0.2.x 公共边界
+
+0.2.0 已完成应用侧 schema-first 切换：
+
+- 表结构通过 `Table` / `Field` 构建，并在 `build()` 后成为不可变 `TableDefinition`。
+- 动态表行统一使用透明 JSON object `Record`。
+- 标准表接口通过 `ModuleRouter::table(definition).crud()` 注册；附属启动期 schema 使用 `ModuleRouter::schema(definition)`。
+- 自定义端点通过 `Api::{get,post,put,patch,delete}` 与 `ModuleRouter::api` / `apis` 原子注册。
+- 应用模块通过 `AppRouter::module` / `modules` 聚合，`ApiCatalog` 是 transport、OpenAPI 与后台展示引用的确定性事实源。
+- 自定义业务操作继续实现 `TypedHandler`，并由 `#[derive(Action)]` 生成 `TypedAction` 元数据。
+
+从 0.1.x 升级到 0.2.0 是有意的公共 API 迁移，应用应按上述边界重写表声明和路由注册。0.2.x 后续 patch 不得再次恢复或扩展已删除的应用模型。
+
+### 0.2.x 兼容规则
+
+- 允许新增 builder 方法、只读元数据、feature、结构化错误和 `Result` 返回入口。
+- `TableDefinition`、`Record`、`Api`、`ApiCatalog` 与现有 Router builder 的公开签名在 patch 版本内保持源码兼容。
+- 新可选 feature 默认关闭，不得向关闭构建泄漏依赖。
+- 默认 feature 的变化必须进入新的升级版本，并列出等价显式配置。
+- 收紧字段校验或 schema 同步行为时，必须提供正反例测试并说明 fail-fast 条件。
+
+## yang-db 0.1.x 规则
+
+`yang-db` 仍处于 0.1.4：
+
+- 允许新增类型、方言能力、checked identifier 入口和结构化错误；已有入口保持可编译。
+- 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和兼容测试。
+- MySQL/PostgreSQL 对称 API 不表示 SQL 语义完全相同；差异由 `BackendCapabilities` 明示。
+- RAW/native SQL 是受控逃生舱，不接受不可信输入。
 
 ### 迁移记录 API
-
-旧代码仍可编译，但记录不含 SQL checksum，之后的计划会把它视为不可验证：
-
-```rust,ignore
-initializer.record_migration("accounts", "v1").await?; // deprecated
-```
 
 新代码应让初始化器执行迁移，或显式提供 checksum/status：
 
 ```rust,ignore
 initializer.run_migrations(&plugin).await?;
 initializer
-    .record_migration_with_checksum("accounts", "v2", "0123456789abcdef", "applied")
+    .record_migration_with_checksum(
+        "accounts",
+        "v2",
+        "0123456789abcdef",
+        "applied",
+    )
     .await?;
 ```
 
+无 checksum 的兼容入口无法验证迁移漂移，不应进入新代码。
+
 ### SQL 标识符与错误
 
-可信固定表达式仍可使用 `field`/`order`；外部列名改用 checked API：
+可信固定表达式可以使用表达式入口；外部列名使用 checked API：
 
 ```rust,ignore
-let query = db.table("users")
+let query = db
+    .table("users")
     .field_identifier(user_selected_column)?
     .order_identifier(user_selected_column, true)?;
 let sql = query.try_to_sql()?;
 ```
 
-`where_and_unchecked`、`having_cond_unchecked`、分号切割的 `Database::init` 只保留兼容，不应进入新代码。
+unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新的公共路径必须返回结构化错误。
 
-## 0.2.0 计划中的 breaking changes
+## 后续 breaking change 要求
 
-- 删除 deprecated RAW/fail-closed 兼容 renderer 和 unchecked operator 入口，只保留 checked `Result` 路径。
-- 删除 MySQL/PostgreSQL `Database::init` 分号切割器；复杂脚本必须使用逐 migration 语句或专用执行器。
-- 删除无 checksum 的 `record_migration(module, version)`。
-- 完成 identifier 与 trusted expression 的公开语义类型边界；需要表达式的调用点必须显式选择 trusted API。
-- 重新评估默认 features；任何默认值变化都在升级说明中列出等价的显式 feature 配置。
+未来若删除 deprecated 数据库入口、调整默认 feature、改变 schema 同步策略或收紧 identifier 语义，必须同时具备：
 
-0.2.0 实施前，每个条目都必须有 compile-fail/迁移测试，且不能在 0.1.x 提前删除兼容入口。
+1. 固定升级版本与逐项迁移说明。
+2. 新旧行为的编译或运行期契约测试。
+3. feature 组合检查与目标数据库集成验证。
+4. README、公共 API 文档、能力矩阵和 release docs contract 同步更新。
+
+不得只修改源码而保留旧版本文档，也不得只更新文档而缺少可执行契约。

@@ -19,6 +19,15 @@ fn assert_contains_all(document: &str, name: &str, expected: &[&str]) {
     }
 }
 
+fn assert_contains_none(document: &str, name: &str, forbidden: &[&str]) {
+    for needle in forbidden {
+        assert!(
+            !document.contains(needle),
+            "{name} 不应继续发布已删除契约 `{needle}`"
+        );
+    }
+}
+
 #[test]
 fn crate_readmes_publish_current_versions_and_features() {
     let base = workspace_file("crates/yang-base/README.md");
@@ -26,7 +35,7 @@ fn crate_readmes_publish_current_versions_and_features() {
         &base,
         "yang-base README",
         &[
-            "0.1.3",
+            "0.2.0",
             "`token`",
             "`http`",
             "`mysql`",
@@ -36,6 +45,10 @@ fn crate_readmes_publish_current_versions_and_features() {
             "`metrics`",
             "`openapi`",
             "`admin-metadata`",
+            "TableDefinition",
+            "Record",
+            "Api::get",
+            ".crud()",
         ],
     );
     assert!(!base.contains("v0.0.1 (当前版本)"));
@@ -55,7 +68,14 @@ fn api_overviews_cover_current_public_contracts() {
         &base,
         "docs/yang-base.md",
         &[
-            "版本：0.1.3",
+            "版本：0.2.0",
+            "Table + Field",
+            "TableDefinition",
+            "Record",
+            "Api::{get,post,put,patch,delete}",
+            "ModuleRouter::table",
+            "ModuleRouter::schema",
+            ".crud()",
             "RequestMeta",
             "ApiCatalog",
             "OpenAPI 3.1",
@@ -63,7 +83,7 @@ fn api_overviews_cover_current_public_contracts() {
             "DatabaseInitializer",
             "SchemaValidationReport",
             "sync_app_schema",
-            "with_schema_table",
+            "validate_table_definition",
         ],
     );
 
@@ -90,7 +110,17 @@ fn capability_matrix_and_backlog_reconciliation_are_present() {
     assert_contains_all(
         &matrix,
         "能力矩阵",
-        &["br-addon", "br-db", "non-goal", "受控 SQL", "真实消费者"],
+        &[
+            "yang-base 0.2.0",
+            "TableDefinition",
+            "Record",
+            "Api",
+            "br-addon",
+            "br-db",
+            "non-goal",
+            "受控 SQL",
+            "真实消费者",
+        ],
     );
 
     let backlog = workspace_file("docs/BACKLOG.md");
@@ -103,6 +133,52 @@ fn capability_matrix_and_backlog_reconciliation_are_present() {
             "[已完成]",
             "[已失效]",
             "## 🔴 Critical — 生产风险",
+            "schema-first 公共边界",
+            "ModuleRouter::table(definition).crud()",
+            "TableDefinition",
+            "Record",
+        ],
+    );
+}
+
+#[test]
+fn versioning_and_current_docs_lock_schema_first_release_boundary() {
+    let versioning = workspace_file("docs/VERSIONING.md");
+    assert_contains_all(
+        &versioning,
+        "VERSIONING",
+        &[
+            "`yang-base` 0.2.0",
+            "`yang-base-derive` 0.2.0",
+            "`yang-db` 0.1.4",
+            "schema-first",
+            "TableDefinition",
+            "Record",
+            "ApiCatalog",
+        ],
+    );
+
+    let documents = [
+        workspace_file("crates/yang-base/README.md"),
+        workspace_file("docs/yang-base.md"),
+        versioning,
+        workspace_file("docs/BASE_DB_CAPABILITY_MATRIX.md"),
+        workspace_file("docs/BACKLOG.md"),
+    ]
+    .join("\n");
+    assert_contains_none(
+        &documents,
+        "yang-base 0.2.0 当前文档",
+        &[
+            "TableEntity",
+            "DynamicRow",
+            "table_typed",
+            "TableConfig",
+            "FieldConfig",
+            "with_table_config",
+            "with_schema_table",
+            "register_action",
+            "register_route",
         ],
     );
 }

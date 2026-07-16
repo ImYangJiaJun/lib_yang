@@ -4,7 +4,7 @@
 use yang_base::database::{DatabaseInitializer, MigrationPlanStatus};
 use yang_base::error::BaseError;
 use yang_base::plugin::Plugin;
-use yang_base::table::{FieldConfig, FieldType, SchemaIssueKind, TableConfig};
+use yang_base::table::{Field, SchemaIssueKind, Table};
 use yang_db::Database;
 
 struct MigrationPlugin {
@@ -149,7 +149,7 @@ async fn dry_run_drift_and_concurrent_reservation_are_verifiable() {
 
 #[tokio::test]
 #[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
-async fn table_config_validation_reads_schema_without_altering_it() {
+async fn table_definition_validation_reads_schema_without_altering_it() {
     let db = Database::connect(&mysql_url()).await.expect("连接 MySQL");
     #[allow(deprecated)]
     {
@@ -164,16 +164,17 @@ async fn table_config_validation_reads_schema_without_altering_it() {
         Database::connect(&mysql_url()).await.expect("连接验证器"),
         false,
     );
-    let config = TableConfig::new("p4_schema_users")
-        .field(FieldConfig::new("id", FieldType::BigInt).required(true))
-        .expect("合法字段")
-        .field(FieldConfig::new("name", FieldType::String { max_length: 64 }).required(true))
-        .expect("合法字段")
-        .field(FieldConfig::new("age", FieldType::Integer))
-        .expect("合法字段");
+    let definition = Table::new("p4_schema_users")
+        .fields([
+            Field::bigint("id").required().primary_key(),
+            Field::string("name", 64).required(),
+            Field::integer("age"),
+        ])
+        .build()
+        .expect("表定义应合法");
 
     let report = initializer
-        .validate_table_config(&config)
+        .validate_table_definition(&definition)
         .await
         .expect("验证 schema");
     assert_eq!(report.issues.len(), 3);

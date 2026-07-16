@@ -1,6 +1,6 @@
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::router::{AppRouter, ModuleRouter, RouteDescriptor};
+use crate::router::{Api, AppRouter, ModuleRouter};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use yang_base_derive::Action;
@@ -57,17 +57,11 @@ impl TypedHandler for HealthAction {
     }
 }
 
-fn search_route(path: &str, operation_id: &str) -> RouteDescriptor {
-    RouteDescriptor::new("POST", path, operation_id).expect("测试 route 应合法")
-}
-
 #[test]
 fn module_descriptor_merges_route_and_action_meta() {
     let module = ModuleRouter::new("users", "用户")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/users/search", "users.search"))
-        .expect("route 注册应成功");
+        .api(Api::post("/users/search", SearchAction))
+        .expect("API 注册应成功");
 
     let descriptor = module.descriptor().expect("descriptor 构建应成功");
     assert_eq!(descriptor.name, "users");
@@ -84,47 +78,48 @@ fn module_descriptor_merges_route_and_action_meta() {
 }
 
 #[test]
-fn descriptor_rejects_action_without_route() {
-    let module = ModuleRouter::new("users", "用户")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功");
-
+fn api_rejects_invalid_route_atomically() {
+    let result =
+        ModuleRouter::new("users", "用户").api(Api::post("users?token=secret", SearchAction));
     assert!(matches!(
-        module.descriptor(),
-        Err(BaseError::ConfigError(message)) if message.contains("search") && message.contains("route")
+        result,
+        Err(BaseError::ConfigError(message)) if message.contains("path")
     ));
+}
+
+#[test]
+fn api_rejects_paths_that_axum_would_panic_on() {
+    for path in [
+        "/users/:id",
+        "/users/*rest",
+        "/users/{id",
+        "/users/{*rest}/tail",
+    ] {
+        let result = ModuleRouter::new("users", "用户").api(Api::get(path, HealthAction));
+        assert!(
+            matches!(result, Err(BaseError::ConfigError(message)) if message.contains("path")),
+            "非法路径应在注册期拒绝: {path}"
+        );
+    }
 }
 
 #[test]
 fn route_registration_rejects_duplicate_route_and_operation() {
     let module = ModuleRouter::new("users", "用户")
-        .register_action(SearchAction)
-        .expect("search 注册应成功")
-        .register_action(HealthAction)
-        .expect("health 注册应成功")
-        .register_route("search", search_route("/shared", "shared.operation"))
-        .expect("首个 route 应成功");
+        .api(Api::post("/shared", SearchAction).operation_id("shared.operation"))
+        .expect("首个 API 应成功");
 
-    let duplicate_route = module.register_route(
-        "health",
-        RouteDescriptor::new("POST", "/shared", "health.operation").expect("route 应合法"),
-    );
+    let duplicate_route =
+        module.api(Api::post("/shared", HealthAction).operation_id("health.operation"));
     assert!(matches!(
         duplicate_route,
         Err(BaseError::ConfigError(message)) if message.contains("route 冲突")
     ));
 
     let duplicate_operation = ModuleRouter::new("users", "用户")
-        .register_action(SearchAction)
-        .expect("search 注册应成功")
-        .register_action(HealthAction)
-        .expect("health 注册应成功")
-        .register_route("search", search_route("/search", "shared.operation"))
-        .expect("首个 route 应成功")
-        .register_route(
-            "health",
-            RouteDescriptor::new("GET", "/health", "shared.operation").expect("route 应合法"),
-        );
+        .api(Api::post("/search", SearchAction).operation_id("shared.operation"))
+        .expect("首个 API 应成功")
+        .api(Api::get("/health", HealthAction).operation_id("shared.operation"));
     assert!(matches!(
         duplicate_operation,
         Err(BaseError::ConfigError(message)) if message.contains("operation_id 冲突")
@@ -132,37 +127,42 @@ fn route_registration_rejects_duplicate_route_and_operation() {
 }
 
 #[test]
-fn route_registration_revalidates_mutated_public_descriptor() {
-    let mut route = search_route("/users/search", "users.search");
-    route.path = "/users?token=secret".to_string();
-    let result = ModuleRouter::new("users", "用户")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", route);
+fn route_registration_matches_axum_template_conflict_semantics() {
+    let semantic_conflict = ModuleRouter::new("users", "用户")
+        .api(Api::get("/users/{id}", SearchAction))
+        .expect("首个动态路由应成功")
+        .api(Api::post("/users/{name}", HealthAction));
+    assert!(matches!(
+        semantic_conflict,
+        Err(BaseError::ConfigError(message)) if message.contains("route 冲突")
+    ));
 
-    assert!(matches!(result, Err(BaseError::ConfigError(message)) if message.contains("path")));
+    let same_path_different_methods = ModuleRouter::new("users", "用户")
+        .api(Api::get("/users/{id}", SearchAction))
+        .expect("GET 路由应成功")
+        .api(Api::post("/users/{id}", HealthAction));
+    assert!(same_path_different_methods.is_ok());
+}
+
+#[test]
+fn api_rejects_invalid_status() {
+    let result = ModuleRouter::new("users", "用户")
+        .api(Api::post("/users/search", SearchAction).status(700));
+
+    assert!(matches!(result, Err(BaseError::ConfigError(message)) if message.contains("status")));
 }
 
 #[test]
 fn app_catalog_is_sorted_and_rejects_cross_module_conflicts() {
     let zeta = ModuleRouter::new("zeta", "Z")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/zeta/search", "zeta.search"))
-        .expect("route 注册应成功");
+        .api(Api::post("/zeta/search", SearchAction))
+        .expect("API 注册应成功");
     let alpha = ModuleRouter::new("alpha", "A")
-        .register_action(HealthAction)
-        .expect("Action 注册应成功")
-        .register_route(
-            "health",
-            RouteDescriptor::new("GET", "/health", "alpha.health").expect("route 应合法"),
-        )
-        .expect("route 注册应成功");
+        .api(Api::get("/health", HealthAction))
+        .expect("API 注册应成功");
     let app = AppRouter::new()
-        .register_module(zeta)
-        .expect("zeta 注册应成功")
-        .register_module(alpha)
-        .expect("alpha 注册应成功");
+        .modules([zeta, alpha])
+        .expect("模块注册应成功");
 
     let catalog = app.catalog().expect("catalog 构建应成功");
     assert_eq!(
@@ -175,20 +175,14 @@ fn app_catalog_is_sorted_and_rejects_cross_module_conflicts() {
     );
 
     let one = ModuleRouter::new("one", "One")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/shared", "one.search"))
-        .expect("route 注册应成功");
+        .api(Api::post("/shared", SearchAction))
+        .expect("API 注册应成功");
     let two = ModuleRouter::new("two", "Two")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/shared", "two.search"))
-        .expect("route 注册应成功");
+        .api(Api::post("/shared", SearchAction))
+        .expect("API 注册应成功");
     let conflicted = AppRouter::new()
-        .register_module(one)
-        .expect("one 注册应成功")
-        .register_module(two)
-        .expect("two 注册应成功");
+        .modules([one, two])
+        .expect("模块注册应成功");
 
     assert!(matches!(
         conflicted.catalog(),
@@ -196,22 +190,34 @@ fn app_catalog_is_sorted_and_rejects_cross_module_conflicts() {
     ));
 
     let first = ModuleRouter::new("first", "First")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/first", "shared.operation"))
-        .expect("route 注册应成功");
+        .api(Api::post("/first", SearchAction).operation_id("shared.operation"))
+        .expect("API 注册应成功");
     let second = ModuleRouter::new("second", "Second")
-        .register_action(SearchAction)
-        .expect("Action 注册应成功")
-        .register_route("search", search_route("/second", "shared.operation"))
-        .expect("route 注册应成功");
+        .api(Api::post("/second", SearchAction).operation_id("shared.operation"))
+        .expect("API 注册应成功");
     let conflicted = AppRouter::new()
-        .register_module(first)
-        .expect("first 注册应成功")
-        .register_module(second)
-        .expect("second 注册应成功");
+        .modules([first, second])
+        .expect("模块注册应成功");
     assert!(matches!(
         conflicted.catalog(),
         Err(BaseError::ConfigError(message)) if message.contains("operation_id 冲突")
+    ));
+}
+
+#[test]
+fn app_catalog_rejects_cross_module_semantic_route_conflicts() {
+    let one = ModuleRouter::new("one", "One")
+        .api(Api::get("/users/{id}", SearchAction))
+        .expect("首个模块路由应成功");
+    let two = ModuleRouter::new("two", "Two")
+        .api(Api::post("/users/{name}", SearchAction))
+        .expect("单模块内路由应成功");
+    let app = AppRouter::new()
+        .modules([one, two])
+        .expect("模块注册应成功");
+
+    assert!(matches!(
+        app.catalog(),
+        Err(BaseError::ConfigError(message)) if message.contains("route 冲突")
     ));
 }

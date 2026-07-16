@@ -3,10 +3,8 @@
 
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::TableEntity;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
 use yang_base_derive::Action;
 
 /// TableAction 的空输入（接受 `{}`）。
@@ -21,9 +19,9 @@ pub struct TableSchemaResponse {
     pub table_name: String,
     /// 主键字段名
     pub primary_key: String,
-    /// 入参 JSON Schema（实体本身）
+    /// 表的可写字段 JSON Schema
     pub input_schema: serde_json::Value,
-    /// 出参 JSON Schema（该表行实体 schema，供参考，并非某具体 Action 的真实出参）
+    /// 表的可读记录 JSON Schema（供参考，并非某具体 Action 的真实出参）
     pub output_schema: serde_json::Value,
 }
 
@@ -34,43 +32,38 @@ pub struct TableSchemaResponse {
     display_name = "表元信息",
     description = "返回表结构与字段 schema"
 )]
-pub struct TableAction<T: TableEntity> {
-    _phantom: PhantomData<T>,
-}
+pub struct TableAction;
 
-impl<T: TableEntity> TableAction<T> {
+impl TableAction {
     /// 创建 TableAction 实例。
     pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
+        Self
     }
 }
 
-impl<T: TableEntity> Default for TableAction<T> {
+impl Default for TableAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl<T: TableEntity> TypedHandler for TableAction<T> {
+impl TypedHandler for TableAction {
     type Input = EmptyInput;
     type Output = TableSchemaResponse;
 
     async fn handle(
         &self,
-        _ctx: ActionContext,
+        ctx: ActionContext,
         _input: EmptyInput,
     ) -> Result<TableSchemaResponse, BaseError> {
-        let schema = schemars::schema_for!(T);
-        let schema_value = serde_json::to_value(&schema)
-            .map_err(|e| BaseError::JsonSerializeFailed(e.to_string()))?;
+        let roles = ctx.user_roles_set().cloned().unwrap_or_default();
+        let definition = ctx.table_definition()?;
         Ok(TableSchemaResponse {
-            table_name: T::TABLE_NAME.to_string(),
-            primary_key: T::PK_FIELD.to_string(),
-            input_schema: schema_value.clone(),
-            output_schema: schema_value,
+            table_name: definition.name().to_string(),
+            primary_key: definition.primary_key().to_string(),
+            input_schema: definition.input_schema_for_roles(&roles),
+            output_schema: definition.output_schema_for_roles(&roles),
         })
     }
 }

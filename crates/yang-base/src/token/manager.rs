@@ -591,7 +591,7 @@ impl TokenManager {
     /// 执行流程：
     /// 1. [`TokenManager::verify_token_checked`] 验证旧 Refresh Token 且确认未被撤销；
     /// 2. 校验其 `token_type` 必须为 `"refresh"`；
-    /// 3. [`TokenManager::try_revoke_once`] 原子写入黑名单（SET NX EX）；
+    /// 3. `TokenManager::try_revoke_once` 原子写入黑名单（SET NX EX）；
     ///    若返回 false（竞态中落败）则返回 [`BaseError::TokenRevoked`]；
     /// 4. [`TokenManager::generate_token_pair`] 以原 `sub` 与新的自定义声明签发新 Token 对。
     ///
@@ -612,7 +612,7 @@ impl TokenManager {
     /// # 依赖
     ///
     /// 本方法依赖基于 Redis 的 Token 黑名单（见 [`TokenManager::verify_token_checked`]
-    /// 与 [`TokenManager::try_revoke_once`]），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
+    /// 与 `TokenManager::try_revoke_once`），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
     pub async fn rotate_refresh_token(
         &self,
         old_refresh: &str,
@@ -628,7 +628,7 @@ impl TokenManager {
 
     /// 基于已验证 claims 轮换 Refresh Token（跳过内部二次验证）。
     ///
-    /// 当调用方已在外部完成 [`verify_token_checked`] 并持有 [`TokenClaims`] 时，
+    /// 当调用方已在外部完成 [`TokenManager::verify_token_checked`] 并持有 [`TokenClaims`] 时，
     /// 使用本方法可避免重复验证（节省 2 次 Redis RTT：黑名单查询 + 水位线查询）。
     ///
     /// 本方法仅执行：
@@ -638,7 +638,7 @@ impl TokenManager {
     ///
     /// # 参数
     ///
-    /// - `old_claims`: 已通过 [`verify_token_checked`] 验证的旧 Refresh Token 声明
+    /// - `old_claims`: 已通过 [`TokenManager::verify_token_checked`] 验证的旧 Refresh Token 声明
     /// - `custom_claims`: 新 Access Token 的自定义声明（JSON 格式）
     ///
     /// # 返回

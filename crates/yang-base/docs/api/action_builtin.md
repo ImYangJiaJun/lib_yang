@@ -1,360 +1,180 @@
 # 内置 CRUD Actions
 
-本模块提供了标准的 CRUD 操作 Actions，包括新增、更新、删除、查询等功能。
+本文对应 `yang-base` 0.2.0。启用 `mysql` 后，`ModuleRouter::table(TableDefinition).crud()` 会为模块原子注册六个标准 API。应用不需要逐个构造或绑定内置 Action。
 
-## Actions 列表
-
-### 1. AddAction - 新增数据
-
-向数据表中插入新记录。
-
-**请求参数：**
-- `data`: HashMap<String, Value> - 要插入的数据
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "新增成功",
-    "data": {
-        "affected": 1
-    }
-}
-```
-
-**示例：**
-```rust
-use yang_base::action::builtin::AddAction;
-use yang_base::table::TableConfig;
-use std::sync::Arc;
-
-let table_config = Arc::new(TableConfig::new("users"));
-let action = AddAction::new(table_config);
-```
-
-### 2. PutAction - 更新数据
-
-更新数据表中的记录。
-
-**请求参数：**
-- `id`: 主键值（参数名由表配置的 primary_key 决定）
-- `data`: HashMap<String, Value> - 要更新的数据
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "更新成功",
-    "data": {
-        "affected": 1
-    }
-}
-```
-
-### 3. DelAction - 删除数据
-
-删除数据表中的记录（支持软删除）。
-
-**请求参数：**
-- `id`: 主键值（参数名由表配置的 primary_key 决定）
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "删除成功",
-    "data": {
-        "affected": 1
-    }
-}
-```
-
-**软删除：**
-如果表配置中设置了 `soft_delete_field`，则执行软删除（UPDATE 设置删除标记），否则执行物理删除（DELETE）。
-
-### 4. GetAction - 获取单条数据
-
-根据主键获取单条记录。
-
-**请求参数：**
-- `id`: 主键值（参数名由表配置的 primary_key 决定）
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "获取成功",
-    "data": {
-        "id": 1,
-        "name": "Alice",
-        "email": "alice@example.com"
-    }
-}
-```
-
-**注意：** 由于 Rust 类型系统限制，内置 GetAction 需要用户自定义实现。请参考下面的自定义实现示例。
-
-### 5. SelectAction - 列表查询
-
-分页查询数据列表，支持字段选择、筛选条件和排序。
-
-**请求参数：**
-- `fields`: 字段选择列表（可选）
-- `where_conditions`: WHERE 条件列表（可选）
-- `order_by`: 排序规则列表（可选）
-- `page`: 当前页码，从 1 开始（可选，默认 1）
-- `page_size`: 每页大小（可选，默认 20）
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "查询成功",
-    "data": {
-        "data": [
-            {"id": 1, "name": "Alice"},
-            {"id": 2, "name": "Bob"}
-        ],
-        "total": 100,
-        "page": 1,
-        "page_size": 20,
-        "total_pages": 5
-    }
-}
-```
-
-**注意：** 由于 Rust 类型系统限制，内置 SelectAction 需要用户自定义实现。请参考下面的自定义实现示例。
-
-### 6. TableAction - 获取表元数据
-
-获取表的元数据信息，包括字段定义、权限配置等。
-
-**请求参数：** 无
-
-**响应：**
-```json
-{
-    "code": 0,
-    "message": "获取成功",
-    "data": {
-        "table_name": "users",
-        "display_name": "用户表",
-        "primary_key": "id",
-        "fields": [
-            {
-                "name": "id",
-                "display_name": "ID",
-                "type": "BigInt",
-                "required": true,
-                "readable": true,
-                "writable": false,
-                "filterable": true,
-                "sortable": true
-            }
-        ],
-        "default_order": [["created_at", "desc"]]
-    }
-}
-```
-
-**特点：** TableAction 是公开 action，不需要认证。
-
-## 自定义实现示例
-
-由于 Rust 的类型系统限制，GetAction 和 SelectAction 无法直接返回动态类型的数据。在实际应用中，建议用户自定义这些 Actions 并指定具体的返回类型。
-
-### 自定义 GetAction
+## 注册
 
 ```rust
-use yang_base::action::{Action, ActionContext, ApiResponse};
-use yang_base::error::BaseError;
-use yang_base::table::TableConfig;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use yang_base::router::ModuleRouter;
+use yang_base::table::{Field, Table};
+use yang_base::BaseError;
 
-// 定义用户结构体
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-struct User {
-    id: i64,
-    name: String,
-    email: String,
-}
+fn user_module() -> Result<ModuleRouter, BaseError> {
+    let users = Table::new("users")
+        .label("用户表")
+        .fields([
+            Field::id("id"),
+            Field::string("username", 64).required().unique(),
+            Field::string("email", 128).required().email().unique(),
+            Field::created_at("created_at"),
+            Field::updated_at("updated_at"),
+            Field::soft_delete("deleted_at"),
+        ])
+        .build()?;
 
-// 自定义 GetAction
-pub struct UserGetAction {
-    config: Arc<TableConfig>,
-}
-
-impl UserGetAction {
-    pub fn new(config: Arc<TableConfig>) -> Self {
-        Self { config }
-    }
-}
-
-#[async_trait]
-impl Action for UserGetAction {
-    fn name(&self) -> &str {
-        "get"
-    }
-
-    fn display_name(&self) -> &str {
-        "获取用户详情"
-    }
-
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取主键值
-        let id: i64 = context.param(&self.config.primary_key)?;
-
-        // 创建查询
-        let query = context
-            .table_query()?
-            .where_eq(&self.config.primary_key, serde_json::json!(id))?;
-
-        // 执行查询
-        let mut results = query.select::<User>().await?;
-
-        // 检查结果
-        if results.is_empty() {
-            return Err(BaseError::RecordNotFound(format!(
-                "{}={}",
-                self.config.primary_key, id
-            )));
-        }
-
-        // 返回第一条记录
-        Ok(ApiResponse::success(results.remove(0), "获取成功"))
-    }
+    ModuleRouter::new("user", "用户管理")
+        .table(users)
+        .crud()
 }
 ```
 
-### 自定义 SelectAction
+`.crud()` 要求模块已经绑定主表，否则返回 `BaseError::TableDefinitionNotSet`。主表定义同时驱动字段校验、权限、软删除、查询和 JSON Schema。
+
+## API 契约
+
+| Action | Method | Path | 输入 | 输出 |
+|---|---|---|---|---|
+| `add` | `POST` | `/api/{module}` | `Record` | `InsertResult { affected, id }` |
+| `put` | `PUT` | `/api/{module}` | `PutInput { id, data: Record }` | `AffectedResult { affected }` |
+| `del` | `DELETE` | `/api/{module}` | `GetByPk { id }` | `AffectedResult { affected }` |
+| `get` | `GET` | `/api/{module}` | `GetByPk { id }` | `Record` |
+| `select` | `POST` | `/api/{module}/query` | `SelectQuery` | `SelectResult { items: Vec<Record>, ... }` |
+| `table` | `GET` | `/api/{module}/schema` | `{}` | `TableSchemaResponse` |
+
+`Record` 序列化为普通 JSON object；它是新增、更新数据和动态查询结果的统一行模型。
+
+## 权限与 Catalog
+
+`.crud()` 按模块名生成权限，而不是把内置 Action 当成无权限公共接口：
+
+- `add`、`put`、`del`：`{module}:write`
+- `get`、`select`、`table`：`{module}:read`
+
+runtime dispatch 与 `ApiCatalog` 共享这份契约。Catalog 的 schema 也绑定当前主表：`get` / `del` / `put` 使用真实主键字段类型，`add` / `put` 只包含允许写入的字段，读取结果不包含 secret 或无读权限字段，`select` 的筛选/排序字段枚举来自该表的权限元数据。
+
+## 请求与响应示例
+
+### add
+
+请求体直接是记录对象：
+
+```json
+{
+  "username": "alice",
+  "email": "alice@example.com"
+}
+```
+
+响应数据：
+
+```json
+{
+  "affected": 1,
+  "id": 42
+}
+```
+
+### put
+
+```json
+{
+  "id": 42,
+  "data": {
+    "email": "new-alice@example.com"
+  }
+}
+```
+
+`data` 不能为空；字段存在性、类型和写权限由主表定义校验。
+
+### del 与 get
+
+两者都接受动态类型的主键值：
+
+```json
+{
+  "id": 42
+}
+```
+
+`del` 在表定义包含软删除字段时执行标记更新，否则执行物理删除。`get` 返回一条 `Record`；记录不存在时返回 `BaseError::RecordNotFound`。
+
+### select
+
+```json
+{
+  "page": 1,
+  "page_size": 20,
+  "order_by": [
+    { "field": "created_at", "direction": "desc" }
+  ],
+  "count_total": true
+}
+```
+
+- `page` 从 1 开始，默认 1。
+- `page_size` 默认 10，范围为 1..=100。
+- `where` 接受 `WhereCondition` 布尔树。
+- `order_by` 的字段和方向会经过字段权限校验。
+- 只有 `count_total` 为 `true` 时，响应中的 `total` 才有值。
+
+WHERE 的字段、操作符和值会在 SQL 生成前按 `TableDefinition` 校验，`IN` 和 `BETWEEN` 逐项验证。`Eq` / `Ne` 与 JSON `null` 的比较分别生成 `IS NULL` / `IS NOT NULL`；显式 `IsNull` / `IsNotNull` 具有相同语义。
+
+响应数据：
+
+```json
+{
+  "items": [
+    { "id": 42, "username": "alice" }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+### table
+
+请求输入为 `{}`，响应数据为：
+
+```json
+{
+  "table_name": "users",
+  "primary_key": "id",
+  "input_schema": { "type": "object" },
+  "output_schema": { "type": "object" }
+}
+```
+
+输入、输出 JSON Schema 来自同一个不可变表定义；禁止读取或写入的字段不会进入对应 schema。
+
+## 在 CRUD 之外添加 API
+
+自定义端点使用 `Api` 把类型化 Action 与 HTTP 元数据绑定为一个注册值：
 
 ```rust
-use yang_base::action::{Action, ActionContext, ApiResponse};
-use yang_base::error::BaseError;
-use yang_base::table::{TableConfig, QueryParams, WhereCondition};
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use yang_base::action::TypedAction;
+use yang_base::router::{Api, ModuleRouter};
+use yang_base::table::TableDefinition;
+use yang_base::BaseError;
 
-// 定义用户结构体
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-struct User {
-    id: i64,
-    name: String,
-    email: String,
-}
-
-// 自定义 SelectAction
-pub struct UserSelectAction {
-    config: Arc<TableConfig>,
-}
-
-impl UserSelectAction {
-    pub fn new(config: Arc<TableConfig>) -> Self {
-        Self { config }
-    }
-}
-
-#[async_trait]
-impl Action for UserSelectAction {
-    fn name(&self) -> &str {
-        "select"
-    }
-
-    fn display_name(&self) -> &str {
-        "查询用户列表"
-    }
-
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 解析查询参数
-        let params: QueryParams = if context.request.body.is_null() {
-            QueryParams::new()
-        } else {
-            serde_json::from_value(context.request.body.clone())
-                .map_err(|e| BaseError::ParamInvalid("query".to_string(), e.to_string()))?
-        };
-
-        // 构建查询
-        let mut query = context.table_query()?;
-
-        // 应用字段选择
-        if let Some(fields) = params.fields {
-            if !fields.is_empty() {
-                let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-                query = query.select_fields(&field_refs)?;
-            }
-        }
-
-        // 应用 WHERE 条件
-        for condition in params.where_conditions {
-            match condition {
-                WhereCondition::Eq { field, value } => {
-                    query = query.where_eq(&field, value)?;
-                }
-                WhereCondition::In { field, values } => {
-                    query = query.where_in(&field, values)?;
-                }
-                WhereCondition::Like { field, pattern } => {
-                    query = query.where_like(&field, pattern)?;
-                }
-                _ => {}
-            }
-        }
-
-        // 应用排序
-        for (field, order) in params.order_by {
-            query = query.order_by(&field, order)?;
-        }
-
-        // 设置分页
-        let page = params.page.unwrap_or(1);
-        let page_size = params.page_size.unwrap_or(20);
-        query = query.page(page, page_size)?;
-
-        // 执行查询
-        let result = query.paginate::<User>().await?;
-
-        // 返回结果
-        Ok(ApiResponse::success(result, "查询成功"))
-    }
+fn user_module(
+    users: TableDefinition,
+    profile_action: impl TypedAction,
+) -> Result<ModuleRouter, BaseError> {
+    ModuleRouter::new("user", "用户管理")
+        .table(users)
+        .crud()?
+        .api(
+            Api::get("/api/user/profile", profile_action)
+                .operation_id("user.profile")
+                .tag("user"),
+        )
 }
 ```
 
-## 使用建议
+标准 CRUD 与自定义 `Api` 最终都进入同一个 `ApiCatalog`，供 HTTP 适配、文档和可选 OpenAPI 3.1 投影使用。
 
-1. **AddAction、PutAction、DelAction** 可以直接使用，无需自定义实现
-2. **GetAction、SelectAction** 建议自定义实现，指定具体的返回类型
-3. **TableAction** 可以直接使用，用于获取表元数据
-4. 所有 Actions 都支持字段级权限控制
-5. DelAction 支持软删除，只需在 TableConfig 中配置 `soft_delete_field`
+`Api` 路径在注册期按 Axum 0.8 校验：动态段使用 `{id}` / `{*path}`，旧式 `:id` / `*path` 会立即失败。`AppRouter::catalog()` 还会拒绝跨模块的匹配模板和 operation id 冲突，transport adapter 只消费已经验证的目录。
 
-## 完整示例
-
-```rust
-use yang_base::action::builtin::{AddAction, PutAction, DelAction, TableAction};
-use yang_base::table::{TableConfig, FieldConfig, FieldType};
-use std::sync::Arc;
-
-// 创建表配置
-let table_config = Arc::new(
-    TableConfig::new("users")
-        .primary_key("id")
-        .field(FieldConfig::new("id", FieldType::BigInt))
-        .field(FieldConfig::new("name", FieldType::String { max_length: 50 }))
-        .field(FieldConfig::new("email", FieldType::String { max_length: 100 }))
-        .field(FieldConfig::new("deleted_at", FieldType::BigInt))
-        .soft_delete_field("deleted_at")
-);
-
-// 创建内置 Actions
-let add_action = AddAction::new(table_config.clone());
-let put_action = PutAction::new(table_config.clone());
-let del_action = DelAction::new(table_config.clone());
-let table_action = TableAction::new(table_config.clone());
-
-// 创建自定义 GetAction 和 SelectAction
-let get_action = UserGetAction::new(table_config.clone());
-let select_action = UserSelectAction::new(table_config.clone());
-```
+完整启动流程参见[快速开始](../guides/quick_start.md)。

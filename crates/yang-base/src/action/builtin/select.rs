@@ -4,10 +4,9 @@
 use crate::action::sql_bridge::count_with_tree;
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
-use crate::table::{AsColumnName, Filter, SortOrder, TableEntity, WhereCondition};
+use crate::table::{Record, SortOrder, WhereCondition};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
 use yang_base_derive::Action;
 
 fn default_page() -> u32 {
@@ -21,77 +20,42 @@ fn default_sort_order() -> SortOrder {
 }
 
 /// 排序条目（JSON 形态：`{"field": "id", "direction": "desc"}`）。
-#[derive(schemars::JsonSchema)]
-pub struct OrderByItem<T: TableEntity> {
-    /// 字段名枚举
-    pub field: T::Field,
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OrderByItem {
+    /// 字段名
+    pub field: String,
     /// 方向，缺省为 Asc
+    #[serde(default = "default_sort_order")]
     pub direction: SortOrder,
 }
 
-impl<'de, T: TableEntity> Deserialize<'de> for OrderByItem<T> {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Raw<F> {
-            field: F,
-            #[serde(default = "default_sort_order")]
-            direction: SortOrder,
-        }
-        let raw = Raw::<T::Field>::deserialize(d)?;
-        Ok(OrderByItem {
-            field: raw.field,
-            direction: raw.direction,
-        })
-    }
-}
-
 /// SelectAction 的输入。
-#[derive(schemars::JsonSchema)]
-pub struct SelectQuery<T: TableEntity> {
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelectQuery {
     /// 页码（1 起步），缺省 1
+    #[serde(default = "default_page")]
     pub page: u32,
     /// 每页条数，缺省 10，必须 1..=100
+    #[serde(default = "default_page_size")]
     pub page_size: u32,
     /// where 布尔过滤树（叶子 + And/Or 嵌套），JSON key 为 `"where"`，缺省无条件
-    pub where_clause: Option<Filter<T::WhereCond>>,
+    #[serde(rename = "where", default)]
+    pub where_clause: Option<WhereCondition>,
     /// 排序规则列表
-    pub order_by: Vec<OrderByItem<T>>,
+    #[serde(default)]
+    pub order_by: Vec<OrderByItem>,
     /// 是否额外执行 COUNT 查询
+    #[serde(default)]
     pub count_total: bool,
-}
-
-impl<'de, T: TableEntity> Deserialize<'de> for SelectQuery<T> {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Raw<W, OI> {
-            #[serde(default = "default_page")]
-            page: u32,
-            #[serde(default = "default_page_size")]
-            page_size: u32,
-            #[serde(rename = "where", default = "Option::default")]
-            where_clause: Option<W>,
-            #[serde(default = "Vec::new")]
-            order_by: Vec<OI>,
-            #[serde(default)]
-            count_total: bool,
-        }
-        let raw = Raw::<Filter<T::WhereCond>, OrderByItem<T>>::deserialize(d)?;
-        Ok(SelectQuery {
-            page: raw.page,
-            page_size: raw.page_size,
-            where_clause: raw.where_clause,
-            order_by: raw.order_by,
-            count_total: raw.count_total,
-        })
-    }
 }
 
 /// 查询结果。
 #[derive(Serialize, schemars::JsonSchema)]
-pub struct SelectResult<T> {
+pub struct SelectResult {
     /// 数据列表
-    pub items: Vec<T>,
+    pub items: Vec<Record>,
     /// 当前页码
     pub page: u32,
     /// 每页条数
@@ -108,58 +72,55 @@ pub struct SelectResult<T> {
     display_name = "查询列表",
     description = "分页 + 多条件 AND 查询"
 )]
-pub struct SelectAction<T: TableEntity> {
-    _phantom: PhantomData<T>,
-}
+pub struct SelectAction;
 
-impl<T: TableEntity> SelectAction<T> {
+impl SelectAction {
     /// 创建 SelectAction 实例。
     pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
+        Self
     }
 }
 
-impl<T: TableEntity> Default for SelectAction<T> {
+impl Default for SelectAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl<T: TableEntity> TypedHandler for SelectAction<T> {
-    type Input = SelectQuery<T>;
-    type Output = SelectResult<T>;
+impl TypedHandler for SelectAction {
+    type Input = SelectQuery;
+    type Output = SelectResult;
 
     async fn handle(
         &self,
         ctx: ActionContext,
-        input: SelectQuery<T>,
-    ) -> Result<SelectResult<T>, BaseError> {
-        if input.page == 0 || input.page_size == 0 || input.page_size > 100 {
+        input: SelectQuery,
+    ) -> Result<SelectResult, BaseError> {
+        let SelectQuery {
+            page,
+            page_size,
+            where_clause,
+            order_by,
+            count_total,
+        } = input;
+        if page == 0 || page_size == 0 || page_size > 100 {
             return Err(BaseError::ParamInvalid(
                 "page/page_size".into(),
                 "page>=1, 1<=page_size<=100".into(),
             ));
         }
 
-        // 把类型化布尔树降解为受保护层的 WhereCondition（None 表示无条件）
-        let where_tree: Option<WhereCondition> =
-            input.where_clause.map(Filter::into_where_condition);
-
-        // 字段读权限强制：始终走整实体 select，先确认当前用户对全部字段可读，
-        // 否则返回 FieldPermissionDenied（匿名访问以空角色用户判定）。
-        // 【LOGIC-3】鉴权必须在 COUNT 之前，避免未登录用户绕过权限获取总数。
-        let user = ctx
-            .user
-            .as_ref()
-            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+        // 默认投影当前角色可读且非 secret 的字段。
+        // 【LOGIC-3】认证必须在 COUNT 之前，避免未登录用户绕过权限获取总数。
+        if ctx.user.is_none() {
+            return Err(BaseError::Unauthorized("需要登录".to_string()));
+        }
         let mut q = ctx.table_query()?;
-        q.ensure_fields_readable(user)?;
+        q.ensure_readable_projection()?;
 
-        let total = if input.count_total {
-            match &where_tree {
+        let total = if count_total {
+            match &where_clause {
                 Some(tree) => Some(count_with_tree(&ctx, tree.clone()).await?),
                 None => Some(ctx.table_query()?.count().await?),
             }
@@ -167,19 +128,19 @@ impl<T: TableEntity> TypedHandler for SelectAction<T> {
             None
         };
         // 整棵 where 树一次性递归校验 + 并入（含字段存在性/筛选权限/嵌套深度）
-        if let Some(tree) = where_tree {
+        if let Some(tree) = where_clause {
             q = q.where_tree(tree)?;
         }
-        for OrderByItem { field, direction } in input.order_by {
-            q = q.order_by(field.column_name(), direction)?;
+        for OrderByItem { field, direction } in order_by {
+            q = q.order_by(&field, direction)?;
         }
         // 设置分页参数
-        q = q.page(input.page as usize, input.page_size as usize)?;
-        let items: Vec<T> = q.select::<T>().await?;
+        q = q.page(page as usize, page_size as usize)?;
+        let items = q.all().await?;
         Ok(SelectResult {
             items,
-            page: input.page,
-            page_size: input.page_size,
+            page,
+            page_size,
             total,
         })
     }

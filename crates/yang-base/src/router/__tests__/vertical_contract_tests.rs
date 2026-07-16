@@ -3,8 +3,8 @@ use crate::action::{
 };
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginManagerBuilder};
-use crate::router::{AppRouter, Middleware, ModuleRouter, Next, OpenApiInfo, RouteDescriptor};
-use crate::table::TableConfig;
+use crate::router::{Api, AppRouter, Middleware, ModuleRouter, Next, OpenApiInfo};
+use crate::table::{Field, Table, TableDefinition};
 use crate::token::TokenManager;
 use async_trait::async_trait;
 use jsonwebtoken::Algorithm;
@@ -83,25 +83,23 @@ fn test_tools() -> Arc<GlobalTools> {
     )))
 }
 
+fn directory_table() -> TableDefinition {
+    Table::new("directory_entries")
+        .fields([Field::id("id"), Field::string("name", 255).required()])
+        .build()
+        .expect("目录表定义应有效")
+}
+
 fn directory_module(with_auth: bool) -> ModuleRouter {
-    let module = ModuleRouter::new("directory", "目录")
-        .with_table_config(Arc::new(TableConfig::new("directory_entries")));
+    let module = ModuleRouter::new("directory", "目录").table(directory_table());
     let module = if with_auth {
         module.middleware(TestAuthMiddleware)
     } else {
         module
     };
     module
-        .register_action(LookupAction)
-        .expect("Action 注册应成功")
-        .register_route(
-            "lookup",
-            RouteDescriptor::new("POST", "/directory/lookup", "directory.lookup")
-                .expect("route 应合法")
-                .with_tags(vec!["directory".to_string()])
-                .expect("tag 应合法"),
-        )
-        .expect("route 注册应成功")
+        .api(Api::post("/directory/lookup", LookupAction).tag("directory"))
+        .expect("API 注册应成功")
 }
 
 #[tokio::test]
@@ -115,7 +113,7 @@ async fn plugin_to_openapi_vertical_contract_without_database() {
     assert!(registry.get("directory").is_some());
 
     let app = AppRouter::new()
-        .register_module(directory_module(true))
+        .module(directory_module(true))
         .expect("模块注册应成功");
     let context = ActionContext::new(
         Request::new(json!({ "query": "alice" }))
@@ -185,7 +183,7 @@ async fn vertical_contract_rejects_duplicate_plugin_unauthorized_and_invalid_inp
     ));
 
     let app = AppRouter::new()
-        .register_module(directory_module(false))
+        .module(directory_module(false))
         .expect("模块注册应成功");
     let context = ActionContext::new(Request::new(json!({ "query": "alice" })), test_tools());
     assert!(matches!(
@@ -194,7 +192,7 @@ async fn vertical_contract_rejects_duplicate_plugin_unauthorized_and_invalid_inp
     ));
 
     let app = AppRouter::new()
-        .register_module(directory_module(true))
+        .module(directory_module(true))
         .expect("模块注册应成功");
     let context = ActionContext::new(Request::new(json!({ "query": 42 })), test_tools());
     assert!(matches!(

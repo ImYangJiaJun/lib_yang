@@ -1,6 +1,6 @@
-//! 动态行类型
+//! 数据库记录类型
 //!
-//! 提供 `DynamicRow` 类型，用于在不知道具体表结构时动态读取 MySQL 查询结果。
+//! 提供 `Record` 类型，用于在不知道具体 Rust 实体时安全读取 MySQL 查询结果。
 //! 每一行数据以 `serde_json::Map<String, serde_json::Value>` 的形式存储，
 //! 支持所有常见 MySQL 类型到 JSON 类型的映射。
 //!
@@ -21,18 +21,20 @@
 //! # 示例
 //!
 //! ```rust,ignore
-//! use yang_base::table::DynamicRow;
+//! use yang_base::table::Record;
 //!
 //! // 通过 sqlx::FromRow 自动从查询结果构建
-//! let rows: Vec<DynamicRow> = query.select().await?;
+//! let rows: Vec<Record> = query.all().await?;
 //! for row in rows {
-//!     println!("{:?}", row.columns);
+//!     println!("{:?}", row.as_map());
 //! }
 //! ```
 
+use crate::error::BaseError;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// 动态行类型
+/// 动态数据库记录
 ///
 /// 以键值对形式存储一行数据库查询结果，支持任意表结构。
 /// 字段名为键，字段值为 JSON 值。
@@ -44,30 +46,44 @@ use serde::{Deserialize, Serialize};
 /// # 示例
 ///
 /// ```rust,ignore
-/// use yang_base::table::DynamicRow;
+/// use yang_base::table::Record;
 /// use serde_json::json;
 ///
-/// let mut row = DynamicRow::new();
-/// row.columns.insert("id".to_string(), json!(1));
-/// row.columns.insert("name".to_string(), json!("Alice"));
+/// let row = Record::new()
+///     .set("id", json!(1))
+///     .set("name", json!("Alice"));
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DynamicRow {
-    /// 列名到 JSON 值的映射
-    ///
-    /// 键为列名，值为对应的 JSON 值（已按 MySQL 类型转换）
-    pub columns: serde_json::Map<String, serde_json::Value>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+#[schemars(transparent)]
+pub struct Record {
+    columns: serde_json::Map<String, serde_json::Value>,
 }
 
-impl DynamicRow {
-    /// 创建空的动态行
+impl Record {
+    /// 创建空记录。
     pub fn new() -> Self {
         Self {
             columns: serde_json::Map::new(),
         }
     }
 
-    /// 获取指定列的值
+    /// 链式写入字段值。
+    pub fn set(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+        self.columns.insert(key.into(), value.into());
+        self
+    }
+
+    /// 写入字段值并返回被替换的旧值。
+    pub fn insert(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        self.columns.insert(key.into(), value.into())
+    }
+
+    /// 获取指定列的原始 JSON 值。
     ///
     /// # 参数
     ///
@@ -84,17 +100,67 @@ impl DynamicRow {
 
         self.columns.get(key)
     }
+
+    /// 读取必需字段并转换为目标类型。
+    pub fn require<T>(&self, key: &str) -> Result<T, BaseError>
+    where
+        T: DeserializeOwned,
+    {
+        let value = self
+            .get(key)
+            .ok_or_else(|| BaseError::FieldNotFound("record".to_string(), key.to_string()))?;
+        serde_json::from_value(value.clone())
+            .map_err(|error| BaseError::InvalidFieldType(key.to_string(), error.to_string()))
+    }
+
+    /// 读取可选字段；字段不存在或为 `null` 时返回 `None`。
+    pub fn optional<T>(&self, key: &str) -> Result<Option<T>, BaseError>
+    where
+        T: DeserializeOwned,
+    {
+        let Some(value) = self.get(key) else {
+            return Ok(None);
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| BaseError::InvalidFieldType(key.to_string(), error.to_string()))
+    }
+
+    /// 返回字段映射的只读引用。
+    pub fn as_map(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.columns
+    }
+
+    /// 消费记录并返回字段映射。
+    pub fn into_map(self) -> serde_json::Map<String, serde_json::Value> {
+        self.columns
+    }
+
+    /// 消费记录并返回查询写入层使用的 HashMap。
+    #[cfg(feature = "mysql")]
+    pub(crate) fn into_columns(self) -> std::collections::HashMap<String, serde_json::Value> {
+        self.columns.into_iter().collect()
+    }
 }
 
-impl Default for DynamicRow {
+impl Default for Record {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// 将 DynamicRow 转换为 serde_json::Value（Object 类型）
-impl From<DynamicRow> for serde_json::Value {
-    fn from(row: DynamicRow) -> Self {
+impl From<serde_json::Map<String, serde_json::Value>> for Record {
+    fn from(columns: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self { columns }
+    }
+}
+
+/// 将 Record 转换为 serde_json::Value（Object 类型）。
+impl From<Record> for serde_json::Value {
+    fn from(row: Record) -> Self {
         serde_json::Value::Object(row.columns)
     }
 }
@@ -112,7 +178,7 @@ impl From<DynamicRow> for serde_json::Value {
 /// - BLOB/BINARY → Base64 字符串
 /// - JSON → Object/Array
 #[cfg(feature = "mysql")]
-impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for DynamicRow {
+impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for Record {
     fn from_row(row: &'r sqlx::mysql::MySqlRow) -> Result<Self, sqlx::Error> {
         use sqlx::Column;
         use sqlx::Row;
@@ -143,7 +209,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for DynamicRow {
             columns.insert(col_name, json_value);
         }
 
-        Ok(DynamicRow { columns })
+        Ok(Record { columns })
     }
 }
 
@@ -249,10 +315,10 @@ mod tests {
 
     #[test]
     fn get_rejects_blank_column_name() {
-        let mut row = DynamicRow::new();
-        row.columns.insert("".to_string(), json!(1));
-        row.columns.insert("   ".to_string(), json!(2));
-        row.columns.insert("name".to_string(), json!("Alice"));
+        let mut row = Record::new();
+        row.insert("", json!(1));
+        row.insert("   ", json!(2));
+        row.insert("name", json!("Alice"));
 
         assert_eq!(
             row.get("name").and_then(|value| value.as_str()),
@@ -260,5 +326,21 @@ mod tests {
         );
         assert_eq!(row.get(""), None);
         assert_eq!(row.get("   "), None);
+    }
+
+    #[test]
+    fn serializes_as_plain_object_and_checks_types() {
+        let row = Record::new().set("id", 7).set("name", "Alice");
+
+        assert_eq!(
+            serde_json::to_value(&row).expect("记录应可序列化"),
+            json!({
+                "id": 7,
+                "name": "Alice"
+            })
+        );
+        assert_eq!(row.require::<i64>("id").expect("id 应为整数"), 7);
+        assert!(row.require::<String>("id").is_err());
+        assert!(row.require::<String>("missing").is_err());
     }
 }

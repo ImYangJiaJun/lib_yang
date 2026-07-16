@@ -258,7 +258,10 @@ fn test_action_context_new() {
 
     // 测试上下文创建成功
     assert!(context.user.is_none());
-    assert!(context.table_config.is_none());
+    assert!(matches!(
+        context.table_definition(),
+        Err(BaseError::TableDefinitionNotSet)
+    ));
 }
 
 #[test]
@@ -525,7 +528,10 @@ fn test_action_context_new_with_global_tools() {
     let context = result.unwrap();
     // 验证上下文创建成功
     assert!(context.user.is_none());
-    assert!(context.table_config.is_none());
+    assert!(matches!(
+        context.table_definition(),
+        Err(BaseError::TableDefinitionNotSet)
+    ));
 }
 
 #[test]

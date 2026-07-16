@@ -1,8 +1,8 @@
 //! FieldType 使用示例
 //!
-//! 演示如何使用 FieldType 定义各种字段类型
+//! 演示如何使用 FieldType 定义存储类型，以及如何为字段附加关系元数据
 
-use yang_base::table::FieldType;
+use yang_base::table::{Field, FieldType, RelationType};
 
 fn main() {
     println!("=== FieldType 使用示例 ===\n");
@@ -87,17 +87,10 @@ fn main() {
         status_type.display_name()
     );
 
-    // 外键类型
-    println!("\n5. 外键类型：");
-    let user_id_type = FieldType::ForeignKey {
-        table: "users".to_string(),
-        field: "id".to_string(),
-    };
-    println!(
-        "  - 用户ID字段: {:?} ({})",
-        user_id_type,
-        user_id_type.display_name()
-    );
+    // 关系元数据与存储类型正交
+    println!("\n5. 关联字段：");
+    let _user_id_field = Field::bigint("user_id").relation("users", "id", RelationType::ManyToOne);
+    println!("  - 用户ID字段: BigInt + ManyToOne(users.id)");
 
     // 类型检查
     println!("\n6. 类型检查：");

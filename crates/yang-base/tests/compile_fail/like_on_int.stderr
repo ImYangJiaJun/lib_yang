@@ -1,5 +1,0 @@
-error[E0599]: no variant or associated item named `Like` found for enum `WhereOp<V>` in the current scope
- --> tests/compile_fail/like_on_int.rs:9:36
-  |
-9 |     let _: WhereOp<i64> = WhereOp::Like("%foo%".into());
-  |                                    ^^^^ variant or associated item not found in `WhereOp<_>`

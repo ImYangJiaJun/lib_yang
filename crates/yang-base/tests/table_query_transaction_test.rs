@@ -15,33 +15,12 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
-use yang_base::table::{FieldConfig, FieldType, TableConfig, TableQuery, Validator};
+use yang_base::table::{Field, Record, Table, TableDefinition, TableQuery};
 use yang_db::Database;
-
-/// 测试用户结构
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
-struct TestUser {
-    id: i64,
-    name: String,
-    email: String,
-    age: i32,
-    status: String,
-}
-
-/// 测试产品结构（用于软删除测试）
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
-struct TestProduct {
-    id: i64,
-    name: String,
-    price: f64,
-    deleted_at: Option<i64>,
-}
 
 /// 创建 MySQL 测试容器并返回数据库 URL
 async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
@@ -120,54 +99,31 @@ async fn create_test_products_table(db: &Database) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// 创建测试用户表配置
-fn create_test_users_table_config() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("name", FieldType::String { max_length: 50 })
-                    .required(true)
-                    .validator(Validator::MinLength(2))
-                    .validator(Validator::MaxLength(50)),
-            )
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("email", FieldType::String { max_length: 100 })
-                    .required(true)
-                    .validator(Validator::Email),
-            )
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new(
-                    "status",
-                    FieldType::Enum {
-                        values: vec!["active".to_string(), "inactive".to_string()],
-                    },
-                )
-                .required(true),
-            )
-            .expect("有效字段配置应注册成功"),
-    )
+/// 创建测试用户表定义。
+fn create_test_users_table_definition() -> TableDefinition {
+    Table::new("test_users")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 50).required().length(2..=50),
+            Field::string("email", 100).required().email(),
+            Field::integer("age").required(),
+            Field::enumeration("status", ["active", "inactive"]).required(),
+        ])
+        .build()
+        .expect("test_users 表定义应有效")
 }
 
-/// 创建测试产品表配置（带软删除）
-fn create_test_products_table_config() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("test_products")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("name", FieldType::String { max_length: 100 }).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("price", FieldType::Double).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("deleted_at", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .soft_delete_field("deleted_at"),
-    )
+/// 创建测试产品表定义（带软删除）。
+fn create_test_products_table_definition() -> TableDefinition {
+    Table::new("test_products")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 100).required(),
+            Field::double("price").required(),
+            Field::soft_delete("deleted_at"),
+        ])
+        .build()
+        .expect("test_products 表定义应有效")
 }
 
 /// 设置测试环境
@@ -194,27 +150,17 @@ macro_rules! setup_test_env {
 }
 
 /// 构建用户插入数据
-fn user_data(
-    name: &str,
-    email: &str,
-    age: i64,
-    status: &str,
-) -> HashMap<String, serde_json::Value> {
-    let mut data = HashMap::new();
-    data.insert("name".to_string(), serde_json::json!(name));
-    data.insert("email".to_string(), serde_json::json!(email));
-    data.insert("age".to_string(), serde_json::json!(age));
-    data.insert("status".to_string(), serde_json::json!(status));
-    data
+fn user_data(name: &str, email: &str, age: i64, status: &str) -> Record {
+    Record::new()
+        .set("name", name)
+        .set("email", email)
+        .set("age", age)
+        .set("status", status)
 }
 
-/// 新建一个绑定连接池的 admin TableQuery
-fn admin_query(config: &Arc<TableConfig>, pool: &sqlx::MySqlPool) -> TableQuery {
-    TableQuery::new(
-        config.clone(),
-        vec!["admin".to_string()].into(),
-        Some(Arc::new(pool.clone())),
-    )
+/// 新建一个绑定连接池的 admin TableQuery。
+fn admin_query(definition: &TableDefinition, pool: &sqlx::MySqlPool) -> TableQuery {
+    definition.bind(Arc::new(pool.clone())).query(["admin"])
 }
 
 // ==================== 原子性：回滚撤销全部写入 ====================
@@ -226,7 +172,7 @@ async fn test_transaction_rollback_discards_all_inserts() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let mut tx = db.transaction().await.unwrap();
 
@@ -246,7 +192,7 @@ async fn test_transaction_rollback_discards_all_inserts() {
     tx.rollback().await.unwrap();
 
     // 池外查询：两条记录都不应存在
-    let users: Vec<TestUser> = admin_query(&config, &pool).select().await.unwrap();
+    let users: Vec<Record> = admin_query(&config, &pool).all().await.unwrap();
     assert_eq!(users.len(), 0, "回滚后不应有任何记录落库");
 }
 
@@ -257,7 +203,7 @@ async fn test_transaction_drop_without_commit_rolls_back() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     {
         let mut tx = db.transaction().await.unwrap();
@@ -271,7 +217,7 @@ async fn test_transaction_drop_without_commit_rolls_back() {
         // tx 在此作用域结束被 drop，未 commit
     }
 
-    let users: Vec<TestUser> = admin_query(&config, &pool).select().await.unwrap();
+    let users: Vec<Record> = admin_query(&config, &pool).all().await.unwrap();
     assert_eq!(users.len(), 0, "未提交事务 drop 后写入不应落库");
 }
 
@@ -284,7 +230,7 @@ async fn test_transaction_commit_persists_all_inserts() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let mut tx = db.transaction().await.unwrap();
 
@@ -302,11 +248,11 @@ async fn test_transaction_commit_persists_all_inserts() {
 
     tx.commit().await.unwrap();
 
-    let mut users: Vec<TestUser> = admin_query(&config, &pool).select().await.unwrap();
-    users.sort_by_key(|u| u.id);
+    let mut users: Vec<Record> = admin_query(&config, &pool).all().await.unwrap();
+    users.sort_by_key(|user| user.require::<i64>("id").unwrap());
     assert_eq!(users.len(), 2, "提交后两条记录都应落库");
-    assert_eq!(users[0].name, "张三");
-    assert_eq!(users[1].name, "李四");
+    assert_eq!(users[0].require::<String>("name").unwrap(), "张三");
+    assert_eq!(users[1].require::<String>("name").unwrap(), "李四");
 }
 
 // ==================== 一致性：事务内读-改-写 ====================
@@ -318,7 +264,7 @@ async fn test_transaction_read_sees_uncommitted_write() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let mut tx = db.transaction().await.unwrap();
 
@@ -332,20 +278,20 @@ async fn test_transaction_read_sees_uncommitted_write() {
     assert!(new_id > 0, "应返回自增主键");
 
     // 事务内查询：应能看到刚插入但尚未提交的记录
-    let in_tx: Vec<TestUser> = admin_query(&config, &pool)
+    let in_tx: Vec<Record> = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
-        .select_in_tx(&mut tx)
+        .all_in_tx(&mut tx)
         .await
         .unwrap();
     assert_eq!(in_tx.len(), 1, "事务内应可见未提交写入");
-    assert_eq!(in_tx[0].name, "赵六");
+    assert_eq!(in_tx[0].require::<String>("name").unwrap(), "赵六");
 
     // 池外查询：尚未提交，不可见
-    let outside: Vec<TestUser> = admin_query(&config, &pool)
+    let outside: Vec<Record> = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
-        .select()
+        .all()
         .await
         .unwrap();
     assert_eq!(outside.len(), 0, "未提交写入在事务外不可见");
@@ -360,7 +306,7 @@ async fn test_transaction_multi_step_atomic_on_failure() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let mut tx = db.transaction().await.unwrap();
 
@@ -381,7 +327,7 @@ async fn test_transaction_multi_step_atomic_on_failure() {
     // 业务决定回滚整个事务
     tx.rollback().await.unwrap();
 
-    let users: Vec<TestUser> = admin_query(&config, &pool).select().await.unwrap();
+    let users: Vec<Record> = admin_query(&config, &pool).all().await.unwrap();
     assert_eq!(users.len(), 0, "任一步失败回滚后，先前成功步骤也不应落库");
 }
 
@@ -394,7 +340,7 @@ async fn test_transaction_update_commit() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     // 预置一条（自动提交路径）
     let new_id = admin_query(&config, &pool)
@@ -405,9 +351,7 @@ async fn test_transaction_update_commit() {
 
     // 事务内更新
     let mut tx = db.transaction().await.unwrap();
-    let mut upd = HashMap::new();
-    upd.insert("age".to_string(), serde_json::json!(99));
-    upd.insert("status".to_string(), serde_json::json!("inactive"));
+    let upd = Record::new().set("age", 99).set("status", "inactive");
     let affected = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
@@ -417,14 +361,18 @@ async fn test_transaction_update_commit() {
     assert_eq!(affected, 1);
     tx.commit().await.unwrap();
 
-    let users: Vec<TestUser> = admin_query(&config, &pool)
+    let users: Vec<Record> = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
-        .select()
+        .all()
         .await
         .unwrap();
-    assert_eq!(users[0].age, 99, "提交后更新应持久化");
-    assert_eq!(users[0].status, "inactive");
+    assert_eq!(
+        users[0].require::<i64>("age").unwrap(),
+        99,
+        "提交后更新应持久化"
+    );
+    assert_eq!(users[0].require::<String>("status").unwrap(), "inactive");
 }
 
 /// 事务内物理删除后回滚，记录应仍存在
@@ -434,7 +382,7 @@ async fn test_transaction_delete_rollback_keeps_row() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let new_id = admin_query(&config, &pool)
         .insert_returning_id(user_data("待删", "del@example.com", 50, "active"))
@@ -452,10 +400,10 @@ async fn test_transaction_delete_rollback_keeps_row() {
     assert_eq!(affected, 1, "事务内删除影响 1 行");
     tx.rollback().await.unwrap();
 
-    let users: Vec<TestUser> = admin_query(&config, &pool)
+    let users: Vec<Record> = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
-        .select()
+        .all()
         .await
         .unwrap();
     assert_eq!(users.len(), 1, "回滚后删除应被撤销，记录仍存在");
@@ -468,20 +416,20 @@ async fn test_transaction_soft_delete_in_tx() {
     let (_container, pool, db) = setup_test_env!();
     create_test_products_table(&db).await.unwrap();
 
-    let config = create_test_products_table_config();
+    let config = create_test_products_table_definition();
 
     db.execute("INSERT INTO test_products (name, price) VALUES ('产品X', 12.50)")
         .await
         .unwrap();
 
-    let products: Vec<TestProduct> = admin_query(&config, &pool)
+    let products: Vec<Record> = admin_query(&config, &pool)
         .where_eq("name", serde_json::json!("产品X"))
         .unwrap()
-        .select()
+        .all()
         .await
         .unwrap();
-    let product_id = products[0].id;
-    assert_eq!(products[0].deleted_at, None);
+    let product_id = products[0].require::<i64>("id").unwrap();
+    assert_eq!(products[0].optional::<i64>("deleted_at").unwrap(), None);
 
     let mut tx = db.transaction().await.unwrap();
     let affected = admin_query(&config, &pool)
@@ -494,16 +442,16 @@ async fn test_transaction_soft_delete_in_tx() {
     tx.commit().await.unwrap();
 
     // with_trashed 读取，确认记录仍在且 deleted_at 被标记
-    let products: Vec<TestProduct> = admin_query(&config, &pool)
+    let products: Vec<Record> = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(product_id))
         .unwrap()
         .with_trashed()
-        .select()
+        .all()
         .await
         .unwrap();
     assert_eq!(products.len(), 1, "软删除记录仍存在");
     assert!(
-        products[0].deleted_at.is_some(),
+        products[0].optional::<i64>("deleted_at").unwrap().is_some(),
         "事务内软删除提交后 deleted_at 应被标记"
     );
 }
@@ -518,7 +466,7 @@ async fn test_independent_transactions_isolated() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     let mut tx = db.transaction().await.unwrap();
     admin_query(&config, &pool)
@@ -537,9 +485,9 @@ async fn test_independent_transactions_isolated() {
     tx2.rollback().await.unwrap();
 
     // 仅“甲方”被提交
-    let users: Vec<TestUser> = admin_query(&config, &pool).select().await.unwrap();
+    let users: Vec<Record> = admin_query(&config, &pool).all().await.unwrap();
     assert_eq!(users.len(), 1);
-    assert_eq!(users[0].name, "甲方");
+    assert_eq!(users[0].require::<String>("name").unwrap(), "甲方");
 }
 
 // ==================== C4 慢查询计时：超阈值仍正常执行 ====================
@@ -553,7 +501,7 @@ async fn test_slow_query_timing_does_not_break_execution() {
     let (_container, pool, db) = setup_test_env!();
     create_test_users_table(&db).await.unwrap();
 
-    let config = create_test_users_table_config();
+    let config = create_test_users_table_definition();
 
     // 预置一条
     admin_query(&config, &pool)
@@ -562,19 +510,14 @@ async fn test_slow_query_timing_does_not_break_execution() {
         .unwrap();
 
     // 阈值 0：每次执行都超阈值 → 触发 warn 分支；结果仍须正确
-    let q = TableQuery::new(
-        config.clone(),
-        vec!["admin".to_string()].into(),
-        Some(std::sync::Arc::new(pool.clone())),
-    )
-    .with_slow_threshold(Some(Duration::from_nanos(0)));
+    let q = admin_query(&config, &pool).with_slow_threshold(Some(Duration::from_nanos(0)));
 
-    let users: Vec<TestUser> = q
+    let users: Vec<Record> = q
         .where_eq("name", serde_json::json!("慢查询"))
         .unwrap()
-        .select()
+        .all()
         .await
         .unwrap();
     assert_eq!(users.len(), 1, "慢查询计时不应改变结果");
-    assert_eq!(users[0].age, 42);
+    assert_eq!(users[0].require::<i64>("age").unwrap(), 42);
 }

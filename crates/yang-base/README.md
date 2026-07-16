@@ -1,347 +1,250 @@
 # yang-base
 
-YANG 基础库 v0.1.3（待发布），提供类型化 Action、插件管理、数据库访问、HTTP 客户端和 JWT Token 管理等核心功能。
+`yang-base` 0.2.0 是 YANG 后端基础库，提供 schema-first 数据表、类型化 Action、API 路由目录、插件生命周期、MySQL/Redis 全局访问、HTTP 客户端和 JWT Token 管理。
 
-## Feature 选择
+当前应用侧的核心链路是：
+
+```text
+Table + Field
+  -> TableDefinition
+  -> ModuleRouter::table(...).crud()
+  -> ApiCatalog / AppRouter
+  -> Record + TableQuery
+```
+
+表结构由运行时 `TableDefinition` 描述，标准 CRUD 使用透明 JSON 对象 `Record`，自定义端点通过 `Api` 同时注册 Action 与 HTTP 元数据。
+
+## Features
 
 | Feature | 默认 | 能力 |
 |---|---:|---|
-| `token` | 是 | JWT 签发、刷新与 Redis 撤销列表 |
-| `http` | 是 | 带超时、重试和熔断的 HTTP 客户端 |
-| `mysql` | 是 | `GlobalDatabase`、`TableQuery`、迁移与 schema 校验 |
+| `mysql` | 是 | `GlobalDatabase`、schema 同步、`TableHandle`、`TableQuery` 与内置 CRUD |
 | `redis` | 是 | `GlobalRedis` 与 Redis 数据结构 API |
+| `token` | 是 | JWT 签发、刷新与 Redis 撤销列表；自动启用 `redis` |
+| `http` | 是 | 带超时、重试和熔断的 HTTP 客户端 |
 | `validator` | 是 | Email、Phone、Regex 严格验证 |
 | `plugin-schema` | 是 | 插件配置 JSON Schema 验证 |
-| `metrics` | 否 | 可选指标门面，不绑定 exporter |
+| `metrics` | 否 | Action 指标门面，不绑定 exporter |
 | `openapi` | 否 | 从 `ApiCatalog` 投影 OpenAPI 3.1 JSON |
-| `admin-metadata` | 否 | 后台展示元数据；不改变 dispatch，不增加依赖 |
+| `admin-metadata` | 否 | 后台展示元数据；不改变 dispatch |
 
-`default-features = false` 保留插件、Action、Router 和表元数据核心；各 feature 的依赖边界由 CI 独立编译验证。
+`default-features = false` 保留插件、Action、Router 和表定义核心，不引入数据库或网络驱动。
 
-## ✨ 功能特性
+## 安装
 
-### 🗄️ 数据库管理（database）
-- **MySQL 支持**
-  - 全局数据库访问（GlobalDatabase）
-  - 类型安全的查询构建器
-  - 事务支持
-  - 连接池管理
-  - 数据库迁移
-  
-- **Redis 支持** ⭐ 新增
-  - 全局 Redis 访问（GlobalRedis）
-  - String、Hash、List、Set、Sorted Set 操作
-  - 过期时间管理
-  - 连接池管理
-  - 29+ Redis 操作方法
+发布版本：
 
-### 🔌 插件管理（plugin）
-- 插件注册和管理
-- 插件依赖关系解析
-- 插件生命周期管理
-- 插件配置管理
+```toml
+[dependencies]
+yang-base = "0.2.0"
+```
 
-### 🌐 HTTP 客户端（http）
-- 灵活的请求构建器
-- 支持常用 HTTP 方法（GET、POST、PUT、DELETE、PATCH）
-- 请求头和查询参数管理
-- JSON/表单数据序列化
-- 响应处理和解析
-
-### 🔐 Token 管理（token）
-- JWT Token 生成
-- Token 验证和解析
-- 对称/非对称加密支持
-- Token 刷新机制
-- 自定义声明支持
-
-### ⚠️ 错误处理（error）
-- 统一错误类型（BaseError）
-- 详细的错误上下文
-- 中文错误消息
-- 错误码支持
-
-### 📋 表配置系统（table）
-- 表结构定义
-- 字段类型验证
-- 字段权限控制
-
-### 🎯 Action 系统（action）
-- Action 注册和执行
-- 统一的响应格式
-- 参数验证
-
-## 🚀 快速开始
-
-### 安装
-
-在 `Cargo.toml` 中添加依赖：
+同一 workspace 联调：
 
 ```toml
 [dependencies]
 yang-base = { path = "../yang-base" }
-yang-db = { path = "../yang-db" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 ```
 
-默认 feature 提供完整的 MySQL、Redis、Token、HTTP、validator 与 plugin-schema 能力。最小部署可精确选择：
+按需选择 feature：
 
 ```toml
-# 仅核心插件/路由/表元数据，不引入数据库与网络驱动
-yang-base = { version = "0.1.3", default-features = false }
+# 仅核心模型
+yang-base = { version = "0.2.0", default-features = false }
 
-# 仅 MySQL
-yang-base = { version = "0.1.3", default-features = false, features = ["mysql"] }
+# 核心模型 + MySQL
+yang-base = { version = "0.2.0", default-features = false, features = ["mysql"] }
 
-# 仅 Redis
-yang-base = { version = "0.1.3", default-features = false, features = ["redis"] }
-
-# Token 撤销依赖 Redis，因此 token 会自动启用 redis
-yang-base = { version = "0.1.3", default-features = false, features = ["token"] }
+# 核心模型 + Redis
+yang-base = { version = "0.2.0", default-features = false, features = ["redis"] }
 ```
 
-`yang-base` 通过 `default-features = false` 依赖 `yang-db`，只转发实际选中的后端 feature；docs.rs 使用 all-features 构建完整 API。
+## 快速开始：定义表并注册 CRUD
 
-### 基本使用
+```rust
+use yang_base::router::{AppRouter, ModuleRouter};
+use yang_base::table::{col, Field, Table};
+use yang_base::BaseError;
+
+fn build_router() -> Result<AppRouter, BaseError> {
+    let users = Table::new("users")
+        .label("用户表")
+        .fields([
+            Field::id("id").label("ID"),
+            Field::string("username", 64)
+                .label("用户名")
+                .required()
+                .length(3..=64)
+                .unique()
+                .filterable()
+                .sortable(),
+            Field::string("email", 128)
+                .label("邮箱")
+                .required()
+                .email()
+                .unique(),
+            Field::created_at("created_at"),
+            Field::updated_at("updated_at"),
+            Field::soft_delete("deleted_at"),
+        ])
+        .default_order(col("created_at").desc())
+        .build()?;
+
+    let user_module = ModuleRouter::new("user", "用户管理")
+        .table(users)
+        .crud()?;
+
+    AppRouter::new().module(user_module)
+}
+```
+
+`.crud()` 原子注册六个标准 API：
+
+| Action | Method | Path | 用途 |
+|---|---|---|---|
+| `add` | `POST` | `/api/user` | 插入一条 `Record` |
+| `put` | `PUT` | `/api/user` | 按主键更新 `data` 中的字段 |
+| `del` | `DELETE` | `/api/user` | 按主键删除或软删除 |
+| `get` | `GET` | `/api/user` | 按主键读取一条 `Record` |
+| `select` | `POST` | `/api/user/query` | where 树、排序与分页查询 |
+| `table` | `GET` | `/api/user/schema` | 返回输入/输出 JSON Schema |
+
+`.crud()` 同时生成运行时授权契约：`add`、`put`、`del` 需要 `user:write`，`get`、`select`、`table` 需要 `user:read`；把模块名替换为实际的 `module_name` 即得到其它模块的权限名。六个 Action 的 Catalog schema 不是通用 `Record` 占位符，而是从当前主表的 `TableDefinition` 生成，包含真实主键类型、可读/可写字段，以及允许筛选和排序的字段枚举。
+
+`ModuleRouter::table` 绑定模块主表；只参与启动期 schema 汇总的附属表使用 `ModuleRouter::schema`。
+
+## 自定义 API
+
+自定义 Action 实现 `TypedHandler` 并派生 `Action`。注册时用 `Api` 将 handler、HTTP method、path、operation id、状态码和标签放在同一个值中：
+
+```rust
+use yang_base::action::TypedAction;
+use yang_base::router::{Api, ModuleRouter};
+use yang_base::BaseError;
+
+fn build_system_module(
+    health_action: impl TypedAction,
+) -> Result<ModuleRouter, BaseError> {
+    ModuleRouter::new("system", "系统").api(
+        Api::get("/health", health_action)
+            .operation_id("system.health")
+            .tag("system"),
+    )
+}
+```
+
+多个端点使用 `ModuleRouter::apis`。`Api::{get,post,put,patch,delete}` 会先把具体 Action 擦除成统一注册值，因此数组或 `Vec<Api>` 可以容纳不同的 Action 类型。
+
+公开与受保护 Action 可以注册在同一个 `ModuleRouter`。Action 默认受保护，只有带 `#[action(..., public)]` 的端点跳过认证；`TokenAuthMiddleware` 的 scope 固定为 `ProtectedActions`，因此登录、注册等公开端点不会被强制要求 Bearer Token，日志、限流等普通中间件仍默认覆盖全部端点。
+
+`ModuleRouter::api` / `apis` 会立即校验路由；`AppRouter::catalog()` 再校验跨模块冲突。动态段必须使用 Axum 0.8 的 `/users/{id}` 与 `/files/{*path}` 语法，旧式 `:id` / `*path` 会在 transport 启动前返回配置错误。同一路径可以注册不同 HTTP method，但匹配集合相同的模板会被视为冲突。
+
+## 动态行：Record
+
+`Record` 是内置 CRUD 与动态查询统一使用的行对象，序列化后就是普通 JSON object：
+
+```rust
+use yang_base::table::Record;
+
+let mut row = Record::new()
+    .set("username", "alice")
+    .set("email", "alice@example.com");
+row.insert("active", true);
+
+let username: String = row.require("username").expect("username 必须是字符串");
+let nickname: Option<String> = row.optional("nickname").expect("nickname 类型应有效");
+```
+
+- `set`：链式写入字段。
+- `insert`：原地写入并返回旧值。
+- `require::<T>`：必需字段的类型化读取。
+- `optional::<T>`：缺失或 `null` 返回 `None`。
+- `as_map` / `into_map`：以只读引用或所有权形式访问底层 JSON 字段映射。
+
+## 表字段能力
+
+常用 `Field` 构造器：
+
+- `id`、`string`、`integer`、`bigint`、`float`、`double`、`boolean`
+- `date`、`datetime`、`timestamp`
+- `json`、`text`、`enumeration`
+- `created_at`、`updated_at`、`soft_delete`
+
+常用修饰器：
+
+- 结构：`label`、`required`、`nullable`、`default`、`primary_key`、`auto_increment`
+- 校验：`length`、`min_length`、`max_length`、`min`、`max`、`email`、`phone`、`url`、`regex`
+- 索引：`unique`、`unique_named`、`index`、`index_named`
+- 权限：`readable_by`、`writable_by`、`filterable_by`、`sortable_by`、`secret`
+- 关联：`relation`、`relation_display_fields`
+
+字段存储类型与关系元数据正交。普通外键列先按真实数据库类型构造，再附加关系，例如 `Field::bigint("user_id").relation("users", "id", RelationType::ManyToOne)`。
+
+`Table::build()` 是集中校验边界：它检查表/字段标识符、主键、重复字段、索引引用、时间戳角色、默认排序和字段形态，然后生成不可变 `TableDefinition`。
+
+完整示例见 [表定义指南](docs/guides/table_config.md) 和 [batch_field_config.rs](examples/batch_field_config.rs)。
+
+## 数据库与 Redis
+
+启用默认 feature 后，可以初始化全局 MySQL/Redis 客户端。初始化配置类型来自 `yang-db`；直接调用这些入口的应用还需声明匹配的依赖：
+
+```toml
+yang-db = { version = "0.1.4", default-features = false, features = ["mysql", "redis"] }
+```
+
+初始化示例：
 
 ```rust
 use yang_base::database::{GlobalDatabase, GlobalRedis};
-use yang_base::error::BaseError;
-use yang_db::{DatabaseConfig, redis::RedisConfig};
-use serde::{Deserialize, Serialize};
+use yang_base::BaseError;
+use yang_db::{redis::RedisConfig, DatabaseConfig};
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-struct User {
-    id: i32,
-    name: String,
-    email: String,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), BaseError> {
-    // 初始化 MySQL
+async fn init_storage() -> Result<(), BaseError> {
     GlobalDatabase::init(
         "mysql://root:password@localhost/mydb",
-        DatabaseConfig::default()
-    ).await?;
-    
-    // 初始化 Redis
+        DatabaseConfig::default(),
+    )
+    .await?;
+
     GlobalRedis::init(
         "redis://127.0.0.1:6379",
-        RedisConfig::default()
-    ).await?;
-    
-    // 查询数据库
-    let users: Vec<User> = GlobalDatabase::table("users")?
-        .where_and("age", ">=", 18)
-        .select()
-        .await?;
-    
-    // 使用 Redis 缓存
-    GlobalRedis::set("user_count", &users.len().to_string(), Some(300)).await?;
-    
-    // 获取缓存
-    if let Some(count) = GlobalRedis::get("user_count").await? {
-        println!("用户数量: {}", count);
-    }
-    
+        RedisConfig::default(),
+    )
+    .await?;
+
     Ok(())
 }
 ```
 
-## 📚 文档
+面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`GlobalDatabase` 更适合初始化、系统任务和明确承担授权责任的底层操作。
 
-- **[完整使用指南](./USAGE_GUIDE.md)** - 详细的功能说明和示例
-- **[快速参考](./QUICK_REFERENCE.md)** - 常用操作速查表
-- **[Redis 功能指南](./REDIS_GUIDE.md)** - Redis 操作详细说明
-- **[Action 系统示例](./src/action/ACTION_EXAMPLES.md)** - Action 系统使用示例
+`TableQuery` 会在 SQL 生成前按 `TableDefinition` 校验 WHERE 字段、筛选权限、操作符和值类型；`IN` 与 `BETWEEN` 的每个值都逐项校验。`where_eq(field, null)` / `where_ne(field, null)` 分别生成 `IS NULL` / `IS NOT NULL`，也可以显式调用 `where_null` / `where_not_null`，不会生成语义错误的 `= NULL` 或 `!= NULL`。
 
-## 🏗️ 项目结构
+## 目录
 
-```
-yang-base/
-├── src/
-│   ├── lib.rs              # 库入口
-│   ├── error/              # 错误处理模块
-│   │   └── mod.rs
-│   ├── plugin/             # 插件管理模块
-│   │   └── mod.rs
-│   ├── database/           # 数据库管理模块
-│   │   ├── mod.rs
-│   │   ├── global.rs       # MySQL 全局访问
-│   │   ├── global_redis.rs # Redis 全局访问 ⭐
-│   │   └── initializer.rs
-│   ├── http/               # HTTP 客户端模块
-│   │   └── mod.rs
-│   ├── token/              # Token 管理模块
-│   │   └── mod.rs
-│   ├── table/              # 表配置系统
-│   │   └── mod.rs
-│   ├── action/             # Action 系统
-│   │   └── mod.rs
-│   └── router/             # 路由系统
-│       └── mod.rs
-├── Cargo.toml              # 项目配置
-├── README.md               # 项目说明
-├── USAGE_GUIDE.md          # 使用指南
-├── QUICK_REFERENCE.md      # 快速参考
-└── REDIS_GUIDE.md          # Redis 指南
+```text
+src/
+├── action/       # TypedHandler / TypedAction / DynAction 与 builtin CRUD
+├── database/     # MySQL、Redis 与启动期 schema 同步
+├── router/       # Api、ModuleRouter、AppRouter、ApiCatalog
+├── table/        # Table、Field、TableDefinition、Record、TableQuery
+├── plugin/       # 插件生命周期与依赖管理
+├── http/         # 可选 HTTP 客户端
+├── token/        # 可选 JWT 与撤销列表
+└── error/        # BaseError
 ```
 
-## 📦 依赖项
-
-### 核心依赖
-- `yang-db` - YANG 数据库库（支持 MySQL、PostgreSQL 和 Redis）
-- `tokio` - 异步运行时
-- `async-trait` - 异步 trait 支持
-- `serde`/`serde_json` - 序列化支持
-- `thiserror` - 错误处理
-- `log` - 日志记录
-
-### HTTP 相关
-- `reqwest` - HTTP 客户端
-
-### Token 相关
-- `jsonwebtoken` - JWT Token 处理
-
-### 数据库相关
-- `sqlx` - MySQL 数据库驱动
-
-### 工具库
-- `uuid` - UUID 生成
-- `chrono` - 时间处理
-- `regex` - 正则表达式
-
-### 开发依赖
-- `proptest` - 属性测试
-- `mockito` - HTTP Mock
-- `testcontainers` - 容器化测试
-- `env_logger` - 日志输出
-
-## 🎯 使用场景
-
-### Web 应用后端
-```rust
-// 用户认证 + 缓存
-let user = get_user_from_db(user_id).await?;
-let token = TokenManager::generate(&claims, 3600)?;
-GlobalRedis::set(&format!("session:{}", token), &user_id.to_string(), Some(3600)).await?;
-```
-
-### API 服务
-```rust
-// 数据查询 + 缓存
-let cache_key = format!("api:users:{}", user_id);
-if let Some(cached) = GlobalRedis::get(&cache_key).await? {
-    return Ok(serde_json::from_str(&cached)?);
-}
-let user = GlobalDatabase::table("users")?.where_and("id", "=", user_id).select().await?;
-GlobalRedis::set(&cache_key, &serde_json::to_string(&user)?, Some(300)).await?;
-```
-
-### 任务队列
-```rust
-// 生产者
-GlobalRedis::lpush("tasks", &[task_json]).await?;
-
-// 消费者
-while let Some(task) = GlobalRedis::rpop("tasks").await? {
-    process_task(&task).await?;
-}
-```
-
-### 排行榜系统
-```rust
-// 更新分数
-GlobalRedis::zadd("leaderboard", &[(score, player_id)]).await?;
-
-// 获取排名
-let top10 = GlobalRedis::zrange("leaderboard", 0, 9).await?;
-```
-
-## 🔧 配置示例
-
-### 生产环境配置
-
-```rust
-// MySQL 配置
-let db_config = DatabaseConfig {
-    max_connections: 20,
-    connect_timeout: 10,
-    idle_timeout: 300,
-    enable_logging: false,
-};
-
-// Redis 配置
-let redis_config = RedisConfig::new(
-    10,     // max_connections
-    5,      // connect_timeout
-    300,    // idle_timeout
-    false   // enable_logging
-);
-```
-
-## ✅ 测试
+## 验证
 
 ```bash
-# 运行所有测试
+cargo fmt --check
 cargo test --lib -p yang-base
-
-# 运行特定模块测试
-cargo test --lib -p yang-base error::tests
-
-# 查看测试覆盖率
-cargo test --lib -p yang-base -- --nocapture
+cargo check -p yang-base --examples --all-features
+cargo clippy -p yang-base --all-targets --all-features -- -D warnings
 ```
 
-当前测试状态：✅ 286 个测试全部通过
+需要真实 MySQL/Redis 的 ignored 测试应在容器就绪后单线程运行。
 
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 许可证
+## 许可证
 
 MIT OR Apache-2.0
-
-## 🔗 相关项目
-
-- [yang-db](../yang-db) - YANG 数据库库
-- [yang-pcg](../yang-pcg) - YANG 配置生成器
-
-## 📝 更新日志
-
-### v0.1.3（待发布）
-- ✅ 模块主表/附属表汇总与启动期 additive schema 同步
-- ✅ MySQL 多实例 advisory lock、幂等续作与危险差异 fail-fast
-- ✅ `TableEntity` 整数主键 `auto_increment` 元数据
-
-### v0.1.2（已发布）
-- ✅ 插件管理系统
-- ✅ MySQL 数据库支持
-- ✅ Redis 缓存支持 ⭐ 新增
-- ✅ HTTP 客户端
-- ✅ JWT Token 管理
-- ✅ 错误处理系统
-- ✅ 表配置系统
-- ✅ Action 系统
-- ✅ transport-neutral `RequestMeta`、确定性 `ApiCatalog` 与可选 OpenAPI 3.1
-- ✅ 迁移 checksum/dry-run/并发治理与只读 schema 兼容验证
-- ✅ 可选 `admin-metadata`，不污染核心 dispatch
-- ✅ 完整文档和示例
-
-## 💡 最佳实践
-
-1. **初始化顺序**：先初始化数据库和 Redis，再初始化其他组件
-2. **错误处理**：使用 `?` 操作符传播错误，在顶层统一处理
-3. **缓存策略**：合理设置 TTL，避免缓存雪崩
-4. **连接池配置**：根据实际负载调整 `max_connections`
-5. **日志记录**：开发环境开启 `enable_logging`，生产环境关闭
-6. **安全性**：Token 密钥使用环境变量，不要硬编码
-7. **性能优化**：使用批量操作减少网络往返
-
-## 📞 联系方式
-
-如有问题或建议，请提交 Issue。

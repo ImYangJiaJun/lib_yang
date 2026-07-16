@@ -2,25 +2,10 @@
 
 `yang-base` 的过程宏（proc-macro）crate，提供类型化 Action 系统的派生基础设施。
 
-> 一般不需要直接依赖本 crate。`yang-base` 已通过 `pub use yang_base_derive::{Action, TableEntity};`
-> 重导出这两个派生宏，下游直接写 `yang_base::TableEntity` / `yang_base::Action` 即可。
+> 一般不需要直接依赖本 crate。`yang-base` 会重导出 `Action`，下游可直接写
+> `yang_base::Action`。
 
 ## 提供的派生宏
-
-### `#[derive(TableEntity)]`
-
-为 struct 生成表实体的全部类型化基础设施：
-
-- `<Name>Field` 枚举 —— 每个字段一个变体，impl `AsColumnName`，提供封闭的列名集合，杜绝任意字符串列名拼接。
-- `<Name>Where` 枚举 —— 按列类型生成 `WhereOp<T>`（字符串列用 `StringWhereOp`），impl `IntoSqlCondition`。
-- `impl TableEntity` —— 关联类型 `Pk` / `Field` / `WhereCond`，常量 `TABLE_NAME` / `PK_FIELD`，以及 `OnceLock` 缓存的运行时 `TableConfig`。
-
-编译期校验：必须恰好一个 `#[entity(primary_key)]`（多个或零个直接编译失败），仅支持具名字段 struct。
-
-属性：
-
-- 表级 `#[table(name = "...", display_name = "...", soft_delete = "...")]`
-- 字段级 `#[entity(primary_key, max_length = N, unique, required = bool, column = "...", skip)]`
 
 ### `#[derive(Action)]`
 
@@ -32,28 +17,38 @@
 
 依赖手写的 `TypedHandler`（声明 `Input` / `Output` 关联类型 + `handle` 业务逻辑）；本宏只补元数据与 trait 胶水。
 
-属性：`#[action(name = "...", display_name = "...", description = "...", public, permissions("a", "b"))]`，其中 `name` 必填。
+支持泛型 Action，并透传原 struct 的泛型参数与 `where` 约束。
+
+属性：
+
+- `name = "..."`：唯一标识，必填。
+- `display_name = "..."`：用户可见名称，默认同 `name`。
+- `description = "..."`：简介，默认空字符串。
+- `public`：公开 Action，默认关闭。
+- `permissions("a", "b")`：权限列表。
+- `permission_mode = "all" | "any"`：权限组合模式，默认 `all`。
 
 ## 使用示例
 
 ```rust
-use yang_base::{TableEntity, Action};
-use yang_base::action::TypedHandler;
+use yang_base::Action;
 
-#[derive(TableEntity, serde::Serialize, serde::Deserialize, schemars::JsonSchema, sqlx::FromRow)]
-#[table(name = "users")]
-struct User {
-    #[entity(primary_key)]
-    id: i64,
-    #[entity(max_length = 50, unique)]
-    name: String,
-}
+#[derive(Action)]
+#[action(
+    name = "ping",
+    display_name = "心跳",
+    description = "检查服务连通性",
+    public
+)]
+struct PingAction;
 ```
 
-内置六个 CRUD Action（add/put/del/get/select/table）即用本 crate 派生，
-通过 `ModuleRouter::table_typed::<User>()` 一行注册全套。
+`PingAction` 还需实现 `yang_base::action::TypedHandler`，声明 `Input`、`Output`
+并实现 `handle`。派生宏负责补齐元信息、JSON Schema 缓存和 `TypedAction` 实现。
+
+表结构不再由本 crate 从 Rust 实体推导；请使用 `yang-base` 的 schema-first
+`Table::new(...).fields([Field::...])` API 显式声明。
 
 ## 许可证
 
 MIT OR Apache-2.0
-

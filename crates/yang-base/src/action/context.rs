@@ -9,7 +9,7 @@
 //! - `GlobalTools`：全局工具集合（占位符，后续实现）
 
 use crate::error::BaseError;
-use crate::table::{TableConfig, TableQuery};
+use crate::table::{TableDefinition, TableQuery};
 #[cfg(feature = "token")]
 use crate::token::TokenManager;
 use serde::de::DeserializeOwned;
@@ -255,8 +255,8 @@ pub struct ActionContext {
     pub(crate) user: Option<User>,
     /// 全局工具
     pub tools: Arc<GlobalTools>,
-    /// 表配置（如果 action 关联表）
-    pub table_config: Option<Arc<TableConfig>>,
+    /// 不可变表定义（如果 Action 关联表）。
+    table_definition: Option<TableDefinition>,
     /// 本次派发的运行期标识，用于串联日志/span/metrics/审计。
     ///
     /// 由 `new`/`new_with_global_tools` 默认生成；`RequestIdMiddleware` 在洋葱链
@@ -281,7 +281,7 @@ impl ActionContext {
             request_meta: RequestMeta::default(),
             user: None,
             tools,
-            table_config: None,
+            table_definition: None,
             request_id: RequestId::generate(),
             module: None,
             cached_roles: Arc::from(Vec::new()),
@@ -312,7 +312,7 @@ impl ActionContext {
             request_meta: RequestMeta::default(),
             user: None,
             tools,
-            table_config: None,
+            table_definition: None,
             request_id: RequestId::generate(),
             module: None,
             cached_roles: Arc::from(Vec::new()),
@@ -360,10 +360,17 @@ impl ActionContext {
         self
     }
 
-    /// 设置表配置（链式调用）
-    pub fn with_table_config(mut self, config: Arc<TableConfig>) -> Self {
-        self.table_config = Some(config);
+    /// 设置表定义（链式调用）。
+    pub fn with_table_definition(mut self, definition: TableDefinition) -> Self {
+        self.table_definition = Some(definition);
         self
+    }
+
+    /// 返回当前 Action 绑定的表定义。
+    pub fn table_definition(&self) -> Result<&TableDefinition, BaseError> {
+        self.table_definition
+            .as_ref()
+            .ok_or(BaseError::TableDefinitionNotSet)
     }
 
     /// 把整个请求体反序列化为 `I`。新类型化 Action 系统的统一参数提取入口。
@@ -486,12 +493,12 @@ impl ActionContext {
     /// # 返回
     ///
     /// - `Ok(TableQuery)`: 查询构建器
-    /// - `Err(BaseError::TableConfigNotSet)`: 表配置未设置
+    /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
     pub fn table_query(&self) -> Result<TableQuery, BaseError> {
-        let config = self
-            .table_config
+        let definition = self
+            .table_definition
             .as_ref()
-            .ok_or(BaseError::TableConfigNotSet)?;
+            .ok_or(BaseError::TableDefinitionNotSet)?;
 
         // 将用户角色 HashSet 转为 Vec 再打包为 Arc（table_query 需要 Vec）
         let roles_set = self.user_roles_set();
@@ -512,9 +519,11 @@ impl ActionContext {
         // 注入可观测性：慢查询阈值（全局配置）+ 本次派发 request_id，
         // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
         let slow_threshold = crate::observability::ObservabilityConfig::get().slow_query_threshold;
-        Ok(TableQuery::new(config.clone(), user_roles, pool)
-            .with_slow_threshold(slow_threshold)
-            .with_request_id(self.request_id))
+        Ok(
+            TableQuery::new(definition.shared_config(), user_roles, pool)
+                .with_slow_threshold(slow_threshold)
+                .with_request_id(self.request_id),
+        )
     }
 
     /// 开启一个数据库事务（受保护层多步写的原子作用域）

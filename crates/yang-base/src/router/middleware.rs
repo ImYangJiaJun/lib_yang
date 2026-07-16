@@ -43,12 +43,35 @@ use crate::router::ModuleRouter;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// 中间件适用的 Action 范围。
+///
+/// 通用中间件使用默认的 [`AllActions`](Self::AllActions)，因此日志、限流、
+/// 请求追踪等横切逻辑会覆盖公开与受保护 Action。强制认证中间件应返回
+/// [`ProtectedActions`](Self::ProtectedActions)，公开 Action 会跳过它，而受保护
+/// Action 仍按原有洋葱链顺序执行。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MiddlewareScope {
+    /// 对公开与受保护 Action 都生效。
+    #[default]
+    AllActions,
+    /// 只对需要认证的受保护 Action 生效。
+    ProtectedActions,
+}
+
 /// 中间件 trait。
 ///
 /// 实现者在 `handle` 中拦截一次 Action 派发：可在调用 `next.run(ctx)` 前后
 /// 注入逻辑，或不调用 `next` 直接短路返回。
 #[async_trait]
 pub trait Middleware: Send + Sync + 'static {
+    /// 返回此中间件适用的 Action 范围。
+    ///
+    /// 默认覆盖全部 Action，以保持日志、限流、追踪和其他通用中间件的直观语义。
+    /// 强制认证中间件应显式返回 [`MiddlewareScope::ProtectedActions`]。
+    fn scope(&self) -> MiddlewareScope {
+        MiddlewareScope::AllActions
+    }
+
     /// 处理一次派发。
     ///
     /// # 参数
@@ -62,9 +85,9 @@ pub trait Middleware: Send + Sync + 'static {
 ///
 /// 持有尚未执行的中间件切片、对所属 [`ModuleRouter`] 的引用、以及链尾的目标
 /// [`DynAction`]。中间件链是**最外层**：当中间件耗尽时，链尾执行
-/// 「内置鉴权 + Action 派发」（[`ModuleRouter::authorize_and_dispatch`]），
-/// 因此日志、限流、自定义认证等中间件可以观察并干预**所有**请求，
-/// 包括会被内置鉴权拒绝的请求。
+/// 「内置鉴权 + Action 派发」（`ModuleRouter::authorize_and_dispatch`）。
+/// [`MiddlewareScope::AllActions`] 中间件可以观察并干预所有请求；
+/// [`MiddlewareScope::ProtectedActions`] 中间件则会在公开 Action 上被跳过。
 pub struct Next<'a> {
     /// 尚未执行的中间件
     pub(crate) remaining: &'a [Arc<dyn Middleware>],
@@ -72,29 +95,41 @@ pub struct Next<'a> {
     pub(crate) router: &'a ModuleRouter,
     /// 链尾要执行的目标 Action
     pub(crate) action: Arc<dyn DynAction>,
+    /// 目标 Action 是否公开；由 ModuleRouter 在进入中间件链时计算一次。
+    pub(crate) is_public: bool,
 }
 
 impl<'a> Next<'a> {
     /// 推进调用链。
     ///
-    /// 若还有中间件，取出第一个执行，并把其余部分包装成新的 `Next` 传入；
-    /// 否则执行链尾的「内置鉴权 + Action 派发」。
+    /// 依次跳过不适用于目标 Action 的中间件；遇到第一个适用中间件时执行它，
+    /// 并把其余部分包装成新的 `Next` 传入。全部耗尽后执行链尾的
+    /// 「内置鉴权 + Action 派发」。
     ///
     /// # 参数
     ///
     /// - `ctx`: 动作上下文（所有权转移）
     pub async fn run(self, ctx: ActionContext) -> Result<ApiResponse, BaseError> {
-        match self.remaining.split_first() {
-            Some((current, rest)) => {
+        let mut remaining = self.remaining;
+
+        while let Some((current, rest)) = remaining.split_first() {
+            remaining = rest;
+            let applies = match current.scope() {
+                MiddlewareScope::AllActions => true,
+                MiddlewareScope::ProtectedActions => !self.is_public,
+            };
+            if applies {
                 let next = Next {
                     remaining: rest,
                     router: self.router,
                     action: self.action,
+                    is_public: self.is_public,
                 };
-                current.handle(ctx, next).await
+                return current.handle(ctx, next).await;
             }
-            None => self.router.authorize_and_dispatch(self.action, ctx).await,
         }
+
+        self.router.authorize_and_dispatch(self.action, ctx).await
     }
 }
 

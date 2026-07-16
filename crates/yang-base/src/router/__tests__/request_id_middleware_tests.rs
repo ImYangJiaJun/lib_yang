@@ -78,6 +78,7 @@ async fn run_test(request: Request, default_rid: RequestId) -> Option<RequestId>
         remaining: &remaining,
         router: &router,
         action: Arc::new(MockAction),
+        is_public: false,
     };
 
     RequestIdMiddleware

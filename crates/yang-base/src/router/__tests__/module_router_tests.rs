@@ -6,8 +6,8 @@ use crate::action::meta::ActionMeta;
 use crate::action::{ActionContext, ApiResponse, GlobalTools, Request, User};
 use crate::action::{Permission, PermissionMode, TypedAction, TypedHandler};
 use crate::error::BaseError;
-use crate::router::{Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
-use crate::table::TableEntity;
+use crate::router::{Api, Middleware, ModuleRouter, Next, BUILTIN_ACTION_NAMES};
+use crate::table::{Field, Table, TableDefinition};
 use crate::token::TokenManager;
 use async_trait::async_trait;
 use jsonwebtoken::Algorithm;
@@ -17,25 +17,19 @@ use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 测试用类型化实体
+// 测试用表定义
 // ──────────────────────────────────────────────────────────────────────────────
 
-#[derive(
-    Debug,
-    Deserialize,
-    Serialize,
-    schemars::JsonSchema,
-    sqlx::FromRow,
-    yang_base_derive::TableEntity,
-)]
-#[table(name = "test_users", display_name = "测试用户表")]
-pub struct TestUser {
-    #[entity(primary_key)]
-    pub id: i64,
-    #[entity(max_length = 50, unique)]
-    pub username: String,
-    #[entity(max_length = 100)]
-    pub email: Option<String>,
+fn test_user_table() -> TableDefinition {
+    Table::new("test_users")
+        .label("测试用户表")
+        .fields([
+            Field::bigint("id").required().primary_key(),
+            Field::string("username", 50).required().unique(),
+            Field::string("email", 100).nullable(),
+        ])
+        .build()
+        .expect("test_users 表定义应有效")
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -171,11 +165,11 @@ fn create_test_tools() -> Arc<GlobalTools> {
     Arc::new(GlobalTools::new(token_manager))
 }
 
-/// 构造一个注册了全部内置 Action 的路由器（带 table_config）。
+/// 构造一个绑定表定义并注册全部内置 Action 的路由器。
 fn router_with_builtins() -> ModuleRouter {
     ModuleRouter::new("user", "用户管理")
-        .with_table_config(Arc::new(TestUser::table_config().clone()))
-        .table_typed::<TestUser>()
+        .table(test_user_table())
+        .crud()
         .expect("注册内置 Actions 应该成功")
 }
 
@@ -189,21 +183,23 @@ fn test_module_router_new() {
 
     assert_eq!(router.module_name(), "user");
     assert_eq!(router.display_name(), "用户管理");
-    assert!(router.get_table_config().is_none());
+    assert!(router.table_definition().is_none());
     assert_eq!(router.action_names().len(), 0);
 }
 
 #[test]
-fn test_module_router_with_table_config() {
-    let router = ModuleRouter::new("user", "用户管理")
-        .with_table_config(Arc::new(TestUser::table_config().clone()));
+fn test_module_router_with_table_definition() {
+    let router = ModuleRouter::new("user", "用户管理").table(test_user_table());
 
-    assert!(router.get_table_config().is_some());
-    assert_eq!(router.get_table_config().unwrap().table_name, "test_users");
+    assert!(router.table_definition().is_some());
+    assert_eq!(
+        router.table_definition().expect("表定义应存在").name(),
+        "test_users"
+    );
 }
 
 #[test]
-fn test_table_typed_registers_six_actions() {
+fn test_crud_registers_six_actions() {
     let router = router_with_builtins();
 
     let action_names = router.action_names();
@@ -223,17 +219,13 @@ fn test_builtin_action_names_consistency() {
     assert_eq!(router.action_names().len(), BUILTIN_ACTION_NAMES.len());
 }
 
-/// 未设置 table_config 时 table_typed 返回 Err 而非 panic。
+/// 未设置表定义时 crud 返回 Err 而非 panic。
 #[test]
-fn test_table_typed_without_table_config() {
+fn test_crud_without_table_definition() {
     // 验证需求: 2.1, 2.2
-    let result = ModuleRouter::new("user", "用户管理").table_typed::<TestUser>();
+    let result = ModuleRouter::new("user", "用户管理").crud();
 
-    assert!(result.is_err());
-    match result.err().unwrap() {
-        BaseError::TableConfigNotSet => {}
-        e => panic!("期望 TableConfigNotSet 错误，实际得到: {:?}", e),
-    }
+    assert!(matches!(result, Err(BaseError::TableDefinitionNotSet)));
 }
 
 #[test]
@@ -259,10 +251,10 @@ fn test_default_permissions_rejects_duplicate_permission_name() {
 }
 
 #[test]
-fn test_register_action_rejects_duplicate_action_name() {
+fn test_api_rejects_duplicate_action_name() {
     let router = router_with_builtins();
 
-    let result = router.register_action(TableAction::<TestUser>::new());
+    let result = router.api(Api::get("/other/schema", TableAction::new()));
 
     assert!(matches!(
         result,
@@ -271,8 +263,8 @@ fn test_register_action_rejects_duplicate_action_name() {
 }
 
 #[test]
-fn test_register_action_rejects_blank_action_name() {
-    let result = ModuleRouter::new("user", "用户管理").register_action(BlankNameAction);
+fn test_api_rejects_blank_action_name() {
+    let result = ModuleRouter::new("user", "用户管理").api(Api::post("/blank", BlankNameAction));
 
     assert!(matches!(
         result,
@@ -281,8 +273,9 @@ fn test_register_action_rejects_blank_action_name() {
 }
 
 #[test]
-fn test_register_action_rejects_blank_permission_name() {
-    let result = ModuleRouter::new("user", "用户管理").register_action(BlankPermissionAction);
+fn test_api_rejects_blank_permission_name() {
+    let result = ModuleRouter::new("user", "用户管理")
+        .api(Api::post("/blank-permission", BlankPermissionAction));
 
     assert!(matches!(
         result,
@@ -311,7 +304,7 @@ async fn test_dispatch_action_not_found() {
 #[tokio::test]
 async fn test_dispatch_unauthorized() {
     let router = router_with_builtins();
-    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let request = Request::new(json!({ "username": "alice" }));
     let context = ActionContext::new(request, create_test_tools());
 
     // add 需要认证，但未提供用户信息 → Unauthorized（在触达数据库前返回）
@@ -334,7 +327,7 @@ async fn test_dispatch_permission_denied() {
         roles: HashSet::from(["user".to_string()]),
         permissions: HashSet::from(["user:read".to_string()]),
     };
-    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let request = Request::new(json!({ "username": "alice" }));
     let context = ActionContext::new(request, create_test_tools()).with_user(user);
 
     // 用户缺少 admin:access → PermissionDenied（在触达数据库前返回）
@@ -350,7 +343,7 @@ async fn test_dispatch_with_sufficient_permissions_passes_authz() {
         .expect("有效默认权限应设置成功");
 
     let user = create_test_user();
-    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let request = Request::new(json!({ "username": "alice" }));
     let context = ActionContext::new(request, create_test_tools()).with_user(user);
 
     // 鉴权通过后会因无数据库连接而失败，但绝不应是鉴权类错误
@@ -403,7 +396,7 @@ async fn test_middleware_short_circuit() {
         payload: "intercepted".to_string(),
     });
 
-    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let request = Request::new(json!({ "username": "alice" }));
     let context = ActionContext::new(request, create_test_tools());
 
     // 短路中间件在鉴权后立即返回，不触达 add 的数据库逻辑，也不报 Unauthorized
@@ -429,7 +422,7 @@ async fn test_middleware_onion_order() {
             payload: "end".to_string(),
         });
 
-    let request = Request::new(json!({ "data": { "username": "alice" } }));
+    let request = Request::new(json!({ "username": "alice" }));
     let context = ActionContext::new(request, create_test_tools());
 
     let result = router.dispatch("add", context).await;

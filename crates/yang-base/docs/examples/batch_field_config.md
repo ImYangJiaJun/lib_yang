@@ -1,141 +1,102 @@
-# 批量配置表字段功能
+# 批量声明表字段
 
-## 概述
+本文对应 `yang-base` 0.2.0。应用通过 `Table` 和 `Field` 声明 schema，`Table::build()` 生成不可变的 `TableDefinition`。
 
-为 `TableConfig` 添加了批量配置字段的便捷方法，避免重复调用 `.field()` 方法，使代码更简洁易读。
+## 使用数组声明固定字段
 
-## 新增方法
-
-### 1. `fields(Vec<FieldConfig>)` - 批量添加字段
-
-从 Vec 批量添加字段配置。
-
-**示例：**
+字段集合固定时，直接把数组传给 `Table::fields`：
 
 ```rust
-let table = TableConfig::new("users")
-    .fields(vec![
-        FieldConfig::new("id", FieldType::BigInt).required(true),
-        FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true),
-        FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true),
-    ]);
+use yang_base::table::{Field, Table, TableDefinition};
+use yang_base::BaseError;
+
+fn users_table() -> Result<TableDefinition, BaseError> {
+    Table::new("users")
+        .label("用户表")
+        .fields([
+            Field::id("id").label("ID"),
+            Field::string("username", 64)
+                .label("用户名")
+                .required()
+                .length(3..=64)
+                .unique(),
+            Field::string("email", 128)
+                .label("邮箱")
+                .required()
+                .email()
+                .unique(),
+            Field::boolean("active").default(true),
+            Field::created_at("created_at"),
+            Field::updated_at("updated_at"),
+        ])
+        .build()
+}
 ```
 
-### 2. `fields_from_iter<I>(I)` - 从迭代器添加字段
+`build()` 是集中校验边界，会检查字段名、主键、重复字段、默认值、索引引用、权限和生成列组合。
 
-从任何实现了 `IntoIterator<Item = FieldConfig>` 的类型批量添加字段。
+## 使用 Vec 组装字段
 
-**示例：**
+字段来自配置或功能开关时，先构造 `Vec<Field>`，再一次性交给 `fields`：
 
 ```rust
-let field_configs = vec![
-    FieldConfig::new("id", FieldType::BigInt),
-    FieldConfig::new("username", FieldType::String { max_length: 50 }),
-];
+use yang_base::table::{Field, Table, TableDefinition};
+use yang_base::BaseError;
 
-let table = TableConfig::new("users")
-    .fields_from_iter(field_configs.into_iter());
+fn audit_table(include_payload: bool) -> Result<TableDefinition, BaseError> {
+    let mut fields = vec![
+        Field::id("id"),
+        Field::bigint("user_id").required().index(),
+        Field::string("event", 64).required(),
+        Field::created_at("created_at"),
+    ];
+
+    if include_payload {
+        fields.push(Field::json("payload"));
+    }
+
+    Table::new("audit_logs")
+        .label("审计日志")
+        .fields(fields)
+        .build()
+}
 ```
 
-## 使用场景对比
+## 从迭代器生成重复字段
 
-### 传统方式（不推荐）
+`fields` 接受任何产出 `Field` 的迭代器，因此可以先用迭代器生成字段：
 
 ```rust
-let table = TableConfig::new("users")
-    .field(FieldConfig::new("id", FieldType::BigInt).required(true))
-    .field(FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true))
-    .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true))
-    .field(FieldConfig::new("age", FieldType::Integer))
-    .field(FieldConfig::new("status", FieldType::Enum {
-        values: vec!["active".to_string(), "inactive".to_string()],
-    }));
+use yang_base::table::{Field, Table, TableDefinition};
+use yang_base::BaseError;
+
+fn metrics_table(names: &[&str]) -> Result<TableDefinition, BaseError> {
+    let mut fields = vec![Field::id("id")];
+    fields.extend(
+        names
+            .iter()
+            .map(|name| Field::double(*name).default(0.0)),
+    );
+
+    Table::new("metrics").fields(fields).build()
+}
 ```
 
-**缺点：**
-- 代码冗余，每个字段都要写 `.field(`
-- 视觉上不够清晰
-- 难以快速浏览字段列表
+不要绕过 `build()` 保存可变的中间字段配置。运行时、内置 CRUD、schema 同步和 JSON Schema 都应共享同一个 `TableDefinition`。
 
-### 批量方式（推荐）
+## 注册到模块
+
+启用 `mysql` 后，把定义绑定到模块并原子注册标准 CRUD：
 
 ```rust
-let table = TableConfig::new("users")
-    .fields(vec![
-        FieldConfig::new("id", FieldType::BigInt).required(true),
-        FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true),
-        FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true),
-        FieldConfig::new("age", FieldType::Integer),
-        FieldConfig::new("status", FieldType::Enum {
-            values: vec!["active".to_string(), "inactive".to_string()],
-        }),
-    ]);
+use yang_base::router::ModuleRouter;
+use yang_base::BaseError;
+
+fn user_module() -> Result<ModuleRouter, BaseError> {
+    ModuleRouter::new("user", "用户管理")
+        .table(users_table()?)
+        .crud()
+}
 ```
 
-**优点：**
-- 代码简洁，减少重复
-- 字段列表一目了然
-- 更符合 Rust 的惯用法
-
-### 混合方式（灵活）
-
-先批量添加基本字段，再单独添加特殊字段：
-
-```rust
-let table = TableConfig::new("users")
-    .fields(vec![
-        FieldConfig::new("id", FieldType::BigInt).required(true),
-        FieldConfig::new("username", FieldType::String { max_length: 50 }).required(true),
-        FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true),
-    ])
-    // 单独添加复杂的 JSON 字段
-    .field(FieldConfig::new("metadata", FieldType::Json)
-        .display_name("元数据"));
-```
-
-## 完整示例
-
-查看 `examples/batch_field_config.rs` 获取完整的使用示例。
-
-运行示例：
-
-```bash
-cargo run --example batch_field_config -p yang-base
-```
-
-## 代码变更
-
-### 修改的文件
-
-1. **`src/table/table_config.rs`**
-   - 添加 `fields()` 方法
-   - 添加 `fields_from_iter()` 方法
-
-2. **`TABLE_CONFIG_GUIDE.md`**
-   - 更新文档，展示批量配置的用法
-   - 添加最佳实践建议
-   - 修复验证器示例（`Range` → `Min` + `Max`）
-
-3. **`examples/batch_field_config.rs`**
-   - 新增示例文件，展示四种配置方式
-
-## 测试
-
-所有测试通过：
-
-```bash
-✅ cargo check -p yang-base
-✅ cargo clippy -p yang-base -- -D warnings
-✅ cargo fmt -p yang-base --check
-✅ cargo run --example batch_field_config -p yang-base
-```
-
-## 最佳实践
-
-1. **优先使用批量配置**：当有多个字段时，使用 `fields()` 方法
-2. **混合使用**：基本字段批量添加，特殊字段单独添加
-3. **保持一致性**：在同一个项目中保持统一的配置风格
-
-## 向后兼容性
-
-✅ 完全向后兼容，原有的 `.field()` 方法仍然可用。
+进一步配置字段关系、权限、索引和默认排序，参见[表定义指南](../guides/table_config.md)。

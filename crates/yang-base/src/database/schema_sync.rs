@@ -1,4 +1,4 @@
-//! 基于模块 `TableConfig` 的 MySQL 启动期 additive schema 同步。
+//! 基于模块 [`TableDefinition`] 的 MySQL 启动期 additive schema 同步。
 //!
 //! 同步器只创建缺失表、字段、主键和索引；不会删除列/索引，也不会自动修改已有
 //! 字段类型或 NULL 约束。多实例同时启动时使用同一 MySQL 会话持有 advisory lock，
@@ -7,7 +7,9 @@
 use super::DatabaseInitializer;
 use crate::error::BaseError;
 use crate::router::AppRouter;
-use crate::table::{FieldConfig, FieldType, SchemaColumn, SchemaIssueKind, TableConfig};
+use crate::table::{
+    FieldConfig, FieldType, SchemaColumn, SchemaIssueKind, TableConfig, TableDefinition,
+};
 use sqlx::mysql::MySqlConnection;
 use sqlx::{Executor, FromRow};
 use std::collections::BTreeMap;
@@ -128,7 +130,7 @@ struct DesiredIndex {
 }
 
 impl DatabaseInitializer {
-    /// 根据 `AppRouter` 中各模块声明的表配置同步 MySQL schema。
+    /// 根据 `AppRouter` 中各模块声明的表定义同步 MySQL schema。
     ///
     /// 该入口适合在监听 HTTP 端口前调用。同步策略固定为 additive：只创建缺失
     /// 对象；任何已有字段类型、NULL、自增或主键冲突都会失败并中止启动。
@@ -136,17 +138,17 @@ impl DatabaseInitializer {
         &self,
         app_router: &AppRouter,
     ) -> Result<SchemaSyncReport, BaseError> {
-        let tables = app_router.table_configs();
-        self.sync_table_configs(&tables).await
+        let tables = app_router.table_definitions();
+        self.sync_table_definitions(&tables).await
     }
 
-    /// 同步一组表配置，使用单个数据库级 advisory lock 串行化多实例启动。
-    pub async fn sync_table_configs(
+    /// 同步一组不可变表定义，使用单个数据库级 advisory lock 串行化多实例启动。
+    pub async fn sync_table_definitions(
         &self,
-        tables: &[&TableConfig],
+        definitions: &[&TableDefinition],
     ) -> Result<SchemaSyncReport, BaseError> {
-        let tables = normalize_tables(tables)?;
-        if tables.is_empty() {
+        let definitions = normalize_definitions(definitions)?;
+        if definitions.is_empty() {
             return Ok(SchemaSyncReport::default());
         }
 
@@ -176,7 +178,7 @@ impl DatabaseInitializer {
             )));
         }
 
-        let result = sync_locked(&mut connection, &tables).await;
+        let result = sync_locked(&mut connection, &definitions).await;
         let release_result: Result<Option<i64>, sqlx::Error> =
             sqlx::query_scalar("SELECT RELEASE_LOCK(?)")
                 .bind(&lock_name)
@@ -196,24 +198,24 @@ impl DatabaseInitializer {
 
 async fn sync_locked(
     connection: &mut MySqlConnection,
-    tables: &[&TableConfig],
+    definitions: &[&TableDefinition],
 ) -> Result<SchemaSyncReport, BaseError> {
     let mut report = SchemaSyncReport {
-        tables: tables
+        tables: definitions
             .iter()
-            .map(|table| table.table_name.clone())
+            .map(|definition| definition.name().to_string())
             .collect(),
         changes: Vec::new(),
     };
 
-    let mut plans = Vec::with_capacity(tables.len());
-    for table in tables {
-        let existing = load_existing_schema(connection, table).await?;
-        let plan = plan_table_sync(table, &existing)?;
+    let mut plans = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let existing = load_existing_schema(connection, definition).await?;
+        let plan = plan_table_sync(definition, &existing)?;
         if plan.statements.len() != plan.changes.len() {
             return Err(BaseError::DatabaseInitFailed(format!(
                 "表 {} 的 schema 计划内部不一致",
-                table.table_name
+                definition.name()
             )));
         }
         plans.push(plan);
@@ -240,8 +242,9 @@ async fn sync_locked(
 
 async fn load_existing_schema(
     connection: &mut MySqlConnection,
-    table: &TableConfig,
+    definition: &TableDefinition,
 ) -> Result<ExistingTableSchema, BaseError> {
+    let table = definition.config();
     #[derive(FromRow)]
     struct ColumnRow {
         column_name: String,
@@ -249,6 +252,7 @@ async fn load_existing_schema(
         column_type: String,
         is_nullable: String,
         character_maximum_length: Option<i64>,
+        column_default: Option<String>,
         extra: String,
     }
 
@@ -271,7 +275,7 @@ async fn load_existing_schema(
     }
 
     let column_rows: Vec<ColumnRow> = sqlx::query_as(
-        "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION",
+        "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(COLUMN_DEFAULT AS CHAR) AS column_default, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION",
     )
     .bind(&table.table_name)
     .fetch_all(&mut *connection)
@@ -287,6 +291,7 @@ async fn load_existing_schema(
                 row.is_nullable.eq_ignore_ascii_case("YES"),
                 row.character_maximum_length
                     .and_then(|length| u64::try_from(length).ok()),
+                row.column_default,
             )
             .with_auto_increment(
                 row.extra
@@ -334,9 +339,10 @@ async fn load_existing_schema(
 }
 
 pub(super) fn plan_table_sync(
-    table: &TableConfig,
+    definition: &TableDefinition,
     existing: &ExistingTableSchema,
 ) -> Result<TableSyncPlan, BaseError> {
+    let table = definition.config();
     validate_table_config(table)?;
     if !existing.exists {
         return Ok(TableSyncPlan {
@@ -474,9 +480,12 @@ pub(super) fn plan_table_sync(
     })
 }
 
-fn normalize_tables<'a>(tables: &'a [&'a TableConfig]) -> Result<Vec<&'a TableConfig>, BaseError> {
-    let mut normalized: BTreeMap<&str, (&TableConfig, String)> = BTreeMap::new();
-    for table in tables {
+fn normalize_definitions<'a>(
+    definitions: &'a [&'a TableDefinition],
+) -> Result<Vec<&'a TableDefinition>, BaseError> {
+    let mut normalized: BTreeMap<&str, (&TableDefinition, String)> = BTreeMap::new();
+    for definition in definitions {
+        let table = definition.config();
         validate_table_config(table)?;
         let signature = render_create_table(table)?;
         if let Some((_, existing_signature)) = normalized.get(table.table_name.as_str()) {
@@ -488,9 +497,12 @@ fn normalize_tables<'a>(tables: &'a [&'a TableConfig]) -> Result<Vec<&'a TableCo
             }
             continue;
         }
-        normalized.insert(table.table_name.as_str(), (*table, signature));
+        normalized.insert(table.table_name.as_str(), (*definition, signature));
     }
-    Ok(normalized.into_values().map(|(table, _)| table).collect())
+    Ok(normalized
+        .into_values()
+        .map(|(definition, _)| definition)
+        .collect())
 }
 
 fn validate_table_config(table: &TableConfig) -> Result<(), BaseError> {
@@ -611,12 +623,6 @@ fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
                     .collect::<Vec<_>>()
                     .join(", ")
             )
-        }
-        FieldType::ForeignKey { .. } => {
-            return Err(BaseError::ConfigError(format!(
-                "字段 {} 的 ForeignKey 未携带本地列类型，不能自动生成 DDL",
-                field.name
-            )))
         }
     };
 

@@ -27,10 +27,15 @@ fn action(name: &str, method: &str, is_public: bool) -> ActionDescriptor {
         is_public,
         input_schema: schema_for!(SearchInput),
         output_schema: schema_for!(SearchOutput),
-        route: RouteDescriptor::new(method, "/users", format!("users.{name}"))
-            .expect("route 应合法")
-            .with_tags(vec!["users".to_string()])
-            .expect("tag 应合法"),
+        route: RouteDescriptor {
+            method: method.to_string(),
+            path: "/users".to_string(),
+            operation_id: format!("users.{name}"),
+            request_content_types: vec!["application/json".to_string()],
+            response_content_types: vec!["application/json".to_string()],
+            success_status: 200,
+            tags: vec!["users".to_string()],
+        },
     }
 }
 

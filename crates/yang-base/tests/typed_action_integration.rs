@@ -1,6 +1,6 @@
-//! 类型化 Action 端到端 CRUD 集成测试（H-1 验收）
+//! Schema-first Action 端到端 CRUD 集成测试。
 //!
-//! 用 testcontainers 启动真实 MySQL，通过 `ModuleRouter::table_typed::<T>()` 注册
+//! 用 testcontainers 启动真实 MySQL，通过 `ModuleRouter::table(...).crud()` 注册
 //! 全套内置 Action，再经 `router.dispatch(...)` 跑完整 add → get → put → select →
 //! del → table 流程。这条路径依赖 `ActionContext::table_query()` 从 `GlobalDatabase`
 //! 注入连接池——本测试同时验证该注入链路。
@@ -12,25 +12,25 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::action::{ActionContext, GlobalTools, Request, TokenAuthMiddleware, User};
 use yang_base::database::{GlobalDatabase, GlobalRedis};
 use yang_base::router::ModuleRouter;
+use yang_base::table::{Field, Record, Table, TableDefinition};
 use yang_base::token::TokenManager;
-use yang_base_derive::TableEntity;
 use yang_db::{redis::RedisConfig, Database, DatabaseConfig};
 
-/// 端到端测试实体。
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema, sqlx::FromRow, TableEntity)]
-#[table(name = "typed_test_users")]
-struct U {
-    #[entity(primary_key)]
-    id: i64,
-    #[entity(max_length = 50)]
-    username: String,
-    age: i32,
+/// 构建端到端测试使用的运行期表定义。
+fn test_table() -> TableDefinition {
+    Table::new("typed_test_users")
+        .fields([
+            Field::id("id"),
+            Field::string("username", 50).required(),
+            Field::integer("age").required(),
+        ])
+        .build()
+        .expect("测试表定义应有效")
 }
 
 /// 创建测试用 GlobalTools（对称密钥 TokenManager）。
@@ -139,31 +139,35 @@ async fn full_crud_cycle() {
         .middleware(TokenAuthMiddleware::new(|claims| {
             User::new(1, claims.sub.clone())
         }))
-        .with_table_config(Arc::new(
-            <U as yang_base::table::TableEntity>::table_config().clone(),
-        ))
-        .table_typed::<U>()
-        .expect("table_typed 注册应成功");
+        .table(test_table())
+        .crud()
+        .expect("schema-first CRUD 注册应成功");
 
     // 1. add
     let ctx = logged_in_ctx(
-        serde_json::json!({"id": 1, "username": "alice", "age": 30}),
+        serde_json::json!({"username": "alice", "age": 30}),
         tools.clone(),
     );
     let r = router.dispatch("add", ctx).await.expect("add 应成功");
     assert_eq!(r.code, 0, "add code");
     assert_eq!(r.data.as_ref().unwrap()["affected"], 1);
+    let inserted_id = r.data.as_ref().unwrap()["id"]
+        .as_u64()
+        .expect("add 应返回自增主键");
 
     // 2. get
-    let ctx = logged_in_ctx(serde_json::json!({"id": 1}), tools.clone());
+    let ctx = logged_in_ctx(serde_json::json!({"id": inserted_id}), tools.clone());
     let r = router.dispatch("get", ctx).await.expect("get 应成功");
-    let user: U = serde_json::from_value(r.data.unwrap()).unwrap();
-    assert_eq!(user.username, "alice");
-    assert_eq!(user.age, 30);
+    let user: Record = serde_json::from_value(r.data.unwrap()).expect("get 应返回 Record 对象");
+    assert_eq!(
+        user.require::<String>("username").expect("username 应存在"),
+        "alice"
+    );
+    assert_eq!(user.require::<i32>("age").expect("age 应存在"), 30);
 
-    // 3. put（data 为 [字段, 值] 对列表）
+    // 3. put（data 为动态 Record 对象）
     let ctx = logged_in_ctx(
-        serde_json::json!({"id": 1, "data": [["age", 31]]}),
+        serde_json::json!({"id": inserted_id, "data": {"age": 31}}),
         tools.clone(),
     );
     let r = router.dispatch("put", ctx).await.expect("put 应成功");
@@ -173,24 +177,26 @@ async fn full_crud_cycle() {
     let ctx = logged_in_ctx(
         serde_json::json!({
             "page": 1, "page_size": 10,
-            "where": {"field": "username", "cond": {"op": "like", "value": "%alice%"}},
+            "where": {"type": "like", "field": "username", "pattern": "%alice%"},
             "count_total": true
         }),
         tools.clone(),
     );
     let r = router.dispatch("select", ctx).await.expect("select 应成功");
     let data = r.data.unwrap();
-    assert_eq!(data["items"].as_array().unwrap().len(), 1);
-    assert_eq!(data["items"][0]["age"], 31);
+    let items: Vec<Record> =
+        serde_json::from_value(data["items"].clone()).expect("items 应为 Record 数组");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].require::<i32>("age").expect("age 应存在"), 31);
     assert_eq!(data["total"], 1);
 
     // 4b. select（C2a OR 布尔组：username like %alice% OR age > 1000）
     let ctx = logged_in_ctx(
         serde_json::json!({
             "page": 1, "page_size": 10,
-            "where": {"or": [
-                {"field": "username", "cond": {"op": "like", "value": "%alice%"}},
-                {"field": "age", "cond": {"op": "gt", "value": 1000}}
+            "where": {"type": "or", "conditions": [
+                {"type": "like", "field": "username", "pattern": "%alice%"},
+                {"type": "gt", "field": "age", "value": 1000}
             ]},
             "count_total": true
         }),
@@ -209,11 +215,11 @@ async fn full_crud_cycle() {
     assert_eq!(data["total"], 1);
 
     // 5. del
-    let ctx = logged_in_ctx(serde_json::json!({"id": 1}), tools.clone());
+    let ctx = logged_in_ctx(serde_json::json!({"id": inserted_id}), tools.clone());
     let r = router.dispatch("del", ctx).await.expect("del 应成功");
     assert_eq!(r.data.as_ref().unwrap()["affected"], 1);
 
-    // 6. table（公开 Action，返回元信息）
+    // 6. table（返回运行期表定义元信息）
     let ctx = logged_in_ctx(serde_json::json!({}), tools.clone());
     let r = router.dispatch("table", ctx).await.expect("table 应成功");
     let schema = r.data.unwrap();

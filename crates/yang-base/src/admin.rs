@@ -33,7 +33,7 @@ pub enum AdminTarget {
         /// Action 名。
         action: String,
     },
-    /// 模块内的 TableConfig 稳定名称。
+    /// 模块内的 [`crate::table::TableDefinition`] 稳定名称。
     Table {
         /// 模块名。
         module: String,

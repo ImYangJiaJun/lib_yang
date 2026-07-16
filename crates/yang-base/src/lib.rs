@@ -90,4 +90,4 @@ pub use plugin::{Plugin, PluginManager, PluginManagerBuilder, PluginRegistry};
 pub use error::{BaseError, ErrorCategory, Result};
 
 // 重新导出派生宏
-pub use yang_base_derive::{Action, TableEntity};
+pub use yang_base_derive::Action;

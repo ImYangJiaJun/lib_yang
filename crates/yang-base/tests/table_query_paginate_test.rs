@@ -15,24 +15,14 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::table::{
-    FieldConfig, FieldType, PaginatedResult, SortOrder, TableConfig, TableQuery,
+    Field, PaginatedResult, Record, SortOrder, Table, TableDefinition, TableQuery,
 };
 use yang_db::Database;
-
-/// 测试用户结构
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, PartialEq)]
-struct TestUser {
-    id: i64,
-    name: String,
-    email: String,
-    age: i32,
-}
 
 /// 创建 MySQL 测试容器并返回数据库 URL
 async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
@@ -107,25 +97,27 @@ async fn setup_test_data(db: &Database) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// 创建测试用的表配置
-fn create_test_table_config() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("test_users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "name",
-                FieldType::String { max_length: 50 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "email",
-                FieldType::String { max_length: 100 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer))
-            .expect("有效字段配置应注册成功"),
-    )
+/// 创建测试用的表定义。
+fn create_test_table_definition() -> TableDefinition {
+    Table::new("test_users")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 50).required(),
+            Field::string("email", 100).required(),
+            Field::integer("age").required(),
+        ])
+        .build()
+        .expect("test_users 表定义应有效")
+}
+
+fn bound_query(
+    definition: TableDefinition,
+    roles: Arc<[String]>,
+    pool: Option<Arc<sqlx::MySqlPool>>,
+) -> TableQuery {
+    definition
+        .bind(pool.expect("测试查询必须绑定连接池"))
+        .query(roles.iter().cloned())
 }
 
 /// 测试基本分页查询
@@ -152,16 +144,17 @@ async fn test_paginate_basic() {
     setup_test_data(&db).await.unwrap();
 
     // 创建表配置和查询
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：第 1 页，每页 10 条
-    let result: PaginatedResult<TestUser> = query.page(1, 10).unwrap().paginate().await.unwrap();
+    let result: PaginatedResult<Record> =
+        query.page(1, 10).unwrap().paginate_records().await.unwrap();
 
     // 验证结果
     assert_eq!(result.total, 50, "总记录数应该是 50");
@@ -194,16 +187,17 @@ async fn test_paginate_second_page() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：第 2 页，每页 10 条
-    let result: PaginatedResult<TestUser> = query.page(2, 10).unwrap().paginate().await.unwrap();
+    let result: PaginatedResult<Record> =
+        query.page(2, 10).unwrap().paginate_records().await.unwrap();
 
     // 验证结果
     assert_eq!(result.total, 50);
@@ -236,16 +230,17 @@ async fn test_paginate_last_page() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：第 5 页（最后一页），每页 10 条
-    let result: PaginatedResult<TestUser> = query.page(5, 10).unwrap().paginate().await.unwrap();
+    let result: PaginatedResult<Record> =
+        query.page(5, 10).unwrap().paginate_records().await.unwrap();
 
     // 验证结果
     assert_eq!(result.total, 50);
@@ -292,16 +287,17 @@ async fn test_paginate_empty_result() {
     .await
     .unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询
-    let result: PaginatedResult<TestUser> = query.page(1, 10).unwrap().paginate().await.unwrap();
+    let result: PaginatedResult<Record> =
+        query.page(1, 10).unwrap().paginate_records().await.unwrap();
 
     // 验证结果
     assert_eq!(result.total, 0, "总记录数应该是 0");
@@ -334,21 +330,21 @@ async fn test_paginate_with_where_condition() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：age = 25
-    let result: PaginatedResult<TestUser> = query
+    let result: PaginatedResult<Record> = query
         .where_eq("age", serde_json::json!(25))
         .unwrap()
         .page(1, 10)
         .unwrap()
-        .paginate()
+        .paginate_records()
         .await
         .unwrap();
 
@@ -360,7 +356,11 @@ async fn test_paginate_with_where_condition() {
 
     // 验证所有返回的记录都满足条件
     for user in &result.data {
-        assert_eq!(user.age, 25, "所有记录的 age 应该等于 25");
+        assert_eq!(
+            user.require::<i64>("age").unwrap(),
+            25,
+            "所有记录的 age 应该等于 25"
+        );
     }
 }
 
@@ -385,21 +385,21 @@ async fn test_paginate_with_order_by() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：按 id 降序排列
-    let result: PaginatedResult<TestUser> = query
+    let result: PaginatedResult<Record> = query
         .order_by("id", SortOrder::Desc)
         .unwrap()
         .page(1, 10)
         .unwrap()
-        .paginate()
+        .paginate_records()
         .await
         .unwrap();
 
@@ -408,13 +408,22 @@ async fn test_paginate_with_order_by() {
     assert_eq!(result.data.len(), 10);
 
     // 验证排序：第一条记录的 id 应该是最大的
-    assert_eq!(result.data[0].id, 50, "第一条记录的 id 应该是 50");
-    assert_eq!(result.data[9].id, 41, "第十条记录的 id 应该是 41");
+    assert_eq!(
+        result.data[0].require::<i64>("id").unwrap(),
+        50,
+        "第一条记录的 id 应该是 50"
+    );
+    assert_eq!(
+        result.data[9].require::<i64>("id").unwrap(),
+        41,
+        "第十条记录的 id 应该是 41"
+    );
 
     // 验证降序排列
     for i in 0..result.data.len() - 1 {
         assert!(
-            result.data[i].id > result.data[i + 1].id,
+            result.data[i].require::<i64>("id").unwrap()
+                > result.data[i + 1].require::<i64>("id").unwrap(),
             "记录应该按 id 降序排列"
         );
     }
@@ -441,21 +450,21 @@ async fn test_paginate_with_field_selection() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：选择所有字段
-    let result: PaginatedResult<TestUser> = query
+    let result: PaginatedResult<Record> = query
         .select_fields(&["id", "name", "email", "age"])
         .unwrap()
         .page(1, 10)
         .unwrap()
-        .paginate()
+        .paginate_records()
         .await
         .unwrap();
 
@@ -465,8 +474,11 @@ async fn test_paginate_with_field_selection() {
 
     // 验证字段值存在
     for user in &result.data {
-        assert!(user.id > 0, "id 应该大于 0");
-        assert!(!user.name.is_empty(), "name 不应该为空");
+        assert!(user.require::<i64>("id").unwrap() > 0, "id 应该大于 0");
+        assert!(
+            !user.require::<String>("name").unwrap().is_empty(),
+            "name 不应该为空"
+        );
     }
 }
 
@@ -491,16 +503,16 @@ async fn test_paginate_with_default_params() {
     let db = Database::connect(&db_url).await.unwrap();
     setup_test_data(&db).await.unwrap();
 
-    let table_config = create_test_table_config();
+    let table_config = create_test_table_definition();
 
-    let query = TableQuery::new(
+    let query = bound_query(
         table_config,
         vec!["user".to_string()].into(),
         Some(Arc::new(pool)),
     );
 
     // 执行分页查询：不设置分页参数，使用默认值
-    let result: PaginatedResult<TestUser> = query.paginate().await.unwrap();
+    let result: PaginatedResult<Record> = query.paginate_records().await.unwrap();
 
     // 验证结果：默认应该是第 1 页，每页 10 条
     assert_eq!(result.total, 50);

@@ -64,7 +64,7 @@ fn test_database_connection_failed_message() {
     ));
     assert_eq!(
         format!("{}", err),
-        "数据库连接失败: 连接错误: 无法连接到 MySQL"
+        "数据库连接失败 [DbError]: 连接错误: 无法连接到 MySQL"
     );
 }
 

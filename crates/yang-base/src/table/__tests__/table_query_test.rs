@@ -6,10 +6,13 @@
 //! - 错误情况处理
 
 use crate::error::BaseError;
-use crate::table::{FieldConfig, FieldPermissions, FieldType, SortOrder, TableConfig, TableQuery};
+use crate::table::{col, Field, SortOrder, Table, TableConfig, TableQuery};
 use serde_json::json;
-use std::collections::HashSet;
 use std::sync::Arc;
+
+fn build_config(table: Table) -> Arc<TableConfig> {
+    table.build().expect("测试表定义应有效").shared_config()
+}
 
 /// 创建测试用的表配置
 ///
@@ -20,40 +23,22 @@ use std::sync::Arc;
 /// - salary: Double, 只有 admin 可读可筛选可排序
 /// - secret: String, 只有 admin 可读
 fn create_test_table_config() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "name",
-                FieldType::String { max_length: 50 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "email",
-                FieldType::String { max_length: 100 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
-                    readable_roles: HashSet::from(["admin".to_string()]),
-                    writable_roles: HashSet::from(["admin".to_string()]),
-                    filterable_roles: HashSet::from(["admin".to_string()]),
-                    sortable_roles: HashSet::from(["admin".to_string()]),
-                }),
-            )
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("secret", FieldType::String { max_length: 255 }).permissions(
-                    FieldPermissions {
-                        readable_roles: HashSet::from(["admin".to_string()]),
-                        writable_roles: HashSet::from(["admin".to_string()]),
-                        filterable_roles: HashSet::from(["admin".to_string()]),
-                        sortable_roles: HashSet::from(["admin".to_string()]),
-                    },
-                ),
-            )
-            .expect("有效字段配置应注册成功"),
+    build_config(
+        Table::new("users").fields([
+            Field::id("id"),
+            Field::string("name", 50),
+            Field::string("email", 100),
+            Field::double("salary")
+                .readable_by(["admin"])
+                .writable_by(["admin"])
+                .filterable_by(["admin"])
+                .sortable_by(["admin"]),
+            Field::string("secret", 255)
+                .readable_by(["admin"])
+                .writable_by(["admin"])
+                .filterable_by(["admin"])
+                .sortable_by(["admin"]),
+        ]),
     )
 }
 
@@ -479,25 +464,18 @@ fn test_empty_user_roles() {
 /// - age: Integer, 非必填
 /// - salary: Double, 只有 admin 可写
 fn create_test_table_config_for_insert() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("email", FieldType::String { max_length: 100 }).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("salary", FieldType::Double).permissions(FieldPermissions {
-                    readable_roles: HashSet::from(["admin".to_string()]),
-                    writable_roles: HashSet::from(["admin".to_string()]),
-                    filterable_roles: HashSet::from(["admin".to_string()]),
-                    sortable_roles: HashSet::from(["admin".to_string()]),
-                }),
-            )
-            .expect("有效字段配置应注册成功"),
+    build_config(
+        Table::new("users").fields([
+            Field::id("id"),
+            Field::string("name", 50).required(),
+            Field::string("email", 100).required(),
+            Field::integer("age"),
+            Field::double("salary")
+                .readable_by(["admin"])
+                .writable_by(["admin"])
+                .filterable_by(["admin"])
+                .sortable_by(["admin"]),
+        ]),
     )
 }
 
@@ -774,24 +752,12 @@ fn test_update_empty_data() {
 /// - email: String
 /// - deleted_at: BigInt（软删除字段）
 fn create_test_table_config_with_soft_delete() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "name",
-                FieldType::String { max_length: 50 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "email",
-                FieldType::String { max_length: 100 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("deleted_at", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .soft_delete_field("deleted_at"), // 配置软删除字段
-    )
+    build_config(Table::new("users").fields([
+        Field::id("id"),
+        Field::string("name", 50),
+        Field::string("email", 100),
+        Field::soft_delete("deleted_at"),
+    ]))
 }
 
 /// 创建测试用的表配置（不带软删除字段）
@@ -800,14 +766,7 @@ fn create_test_table_config_with_soft_delete() -> Arc<TableConfig> {
 /// - id: BigInt
 /// - message: Text
 fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("logs")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("message", FieldType::Text))
-            .expect("有效字段配置应注册成功"),
-        // 未配置 soft_delete_field
-    )
+    build_config(Table::new("logs").fields([Field::id("id"), Field::text("message")]))
 }
 
 #[test]
@@ -965,19 +924,11 @@ fn test_delete_sql_all_where_conditions() {
 
 #[test]
 fn test_new_where_methods_build_sql() {
-    use crate::table::{FieldConfig, FieldType, TableConfig};
-    let config = std::sync::Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("age", FieldType::Integer))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "name",
-                FieldType::String { max_length: 50 },
-            ))
-            .expect("有效字段配置应注册成功"),
-    );
+    let config = build_config(Table::new("users").fields([
+        Field::id("id"),
+        Field::integer("age"),
+        Field::string("name", 50),
+    ]));
     let q = crate::table::TableQuery::new_without_pool(config)
         .where_lt("age", serde_json::json!(18))
         .unwrap()
@@ -1031,22 +982,12 @@ fn test_new_where_methods_build_sql() {
 /// - `status`：必填，但配置了默认值 "active"（验证 required+default 不误报）
 /// - `created_at`：时间戳字段，插入时自动填充
 fn create_test_table_config_with_defaults() -> Arc<TableConfig> {
-    Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("status", FieldType::String { max_length: 20 })
-                    .required(true)
-                    .default_value(json!("active")),
-            )
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new("created_at", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .timestamps(true, false, false),
-    )
+    build_config(Table::new("users").fields([
+        Field::id("id"),
+        Field::string("name", 50).required(),
+        Field::string("status", 20).required().default("active"),
+        Field::created_at("created_at"),
+    ]))
 }
 
 #[test]
@@ -1077,6 +1018,22 @@ fn test_insert_required_with_default_omitted_ok() {
 }
 
 #[test]
+fn test_insert_required_with_default_rejects_explicit_null() {
+    use std::collections::HashMap;
+
+    let config = create_test_table_config_with_defaults();
+    let query = TableQuery::new_without_pool(config);
+    let data = HashMap::from([
+        ("name".to_string(), json!("张三")),
+        ("status".to_string(), serde_json::Value::Null),
+    ]);
+
+    let result = query.build_insert_sql_for_test(data);
+
+    assert!(matches!(result, Err(BaseError::FieldRequired(ref field)) if field == "status"));
+}
+
+#[test]
 fn test_insert_missing_required_no_default_errors() {
     use std::collections::HashMap;
 
@@ -1097,19 +1054,11 @@ fn test_insert_missing_required_no_default_errors() {
 
 #[test]
 fn test_select_falls_back_to_default_order() {
-    let config = Arc::new(
-        TableConfig::new("users")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(FieldConfig::new(
-                "name",
-                FieldType::String { max_length: 50 },
-            ))
-            .expect("有效字段配置应注册成功")
-            .default_order(vec![
-                ("name".to_string(), SortOrder::Asc),
-                ("id".to_string(), SortOrder::Desc),
-            ]),
+    let config = build_config(
+        Table::new("users")
+            .fields([Field::id("id"), Field::string("name", 50)])
+            .default_order(col("name").asc())
+            .then_order(col("id").desc()),
     );
     let query = TableQuery::new_without_pool(config);
 
@@ -1258,20 +1207,114 @@ fn test_where_group_rejects_empty_not_in_values() {
     );
 }
 
-/// 字段级 `.filterable(false)` 是硬约束：即便角色权限放行也拒绝筛选。
+#[test]
+fn test_where_value_type_is_checked_for_every_operator_operand() {
+    let config = build_config(Table::new("typed_rows").fields([
+        Field::id("id"),
+        Field::bigint("owner_id"),
+        Field::datetime("occurred_at"),
+        Field::json("payload"),
+    ]));
+
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_eq("owner_id", json!("42"))
+        .is_err());
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_in("owner_id", vec![json!(1), json!("2")])
+        .is_err());
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_between("owner_id", json!(1), json!("2"))
+        .is_err());
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_like("owner_id", "%2%".to_string())
+        .is_err());
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_gt("payload", json!({"rank": 1}))
+        .is_err());
+
+    assert!(TableQuery::new_without_pool(Arc::clone(&config))
+        .where_eq("occurred_at", json!("2026-05-27T13:45:30+08:00"))
+        .is_ok());
+    assert!(TableQuery::new_without_pool(config)
+        .where_eq("occurred_at", json!("2026-05-27 13:45:30"))
+        .is_err());
+}
+
+#[test]
+fn test_where_tree_validates_each_in_and_between_operand() {
+    let config =
+        build_config(Table::new("typed_rows").fields([Field::id("id"), Field::bigint("owner_id")]));
+
+    let in_error =
+        TableQuery::new_without_pool(Arc::clone(&config)).where_tree(WhereCondition::In {
+            field: "owner_id".into(),
+            values: vec![json!(1), json!("2")],
+        });
+    assert!(in_error.is_err());
+
+    let between_error = TableQuery::new_without_pool(config).where_tree(WhereCondition::Between {
+        field: "owner_id".into(),
+        lo: json!(1),
+        hi: json!("2"),
+    });
+    assert!(between_error.is_err());
+}
+
+#[test]
+fn test_eq_and_ne_null_render_as_null_predicates_without_bind_params() {
+    let config = create_test_table_config();
+
+    let eq_query = TableQuery::new_without_pool(Arc::clone(&config))
+        .where_eq("email", serde_json::Value::Null)
+        .expect("Eq null 应被规范化为 IS NULL");
+    let (eq_sql, eq_params) = eq_query
+        .build_select_sql_for_test()
+        .expect("应构建 Eq null SQL");
+    assert!(eq_sql.contains("`email` IS NULL"));
+    assert!(eq_params.is_empty());
+
+    let ne_query = TableQuery::new_without_pool(config)
+        .where_ne("email", serde_json::Value::Null)
+        .expect("Ne null 应被规范化为 IS NOT NULL");
+    let (ne_sql, ne_params) = ne_query
+        .build_select_sql_for_test()
+        .expect("应构建 Ne null SQL");
+    assert!(ne_sql.contains("`email` IS NOT NULL"));
+    assert!(ne_params.is_empty());
+}
+
+#[tokio::test]
+async fn test_count_fails_closed_before_database_lookup_without_readable_fields() {
+    let config = build_config(
+        Table::new("private_rows").fields([
+            Field::bigint("id")
+                .required()
+                .primary_key()
+                .readable_by(["admin"]),
+            Field::string("secret", 64).readable_by(["admin"]),
+        ]),
+    );
+
+    let error = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None)
+        .count()
+        .await
+        .expect_err("COUNT 不得绕过表的可读权限");
+
+    assert!(matches!(
+        error,
+        BaseError::FieldPermissionDenied(table, field, _)
+            if table == "private_rows" && field == "*"
+    ));
+}
+
+/// 字段级 `.not_filterable()` 是硬约束：即便角色权限放行也拒绝筛选。
 #[test]
 fn test_non_filterable_field_rejected() {
-    // password 字段：filterable(false)，但角色权限为空（默认放行所有角色）
-    let config = Arc::new(
-        TableConfig::new("accounts")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("password", FieldType::String { max_length: 255 })
-                    .filterable(false),
-            )
-            .expect("有效字段配置应注册成功"),
-    );
+    // password 字段显式禁止筛选。
+    let config = build_config(Table::new("accounts").fields([
+        Field::id("id"),
+        Field::string("password", 255).not_filterable(),
+    ]));
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
     let result = query.where_eq("password", json!("secret"));
     assert!(
@@ -1281,19 +1324,13 @@ fn test_non_filterable_field_rejected() {
     );
 }
 
-/// 字段级 `.sortable(false)` 是硬约束：即便角色权限放行也拒绝排序。
+/// 字段级 `.not_sortable()` 是硬约束：即便角色权限放行也拒绝排序。
 #[test]
 fn test_non_sortable_field_rejected() {
-    let config = Arc::new(
-        TableConfig::new("accounts")
-            .field(FieldConfig::new("id", FieldType::BigInt))
-            .expect("有效字段配置应注册成功")
-            .field(
-                FieldConfig::new("description", FieldType::String { max_length: 255 })
-                    .sortable(false),
-            )
-            .expect("有效字段配置应注册成功"),
-    );
+    let config = build_config(Table::new("accounts").fields([
+        Field::id("id"),
+        Field::string("description", 255).not_sortable(),
+    ]));
     let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
     let result = query.order_by("description", SortOrder::Asc);
     assert!(
@@ -1392,35 +1429,19 @@ fn test_where_tree_depth_limit() {
     );
 }
 
-/// Filter<W> 布尔树 JSON 反序列化 + 降解为 WhereCondition。
+/// 运行时 WhereCondition 布尔树 JSON 反序列化。
 #[test]
-fn test_filter_json_roundtrip_to_where_condition() {
-    use crate::table::{Filter, IntoSqlCondition, SqlCondition, SqlOp};
-
-    // 一个最小的类型化叶子：固定列 + Eq
-    #[derive(serde::Deserialize)]
-    struct LeafW {
-        value: i64,
-    }
-    impl IntoSqlCondition for LeafW {
-        fn into_sql_condition(self) -> SqlCondition {
-            SqlCondition {
-                column: "id",
-                op: SqlOp::Eq,
-                params: vec![json!(self.value)],
-            }
-        }
-    }
-
-    // {"or": [{"value": 1}, {"and": [{"value": 2}]}]}
+fn test_where_condition_json_roundtrip() {
     let j = json!({
-        "or": [
-            {"value": 1},
-            {"and": [{"value": 2}]}
+        "type": "or",
+        "conditions": [
+            {"type": "eq", "field": "id", "value": 1},
+            {"type": "and", "conditions": [
+                {"type": "eq", "field": "id", "value": 2}
+            ]}
         ]
     });
-    let filter: Filter<LeafW> = serde_json::from_value(j).expect("deserialize Filter");
-    let wc = filter.into_where_condition();
+    let wc: WhereCondition = serde_json::from_value(j).expect("应反序列化 WhereCondition");
 
     match wc {
         WhereCondition::Or { conditions } => {

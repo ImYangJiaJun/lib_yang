@@ -4,43 +4,28 @@ use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::database::{DatabaseInitializer, SchemaSyncChangeKind};
 use yang_base::router::{AppRouter, ModuleRouter};
-use yang_base::table::{FieldConfig, FieldType, TableConfig};
+use yang_base::table::{Field, Table, TableDefinition};
 use yang_db::Database;
 
-fn account_table(username_length: usize, with_display_name: bool) -> Arc<TableConfig> {
-    let mut table = TableConfig::new("schema_sync_accounts")
-        .primary_key("id")
-        .field(
-            FieldConfig::new("id", FieldType::BigInt)
-                .required(true)
-                .auto_increment(true),
-        )
-        .expect("id 字段应有效")
-        .field(
-            FieldConfig::new(
-                "username",
-                FieldType::String {
-                    max_length: username_length,
-                },
-            )
-            .required(true),
-        )
-        .expect("username 字段应有效")
-        .unique_index(vec!["username".to_string()]);
+fn account_table(username_length: usize, with_display_name: bool) -> TableDefinition {
+    let mut fields = vec![
+        Field::id("id"),
+        Field::string("username", username_length)
+            .required()
+            .unique(),
+    ];
     if with_display_name {
-        table = table
-            .field(FieldConfig::new(
-                "display_name",
-                FieldType::String { max_length: 64 },
-            ))
-            .expect("display_name 字段应有效");
+        fields.push(Field::string("display_name", 64));
     }
-    Arc::new(table)
+    Table::new("schema_sync_accounts")
+        .fields(fields)
+        .build()
+        .expect("schema_sync_accounts 表定义应有效")
 }
 
-fn account_app(table: Arc<TableConfig>) -> AppRouter {
+fn account_app(table: TableDefinition) -> AppRouter {
     AppRouter::new()
-        .register_module(ModuleRouter::new("account", "账号").with_table_config(table))
+        .module(ModuleRouter::new("account", "账号").table(table))
         .expect("账号模块应注册成功")
 }
 
@@ -112,7 +97,7 @@ async fn schema_sync_is_concurrent_idempotent_additive_and_fail_closed() {
     assert_eq!(report.changes[0].kind, SchemaSyncChangeKind::AddedColumn);
     assert_eq!(report.changes[0].object, "display_name");
     assert!(first
-        .validate_table_config(expanded_table.as_ref())
+        .validate_table_definition(&expanded_table)
         .await
         .expect("同步后 schema 应可读取")
         .is_compatible());
@@ -122,16 +107,15 @@ async fn schema_sync_is_concurrent_idempotent_additive_and_fail_closed() {
         .expect("重复同步应成功")
         .is_noop());
 
-    let pending_table = Arc::new(
-        TableConfig::new("aaa_schema_sync_pending")
-            .field(FieldConfig::new("id", FieldType::BigInt).required(true))
-            .expect("pending id 字段应有效"),
-    );
+    let pending_table = Table::new("aaa_schema_sync_pending")
+        .fields([Field::bigint("id").required().primary_key()])
+        .build()
+        .expect("pending 表定义应有效");
     let incompatible = AppRouter::new()
-        .register_module(
+        .module(
             ModuleRouter::new("account", "账号")
-                .with_table_config(account_table(255, true))
-                .with_schema_table(pending_table),
+                .table(account_table(255, true))
+                .schema(pending_table),
         )
         .expect("不兼容测试模块应注册成功");
     let error = first

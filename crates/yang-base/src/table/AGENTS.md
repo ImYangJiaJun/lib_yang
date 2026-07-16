@@ -3,64 +3,93 @@
 **Parent:** `crates/yang-base/AGENTS.md`
 
 ## OVERVIEW
-Table-aware schema, validation, permissions, dynamic row decoding, and query building layer used by builtin actions and backend modules.
+Schema-first table definitions, field validation and permissions, dynamic `Record` rows, schema compatibility checks, and guarded MySQL query execution.
 
 ## STRUCTURE
 ```text
 table/
-├── mod.rs              # public exports
-├── entity.rs           # TableEntity trait + 衍生类型 AsColumnName(:67)/Filter(:322)（WhereCondition 定义在 query_params.rs:99、SortOrder 在 table_config.rs:522），H-1 类型化 Action 的核心基础
-├── field_type.rs       # FieldType enum, MySQL mapping, JSON validation
-├── field_config.rs     # FieldConfig, validators, permissions
-├── table_config.rs     # TableConfig, indexes, timestamps, soft delete
-├── query_params.rs     # filters/sorts/pagination request model
-├── table_query.rs      # TableQuery chainable DB operations
-├── dynamic_row.rs      # DynamicRow and BLOB base64 JSON conversion
-├── validator.rs        # Validator enum and validation helpers
-└── __tests__/          # colocated unit tests（含 entity_test.rs）
+├── mod.rs                # public re-exports
+├── definition.rs         # Table / Field builders, TableDefinition, TableHandle
+├── field_type.rs         # FieldType enum, MySQL mapping, JSON validation
+├── field_config.rs       # internal field metadata, permissions and relations
+├── table_config.rs       # internal normalized schema metadata
+├── query_params.rs       # filters, sorting and pagination request model
+├── table_query.rs        # permission-aware query builder and execution
+├── dynamic_row.rs        # Record and MySQL row decoding
+├── schema_validation.rs  # live-schema compatibility report
+├── validator.rs          # Validator enum and validation helpers
+└── __tests__/            # colocated unit tests
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Field type behavior | `field_type.rs` | validation, SQL type mapping, JSON conversion |
-| Field metadata | `field_config.rs` | labels, required/default/validators/permissions |
-| Table schema | `table_config.rs` | builder-style table config, indexes, timestamps, soft delete |
-| Query request model | `query_params.rs` | selected fields, filters, sort, pagination |
-| DB query execution | `table_query.rs` | select/get/insert/update/delete/count/paginate |
-| Dynamic rows | `dynamic_row.rs` | MySQL row -> JSON-ish map, BLOB encoded with base64 |
-| Validators | `validator.rs` | enum validators; regex-backed variants are feature-sensitive |
-| Tests | `__tests__/` | field/table/query/validator coverage |
+| Define an application table | `definition.rs` | Compose `Table::new(...).fields([...]).build()` |
+| Define fields | `definition.rs` | `Field` constructors plus validation, permission, index and relation modifiers |
+| Inspect immutable metadata | `definition.rs` | `TableDefinition` and `FieldMetadata` read-only views |
+| Bind a database | `definition.rs` | `TableDefinition::bind` creates `TableHandle` when `mysql` is enabled |
+| Dynamic rows | `dynamic_row.rs` | `Record` is the transparent JSON object used by queries and builtin CRUD |
+| Query request model | `query_params.rs` | selected fields, Boolean where trees, sort and pagination |
+| DB query execution | `table_query.rs` | select/get/insert/update/delete/count/page operations |
+| Schema drift | `schema_validation.rs` | additive/compatible/destructive issue classification |
+| Validators | `validator.rs` | built-in validators; regex-backed variants depend on `validator` |
 
 ## CODE MAP
 | Symbol | Location | Role |
 |--------|----------|------|
-| `TableEntity` | `entity.rs` | H-1 类型化核心 trait；所有内置 Action（Add/Put/Del/Get/Select/Table）泛型约束；#[derive(TableEntity)] 派生入口 |
-| `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum/ForeignKey |
-| `FieldConfig` | `field_config.rs` | per-field name/type/display/permission/validator/default metadata |
-| `FieldPermissions` | `field_config.rs` | role-based read/write/filter/sort controls |
-| `TableConfig` | `table_config.rs` | table name, fields, indexes, default order, soft delete, timestamps |
-| `QueryParams` | `query_params.rs` | request-facing filtering/sorting/pagination DTO |
-| `TableQuery` | `table_query.rs` | table-aware query builder/executor |
-| `DynamicRow` | `dynamic_row.rs` | dynamic MySQL row serialization bridge |
-| `PaginatedResult` | `mod.rs` | page/page_size/total/total_pages/data container |
+| `Table` | `definition.rs` | schema-first table builder; `build` performs cross-field validation |
+| `Field` | `definition.rs` | typed field builder with validation, permissions, indexes and relations |
+| `TableDefinition` | `definition.rs` | immutable runtime schema and JSON Schema source |
+| `FieldMetadata` | `definition.rs` | read-only view returned by `TableDefinition::field(s)` |
+| `TableHandle` | `definition.rs` | a definition bound to a MySQL pool |
+| `Record` | `dynamic_row.rs` | transparent dynamic row with typed `require` / `optional` reads |
+| `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum storage types |
+| `RelationType` | `field_config.rs` | OneToOne/OneToMany/ManyToOne/ManyToMany relation metadata |
+| `WhereCondition` | `query_params.rs` | validated Boolean filter tree |
+| `TableQuery` | `table_query.rs` | guarded query builder and executor |
+| `SchemaValidationReport` | `schema_validation.rs` | deterministic live-schema compatibility result |
+
+## APPLICATION CONTRACT
+```rust
+use yang_base::table::{col, Field, Table};
+
+let users = Table::new("users")
+    .label("用户表")
+    .fields([
+        Field::id("id"),
+        Field::string("username", 64)
+            .required()
+            .unique()
+            .filterable()
+            .sortable(),
+        Field::created_at("created_at"),
+    ])
+    .default_order(col("created_at").desc())
+    .build()?;
+```
+
+- Application code constructs schemas only through `Table` and `Field`.
+- `build` is the validation boundary and returns an immutable `TableDefinition`.
+- A module binds its primary definition with `ModuleRouter::table`; extra startup-only schemas use `ModuleRouter::schema`.
+- Builtin CRUD and `TableQuery` exchange dynamic rows as `Record`.
 
 ## CONVENTIONS
-- Table config uses builder chaining (`TableConfig::new(...).field(...).soft_delete(...).timestamps(...)`).
-- All SQL identifiers must pass `is_valid_identifier`; don't concatenate untrusted field/table names.
-- Permission checks are role-based and happen before field selection/filtering/sorting/writing.
-- `TableQuery` uses `Arc<TableConfig>` and `Arc<[String]>` to avoid cloning configs/roles.
-- `DynamicRow` serializes BLOB bytes to base64 strings for JSON output.
-- Soft delete updates the configured field instead of physical delete when `soft_delete_field` is set.
+- All SQL identifiers must pass the centralized identifier validator; never concatenate untrusted table or field names.
+- Permission checks happen before field selection, filtering, sorting or writes.
+- Use `Field::id`, `created_at`, `updated_at` and `soft_delete` for generated-column semantics instead of recreating their flags manually.
+- Keep storage types and relation metadata orthogonal: define a normal foreign-key column with `Field::bigint("user_id").relation("users", "id", RelationType::ManyToOne)`.
+- Use `col("name")` for table-level indexes and default ordering.
+- `Record` serializes as a plain JSON object; use `require::<T>` and `optional::<T>` for typed reads.
+- Soft delete updates the declared soft-delete field instead of physically deleting a row.
 
 ## FEATURE NOTES
-- `mysql` feature enables async DB execution methods in `TableQuery`.
-- `validator` feature enables stricter regex-backed validators; without it, some validators degrade to simpler checks.
-- Date/DateTime/Timestamp validation now exists in `field_type.rs`; keep tests aligned when changing accepted formats.
+- `mysql` enables `TableHandle` and async execution methods in `TableQuery`.
+- `validator` enables strict regex-backed Email/Phone/Regex validation.
+- Date/DateTime/Timestamp validation lives in `field_type.rs`; keep accepted formats and tests aligned.
 
 ## ANTI-PATTERNS
-- Do not bypass `TableConfig::validate_field` or `TableQuery` permission checks for user-controlled field names.
-- Do not add raw SQL string filters; use validated `QueryParams` / `where_*` patterns.
-- Do not assume all `serde_json::Value` inputs are objects; builtin actions explicitly validate object shapes before insert/update.
-- Do not make `DynamicRow` silently drop unsupported MySQL values; return structured errors or explicit conversions.
-- Avoid adding more `#[allow(dead_code)]` around table internals; existing ones mark reserved getter/pool hooks.
+- Do not expose or construct the normalized internal metadata structs from application code; keep `Table` / `Field` as the public declaration boundary.
+- Do not bypass `TableDefinition` or `TableQuery` permission checks for user-controlled field names.
+- Do not add raw SQL string filters; use validated `WhereCondition` / `where_*` APIs.
+- Do not assume every `serde_json::Value` is an object; use `Record` for dynamic row-shaped payloads.
+- Do not make row decoding silently drop unsupported MySQL values; return structured errors or explicit conversions.

@@ -99,7 +99,7 @@ pub const MAX_QUERY_PAGE_SIZE: usize = 100;
 ///     field: "deleted_at".to_string(),
 /// };
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WhereCondition {

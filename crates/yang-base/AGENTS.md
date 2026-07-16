@@ -16,8 +16,8 @@ yang-base/
 │   ├── database/        # GlobalDatabase, GlobalRedis, DatabaseInitializer
 │   ├── plugin/          # Plugin trait + managers/registry in one file
 │   ├── action/          # child AGENTS.md: TypedHandler/TypedAction/DynAction, builtin CRUD
-│   ├── table/           # child AGENTS.md: FieldType/TableConfig/TableQuery/TableEntity
-│   ├── router/          # ModuleRouter + AppRouter
+│   ├── table/           # child AGENTS.md: Table/Field/TableDefinition/Record/TableQuery
+│   ├── router/          # Api + ModuleRouter + AppRouter + ApiCatalog
 │   ├── http/            # reqwest wrapper, `http` feature
 │   ├── token/           # JWT TokenManager + revocation, `token` feature
 │   └── error/           # BaseError with numeric codes
@@ -33,8 +33,8 @@ yang-base/
 | DB/Redis bootstrap | `src/database/initializer.rs` | initialization/migration ordering |
 | Plugin management | `src/plugin/mod.rs` | `Plugin`, `PluginManager`, `PluginManagerBuilder`, `PluginRegistry` |
 | Custom actions | `src/action/` | child AGENTS.md covers trait/context/builtin CRUD |
-| Table configuration | `src/table/` | child AGENTS.md covers field/table/query/permissions |
-| Router dispatch | `src/router/module_router.rs` | module action dispatch and permission checks |
+| Table definitions | `src/table/definition.rs` | public schema-first `Table` / `Field` builders and immutable `TableDefinition` |
+| Router/API registration | `src/router/api.rs`, `src/router/module_router.rs` | `Api` atomically binds an Action and route; `.table(...).crud()` installs builtin CRUD |
 | HTTP requests | `src/http/` | feature-gated request builder/client/response |
 | Token generation | `src/token/manager.rs` | feature-gated JWT generation/validation/refresh |
 | Error handling | `src/error/mod.rs` | `BaseError` variants and codes |
@@ -53,8 +53,12 @@ yang-base/
 | `DynAction` | `src/action/typed.rs` | type-erased dispatch layer |
 | `Permission` | `src/action/action_trait.rs` | action permission type |
 | `ActionContext` | `src/action/context.rs` | request/user/tools/table context |
+| `Table` / `Field` | `src/table/definition.rs` | application-facing schema builders |
+| `TableDefinition` | `src/table/definition.rs` | immutable runtime schema, permissions and JSON Schema source |
+| `Record` | `src/table/dynamic_row.rs` | transparent dynamic row object used by builtin CRUD |
 | `TableQuery` | `src/table/table_query.rs` | table-aware SQL query builder/executor |
 | `FieldType` | `src/table/field_type.rs` | JSON/MySQL field type validation/mapping |
+| `Api` | `src/router/api.rs` | Action + method/path/operation metadata single registration value |
 | `ModuleRouter` | `src/router/module_router.rs` | action registration and dispatch |
 | `TokenManager` | `src/token/manager.rs` | JWT encode/decode/refresh |
 | `HttpClient` | `src/http/client.rs` | global reqwest client wrapper |
@@ -79,7 +83,8 @@ Default enables all features for compatibility.
 - Unit tests are colocated in `__tests__/`; integration tests live in `tests/` and often require Docker.
 
 ## ANTI-PATTERNS
-- Builtin actions (add/put/del/get/select/table) are now fully typed via `XxxAction<T: TableEntity>` (H-1 refactor); new actions should follow the `TypedHandler` → `TypedAction` → `DynAction` pattern in `action/typed.rs`, not the old `serde_json::Value` approach.
+- Builtin actions are non-generic typed handlers over runtime `TableDefinition`: add/get/select use `Record`, dynamic primary keys live inside typed DTOs, and `.table(definition).crud()` installs the complete API set. Custom actions still follow `TypedHandler` → derived `TypedAction` → erased `DynAction`; do not use a bare `serde_json::Value` as the whole input/output contract.
+- Register custom endpoints with `Api::{get,post,put,patch,delete}` and `ModuleRouter::api`/`apis`; do not split Action and route registration into separate calls.
 - Plugin code is a 1.4k-line single file with existing unwraps; avoid adding new panic paths.
 - Do not bypass `TableQuery`/`FieldPermissions` when handling user-selected fields.
 - Do not add hardcoded production credentials; test/default Docker credentials belong only in test docs/examples.

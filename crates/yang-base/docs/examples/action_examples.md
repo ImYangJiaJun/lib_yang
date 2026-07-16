@@ -1,343 +1,71 @@
-# Action Trait 使用示例
+# 类型化 Action 与 API 注册示例
 
-本文档展示如何使用 Action Trait 定义和实现自定义 action。
+`yang-base` 0.2.0 的业务 Action 实现 `TypedHandler`，再通过 `#[derive(Action)]` 生成元数据。注册时使用单个 `Api` 同时绑定 handler 与 HTTP method/path，应用不再分别维护 Action 注册表和 route 注册表。
 
-## 基本示例
-
-### 1. 简单的 Action
+## 定义公开 Action
 
 ```rust
-use yang_base::action::{Action, ActionContext, ApiResponse};
-use yang_base::error::BaseError;
 use async_trait::async_trait;
-use serde_json::json;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use yang_base::action::{ActionContext, TypedHandler};
+use yang_base::{Action, BaseError};
 
-pub struct HelloAction;
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct HealthInput {}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct HealthOutput {
+    status: &'static str,
+}
+
+#[derive(Action)]
+#[action(
+    name = "health",
+    display_name = "健康检查",
+    description = "返回进程状态",
+    public
+)]
+struct HealthAction;
 
 #[async_trait]
-impl Action for HelloAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        let name: String = context.param("name")?;
-        
-        Ok(ApiResponse::success(
-            json!({ "message": format!("Hello, {}!", name) }),
-            "操作成功"
-        ))
-    }
-    
-    fn name(&self) -> &str {
-        "hello"
+impl TypedHandler for HealthAction {
+    type Input = HealthInput;
+    type Output = HealthOutput;
+
+    async fn handle(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(HealthOutput { status: "ok" })
     }
 }
 ```
 
-### 2. 带权限的 Action
+没有 `public` 的 Action 默认受保护；可用 `permissions("user:read")` 声明额外业务权限。输入输出都应使用 serde + schemars 强类型 DTO，只有动态数据库记录使用 `Record`。
+
+## 原子注册与鉴权范围
 
 ```rust
-use yang_base::action::{Action, ActionContext, ApiResponse, Permission};
-use yang_base::error::BaseError;
-use async_trait::async_trait;
-use serde_json::json;
+use yang_base::action::{TokenAuthMiddleware, User};
+use yang_base::router::{Api, ModuleRouter};
 
-pub struct DeleteUserAction;
+let auth = TokenAuthMiddleware::new(|claims| {
+    User::new(0, claims.sub.clone())
+});
 
-#[async_trait]
-impl Action for DeleteUserAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        let user_id: i64 = context.param("id")?;
-        
-        // 执行删除逻辑
-        // ...
-        
-        Ok(ApiResponse::success(
-            json!({ "affected": 1 }),
-            "删除成功"
-        ))
-    }
-    
-    fn name(&self) -> &str {
-        "delete_user"
-    }
-    
-    fn display_name(&self) -> &str {
-        "删除用户"
-    }
-    
-    fn description(&self) -> &str {
-        "删除指定的用户账号"
-    }
-    
-    fn permissions(&self) -> &[Permission] {
-        &[
-            Permission::new("user:delete"),
-            Permission::new("admin:access")
-        ]
-    }
-}
+let module = ModuleRouter::new("system", "系统")
+    .middleware(auth)
+    .api(
+        Api::get("/health", HealthAction)
+            .operation_id("system.health")
+            .tag("system"),
+    )?;
 ```
 
-### 3. 公开 Action（不需要认证）
+`TokenAuthMiddleware` 固定使用 `MiddlewareScope::ProtectedActions`，所以它会跳过上例的公开健康检查，但会验证同一模块中的受保护 Action。普通中间件默认是 `AllActions`，日志、限流和请求追踪仍可覆盖两类端点。
 
-```rust
-use yang_base::action::{Action, ActionContext, ApiResponse};
-use yang_base::error::BaseError;
-use async_trait::async_trait;
-use serde_json::json;
+`Api` 路由按 Axum 0.8 校验：路径参数使用 `{id}`，尾部通配使用 `{*path}`；旧式 `:id` / `*path` 和匹配冲突会在 transport 启动前返回配置错误。批量注册使用 `ModuleRouter::apis([Api::get(...), Api::post(...)])`。
 
-pub struct LoginAction;
-
-#[async_trait]
-impl Action for LoginAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        let username: String = context.param("username")?;
-        let password: String = context.param("password")?;
-        
-        // 验证用户
-        // ...
-        
-        Ok(ApiResponse::success(
-            json!({
-                "token": "xxx",
-                "user": { "id": 1, "username": username }
-            }),
-            "登录成功"
-        ))
-    }
-    
-    fn name(&self) -> &str {
-        "login"
-    }
-    
-    fn display_name(&self) -> &str {
-        "用户登录"
-    }
-    
-    fn is_public(&self) -> bool {
-        true // 登录不需要认证
-    }
-}
-```
-
-### 4. 带参数 Schema 的 Action
-
-```rust
-use yang_base::action::{Action, ActionContext, ApiResponse};
-use yang_base::error::BaseError;
-use async_trait::async_trait;
-use serde_json::json;
-
-pub struct CreateUserAction;
-
-#[async_trait]
-impl Action for CreateUserAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        let username: String = context.param("username")?;
-        let email: String = context.param("email")?;
-        let age: Option<i64> = context.param_optional("age");
-        
-        // 创建用户
-        // ...
-        
-        Ok(ApiResponse::success(
-            json!({ "id": 1, "username": username, "email": email }),
-            "创建成功"
-        ))
-    }
-    
-    fn name(&self) -> &str {
-        "create_user"
-    }
-    
-    fn display_name(&self) -> &str {
-        "创建用户"
-    }
-    
-    fn description(&self) -> &str {
-        "创建新的用户账号"
-    }
-    
-    fn params_schema(&self) -> Option<serde_json::Value> {
-        Some(json!({
-            "type": "object",
-            "properties": {
-                "username": {
-                    "type": "string",
-                    "minLength": 3,
-                    "maxLength": 20,
-                    "description": "用户名"
-                },
-                "email": {
-                    "type": "string",
-                    "format": "email",
-                    "description": "邮箱地址"
-                },
-                "age": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 150,
-                    "description": "年龄（可选）"
-                }
-            },
-            "required": ["username", "email"]
-        }))
-    }
-}
-```
-
-## ActionContext 使用
-
-### 获取参数
-
-```rust
-// 获取必填参数
-let username: String = context.param("username")?;
-let age: i64 = context.param("age")?;
-
-// 获取可选参数
-let email: Option<String> = context.param_optional("email");
-let phone: Option<String> = context.param_optional("phone");
-```
-
-### 访问用户信息
-
-```rust
-// 获取当前用户
-if let Some(user) = &context.user {
-    println!("用户 ID: {}", user.id);
-    println!("用户名: {}", user.username);
-    
-    // 检查权限
-    if user.has_permission("admin:access") {
-        // 执行管理员操作
-    }
-    
-    // 检查角色
-    if user.has_role("admin") {
-        // 执行管理员操作
-    }
-}
-
-// 获取用户角色列表
-let roles = context.user_roles();
-```
-
-### 使用表查询
-
-```rust
-// 创建表查询构建器
-let query = context.table_query()?;
-
-// 执行查询
-let users = query
-    .fields(vec!["id".to_string(), "username".to_string()])?
-    .where_eq("status".to_string(), json!("active"))?
-    .order_by("created_at".to_string(), SortOrder::Desc)?
-    .select::<serde_json::Value>()
-    .await?;
-```
-
-## Permission 使用
-
-```rust
-use yang_base::action::Permission;
-
-// 创建权限
-let permission = Permission::new("user:create");
-
-// 获取权限名称
-assert_eq!(permission.name(), "user:create");
-
-// 权限比较
-let p1 = Permission::new("user:create");
-let p2 = Permission::new("user:create");
-assert_eq!(p1, p2);
-```
-
-## 完整示例
-
-```rust
-use yang_base::action::{Action, ActionContext, ApiResponse, Permission};
-use yang_base::error::BaseError;
-use async_trait::async_trait;
-use serde_json::json;
-
-/// 获取用户列表 Action
-pub struct GetUsersAction;
-
-#[async_trait]
-impl Action for GetUsersAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        // 获取分页参数
-        let page: i64 = context.param_optional("page").unwrap_or(1);
-        let page_size: i64 = context.param_optional("page_size").unwrap_or(10);
-        
-        // 获取筛选条件
-        let status: Option<String> = context.param_optional("status");
-        
-        // 构建查询
-        let mut query = context.table_query()?;
-        
-        // 应用筛选条件
-        if let Some(status) = status {
-            query = query.where_eq("status".to_string(), json!(status))?;
-        }
-        
-        // 执行分页查询
-        let result = query
-            .order_by("created_at".to_string(), SortOrder::Desc)?
-            .select_paginated::<serde_json::Value>(page, page_size)
-            .await?;
-        
-        Ok(ApiResponse::success(result, "查询成功"))
-    }
-    
-    fn name(&self) -> &str {
-        "get_users"
-    }
-    
-    fn display_name(&self) -> &str {
-        "获取用户列表"
-    }
-    
-    fn description(&self) -> &str {
-        "分页查询用户列表，支持按状态筛选"
-    }
-    
-    fn permissions(&self) -> &[Permission] {
-        &[Permission::new("user:read")]
-    }
-    
-    fn params_schema(&self) -> Option<serde_json::Value> {
-        Some(json!({
-            "type": "object",
-            "properties": {
-                "page": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "页码（默认 1）"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "description": "每页数量（默认 10）"
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["active", "inactive", "banned"],
-                    "description": "用户状态（可选）"
-                }
-            }
-        }))
-    }
-}
-```
-
-## 注意事项
-
-1. **异步方法**：`execute` 方法必须使用 `async_trait` 宏
-2. **错误处理**：使用 `?` 操作符传播错误，返回 `BaseError`
-3. **参数验证**：使用 `param` 获取必填参数，使用 `param_optional` 获取可选参数
-4. **权限检查**：在 `permissions` 方法中定义所需权限，由路由器负责检查
-5. **公开 Action**：登录、注册等不需要认证的 action 应设置 `is_public` 为 `true`
-6. **参数 Schema**：提供 JSON Schema 可用于自动生成文档和前端表单
+标准表接口不需要逐个创建 Action：先用 `.table(definition)` 绑定主表，再调用 `.crud()`。它会自动注册六个 API、生成 `{module}:read` / `{module}:write` 权限，并把该表的主键、字段和查询约束写入 `ApiCatalog`。

@@ -123,7 +123,7 @@ impl TokenManager {
     /// 会拒绝任何 `iat` 早于该水位线的 Token，从而让此前签发的全部 Token 一次性失效。
     ///
     /// 适用于**改密、强制下线**等需要让某用户全部会话立即失效的场景。
-    /// 水位线 TTL 取 Refresh Token 有效期（[`TokenManager::refresh_token_expiry`]），
+    /// 水位线 TTL 取 Refresh Token 有效期（`TokenManager::refresh_token_expiry`），
     /// 因为更早签发的 Token 至此必然已过期，水位线无需再保留，避免无限增长。
     ///
     /// # 参数

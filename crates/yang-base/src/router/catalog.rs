@@ -2,6 +2,7 @@
 
 use crate::action::PermissionMode;
 use crate::error::BaseError;
+use std::collections::{HashMap, HashSet};
 
 /// Action 对应的传输路由描述。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,30 +25,8 @@ pub struct RouteDescriptor {
 }
 
 impl RouteDescriptor {
-    /// 创建并校验最小路由描述。
-    pub fn new(
-        method: impl Into<String>,
-        path: impl Into<String>,
-        operation_id: impl Into<String>,
-    ) -> Result<Self, BaseError> {
-        let method = method.into().trim().to_ascii_uppercase();
-        let path = path.into().trim().to_string();
-        let operation_id = operation_id.into().trim().to_string();
-        let descriptor = Self {
-            method,
-            path,
-            operation_id,
-            request_content_types: vec!["application/json".to_string()],
-            response_content_types: vec!["application/json".to_string()],
-            success_status: 200,
-            tags: Vec::new(),
-        };
-        descriptor.validate()?;
-        Ok(descriptor)
-    }
-
-    /// 重新校验公开字段，防止构造后修改绕过注册期约束。
-    pub fn validate(&self) -> Result<(), BaseError> {
+    /// 注册前统一校验路由描述。
+    pub(crate) fn validate(&self) -> Result<(), BaseError> {
         if self.method.is_empty()
             || self.method != self.method.to_ascii_uppercase()
             || !self
@@ -65,6 +44,19 @@ impl RouteDescriptor {
                 "route path 必须是无 query/fragment 的绝对路径".to_string(),
             ));
         }
+        if self
+            .path
+            .split('/')
+            .any(|segment| segment.starts_with([':', '*']))
+        {
+            return Err(BaseError::ConfigError(
+                "route path 必须使用 Axum 0.8 的 {name}/{*name} 参数语法".to_string(),
+            ));
+        }
+        let mut matcher = matchit::Router::new();
+        matcher.insert(self.path.clone(), ()).map_err(|error| {
+            BaseError::ConfigError(format!("route path 非法: {} ({error})", self.path))
+        })?;
         if self.operation_id.trim().is_empty() {
             return Err(BaseError::ConfigError("operation_id 不能为空".to_string()));
         }
@@ -78,38 +70,44 @@ impl RouteDescriptor {
         }
         Ok(())
     }
+}
 
-    /// 设置请求 Content-Type 列表。
-    pub fn with_request_content_types(mut self, values: Vec<String>) -> Result<Self, BaseError> {
-        validate_non_blank_unique("request content type", &values, false)?;
-        self.request_content_types = values;
-        Ok(self)
-    }
+/// 与 Axum PathRouter 等价的路由模板注册检查。
+///
+/// 完全相同的 path 可以按不同 HTTP method 合并；参数名不同但匹配集合相同的模板
+/// 会被 matchit 判定为冲突，避免把 panic 延迟到 transport 构建阶段。
+#[derive(Default)]
+pub(crate) struct RoutePatternRegistry {
+    matcher: matchit::Router<()>,
+    methods_by_path: HashMap<String, HashSet<String>>,
+}
 
-    /// 设置响应 Content-Type 列表。
-    pub fn with_response_content_types(mut self, values: Vec<String>) -> Result<Self, BaseError> {
-        validate_non_blank_unique("response content type", &values, false)?;
-        self.response_content_types = values;
-        Ok(self)
-    }
+impl RoutePatternRegistry {
+    pub(crate) fn insert(&mut self, route: &RouteDescriptor) -> Result<(), BaseError> {
+        route.validate()?;
 
-    /// 设置成功状态码（100..=599）。
-    pub fn with_success_status(mut self, status: u16) -> Result<Self, BaseError> {
-        if !(100..=599).contains(&status) {
-            return Err(BaseError::ConfigError(
-                "success status 必须在 100..=599".to_string(),
-            ));
+        if let Some(methods) = self.methods_by_path.get_mut(&route.path) {
+            if !methods.insert(route.method.clone()) {
+                return Err(route_conflict(route, None));
+            }
+            return Ok(());
         }
-        self.success_status = status;
-        Ok(self)
-    }
 
-    /// 设置文档标签。
-    pub fn with_tags(mut self, tags: Vec<String>) -> Result<Self, BaseError> {
-        validate_non_blank_unique("route tag", &tags, true)?;
-        self.tags = tags;
-        Ok(self)
+        self.matcher
+            .insert(route.path.clone(), ())
+            .map_err(|error| route_conflict(route, Some(error)))?;
+        self.methods_by_path
+            .insert(route.path.clone(), HashSet::from([route.method.clone()]));
+        Ok(())
     }
+}
+
+fn route_conflict(route: &RouteDescriptor, source: Option<matchit::InsertError>) -> BaseError {
+    let detail = source.map_or_else(String::new, |error| format!(" ({error})"));
+    BaseError::ConfigError(format!(
+        "route 冲突: {} {}{detail}",
+        route.method, route.path
+    ))
 }
 
 fn validate_non_blank_unique(

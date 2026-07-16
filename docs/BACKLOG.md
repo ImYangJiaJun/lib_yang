@@ -84,31 +84,26 @@ let pool_config = deadpool_redis::Config {
 - `crates/yang-base/src/action/builtin/select.rs`
 - `crates/yang-base/src/action/builtin/get.rs`
 
-**状态**：✅ 已完成。Action 系统已重构为 `TypedHandler` + `#[derive(TableEntity)]` + `#[derive(Action)]` 的端到端类型化方案（计划见 `docs/superpowers/plans/2026-05-27-action-typed-system.md`，Task 1-8 全部完成）：
-- 三层 trait（`TypedHandler` 用户手写 → `TypedAction` 派生 → `DynAction` 擦除层 + blanket impl），见 `action/typed.rs`。
-- 派生宏 crate `yang-base-derive` 提供 `#[derive(TableEntity)]`（生成 `Field`/`WhereCond` 枚举 + 运行时 `TableConfig`）与 `#[derive(Action)]`（生成 `TypedAction` impl + `ActionMeta`）。
-- 六个内置 Action（add/del/get/put/select/table）全部泛型化为 `XxxAction<T: TableEntity>`，输入输出契约由 `TypedHandler::{Input,Output}` 编译期固定；字段名通过 `T::Field` 封闭枚举保证，杜绝任意字符串列名拼接。
-- `ModuleRouter::table_typed::<T>()` 一行注册全套 CRUD；`dispatch` 改读 `ActionMeta`，见 `router/module_router.rs`。
+**状态**：✅ 已完成，并在 yang-base 0.2.0 收口为 schema-first 公共边界。原计划见 `docs/superpowers/plans/2026-05-27-action-typed-system.md`；当前实现以源码和 0.2.0 文档为准：
 
-**Task 8 验收套件（本会话补齐）**：
-- trybuild 编译失败用例 4 个（缺主键 / 非法字段名 / 类型不匹配 / Like on int），`tests/trybuild.rs` + `tests/compile_fail/`，`.stderr` 基线已生成并复跑校验通过。
-- insta schema 快照（实体 + `SelectQuery<T>`），`tests/schema_snapshots.rs`，锁定封闭字段枚举 + 按列类型化 WhereOp。
-- testcontainers 端到端 CRUD 集成测试 `tests/typed_action_integration.rs`（`#[ignore]`，需 Docker），跑通 add→get→put→select→del→table。
-- 删除旧 `Action` trait（`action_trait.rs` 仅留 `Permission`），清理对应死测试。
+- 自定义业务 Action 采用三层 trait：`TypedHandler` 用户手写，`#[derive(Action)]` 生成 `TypedAction` / `ActionMeta`，blanket impl 提供 `DynAction` 擦除层。
+- 应用表由 `Table` + `Field` 构建为不可变 `TableDefinition`；字段、权限、索引、关系和输入/输出 JSON Schema 由同一定义产生。
+- 六个内置 Action（add/del/get/put/select/table）是非泛型 handler。动态行统一使用透明 JSON object `Record`，主键、表名和字段权限在运行期从绑定定义读取；put/get/del/select 仍使用明确 DTO 固定请求外形。
+- `ModuleRouter::table(definition).crud()` 注册标准 CRUD；自定义端点通过 `Api` 与 `ModuleRouter::api` / `apis` 原子注册，避免 Action 与 route 元数据漂移。
+- `AppRouter::catalog()` 提供确定性的 Action schema / route 快照，可选 `openapi` feature 从中投影 OpenAPI 3.1。
 
-**顺带修复的真实 bug**：`ActionContext::table_query()` 原硬编码 `pool: None`，导致类型化 builtin 经 router 派发时所有 DB 操作返回 `DatabaseNotInitialized`（功能性死代码）。已修：yang-db 新增 `Database::pool()`，`table_query()` 在 mysql feature 下从 `GlobalDatabase` 注入共享连接池。
+**当前验收套件**：
 
-**原始问题**：`SelectAction::execute()` 和 `GetAction::execute()` 返回的数据是 `serde_json::Value`（通过 `DynamicRow` 序列化），而不是用户定义的具体 Rust 类型。这导致：
-- 编译期无类型检查
-- 运行时反序列化错误只能在调用方发现
-- 无法生成准确的 API 文档/Schema
+- `tests/schema_snapshots.rs` 锁定 `TableDefinition::input_schema()` / `output_schema()`。
+- `tests/typed_action_integration.rs` 使用真实 MySQL/Redis 跑通 add → get → put → select → del → table，输入输出按 `Record` 契约断言。
+- table/query/router 的单元与集成测试覆盖定义校验、权限、where 树、分页、事务和 `.crud()` 注册。
+- `tests/release_docs_contract.rs` 防止发布文档重新出现已删除的应用模型。
 
-**影响**：Action 系统的类型安全性弱，增加集成层出错概率。
+**顺带修复的真实 bug**：`ActionContext::table_query()` 早期曾硬编码 `pool: None`，导致 builtin 经 router 派发时 DB 操作返回 `DatabaseNotInitialized`。当前路径会从 `GlobalDatabase` 注入共享连接池，并携带用户角色、request id 与慢查询阈值。
 
-**修复方向**：
-- 提供泛型版本：`SelectAction<T: for<'r> sqlx::FromRow<'r, MySqlRow> + Serialize>`
-- 或通过关联类型让 Action trait 声明输出类型
-- 近期可行方案：至少在 execute 返回前做一次 schema 验证
+**原始问题**：查询 Action 直接返回裸 `serde_json::Value`，缺少稳定的动态行类型和可复用 schema；调用方只能在运行期自行猜测对象结构。
+
+**最终方案**：自定义业务 DTO 保持编译期强类型，动态表行显式使用 `Record`，表结构与 JSON Schema 由 `TableDefinition` 提供，二者职责不再混淆。
 
 ---
 
@@ -557,7 +552,7 @@ FieldType::Date => {
 
 **文件**：`crates/yang-db/src/mysql/condition.rs:171-176`（`postgres/condition.rs` 同构）
 
-**问题**：`condition_to_sql_owned` 对非法标识符仅 `log::warn` 后输出 RAW 字段，而非返回错误。该回退为支持 `a.b` 限定名等 JOIN 表达式而设计，但同一代码路径对恶意载荷（如 `'; DROP TABLE t;--`）同样回退输出 RAW。yang-base `TableEntity` 封闭枚举路径已从类型层收口，但直接使用 yang-db 公有 API 并传入外部字符串的调用方仍面临真实注入面。
+**问题**：`condition_to_sql_owned` 对非法标识符仅 `log::warn` 后输出 RAW 字段，而非返回错误。该回退为支持 `a.b` 限定名等 JOIN 表达式而设计，但同一代码路径对恶意载荷（如 `'; DROP TABLE t;--`）同样回退输出 RAW。yang-base 的 `TableDefinition` + `TableQuery` 路径会先校验用户字段名，但直接使用 yang-db 公有 API 并传入外部字符串的调用方仍面临真实注入面。
 
 **修复方向**：为 `condition_to_sql_owned` 增 checked 变体，非法标识符返回 `DbError::InvalidArgument` 而非 RAW 输出；保留 RAW 回退仅给显式标注的限定名 API（如 `quote_qualified`）。同时在 `lib.rs` 重导出 `quote_identifier`/`quote_qualified` 便于下游调用方自检。
 

@@ -72,7 +72,7 @@ pub trait TypedAction: TypedHandler {
 
 /// 擦除层：router 存 `Arc<dyn DynAction>` 派发。
 ///
-/// Task 7 重命名为 `Action`。当前临时名以避免与旧 `Action` trait 冲突。
+/// 名称刻意与 crate 根的 `#[derive(Action)]` 宏区分；业务代码无需直接实现本 trait。
 #[async_trait]
 pub trait DynAction: Send + Sync + 'static {
     /// 派发：从 ctx 中提取输入、执行业务逻辑、封装响应

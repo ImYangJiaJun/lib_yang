@@ -85,7 +85,7 @@ pub enum BaseError {
     #[error("数据库连接失败 [DbError]: {0}")]
     DatabaseConnectionFailed(#[source] yang_db::DbError),
 
-    /// 数据库连接失败（DbError 专用变体，用于 From<DbError> 映射）
+    /// 数据库连接失败（DbError 专用变体，用于 `From<DbError>` 映射）
     ///
     /// 与 `DatabaseConnectionFailed` 语义相同但独立编码 200011，
     /// 便于下游区分"直接构造的连接错误"和"来自 DbError 包装的连接错误"。
@@ -352,9 +352,9 @@ pub enum BaseError {
     #[error("密码无效")]
     InvalidPassword,
 
-    /// 表配置未设置
-    #[error("表配置未设置")]
-    TableConfigNotSet,
+    /// 表定义未设置
+    #[error("表定义未设置")]
+    TableDefinitionNotSet,
 
     // ==================== 通用错误 ====================
     /// 配置错误
@@ -629,7 +629,7 @@ impl BaseError {
             BaseError::RecordNotFound(_) => 700006,
             BaseError::UserNotFound(_) => 700007,
             BaseError::InvalidPassword => 700008,
-            BaseError::TableConfigNotSet => 700009,
+            BaseError::TableDefinitionNotSet => 700009,
 
             // ==================== 通用错误 (9xxxxx) ====================
             BaseError::ConfigError(_) => 900001,
@@ -718,7 +718,7 @@ impl BaseError {
             BaseError::RecordNotFound(_) => "700006",
             BaseError::UserNotFound(_) => "700007",
             BaseError::InvalidPassword => "700008",
-            BaseError::TableConfigNotSet => "700009",
+            BaseError::TableDefinitionNotSet => "700009",
             // 通用错误 (9xxxxx)
             BaseError::ConfigError(_) => "900001",
             BaseError::IoError(_) => "900002",
@@ -812,7 +812,7 @@ impl BaseError {
             BaseError::ParamMissing(_) | BaseError::ParamInvalid(_, _) => C::Client,
             BaseError::RecordNotFound(_) | BaseError::UserNotFound(_) => C::NotFound,
             BaseError::InvalidPassword => C::Auth,
-            BaseError::ActionNotFound(_) | BaseError::TableConfigNotSet => C::NotFound,
+            BaseError::ActionNotFound(_) | BaseError::TableDefinitionNotSet => C::NotFound,
             // 通用错误
             BaseError::ConfigError(_) | BaseError::IoError(_) | BaseError::Unknown(_) => C::Server,
         }
@@ -1061,7 +1061,7 @@ mod tests {
             700007
         );
         assert_eq!(BaseError::InvalidPassword.code(), 700008);
-        assert_eq!(BaseError::TableConfigNotSet.code(), 700009);
+        assert_eq!(BaseError::TableDefinitionNotSet.code(), 700009);
     }
 
     #[test]
@@ -1088,7 +1088,7 @@ mod tests {
             BaseError::RecordNotFound("test".to_string()),
             BaseError::UserNotFound("test".to_string()),
             BaseError::InvalidPassword,
-            BaseError::TableConfigNotSet,
+            BaseError::TableDefinitionNotSet,
             BaseError::Unknown("test".to_string()),
         ];
 
@@ -1206,7 +1206,7 @@ mod tests {
             BaseError::JsonSerializeFailed("s".into()),
             BaseError::FieldNotFound("t".into(), "f".into()),
             BaseError::ParamInvalid("k".into(), "r".into()),
-            BaseError::TableConfigNotSet,
+            BaseError::TableDefinitionNotSet,
             BaseError::ConfigError("c".into()),
             BaseError::Unknown("u".into()),
         ];

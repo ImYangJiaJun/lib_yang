@@ -1,26 +1,24 @@
 //! ModuleRouter - 模块路由器
 //!
-//! 管理单个模块的表配置和 Action 路由，负责 Action 的注册、查找和分发。
+//! 管理单个模块的表定义与 API，负责注册、查找和分发。
 //!
 //! # 示例
 //!
 //! ```rust,ignore
 //! use yang_base::router::ModuleRouter;
-//! use yang_base::table::{TableConfig, FieldConfig, FieldType};
-//! use std::sync::Arc;
+//! use yang_base::table::{Field, Table};
 //!
-//! // 创建表配置
-//! let table_config = Arc::new(
-//!     TableConfig::new("users")
-//!         .field(FieldConfig::new("id", FieldType::Integer))
-//!         .field(FieldConfig::new("username", FieldType::String { max_length: 50 }))
-//! );
+//! let users = Table::new("users")
+//!     .fields(vec![
+//!         Field::id("id"),
+//!         Field::string("username", 50).required().unique(),
+//!     ])
+//!     .build()?;
 //!
 //! // 创建模块路由器并注册内置 CRUD Actions
 //! let router = ModuleRouter::new("user", "用户管理")
-//!     .with_table_config(table_config.clone())
-//!     .default_permissions(vec!["user:access".to_string()])
-//!     .table_typed::<User>()?;
+//!     .table(users)
+//!     .crud()?;
 //!
 //! // 分发请求
 //! let response = router.dispatch("add", context).await?;
@@ -33,9 +31,12 @@ pub const BUILTIN_ACTION_NAMES: &[&str] = &["add", "put", "del", "get", "select"
 
 use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode, User};
 use crate::error::BaseError;
-use crate::router::catalog::{ActionDescriptor, ModuleDescriptor, RouteDescriptor};
-use crate::router::middleware::{Middleware, Next};
-use crate::table::TableConfig;
+use crate::router::catalog::{
+    ActionDescriptor, ModuleDescriptor, RouteDescriptor, RoutePatternRegistry,
+};
+use crate::router::middleware::{Middleware, MiddlewareScope, Next};
+use crate::router::Api;
+use crate::table::TableDefinition;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::Instrument;
@@ -48,7 +49,7 @@ use tracing::Instrument;
 ///
 /// - `module_name`: 模块名称
 /// - `display_name`: 模块显示名称
-/// - `table_config`: 表配置（可选）
+/// - `table_definition`: 主表定义（可选）
 /// - `actions`: Action 注册表
 /// - `default_permissions`: 默认权限要求
 #[must_use = "builder 返回新实例，忽略将丢失配置"]
@@ -59,11 +60,11 @@ pub struct ModuleRouter {
     /// 模块显示名称
     display_name: String,
 
-    /// 表配置（如果模块关联表）
-    table_config: Option<Arc<TableConfig>>,
+    /// 主表定义（如果模块关联表）
+    table_definition: Option<TableDefinition>,
 
     /// 仅参与启动期 schema 汇总的附属表配置。
-    schema_tables: Vec<Arc<TableConfig>>,
+    schema_tables: Vec<TableDefinition>,
 
     /// Action 注册表
     /// Key: action 名称, Value: 类型化擦除后的 DynAction 实例
@@ -71,6 +72,13 @@ pub struct ModuleRouter {
 
     /// Action 名称到传输路由的只读描述源。
     routes: HashMap<String, RouteDescriptor>,
+
+    /// `.crud()` 是否已经注册，以及运行时使用的稳定权限名称。
+    ///
+    /// 表级 schema 不缓存在这里；[`Self::descriptor`] 始终从当前主表重新投影，
+    /// 因而链式调用在 CRUD 注册后替换主表也不会让 Catalog 与运行时漂移。
+    #[cfg(feature = "mysql")]
+    crud_permissions: Option<CrudPermissions>,
 
     /// 默认权限要求
     /// 所有 Action 都需要满足这些权限（除非 Action 是公开的）
@@ -83,6 +91,12 @@ pub struct ModuleRouter {
     middlewares: Vec<Arc<dyn Middleware>>,
 }
 
+#[cfg(feature = "mysql")]
+struct CrudPermissions {
+    read: String,
+    write: String,
+}
+
 impl ModuleRouter {
     /// 创建新的模块路由器
     ///
@@ -91,7 +105,7 @@ impl ModuleRouter {
     /// 若路由器将注册**非公开 Action**（`is_public() == false`），调用方**必须**
     /// 通过 [`.middleware()`](Self::middleware) 注册认证中间件（如
     /// `TokenAuthMiddleware`）。否则未认证请求到达非公开 Action 时，
-    /// [`authorize_and_dispatch`](Self::authorize_and_dispatch) 会返回
+    /// `authorize_and_dispatch` 会返回
     /// `Unauthorized`，但中间件层的短路返回可能被意外绕过。
     ///
     /// 本方法在 debug build 中会通过 `tracing::warn!` 在首次 dispatch 时
@@ -117,79 +131,32 @@ impl ModuleRouter {
         Self {
             module_name: module_name.into(),
             display_name: display_name.into(),
-            table_config: None,
+            table_definition: None,
             schema_tables: Vec::new(),
             actions: HashMap::new(),
             routes: HashMap::new(),
+            #[cfg(feature = "mysql")]
+            crud_permissions: None,
             default_permissions: Vec::new(),
             default_permission_mode: PermissionMode::default(),
             middlewares: Vec::new(),
         }
     }
 
-    /// 设置表配置（builder setter）
-    ///
-    /// # 参数
-    ///
-    /// - `config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(ModuleRouter)`: 修改后的实例（支持链式调用）
-    /// - `Err(BaseError::ConfigError)`: 权限名称为空
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::router::ModuleRouter;
-    /// use yang_base::table::TableConfig;
-    /// use std::sync::Arc;
-    ///
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .with_table_config(table_config);
-    /// ```
-    pub fn with_table_config(mut self, config: Arc<TableConfig>) -> Self {
-        self.table_config = Some(config);
+    /// 绑定模块主表。
+    pub fn table(mut self, definition: TableDefinition) -> Self {
+        self.table_definition = Some(definition);
         self
     }
 
     /// 为模块注册一张附属 schema 表。
     ///
-    /// 附属表会被 [`crate::router::AppRouter::table_configs`] 汇总并由数据库初始化器
+    /// 附属表会被 [`crate::router::AppRouter::table_definitions`] 汇总并由数据库初始化器
     /// 同步，但不会替换模块用于内置 CRUD 与 `ActionContext::table_query()` 的主表。
     /// 一个业务模块因此可以声明会话、审计等多张内部表，同时保持主表语义明确。
-    pub fn with_schema_table(mut self, config: Arc<TableConfig>) -> Self {
-        self.schema_tables.push(config);
+    pub fn schema(mut self, definition: TableDefinition) -> Self {
+        self.schema_tables.push(definition);
         self
-    }
-
-    /// 设置表配置（链式 setter 别名，委托给 `with_table_config`）
-    ///
-    /// 与 `with_table_config` 功能相同，提供更简洁的链式调用语法。
-    ///
-    /// # 参数
-    ///
-    /// - `config`: 表配置
-    ///
-    /// # 返回
-    ///
-    /// - 修改后的 ModuleRouter 实例（支持链式调用）
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::router::ModuleRouter;
-    /// use yang_base::table::TableConfig;
-    /// use std::sync::Arc;
-    ///
-    /// let table_config = Arc::new(TableConfig::new("users"));
-    /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .table_config(table_config);
-    /// ```
-    #[deprecated(note = "请用 with_table_config")]
-    pub fn table_config(self, config: Arc<TableConfig>) -> Self {
-        self.with_table_config(config)
     }
 
     /// 设置默认权限要求
@@ -261,37 +228,13 @@ impl ModuleRouter {
         self
     }
 
-    /// 注册一个类型化 Action
+    /// 原子注册一条 API。
     ///
-    /// 接受任意实现 [`TypedAction`](crate::action::TypedAction) 的类型
-    /// （通常由 `#[derive(Action)]` 派生），通过 blanket impl 自动转为
-    /// `Arc<dyn DynAction>` 存入注册表。
-    ///
-    /// 若已存在同名 Action（含内置 CRUD：add/put/del/get/select/table），
-    /// 将覆盖先前注册。
-    ///
-    /// # 参数
-    ///
-    /// - `action`: 类型化 Action 实例
-    ///
-    /// # 返回
-    ///
-    /// - 修改后的 ModuleRouter 实例（支持链式调用）
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::router::ModuleRouter;
-    /// use yang_base::action::builtin::AddAction;
-    ///
-    /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .register_action(AddAction::<User>::new())?;
-    /// ```
-    pub fn register_action<A>(mut self, action: A) -> Result<Self, BaseError>
-    where
-        A: crate::action::TypedAction,
-    {
-        let action: Arc<dyn DynAction> = Arc::new(action);
+    /// Action 与 HTTP 路由来自同一个 [`Api`]，因此不会出现只注册 handler、漏注册
+    /// route，或用字符串绑定到错误 Action 的情况。Action 名、权限、路由、
+    /// operation id 以及模块内冲突会在此统一校验。
+    pub fn api(mut self, api: Api) -> Result<Self, BaseError> {
+        let (action, route) = api.into_parts(&self.module_name)?;
         let meta = action.meta();
         let name = meta.name.to_string();
         if name.trim().is_empty() {
@@ -307,40 +250,13 @@ impl ModuleRouter {
             ));
         }
         if self.actions.contains_key(&name) {
-            return Err(BaseError::ConfigError(format!("Action 已注册: {}", name)));
+            return Err(BaseError::ConfigError(format!("Action 已注册: {name}")));
         }
-        self.actions.insert(name, action);
-        Ok(self)
-    }
-
-    /// 为已注册 Action 绑定传输路由描述。
-    pub fn register_route(
-        mut self,
-        action_name: impl Into<String>,
-        route: RouteDescriptor,
-    ) -> Result<Self, BaseError> {
-        route.validate()?;
-        let action_name = action_name.into();
-        if !self.actions.contains_key(&action_name) {
-            return Err(BaseError::ConfigError(format!(
-                "route 对应的 Action 未注册: {action_name}"
-            )));
+        let mut route_patterns = RoutePatternRegistry::default();
+        for existing in self.routes.values() {
+            route_patterns.insert(existing)?;
         }
-        if self.routes.contains_key(&action_name) {
-            return Err(BaseError::ConfigError(format!(
-                "Action route 已注册: {action_name}"
-            )));
-        }
-        if self
-            .routes
-            .values()
-            .any(|existing| existing.method == route.method && existing.path == route.path)
-        {
-            return Err(BaseError::ConfigError(format!(
-                "route 冲突: {} {}",
-                route.method, route.path
-            )));
-        }
+        route_patterns.insert(&route)?;
         if self
             .routes
             .values()
@@ -351,12 +267,35 @@ impl ModuleRouter {
                 route.operation_id
             )));
         }
-        self.routes.insert(action_name, route);
+        self.actions.insert(name.clone(), action);
+        self.routes.insert(name, route);
+        Ok(self)
+    }
+
+    /// 批量原子配置 API；异构 Action 可先通过 [`Api`] 擦除后放入数组或 `Vec`。
+    pub fn apis<I>(mut self, apis: I) -> Result<Self, BaseError>
+    where
+        I: IntoIterator<Item = Api>,
+    {
+        for api in apis {
+            self = self.api(api)?;
+        }
         Ok(self)
     }
 
     /// 构建与运行时注册表隔离的只读模块描述快照。
     pub fn descriptor(&self) -> Result<ModuleDescriptor, BaseError> {
+        #[cfg(feature = "mysql")]
+        let builtin_contracts = match (&self.crud_permissions, &self.table_definition) {
+            (Some(_), Some(definition)) => {
+                crate::action::builtin::crud_contracts(definition, &self.module_name)?
+                    .into_iter()
+                    .collect::<HashMap<_, _>>()
+            }
+            (Some(_), None) => return Err(BaseError::TableDefinitionNotSet),
+            (None, _) => HashMap::new(),
+        };
+
         let mut action_names: Vec<&String> = self.actions.keys().collect();
         action_names.sort();
         let mut actions = Vec::with_capacity(action_names.len());
@@ -367,19 +306,36 @@ impl ModuleRouter {
                 .routes
                 .get(name)
                 .ok_or_else(|| BaseError::ConfigError(format!("Action 缺少 route: {name}")))?;
+            let permissions: Vec<String> = meta
+                .permissions
+                .iter()
+                .map(|permission| permission.name().to_string())
+                .collect();
+            let permission_mode = meta.permission_mode;
+            let input_schema = meta.input_schema.clone();
+            let output_schema = meta.output_schema.clone();
+            #[cfg(feature = "mysql")]
+            let (permissions, permission_mode, input_schema, output_schema) =
+                builtin_contracts.get(name.as_str()).map_or_else(
+                    || (permissions, permission_mode, input_schema, output_schema),
+                    |contract| {
+                        (
+                            contract.permissions.clone(),
+                            contract.permission_mode,
+                            contract.input_schema.clone(),
+                            contract.output_schema.clone(),
+                        )
+                    },
+                );
             actions.push(ActionDescriptor {
                 name: meta.name.to_string(),
                 display_name: meta.display_name.to_string(),
                 description: meta.description.to_string(),
-                permissions: meta
-                    .permissions
-                    .iter()
-                    .map(|permission| permission.name().to_string())
-                    .collect(),
-                permission_mode: meta.permission_mode,
+                permissions,
+                permission_mode,
                 is_public: meta.is_public,
-                input_schema: meta.input_schema.clone(),
-                output_schema: meta.output_schema.clone(),
+                input_schema,
+                output_schema,
                 route: route.clone(),
             });
         }
@@ -422,23 +378,18 @@ impl ModuleRouter {
         self
     }
 
-    /// 为指定实体类型 `T` 注册全部六个内置 CRUD Actions
+    /// 为当前主表注册全部六个内置 CRUD Actions。
     ///
-    /// 注册 add、put、del、get、select、table 六个类型化内置 Action。
-    /// 调用前需先通过 `with_table_config` / `table_config` 设置表配置——
-    /// 内置 Action 在 dispatch 时通过 `ActionContext::table_query()` 取用该配置。
+    /// 注册 add、put、del、get、select、table 六个基于 [`crate::table::Record`]
+    /// 的内置 Action。调用前必须先通过 [`Self::table`] 绑定表定义；运行时字段、
+    /// 类型和权限全部以这份定义为准，不再需要数据库实体类型。
     ///
     /// 内置 Action 名称由 [`BUILTIN_ACTION_NAMES`] 常量定义。
-    ///
-    /// # 类型参数
-    ///
-    /// - `T`: 实现 [`TableEntity`](crate::table::TableEntity) 的实体类型
-    ///   （通常由 `#[derive(TableEntity)]` 派生）
     ///
     /// # 返回
     ///
     /// - `Ok(Self)`: 注册成功，返回修改后的 ModuleRouter 实例（支持链式调用）
-    /// - `Err(BaseError::TableConfigNotSet)`: 未设置 table_config
+    /// - `Err(BaseError::TableDefinitionNotSet)`: 未绑定表定义
     ///
     /// # 示例
     ///
@@ -446,28 +397,35 @@ impl ModuleRouter {
     /// use yang_base::router::ModuleRouter;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .with_table_config(user_table_config)
-    ///     .table_typed::<User>()?;
+    ///     .table(user_table)
+    ///     .crud()?;
     /// ```
     #[cfg(feature = "mysql")]
-    pub fn table_typed<T>(self) -> Result<Self, BaseError>
-    where
-        T: crate::table::TableEntity,
-    {
+    pub fn crud(self) -> Result<Self, BaseError> {
         use crate::action::builtin::{
-            AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
+            crud_contracts, AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
         };
 
-        if self.table_config.is_none() {
-            return Err(BaseError::TableConfigNotSet);
-        }
+        let definition = self
+            .table_definition
+            .as_ref()
+            .ok_or(BaseError::TableDefinitionNotSet)?;
+        crud_contracts(definition, &self.module_name)?;
 
-        self.register_action(AddAction::<T>::new())?
-            .register_action(PutAction::<T>::new())?
-            .register_action(DelAction::<T>::new())?
-            .register_action(GetAction::<T>::new())?
-            .register_action(SelectAction::<T>::new())?
-            .register_action(TableAction::<T>::new())
+        let base_path = format!("/api/{}", self.module_name);
+        let mut router = self.apis([
+            Api::post(&base_path, AddAction::new()).created(),
+            Api::put(&base_path, PutAction::new()),
+            Api::delete(&base_path, DelAction::new()),
+            Api::get(&base_path, GetAction::new()),
+            Api::post(format!("{base_path}/query"), SelectAction::new()),
+            Api::get(format!("{base_path}/schema"), TableAction::new()),
+        ])?;
+        router.crud_permissions = Some(CrudPermissions {
+            read: format!("{}:read", router.module_name),
+            write: format!("{}:write", router.module_name),
+        });
+        Ok(router)
     }
 
     /// 分发请求到对应的 Action
@@ -497,8 +455,8 @@ impl ModuleRouter {
     /// use yang_base::action::ActionContext;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .with_table_config(table_config)
-    ///     .table_typed::<User>()?;
+    ///     .table(user_table)
+    ///     .crud()?;
     ///
     /// let response = router.dispatch("add", context).await?;
     /// ```
@@ -507,8 +465,12 @@ impl ModuleRouter {
         action_name: &str,
         mut context: ActionContext,
     ) -> Result<ApiResponse, BaseError> {
-        // 0. 安全检查：存在非公开 Action 但未注册任何中间件时发出警告（S-NEW-AUTH-2）
-        if self.middlewares.is_empty() && self.actions.values().any(|a| !a.meta().is_public) {
+        // 0. 安全检查：存在非公开 Action 但未注册受保护范围中间件时发出警告。
+        let has_protected_middleware = self
+            .middlewares
+            .iter()
+            .any(|middleware| middleware.scope() == MiddlewareScope::ProtectedActions);
+        if !has_protected_middleware && self.actions.values().any(|a| !a.meta().is_public) {
             tracing::warn!(
                 module = %self.module_name,
                 "模块 '{}' 包含非公开 Action 但未注册认证中间件（如 TokenAuthMiddleware）",
@@ -524,19 +486,20 @@ impl ModuleRouter {
             .clone();
 
         // 2. 设置表配置与模块名到上下文
-        if let Some(table_config) = &self.table_config {
-            context = context.with_table_config(table_config.clone());
+        if let Some(table_definition) = &self.table_definition {
+            context = context.with_table_definition(table_definition.clone());
         }
         // 注入模块名，供 metrics module 标签等可观测性标注（NEW-2）
         if context.module.is_none() {
             context = context.with_module(self.module_name.clone());
         }
 
-        // 3. 进入中间件链（最外层）。链尾执行内置鉴权 + Action 派发，
-        //    使日志/限流/自定义认证等中间件能观察并干预所有请求。
+        // 3. 进入中间件链（最外层）。链尾执行内置鉴权 + Action 派发；
+        //    通用中间件覆盖全部请求，受保护范围中间件在公开 Action 上被跳过。
         let next = Next {
             remaining: &self.middlewares,
             router: self,
+            is_public: action.meta().is_public,
             action,
         };
 
@@ -595,6 +558,26 @@ impl ModuleRouter {
                     "缺少模块权限: {:?}",
                     self.default_permissions
                 )));
+            }
+
+            // `.crud()` 生成的权限名与 Catalog 使用同一模块命名规则。schema 则由
+            // descriptor 从当前主表即时投影，使 `.crud()?.table(...)` 仍保持一致。
+            #[cfg(feature = "mysql")]
+            if let Some(crud_permissions) = &self.crud_permissions {
+                let required_permission = match meta.name {
+                    "add" | "put" | "del" => Some(&crud_permissions.write),
+                    "get" | "select" | "table" => Some(&crud_permissions.read),
+                    _ => None,
+                };
+                if let Some(permission) = required_permission {
+                    if !user.has_permission(permission) {
+                        span.record("granted", false);
+                        return Err(BaseError::PermissionDenied(format!(
+                            "缺少 Action 权限: {:?}",
+                            [permission]
+                        )));
+                    }
+                }
             }
 
             // 检查 Action 权限
@@ -662,8 +645,8 @@ impl ModuleRouter {
     /// GlobalTools::init(token_manager)?;
     ///
     /// let router = ModuleRouter::new("user", "用户管理")
-    ///     .with_table_config(table_config)
-    ///     .table_typed::<User>()?;
+    ///     .table(users)
+    ///     .crud()?;
     ///
     /// // 无需传入 tools，自动从全局单例获取
     /// let response = router.dispatch_with_global("add", request).await?;
@@ -734,27 +717,21 @@ impl ModuleRouter {
         names
     }
 
-    /// 获取表配置（getter，返回借用）
-    ///
-    /// # 返回
-    ///
-    /// - `Some(&Arc<TableConfig>)`: 表配置的借用
-    /// - `None`: 未设置表配置
-    pub fn get_table_config(&self) -> Option<&Arc<TableConfig>> {
-        self.table_config.as_ref()
+    /// 返回模块主表定义。
+    pub fn table_definition(&self) -> Option<&TableDefinition> {
+        self.table_definition.as_ref()
     }
 
     /// 返回模块全部 schema 表，按表名确定性排序。
     ///
-    /// 结果包含可选主表和通过 [`Self::with_schema_table`] 注册的附属表。
-    pub fn schema_table_configs(&self) -> Vec<&TableConfig> {
-        let mut tables: Vec<&TableConfig> = self
-            .table_config
+    /// 结果包含可选主表和通过 [`Self::schema`] 注册的附属表。
+    pub fn schema_definitions(&self) -> Vec<&TableDefinition> {
+        let mut tables: Vec<&TableDefinition> = self
+            .table_definition
             .iter()
             .chain(&self.schema_tables)
-            .map(AsRef::as_ref)
             .collect();
-        tables.sort_by(|left, right| left.table_name.cmp(&right.table_name));
+        tables.sort_by(|left, right| left.name().cmp(right.name()));
         tables
     }
 }

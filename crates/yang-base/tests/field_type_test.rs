@@ -5,12 +5,12 @@
 //! - 时间类型验证（Date, DateTime, Timestamp）
 //! - 复杂类型验证（Json, Text）
 //! - 枚举类型验证（Enum）
-//! - 外键类型验证（ForeignKey）
+//! - 关联字段存储类型验证（关系元数据与 BigInt 正交）
 //! - 边界条件测试
 //! - 错误情况测试
 
 use yang_base::error::BaseError;
-use yang_base::table::FieldType;
+use yang_base::table::{Field, FieldType, RelationType, Table};
 
 // ==================== String 类型验证测试 ====================
 
@@ -304,7 +304,7 @@ fn test_bigint_invalid_type_string() {
     match result.unwrap_err() {
         BaseError::InvalidFieldType(field, msg) => {
             assert_eq!(field, "id");
-            assert!(msg.contains("期望长整数类型"));
+            assert!(msg.contains("期望 i64 范围内的长整数"));
         }
         _ => panic!("期望 InvalidFieldType 错误"),
     }
@@ -315,6 +315,24 @@ fn test_bigint_invalid_type_float() {
     let field_type = FieldType::BigInt;
     let result = field_type.validate("id", &serde_json::json!(3.5));
     assert!(result.is_err(), "浮点数类型应该验证失败");
+}
+
+#[test]
+fn test_relation_metadata_is_orthogonal_to_bigint_storage_type() {
+    let table = Table::new("orders")
+        .fields([
+            Field::id("id"),
+            Field::bigint("user_id").relation("users", "id", RelationType::ManyToOne),
+        ])
+        .build()
+        .expect("关联字段定义应该有效");
+    let user_id = table.field("user_id").expect("应该存在 user_id 字段");
+
+    assert_eq!(user_id.field_type(), &FieldType::BigInt);
+    assert!(user_id
+        .field_type()
+        .validate("user_id", &serde_json::json!(42))
+        .is_ok());
 }
 
 // ==================== Float 类型验证测试 ====================
@@ -693,17 +711,33 @@ fn test_json_valid_empty_array() {
 }
 
 #[test]
-fn test_json_valid_string_object() {
+fn test_json_invalid_string_object() {
     let field_type = FieldType::Json;
     let result = field_type.validate("data", &serde_json::json!("{\"key\": \"value\"}"));
-    assert!(result.is_ok(), "JSON 字符串（对象）应该通过验证");
+    assert!(result.is_err(), "JSON 字符串不应作为结构化 JSON 接受");
+
+    match result.unwrap_err() {
+        BaseError::InvalidFieldType(field, msg) => {
+            assert_eq!(field, "data");
+            assert!(msg.contains("期望 JSON 对象或数组"));
+        }
+        _ => panic!("期望 InvalidFieldType 错误"),
+    }
 }
 
 #[test]
-fn test_json_valid_string_array() {
+fn test_json_invalid_string_array() {
     let field_type = FieldType::Json;
     let result = field_type.validate("data", &serde_json::json!("[1, 2, 3]"));
-    assert!(result.is_ok(), "JSON 字符串（数组）应该通过验证");
+    assert!(result.is_err(), "JSON 字符串不应作为结构化 JSON 接受");
+
+    match result.unwrap_err() {
+        BaseError::InvalidFieldType(field, msg) => {
+            assert_eq!(field, "data");
+            assert!(msg.contains("期望 JSON 对象或数组"));
+        }
+        _ => panic!("期望 InvalidFieldType 错误"),
+    }
 }
 
 #[test]
@@ -713,10 +747,11 @@ fn test_json_invalid_string_not_json() {
     assert!(result.is_err(), "非 JSON 格式的字符串应该验证失败");
 
     match result.unwrap_err() {
-        BaseError::InvalidJsonFormat(field, _msg) => {
+        BaseError::InvalidFieldType(field, msg) => {
             assert_eq!(field, "data");
+            assert!(msg.contains("期望 JSON 对象或数组"));
         }
-        _ => panic!("期望 InvalidJsonFormat 错误"),
+        _ => panic!("期望 InvalidFieldType 错误"),
     }
 }
 
@@ -727,10 +762,11 @@ fn test_json_invalid_string_incomplete_json() {
     assert!(result.is_err(), "不完整的 JSON 字符串应该验证失败");
 
     match result.unwrap_err() {
-        BaseError::InvalidJsonFormat(field, _msg) => {
+        BaseError::InvalidFieldType(field, msg) => {
             assert_eq!(field, "data");
+            assert!(msg.contains("期望 JSON 对象或数组"));
         }
-        _ => panic!("期望 InvalidJsonFormat 错误"),
+        _ => panic!("期望 InvalidFieldType 错误"),
     }
 }
 

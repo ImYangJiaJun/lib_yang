@@ -32,7 +32,6 @@ fn value_type_name(value: &serde_json::Value) -> &'static str {
 /// - 时间类型：Date, DateTime, Timestamp
 /// - 复杂类型：Json, Text
 /// - 枚举类型：Enum
-/// - 外键类型：ForeignKey
 ///
 /// # 示例
 ///
@@ -48,12 +47,6 @@ fn value_type_name(value: &serde_json::Value) -> &'static str {
 /// // 创建枚举类型
 /// let status_type = FieldType::Enum {
 ///     values: vec!["active".to_string(), "inactive".to_string()],
-/// };
-///
-/// // 创建外键类型
-/// let user_id_type = FieldType::ForeignKey {
-///     table: "users".to_string(),
-///     field: "id".to_string(),
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,32 +227,6 @@ pub enum FieldType {
         /// 可选值列表
         values: Vec<String>,
     },
-
-    /// 外键类型
-    ///
-    /// 用于关联其他表的字段，建立表之间的关系。
-    ///
-    /// # 字段
-    ///
-    /// - `table`: 关联的目标表名
-    /// - `field`: 关联的目标字段名
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use yang_base::table::FieldType;
-    ///
-    /// let field_type = FieldType::ForeignKey {
-    ///     table: "users".to_string(),
-    ///     field: "id".to_string(),
-    /// };
-    /// ```
-    ForeignKey {
-        /// 关联的目标表名
-        table: String,
-        /// 关联的目标字段名
-        field: String,
-    },
 }
 
 impl FieldType {
@@ -294,7 +261,6 @@ impl FieldType {
             FieldType::Json => "JSON",
             FieldType::Text => "文本",
             FieldType::Enum { .. } => "枚举",
-            FieldType::ForeignKey { .. } => "外键",
         }
     }
 
@@ -431,12 +397,12 @@ impl FieldType {
 
             // 长整数类型验证
             FieldType::BigInt => {
-                if value.is_i64() || value.is_u64() {
+                if value.as_i64().is_some() {
                     Ok(())
                 } else {
                     Err(BaseError::InvalidFieldType(
                         field_name.to_string(),
-                        format!("期望长整数类型，实际类型: {}", value_type_name(value)),
+                        format!("期望 i64 范围内的长整数，实际值: {}", value),
                     ))
                 }
             }
@@ -519,23 +485,13 @@ impl FieldType {
 
             // JSON 类型验证
             FieldType::Json => {
-                // 如果值是字符串，尝试解析为 JSON
-                if let Some(s) = value.as_str() {
-                    serde_json::from_str::<serde_json::Value>(s)
-                        .map(|_| ())
-                        .map_err(|e| {
-                            BaseError::InvalidJsonFormat(field_name.to_string(), e.to_string())
-                        })
+                if value.is_object() || value.is_array() {
+                    Ok(())
                 } else {
-                    // 如果值本身就是 JSON 对象或数组，直接通过
-                    if value.is_object() || value.is_array() {
-                        Ok(())
-                    } else {
-                        Err(BaseError::InvalidFieldType(
-                            field_name.to_string(),
-                            format!("期望 JSON 对象或数组，实际类型: {}", value_type_name(value)),
-                        ))
-                    }
+                    Err(BaseError::InvalidFieldType(
+                        field_name.to_string(),
+                        format!("期望 JSON 对象或数组，实际类型: {}", value_type_name(value)),
+                    ))
                 }
             }
 
@@ -550,9 +506,6 @@ impl FieldType {
                     ))
                 }
             }
-
-            // 外键类型验证：FK 值类型由目标表约束决定，此处不强校验
-            FieldType::ForeignKey { .. } => Ok(()),
         }
     }
 }
@@ -577,21 +530,14 @@ fn validate_date(field_name: &str, value: &serde_json::Value) -> Result<(), Base
 
 fn validate_datetime(field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
     if let Some(s) = value.as_str() {
-        // 先尝试 ISO 8601 形式（"%Y-%m-%dT%H:%M:%S"，与 DynamicRow 的 DATETIME 输出一致），
-        // 再退回到空格分隔形式（"%Y-%m-%d %H:%M:%S"，MySQL 文本形式）。
-        if chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").is_ok()
-            || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").is_ok()
-        {
-            Ok(())
-        } else {
-            Err(BaseError::InvalidFieldType(
-                field_name.to_string(),
-                format!(
-                    "日期时间格式无效，期望 YYYY-MM-DDTHH:MM:SS 或 YYYY-MM-DD HH:MM:SS，实际: {}",
-                    s
-                ),
-            ))
-        }
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|_| ())
+            .map_err(|_| {
+                BaseError::InvalidFieldType(
+                    field_name.to_string(),
+                    format!("日期时间格式无效，期望 RFC 3339，实际: {s}"),
+                )
+            })
     } else {
         Err(BaseError::InvalidFieldType(
             field_name.to_string(),
@@ -648,14 +594,6 @@ mod tests {
             .display_name(),
             "枚举"
         );
-        assert_eq!(
-            FieldType::ForeignKey {
-                table: "users".to_string(),
-                field: "id".to_string()
-            }
-            .display_name(),
-            "外键"
-        );
     }
 
     #[test]
@@ -709,19 +647,6 @@ mod tests {
         assert!(!enum_type.is_numeric());
         assert!(!enum_type.is_temporal());
         assert!(!enum_type.is_text());
-    }
-
-    #[test]
-    fn test_foreign_key_type() {
-        let fk_type = FieldType::ForeignKey {
-            table: "users".to_string(),
-            field: "id".to_string(),
-        };
-
-        assert_eq!(fk_type.display_name(), "外键");
-        assert!(!fk_type.is_numeric());
-        assert!(!fk_type.is_temporal());
-        assert!(!fk_type.is_text());
     }
 
     // ==================== validate 方法测试 ====================
@@ -834,11 +759,14 @@ mod tests {
     fn test_validate_bigint_invalid_type() {
         let field_type = FieldType::BigInt;
 
-        // 类型不匹配
+        // 类型不匹配或超出 MySQL BIGINT 有符号范围
         assert!(field_type
             .validate("id", &serde_json::json!("not a number"))
             .is_err());
         assert!(field_type.validate("id", &serde_json::json!(3.5)).is_err());
+        assert!(field_type
+            .validate("id", &serde_json::json!(u64::MAX))
+            .is_err());
     }
 
     #[test]
@@ -969,7 +897,13 @@ mod tests {
         let field_type = FieldType::DateTime;
 
         assert!(field_type
-            .validate("created_at", &serde_json::json!("2026-05-27 13:45:30"))
+            .validate(
+                "created_at",
+                &serde_json::json!("2026-05-27T13:45:30+08:00"),
+            )
+            .is_ok());
+        assert!(field_type
+            .validate("created_at", &serde_json::json!("2026-05-27T05:45:30Z"))
             .is_ok());
     }
 
@@ -977,10 +911,13 @@ mod tests {
     fn test_validate_datetime_invalid_format() {
         let field_type = FieldType::DateTime;
 
-        // T 分隔的 ISO 8601 形式现在被视为【有效】（与 DynamicRow 的 DATETIME 输出一致）
+        // 缺少 RFC 3339 时区信息的 naive datetime 必须拒绝。
         assert!(field_type
             .validate("created_at", &serde_json::json!("2026-05-27T13:45:30"))
-            .is_ok());
+            .is_err());
+        assert!(field_type
+            .validate("created_at", &serde_json::json!("2026-05-27 13:45:30"))
+            .is_err());
 
         // 真正非法的格式（斜杠分隔）仍然返回错误
         let result = field_type.validate("created_at", &serde_json::json!("2026/05/27 13:45:30"));
@@ -991,12 +928,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_datetime_roundtrip_from_dynamic_row() {
-        // 回归：DynamicRow 读出的 DATETIME 值为 "%Y-%m-%dT%H:%M:%S" 形式，
-        // 应能原样回写并通过 DateTime 字段校验。
+    fn test_validate_datetime_matches_json_schema_date_time_format() {
+        // JSON Schema 的 `date-time` format 使用 RFC 3339。
         let field_type = FieldType::DateTime;
-        let read_back = serde_json::json!("2026-05-27T13:45:30");
-        assert!(field_type.validate("created_at", &read_back).is_ok());
+        let value = serde_json::json!("2026-05-27T13:45:30.123+08:00");
+        assert!(field_type.validate("created_at", &value).is_ok());
     }
 
     #[test]
@@ -1050,25 +986,6 @@ mod tests {
         assert!(field_type
             .validate("content", &serde_json::json!(null))
             .is_err());
-    }
-
-    #[test]
-    fn test_validate_foreign_key_not_enforced() {
-        let field_type = FieldType::ForeignKey {
-            table: "users".to_string(),
-            field: "id".to_string(),
-        };
-
-        // FK 值类型由目标表约束决定，此处不强校验：各类型都应通过
-        assert!(field_type
-            .validate("user_id", &serde_json::json!(1))
-            .is_ok());
-        assert!(field_type
-            .validate("user_id", &serde_json::json!("uuid-string"))
-            .is_ok());
-        assert!(field_type
-            .validate("user_id", &serde_json::json!(null))
-            .is_ok());
     }
 
     #[test]
@@ -1142,27 +1059,26 @@ mod tests {
         assert!(field_type
             .validate("data", &serde_json::json!([1, 2, 3]))
             .is_ok());
-
-        // JSON 字符串（合法的 JSON）
-        assert!(field_type
-            .validate("data", &serde_json::json!("{\"key\": \"value\"}"))
-            .is_ok());
-        assert!(field_type
-            .validate("data", &serde_json::json!("[1, 2, 3]"))
-            .is_ok());
     }
 
     #[test]
     fn test_validate_json_invalid_format() {
         let field_type = FieldType::Json;
 
-        // 无效的 JSON 字符串
+        // JSON 字段只接受结构化对象/数组；即使字符串内容能解析为 JSON 也拒绝。
         let result = field_type.validate("data", &serde_json::json!("not a json"));
         assert!(result.is_err());
 
+        assert!(field_type
+            .validate("data", &serde_json::json!("{\"key\": \"value\"}"))
+            .is_err());
+        assert!(field_type
+            .validate("data", &serde_json::json!("[1, 2, 3]"))
+            .is_err());
+
         assert!(
-            matches!(result, Err(BaseError::InvalidJsonFormat(ref field, _)) if field == "data"),
-            "期望 InvalidJsonFormat 错误，实际: {:?}",
+            matches!(result, Err(BaseError::InvalidFieldType(ref field, _)) if field == "data"),
+            "期望 InvalidFieldType 错误，实际: {:?}",
             result
         );
     }

@@ -12,23 +12,24 @@
 //!
 //! ```rust,ignore
 //! use yang_base::router::{AppRouter, ModuleRouter};
-//! use yang_base::table::TableConfig;
-//! use std::sync::Arc;
+//! use yang_base::table::{Field, Table};
 //!
-//! // 创建表配置
-//! let table_config = Arc::new(TableConfig::new("users"));
+//! let users = Table::new("users")
+//!     .fields(vec![Field::id("id"), Field::string("username", 64).required()])
+//!     .build()?;
 //!
 //! // 创建模块路由器并注册内置 CRUD Actions
 //! let user_router = ModuleRouter::new("user", "用户管理")
-//!     .with_table_config(table_config.clone())
-//!     .table_typed::<User>()?
+//!     .table(users)
+//!     .crud()?
 //!     .default_permissions(vec!["user:access".to_string()])?;
 //!
 //! // 创建应用路由器并注册模块
 //! let app_router = AppRouter::new()
-//!     .register_module(user_router)?;
+//!     .module(user_router)?;
 //! ```
 
+mod api;
 mod app_router;
 mod catalog;
 pub mod middleware;
@@ -36,9 +37,10 @@ mod module_router;
 #[cfg(feature = "openapi")]
 mod openapi;
 
+pub use api::Api;
 pub use app_router::AppRouter;
 pub use catalog::{ActionDescriptor, ApiCatalog, ModuleDescriptor, RouteDescriptor};
-pub use middleware::{Middleware, Next, RequestIdMiddleware};
+pub use middleware::{Middleware, MiddlewareScope, Next, RequestIdMiddleware};
 pub use module_router::ModuleRouter;
 pub use module_router::BUILTIN_ACTION_NAMES;
 #[cfg(feature = "openapi")]

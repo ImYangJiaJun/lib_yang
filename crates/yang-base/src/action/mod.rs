@@ -17,9 +17,8 @@
 //! ```rust,ignore
 //! use yang_base::action::{Request, ApiResponse, ActionContext};
 //! use yang_base::action::builtin::AddAction;
-//! use yang_base::table::TableConfig;
+//! use yang_base::table::Record;
 //! use serde_json::json;
-//! use std::sync::Arc;
 //!
 //! // 创建请求
 //! let request = Request::new(json!({
@@ -44,9 +43,9 @@
 //! // 创建失败响应
 //! let response = ApiResponse::fail(400001, "参数错误");
 //!
-//! // 使用内置 Action（表配置在 dispatch 时由 ActionContext 提供）
-//! let _table_config = Arc::new(TableConfig::new("users"));
-//! // let add_action = AddAction::<User>::new();
+//! // 内置 Action 直接接收 Record；表定义在 dispatch 时由模块注入。
+//! let input = Record::new().set("username", "alice");
+//! let add_action = AddAction::new();
 //! ```
 
 mod action_trait;

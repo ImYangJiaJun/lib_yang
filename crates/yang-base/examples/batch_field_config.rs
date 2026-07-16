@@ -1,117 +1,94 @@
-//! 批量配置表字段示例
+//! Schema-first 批量定义表字段示例
 //!
-//! 展示如何使用 fields() 方法批量配置表字段，避免重复调用 field() 方法。
+//! 展示如何使用 `Table::fields` 一次声明字段，并在 `build` 时生成不可变的
+//! `TableDefinition`。查询和 Action 的动态行数据统一使用 `Record`。
 
 use serde_json::json;
-use yang_base::table::{FieldConfig, FieldType, SortOrder, TableConfig, Validator};
+use yang_base::router::ModuleRouter;
+use yang_base::table::{col, Field, Record, Table, TableDefinition};
 
-fn main() {
-    // 方法1：传统方式 - 逐个添加字段（不推荐）
-    let _table_old_way = TableConfig::new("users")
-        .display_name("用户表")
-        .primary_key("id")
-        .field(FieldConfig::new("id", FieldType::BigInt).required(true))
-        .expect("有效字段配置应注册成功")
-        .field(
-            FieldConfig::new("username", FieldType::String { max_length: 50 })
-                .display_name("用户名")
-                .required(true),
-        )
-        .expect("有效字段配置应注册成功")
-        .field(
-            FieldConfig::new("email", FieldType::String { max_length: 100 })
-                .display_name("邮箱")
-                .required(true),
-        )
-        .expect("有效字段配置应注册成功");
-
-    // 方法2：批量添加字段（推荐）
-    let table_new_way = TableConfig::new("users")
-        .display_name("用户表")
-        .primary_key("id")
-        .fields(vec![
-            FieldConfig::new("id", FieldType::BigInt)
-                .display_name("ID")
-                .required(true),
-            FieldConfig::new("username", FieldType::String { max_length: 50 })
-                .display_name("用户名")
-                .required(true)
-                .validator(Validator::MinLength(3))
-                .validator(Validator::MaxLength(50)),
-            FieldConfig::new("email", FieldType::String { max_length: 100 })
-                .display_name("邮箱")
-                .required(true)
-                .validator(Validator::Email),
-            FieldConfig::new("age", FieldType::Integer)
-                .display_name("年龄")
-                .validator(Validator::Min(18.0))
-                .validator(Validator::Max(100.0)),
-            FieldConfig::new(
-                "status",
-                FieldType::Enum {
-                    values: vec!["active".to_string(), "inactive".to_string()],
-                },
-            )
-            .display_name("状态")
-            .default_value(json!("active")),
+fn users_table() -> Result<TableDefinition, yang_base::BaseError> {
+    Table::new("users")
+        .label("用户表")
+        .fields([
+            Field::id("id").label("ID"),
+            Field::string("username", 50)
+                .label("用户名")
+                .required()
+                .length(3..=50)
+                .unique()
+                .filterable()
+                .sortable(),
+            Field::string("email", 100)
+                .label("邮箱")
+                .required()
+                .email()
+                .unique(),
+            Field::integer("age").label("年龄").min(18.0).max(100.0),
+            Field::enumeration("status", ["active", "inactive"])
+                .label("状态")
+                .default(json!("active")),
+            Field::created_at("created_at"),
+            Field::updated_at("updated_at"),
+            Field::soft_delete("deleted_at"),
         ])
-        .expect("有效字段配置应注册成功")
-        .unique_index(vec!["username".to_string()])
-        .unique_index(vec!["email".to_string()])
-        .default_order(vec![("created_at".to_string(), SortOrder::Desc)])
-        .timestamps(true, true, true);
+        .default_order(col("created_at").desc())
+        .build()
+}
 
-    println!("表名: {}", table_new_way.table_name);
-    println!("显示名称: {}", table_new_way.display_name);
-    println!("字段数量: {}", table_new_way.fields.len());
-    println!("唯一索引数量: {}", table_new_way.unique_indexes.len());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 数组适合字段集合固定的表。
+    let users = users_table()?;
+    println!("表名: {}", users.name());
+    println!("显示名称: {}", users.label());
+    println!("主键: {}", users.primary_key());
+    println!("字段数量: {}", users.field_count());
 
-    // 方法3：从迭代器添加字段
-    let field_configs = vec![
-        FieldConfig::new("id", FieldType::BigInt).required(true),
-        FieldConfig::new("name", FieldType::String { max_length: 50 }).required(true),
-        FieldConfig::new("description", FieldType::Text),
+    if let Some(username) = users.field("username") {
+        println!(
+            "用户名字段: {} ({:?}), 必填: {}",
+            username.label(),
+            username.field_type(),
+            username.is_required()
+        );
+    }
+
+    // Vec 和其他迭代器同样可以直接传给 fields。
+    let product_fields = vec![
+        Field::id("id"),
+        Field::string("name", 50).required(),
+        Field::text("description").nullable(),
     ];
+    let products = Table::new("products")
+        .label("产品表")
+        .fields(product_fields)
+        .build()?;
+    println!("\n产品表字段数量: {}", products.field_count());
 
-    let table_from_iter = TableConfig::new("products")
-        .display_name("产品表")
-        .fields_from_iter(field_configs)
-        .expect("有效字段配置应注册成功");
+    // 先在 Vec 中组合基础字段和特殊字段，再一次性交给 Table 构建器。
+    let mut order_fields = vec![
+        Field::id("id"),
+        Field::string("order_no", 50).required().unique(),
+        Field::bigint("user_id").required().index(),
+        Field::float("amount").required().min(0.0).max(999_999.0),
+    ];
+    order_fields.push(Field::json("metadata").label("元数据").nullable());
+    let orders = Table::new("orders")
+        .label("订单表")
+        .fields(order_fields)
+        .build()?;
+    println!("订单表字段数量: {}", orders.field_count());
 
-    println!("\n产品表字段数量: {}", table_from_iter.fields.len());
+    // Record 是动态查询结果和 CRUD 输入使用的统一行类型。
+    let input = Record::new()
+        .set("username", "alice")
+        .set("email", "alice@example.com")
+        .set("status", "active");
+    let username: String = input.require("username")?;
+    println!("Record 中的用户名: {username}");
 
-    // 方法4：混合使用 - 先批量添加基本字段，再单独添加特殊字段
-    let table_mixed = TableConfig::new("orders")
-        .display_name("订单表")
-        .fields(vec![
-            FieldConfig::new("id", FieldType::BigInt).required(true),
-            FieldConfig::new("order_no", FieldType::String { max_length: 50 }).required(true),
-            FieldConfig::new("user_id", FieldType::BigInt).required(true),
-            FieldConfig::new("amount", FieldType::Float)
-                .required(true)
-                .validator(Validator::Min(0.0))
-                .validator(Validator::Max(999999.0)),
-        ])
-        .expect("有效字段配置应注册成功")
-        // 单独添加复杂的 JSON 字段
-        .field(
-            FieldConfig::new("metadata", FieldType::Json)
-                .display_name("元数据")
-                .required(false),
-        )
-        .expect("有效字段配置应注册成功")
-        .timestamps(true, true, false);
+    // 绑定表定义后，crud() 一次注册标准增删改查与 schema API。
+    let _router = ModuleRouter::new("user", "用户管理").table(users).crud()?;
 
-    println!("\n订单表字段数量: {}", table_mixed.fields.len());
-
-    // 验证字段
-    match table_new_way.validate_field("username") {
-        Ok(_) => println!("\n✅ 字段 'username' 存在"),
-        Err(e) => println!("\n❌ 错误: {}", e),
-    }
-
-    match table_new_way.validate_field("nonexistent") {
-        Ok(_) => println!("✅ 字段 'nonexistent' 存在"),
-        Err(e) => println!("❌ 字段 'nonexistent' 不存在: {}", e),
-    }
+    Ok(())
 }

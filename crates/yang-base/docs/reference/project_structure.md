@@ -1,602 +1,162 @@
-# yang-base 项目结构解析
+# yang-base 0.2.0 项目结构
 
-## 项目概述
+`yang-base` 是应用侧后端基础库。0.2.0 的核心边界是 schema-first：应用声明表和字段，构建不可变定义，再由 Router、数据库初始化器与 CRUD 共享同一份契约。
 
-yang-base 是 YANG 项目的基础库，提供插件管理、数据库访问、HTTP 客户端、JWT Token 管理等核心功能，用于构建后端服务器应用。
+## 核心数据流
 
-## 模块架构图
+```text
+Table + Field
+  -> Table::build()
+  -> TableDefinition
+  -> ModuleRouter::table(...).crud()
+  -> AppRouter
+     ├── table_definitions() -> DatabaseInitializer::sync_app_schema(...)
+     └── catalog()           -> HTTP adapter / OpenAPI
 
-```
-yang-base/
-├── action/          # Action 系统 - 业务逻辑处理
-├── database/        # 数据库管理 - MySQL 和 Redis
-├── error/           # 错误处理 - 统一错误类型
-├── http/            # HTTP 客户端 - 外部 API 调用
-├── plugin/          # 插件管理 - 模块化扩展
-├── router/          # 路由系统 - 请求分发
-├── table/           # 表配置系统 - 数据表元数据
-└── token/           # Token 管理 - JWT 认证
-```
+Custom TypedHandler
+  -> TypedAction / DynAction
+  -> Api::{get, post, put, patch, delete}
+  -> ModuleRouter::api(...)
 
----
-
-## 核心模块详解
-
-### 1. 📦 action - Action 系统模块
-
-**职责**: 提供业务逻辑处理框架，类似于 MVC 中的 Controller 层
-
-**核心组件**:
-- `Action` trait - 定义 Action 接口
-- `ActionContext` - Action 执行上下文，包含请求、数据库、配置等
-- `Request` - 请求封装（请求体、请求头、查询参数、路径参数）
-- `ApiResponse` - 统一响应格式
-
-**内置 Actions** (`builtin/`):
-- `AddAction` - 添加数据（INSERT）
-- `PutAction` - 更新数据（UPDATE）
-- `DelAction` - 删除数据（DELETE）
-- `GetAction` - 获取单条数据（SELECT WHERE id）
-- `SelectAction` - 查询列表数据（SELECT with pagination）
-- `TableAction` - 获取表配置信息
-
-**使用场景**:
-```rust
-// 自定义 Action
-struct LoginAction;
-
-#[async_trait]
-impl Action for LoginAction {
-    async fn execute(&self, context: ActionContext) -> Result<ApiResponse, BaseError> {
-        let username = context.param::<String>("username")?;
-        let password = context.param::<String>("password")?;
-        
-        // 业务逻辑处理
-        let user = authenticate(username, password).await?;
-        
-        Ok(ApiResponse::success(json!({"user": user}), "登录成功"))
-    }
-}
+Request
+  -> ActionContext
+  -> TableQuery
+  -> Record / typed Action output
 ```
 
-**文件结构**:
-```
-action/
-├── action_trait.rs      # Action trait 定义
-├── context.rs           # ActionContext 实现
-├── request.rs           # Request 结构体
-├── response.rs          # ApiResponse 结构体
-├── builtin/             # 内置 Actions
-│   ├── add.rs / add_action.rs
-│   ├── put.rs / put_action.rs
-│   ├── del.rs / del_action.rs
-│   ├── get.rs / get_action.rs
-│   ├── select.rs / select_action.rs
-│   └── table.rs / table_action.rs
-└── __tests__/           # 单元测试
-```
+## 源码目录
 
----
-
-### 2. 🗄️ database - 数据库管理模块
-
-**职责**: 提供全局数据库访问接口，支持 MySQL 和 Redis
-
-**核心组件**:
-- `GlobalDatabase` - MySQL 全局单例
-- `GlobalRedis` - Redis 全局单例
-- `DatabaseInitializer` - 数据库初始化器（支持插件 SQL 脚本）
-
-**功能特性**:
-- 线程安全的全局单例模式（使用 `OnceLock`）
-- 封装 `yang-db` 库的功能
-- 支持查询构建器（QueryBuilder）
-- 支持事务（Transaction）
-- 支持原生 SQL 查询
-
-**使用场景**:
-```rust
-// 初始化 MySQL
-GlobalDatabase::init("mysql://user:pass@localhost/db", DatabaseConfig::default()).await?;
-
-// 使用查询构建器
-let users = GlobalDatabase::table("users")?
-    .where_eq("status", "active")?
-    .select::<User>()
-    .await?;
-
-// 初始化 Redis
-GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
-
-// 使用 Redis
-GlobalRedis::set("key", "value", Some(3600)).await?;
-let value = GlobalRedis::get("key").await?;
-```
-
-**文件结构**:
-```
-database/
-├── global.rs            # GlobalDatabase 实现
-├── global_redis.rs      # GlobalRedis 实现
-├── initializer.rs       # DatabaseInitializer 实现
-└── mod.rs               # 模块导出
-```
-
----
-
-### 3. ⚠️ error - 错误处理模块
-
-**职责**: 定义统一的错误类型，便于错误处理和传播
-
-**核心组件**:
-- `BaseError` - 统一错误枚举类型
-
-**错误分类**:
-- **1xxxxx**: 插件管理错误
-- **2xxxxx**: 数据库错误（MySQL）
-- **21xxxx**: Redis 错误
-- **3xxxxx**: HTTP 客户端错误
-- **4xxxxx**: Token 管理错误
-- **5xxxxx**: 序列化错误
-- **6xxxxx**: 字段验证错误
-- **7xxxxx**: Action 系统错误
-- **9xxxxx**: 通用错误
-
-**使用场景**:
-```rust
-// 错误传播
-fn validate_user(user: &User) -> Result<(), BaseError> {
-    if user.name.is_empty() {
-        return Err(BaseError::ParamInvalid("name".to_string(), "名称不能为空".to_string()));
-    }
-    Ok(())
-}
-
-// 错误码获取
-let error = BaseError::DatabaseConnectionFailed("连接超时".to_string());
-println!("错误码: {}", error.code()); // 输出: 200001
-```
-
-**文件结构**:
-```
-error/
-└── mod.rs               # BaseError 定义
-```
-
----
-
-### 4. 🌐 http - HTTP 客户端模块
-
-**职责**: 提供 HTTP 请求能力，用于调用外部 API
-
-**核心组件**:
-- `HttpClient` - HTTP 客户端（支持全局单例和独立实例）
-- `RequestBuilder` - 请求构建器（链式调用）
-- `Response` - 响应处理器
-
-**功能特性**:
-- 支持所有 HTTP 方法（GET、POST、PUT、DELETE、PATCH）
-- 支持设置请求头、查询参数
-- 支持多种请求体格式（JSON、表单、文本、字节流）
-- 支持 Bearer Token 认证
-- 支持自定义超时时间
-- 支持默认 Token 设置
-
-**使用场景**:
-```rust
-// 初始化全局客户端
-HttpClient::init_global(30)?;
-
-// GET 请求
-let response = HttpClient::global()?
-    .get("https://api.example.com/users")
-    .query("page", "1")
-    .bearer_token("your_token")
-    .send()
-    .await?;
-
-// POST JSON 请求
-let user = json!({"name": "Alice", "email": "alice@example.com"});
-let response = HttpClient::global()?
-    .post("https://api.example.com/users")
-    .json(&user)?
-    .send()
-    .await?;
-```
-
-**文件结构**:
-```
-http/
-├── client.rs            # HttpClient 实现
-├── request.rs           # RequestBuilder 实现
-├── response.rs          # Response 实现
-└── __tests__/           # 单元测试
-```
-
----
-
-### 5. 🔌 plugin - 插件管理模块
-
-**职责**: 提供插件注册、管理和生命周期控制
-
-**核心组件**:
-- `Plugin` trait - 插件接口定义
-- `PluginManager` - 插件管理器
-
-**功能特性**:
-- 插件注册和查找
-- 插件依赖管理（拓扑排序）
-- 插件生命周期回调（on_register、on_init、on_shutdown）
-- 插件配置管理（JSON Schema 验证）
-- 数据库初始化 SQL 脚本支持
-- 数据库迁移脚本支持
-
-**使用场景**:
-```rust
-// 定义插件
-struct UserPlugin;
-
-#[async_trait]
-impl Plugin for UserPlugin {
-    fn name(&self) -> &str {
-        "user"
-    }
-    
-    fn version(&self) -> &str {
-        "1.0.0"
-    }
-    
-    fn init_sql(&self) -> Vec<String> {
-        vec![
-            "CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, name VARCHAR(100))".to_string()
-        ]
-    }
-    
-    async fn on_init(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        println!("用户插件初始化完成");
-        Ok(())
-    }
-}
-
-// 注册插件
-let manager = PluginManager::new();
-manager.register(UserPlugin).await?;
-```
-
-**文件结构**:
-```
-plugin/
-└── mod.rs               # Plugin trait 和 PluginManager 实现
-```
-
----
-
-### 6. 🚦 router - 路由系统模块
-
-**职责**: 提供请求路由和分发功能
-
-**核心组件**:
-- `ModuleRouter` - 模块路由器
-
-**功能特性**:
-- 注册和查找 Action
-- 路由匹配（plugin/module/action）
-- Action 执行
-
-**使用场景**:
-```rust
-// 创建路由器
-let router = ModuleRouter::new();
-
-// 注册 Action
-router.register("user", "profile", "get", Arc::new(GetProfileAction));
-router.register("user", "profile", "update", Arc::new(UpdateProfileAction));
-
-// 执行 Action
-let response = router.execute("user", "profile", "get", context).await?;
-```
-
-**文件结构**:
-```
-router/
-├── module_router.rs     # ModuleRouter 实现
-└── __tests__/           # 单元测试
-```
-
----
-
-### 7. 📋 table - 表配置系统模块
-
-**职责**: 提供数据表元数据管理和查询构建
-
-**核心组件**:
-- `TableConfig` - 表配置（字段定义、主键、索引等）
-- `FieldConfig` - 字段配置（类型、验证规则、权限等）
-- `FieldType` - 字段类型枚举
-- `TableQuery` - 表查询构建器（封装 yang-db QueryBuilder）
-- `QueryParams` - 查询参数（分页、排序、筛选）
-- `Validator` - 字段验证器
-
-**功能特性**:
-- 字段类型定义（字符串、整数、浮点数、布尔、日期、JSON 等）
-- 字段验证（必填、长度、范围、正则、枚举等）
-- 字段权限控制（只读、隐藏、角色权限）
-- 查询构建（WHERE、ORDER BY、LIMIT、OFFSET）
-- 批量字段配置
-
-**使用场景**:
-```rust
-// 定义表配置
-let mut table_config = TableConfig::new("users");
-table_config.set_primary_key("id");
-
-// 添加字段配置
-let name_field = FieldConfig::new("name", FieldType::String)
-    .required(true)
-    .max_length(100)
-    .label("用户名");
-table_config.add_field(name_field);
-
-// 使用查询构建器
-let query = TableQuery::new(db, &table_config);
-let users = query
-    .where_eq("status", "active")?
-    .order_by("created_at", SortOrder::Desc)?
-    .page(1, 10)?
-    .select::<User>()
-    .await?;
-```
-
-**文件结构**:
-```
-table/
-├── table_config.rs      # TableConfig 实现
-├── field_config.rs      # FieldConfig 实现
-├── field_type.rs        # FieldType 枚举
-├── table_query.rs       # TableQuery 实现
-├── query_params.rs      # QueryParams 实现
-├── validator.rs         # Validator 实现
-└── __tests__/           # 单元测试
-```
-
----
-
-### 8. 🔐 token - Token 管理模块
-
-**职责**: 提供 JWT Token 生成、验证和管理
-
-**核心组件**:
-- `TokenManager` - Token 管理器
-- `Claims` - JWT 声明（用户信息、过期时间等）
-
-**功能特性**:
-- JWT Token 生成
-- JWT Token 验证
-- Token 过期检查
-- 自定义声明支持
-
-**使用场景**:
-```rust
-// 创建 Token 管理器
-let manager = TokenManager::new("your_secret_key")?;
-
-// 生成 Token
-let claims = Claims {
-    sub: "user123".to_string(),
-    exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-    ..Default::default()
-};
-let token = manager.generate(&claims)?;
-
-// 验证 Token
-let claims = manager.verify(&token)?;
-println!("用户 ID: {}", claims.sub);
-```
-
-**文件结构**:
-```
-token/
-├── manager.rs           # TokenManager 实现
-└── __tests__/           # 单元测试
-```
-
----
-
-## 模块依赖关系
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                      应用层                              │
-│  (使用 yang-base 构建的后端服务)                         │
-└─────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────┐
-│                    action (业务逻辑层)                   │
-│  - Action trait                                         │
-│  - ActionContext                                        │
-│  - 内置 Actions (CRUD)                                  │
-└─────────────────────────────────────────────────────────┘
-         ↓              ↓              ↓              ↓
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│   database   │ │     http     │ │    token     │ │    table     │
-│  (数据访问)  │ │  (外部调用)  │ │   (认证)     │ │  (元数据)    │
-└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
-         ↓                                                  ↓
-┌──────────────┐                                   ┌──────────────┐
-│    plugin    │                                   │   validator  │
-│  (插件管理)  │                                   │  (字段验证)  │
-└──────────────┘                                   └──────────────┘
-         ↓
-┌─────────────────────────────────────────────────────────┐
-│                    error (错误处理层)                    │
-│  - BaseError (统一错误类型)                              │
-└─────────────────────────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────────────────────────┐
-│                  yang-db (数据库抽象层)                  │
-│  - QueryBuilder                                         │
-│  - Transaction                                          │
-│  - Redis Client                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 测试结构
-
-每个模块都包含完整的测试：
-
-### 单元测试
-位于各模块的 `__tests__/` 目录下：
-```
-src/
-├── action/__tests__/
-├── http/__tests__/
-├── router/__tests__/
-└── table/__tests__/
-```
-
-### 集成测试
-位于项目根目录的 `tests/` 目录下：
-```
-tests/
-├── database_test.rs
-├── database_integration_test.rs
-├── database_initializer_test.rs
-├── error_test.rs
-├── field_type_test.rs
-├── plugin_test.rs
-├── table_query_crud_test.rs
-└── table_query_paginate_test.rs
-```
-
-### 示例代码
-位于 `examples/` 目录下：
-```
-examples/
-├── batch_field_config.rs
-├── database_example.rs
-├── database_initializer_example.rs
-└── field_type_demo.rs
-```
-
----
-
-## 文档结构
-
-### 根目录文档
-```
+```text
 crates/yang-base/
-├── README.md                    # 项目主文档
-├── USAGE_GUIDE.md               # 使用指南
-├── QUICK_REFERENCE.md           # 快速参考
-├── INSTALL.md                   # 安装指南
-├── ASYNC_AWAIT_GUIDE.md         # 异步编程指南
-├── BATCH_FIELD_CONFIG.md        # 批量字段配置
-├── TABLE_CONFIG_GUIDE.md        # 表配置指南
-└── REDIS_GUIDE.md               # Redis 使用指南
+├── src/
+│   ├── action/          # TypedHandler、类型擦除层、上下文与内置 CRUD
+│   ├── database/        # MySQL/Redis 全局访问、初始化与 schema 同步
+│   ├── error/           # BaseError 与稳定错误码
+│   ├── http/            # 可选 HTTP 客户端
+│   ├── plugin/          # 插件注册、依赖和生命周期
+│   ├── router/          # Api、ModuleRouter、AppRouter、ApiCatalog
+│   ├── table/           # Table、Field、TableDefinition、Record、TableQuery
+│   ├── token/           # 可选 JWT 与 Redis 撤销列表
+│   ├── admin.rs         # 可选后台展示元数据
+│   ├── config.rs        # 全局配置
+│   ├── lifecycle.rs     # 应用生命周期钩子
+│   ├── observability.rs # 慢查询等可观测性配置
+│   └── lib.rs           # 模块导出与 feature 边界
+├── tests/               # 集成测试和 feature 契约测试
+├── examples/            # 可运行示例
+└── docs/                # API、指南、示例与参考文档
 ```
 
-### 模块文档
-```
+## 模块职责
+
+### table
+
+公开应用模型：
+
+- `Table`：表声明 builder。
+- `Field`：存储类型、校验、权限、索引和关系元数据 builder。
+- `TableDefinition`：`build()` 生成的不可变运行时契约。
+- `Record`：内置 CRUD 和动态查询使用的透明 JSON object。
+- `TableHandle` / `TableQuery`：绑定数据库后的权限感知查询入口。
+
+内部归一化结构只服务于 schema 校验、同步与查询执行，不是应用声明入口。
+
+### action
+
+自定义 Action 采用三层结构：
+
+1. 应用实现 `TypedHandler`，固定 `Input` 和 `Output`。
+2. `#[derive(Action)]` 生成 `TypedAction` 元数据和桥接实现。
+3. Router 以 `DynAction` 保存异构 Action，并在 dispatch 时恢复类型化输入输出。
+
+`ActionContext` 提供认证用户、`RequestMeta`、全局工具和当前模块的 `TableDefinition` / `TableQuery`。
+
+### router
+
+- `Api`：把 Action、HTTP method、path、operation id、状态码和标签绑定为一个值。
+- `ModuleRouter`：拥有模块主表、附属 schema、Action、API 路由、中间件和默认权限。
+- `AppRouter`：汇总模块、应用级 dispatch 与全部表定义。
+- `ApiCatalog`：确定性的 Action/API 描述源；内置 CRUD 的 schema 与权限绑定具体主表，可选投影 OpenAPI 3.1。
+
+主表使用 `ModuleRouter::table`；仅参与启动期 schema 汇总的附属表使用 `ModuleRouter::schema`。启用 `mysql` 后，`.crud()` 一次注册六个标准 API，并自动为写接口配置 `{module}:write`、为读接口配置 `{module}:read`。
+
+公开与受保护 Action 可以位于同一 `ModuleRouter`。`TokenAuthMiddleware` 只应用于 `MiddlewareScope::ProtectedActions`，普通中间件默认覆盖全部 Action。路由在模块注册和应用 Catalog 构建期按 Axum 0.8 的 `{name}` / `{*name}` 模板语法校验，transport adapter 不再承担发现非法模板或冲突的职责。
+
+### database
+
+- `GlobalDatabase` / `GlobalRedis`：进程级数据库客户端入口。
+- `DatabaseInitializer`：插件 migration、schema 验证和应用表 additive 同步。
+- `SchemaValidationReport`：记录兼容、缺失和破坏性差异。
+
+应用启动时应先完成底层数据库与插件初始化，再调用 `sync_app_schema(&app)`。同步器只创建缺失对象；不兼容差异会 fail-fast，不自动执行破坏性变更。
+
+### plugin、token、http
+
+- `plugin` 负责构建期注册、依赖排序、配置 schema 和生命周期。
+- `token` 负责 JWT 签发、验证、刷新和可选撤销检查。
+- `http` 提供带超时、重试和熔断的出站请求客户端。
+
+这些模块与 Action/Table 主链路解耦，通过 feature 按需启用。
+
+## 推荐应用目录
+
+```text
 src/
-├── action/README.md             # Action 系统文档
-├── action/ACTION_EXAMPLES.md    # Action 示例
-├── action/builtin/README.md     # 内置 Actions 文档
-├── database/README.md           # 数据库管理文档
-└── http/README.md               # HTTP 客户端文档
+├── tables/
+│   ├── mod.rs
+│   └── users.rs       # fn users_table() -> Result<TableDefinition>
+├── actions/
+│   ├── mod.rs
+│   └── profile.rs     # TypedHandler + #[derive(Action)]
+├── router.rs          # ModuleRouter + Api + AppRouter
+├── bootstrap.rs       # database/plugin init + sync_app_schema
+└── main.rs            # transport adapter and lifecycle
 ```
 
----
+职责边界：
 
-## 设计原则
+- `tables` 只声明 schema，不持有连接池。
+- `actions` 只实现类型化业务输入输出，通过 `ActionContext` 访问能力。
+- `router` 原子绑定 Action 与 HTTP 元数据，并组合标准 CRUD。
+- `bootstrap` 汇总外部资源初始化与 schema 同步顺序。
+- transport adapter 只负责协议转换和构造 `RequestMeta`。
 
-### 1. 模块化设计
-每个模块职责单一，相互独立，便于维护和扩展。
+`TableQuery` 是用户可控查询的类型与授权边界：WHERE 字段、操作符和每个值都要匹配 `TableDefinition`，与 `null` 的 `Eq` / `Ne` 比较规范化为 `IS NULL` / `IS NOT NULL`。
 
-### 2. 全局单例模式
-数据库、HTTP 客户端等资源使用全局单例，避免重复创建连接。
+## Feature 边界
 
-### 3. 统一错误处理
-所有模块使用统一的 `BaseError` 类型，便于错误传播和处理。
+| Feature | 主要能力 |
+|---|---|
+| `mysql` | 表绑定、`TableQuery` 执行、内置 CRUD、schema 同步 |
+| `redis` | `GlobalRedis` 与 Redis 数据结构 API |
+| `token` | JWT 与撤销列表；自动启用 `redis` |
+| `http` | 出站 HTTP 客户端 |
+| `validator` | 严格 Email、Phone、Regex 校验 |
+| `plugin-schema` | 插件配置 JSON Schema 校验 |
+| `openapi` | `ApiCatalog` 到 OpenAPI 3.1 |
+| `admin-metadata` | 对核心稳定 ID 的只读展示引用 |
 
-### 4. 异步优先
-所有 I/O 操作都是异步的，基于 `tokio` 运行时。
+## 验证位置
 
-### 5. 类型安全
-充分利用 Rust 的类型系统，在编译期捕获错误。
+- 模块单元测试：`src/**/__tests__/`
+- crate 集成测试：`tests/`
+- feature 组合：`tests/feature_contract.rs`
+- 发布文档契约：`tests/release_docs_contract.rs`
+- 示例编译：`cargo check -p yang-base --examples --all-features`
 
-### 6. 文档完整
-所有公开 API 都有完整的中文文档注释。
+常用验证：
 
----
-
-## 使用流程
-
-### 典型的应用启动流程
-
-```rust
-use yang_base::*;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 初始化日志
-    env_logger::init();
-    
-    // 2. 初始化数据库
-    database::GlobalDatabase::init(
-        "mysql://user:pass@localhost/db",
-        DatabaseConfig::default()
-    ).await?;
-    
-    // 3. 初始化 Redis
-    database::GlobalRedis::init(
-        "redis://127.0.0.1:6379",
-        RedisConfig::default()
-    ).await?;
-    
-    // 4. 初始化 HTTP 客户端
-    http::HttpClient::init_global(30)?;
-    
-    // 5. 创建插件管理器
-    let plugin_manager = plugin::PluginManager::new();
-    
-    // 6. 注册插件
-    plugin_manager.register(UserPlugin).await?;
-    plugin_manager.register(OrderPlugin).await?;
-    
-    // 7. 初始化数据库表（执行插件的 init_sql）
-    let initializer = database::DatabaseInitializer::new(plugin_manager);
-    initializer.initialize().await?;
-    
-    // 8. 创建路由器
-    let router = router::ModuleRouter::new();
-    
-    // 9. 注册 Actions
-    router.register("user", "profile", "get", Arc::new(GetProfileAction));
-    router.register("user", "profile", "update", Arc::new(UpdateProfileAction));
-    
-    // 10. 启动 HTTP 服务器
-    // ... 启动 Actix-web 或其他 HTTP 框架
-    
-    Ok(())
-}
+```bash
+cargo fmt --check
+cargo test --lib -p yang-base
+cargo test -p yang-base --test release_docs_contract
+cargo check -p yang-base --examples --all-features
+cargo clippy -p yang-base --all-targets --all-features -- -D warnings
 ```
 
----
+## 继续阅读
 
-## 总结
-
-yang-base 是一个功能完整、设计良好的 Rust 后端基础库，提供了：
-
-✅ **完整的数据访问层** - MySQL 和 Redis 支持  
-✅ **灵活的业务逻辑框架** - Action 系统  
-✅ **强大的插件机制** - 模块化扩展  
-✅ **便捷的 HTTP 客户端** - 外部 API 调用  
-✅ **安全的认证系统** - JWT Token 管理  
-✅ **丰富的表配置系统** - 元数据管理和验证  
-✅ **统一的错误处理** - BaseError 类型  
-✅ **完整的测试覆盖** - 单元测试和集成测试  
-✅ **详细的文档** - 中文文档和示例代码  
-
-适合用于构建企业级 Rust 后端应用。
+- [快速开始](../guides/quick_start.md)
+- [表定义指南](../guides/table_config.md)
+- [内置 CRUD Actions](../api/action_builtin.md)
+- [批量声明表字段](../examples/batch_field_config.md)
