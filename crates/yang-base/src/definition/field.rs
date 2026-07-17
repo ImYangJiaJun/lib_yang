@@ -58,8 +58,10 @@ pub struct AccessSpec {
     pub readable: AccessRule,
     /// 写入规则。
     pub writable: AccessRule,
-    /// 是否允许筛选。
+    /// 是否允许全文关键词搜索。
     pub searchable: bool,
+    /// 是否允许结构化条件筛选。
+    pub filterable: bool,
     /// 是否允许排序。
     pub sortable: bool,
     /// 是否为敏感字段。
@@ -72,6 +74,7 @@ impl Default for AccessSpec {
             readable: AccessRule::Everyone,
             writable: AccessRule::Everyone,
             searchable: false,
+            filterable: false,
             sortable: false,
             secret: false,
         }
@@ -251,7 +254,7 @@ impl FieldSpec {
         }
         field = apply_read_rule(field, self.access.readable);
         field = apply_write_rule(field, self.access.writable);
-        if self.access.searchable {
+        if self.access.searchable || self.access.filterable {
             field = field.filterable();
         }
         if self.access.sortable {
@@ -437,9 +440,15 @@ macro_rules! simple_builder {
                 self
             }
 
-            /// 设置是否允许筛选。
+            /// 设置是否允许全文关键词搜索。
             pub fn searchable(mut self, value: bool) -> Self {
                 self.0.access.searchable = value;
+                self
+            }
+
+            /// 设置是否允许结构化条件筛选。
+            pub fn filterable(mut self, value: bool) -> Self {
+                self.0.access.filterable = value;
                 self
             }
 

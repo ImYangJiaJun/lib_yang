@@ -95,6 +95,7 @@ struct RuntimeTableView {
     columns: Arc<[RuntimeTableColumn]>,
     actions: Arc<[RuntimeViewAction]>,
     tree: Option<RuntimeTreeView>,
+    default_sort: Arc<[RuntimeTableSort]>,
     policy: AuthorizationPolicy,
 }
 
@@ -102,6 +103,12 @@ struct RuntimeTableView {
 struct RuntimeTreeView {
     schema: super::TreeViewSchema,
     fields: [RuntimeTableColumn; 3],
+}
+
+#[derive(Clone)]
+struct RuntimeTableSort {
+    schema: super::TableSortSchema,
+    column: RuntimeTableColumn,
 }
 
 #[derive(Clone)]
@@ -231,6 +238,7 @@ impl Registry {
                             .collect(),
                     },
                     tree: project_tree(view, context),
+                    query: project_table_query(view, context),
                     actions: allowed_actions
                         .iter()
                         .map(|(runtime, _)| runtime.ui_schema.operation_id.clone())
@@ -662,6 +670,7 @@ fn compile_runtime_table_views(
                 columns: columns.into(),
                 actions: Arc::from(Vec::new()),
                 tree: None,
+                default_sort: Arc::from(Vec::new()),
                 policy,
             });
             continue;
@@ -736,6 +745,38 @@ fn compile_runtime_table_views(
                     })
                 })
                 .transpose()?;
+            let mut seen_sort_fields = BTreeSet::new();
+            let default_sort = view
+                .default_sort
+                .iter()
+                .map(|sort| {
+                    if !view.fields.contains(&sort.field) || !seen_sort_fields.insert(&sort.field) {
+                        return Err(BuildError::InvalidReference {
+                            kind: "View Default Sort",
+                            reference: sort.field.to_string(),
+                        });
+                    }
+                    let field = fields.get(&sort.field).copied().ok_or_else(|| {
+                        BuildError::InvalidReference {
+                            kind: "View Default Sort",
+                            reference: sort.field.to_string(),
+                        }
+                    })?;
+                    if !field.access.sortable {
+                        return Err(BuildError::InvalidReference {
+                            kind: "View Default Sort",
+                            reference: format!("{}: 字段未允许排序", sort.field),
+                        });
+                    }
+                    Ok(RuntimeTableSort {
+                        schema: super::TableSortSchema {
+                            field: sort.field.field().to_string(),
+                            direction: sort.direction,
+                        },
+                        column: runtime_table_column(field, registry)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
                 view_id: format!("{}.{}", module.name, view.name),
                 title: view.name.to_string(),
@@ -743,6 +784,7 @@ fn compile_runtime_table_views(
                 columns: columns.into(),
                 actions: actions.into(),
                 tree,
+                default_sort: default_sort.into(),
                 policy: policy.clone(),
             });
         }
@@ -756,6 +798,38 @@ fn project_tree(view: &RuntimeTableView, context: &ActionContext) -> Option<supe
         .iter()
         .all(|column| column_readable(column, context))
         .then(|| tree.schema.clone())
+}
+
+fn project_table_query(
+    view: &RuntimeTableView,
+    context: &ActionContext,
+) -> super::TableQuerySchema {
+    let readable_columns = view
+        .columns
+        .iter()
+        .filter(|column| column_readable(column, context));
+    let search_fields = readable_columns
+        .clone()
+        .filter(|column| column.schema.searchable)
+        .map(|column| column.schema.field.clone())
+        .collect();
+    let filter_fields = readable_columns
+        .filter(|column| column.schema.filterable)
+        .map(|column| column.schema.field.clone())
+        .collect();
+    let default_sort = view
+        .default_sort
+        .iter()
+        .filter(|sort| column_readable(&sort.column, context))
+        .map(|sort| sort.schema.clone())
+        .collect();
+    super::TableQuerySchema {
+        search_fields,
+        filter_fields,
+        default_sort,
+        default_page_size: crate::table::DEFAULT_QUERY_PAGE_SIZE,
+        max_page_size: crate::table::MAX_TABLE_QUERY_PAGE_SIZE,
+    }
 }
 
 fn infer_action_presentation(runtime: &RuntimeAction) -> super::ActionPresentationSpec {
@@ -883,7 +957,8 @@ fn runtime_table_column(
             description: field.presentation.description.clone(),
             widget: field.widget_hint(),
             required: field.is_required(),
-            filterable: field.access.searchable,
+            searchable: field.access.searchable,
+            filterable: field.access.filterable,
             sortable: field.access.sortable,
             relation: None,
         },
