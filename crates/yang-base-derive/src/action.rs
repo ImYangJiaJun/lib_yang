@@ -32,6 +32,9 @@ struct ActionOpts {
     /// 成功状态码；默认 200。
     #[darling(default)]
     success_status: Option<u16>,
+    /// 成功响应类别：json/download/preview/redirect；默认 json。
+    #[darling(default)]
+    response_kind: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -99,6 +102,19 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             .into_compile_error();
     }
     let success_status = opts.success_status.unwrap_or(200);
+    let response_kind = match opts.response_kind.as_deref().unwrap_or("json") {
+        "json" => quote!(::yang_base::definition::ActionResponseKind::Json),
+        "download" => quote!(::yang_base::definition::ActionResponseKind::Download),
+        "preview" => quote!(::yang_base::definition::ActionResponseKind::Preview),
+        "redirect" => quote!(::yang_base::definition::ActionResponseKind::Redirect),
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "action response_kind 必须是 json/download/preview/redirect",
+            )
+            .into_compile_error()
+        }
+    };
     let perms: Vec<String> = opts.permissions.unwrap_or_default().0;
 
     // 解析 permission_mode：支持 "all" / "any"，默认 "all"
@@ -161,6 +177,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             fn http_method(&self) -> ::yang_base::definition::HttpMethod { #method }
             fn path(&self) -> &'static str { #path }
             fn success_status(&self) -> u16 { #success_status }
+            fn response_kind(&self) -> ::yang_base::definition::ActionResponseKind { #response_kind }
             fn is_public(&self) -> bool { #is_public }
             fn permission_mode(&self) -> ::yang_base::action::PermissionMode { #perm_mode }
 

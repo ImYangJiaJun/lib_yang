@@ -1,0 +1,5 @@
+error: action response_kind 必须是 json/download/preview/redirect
+ --> trybuild/action_invalid_response_kind.rs:5:8
+  |
+5 | struct BrokenAction;
+  |        ^^^^^^^^^^^^

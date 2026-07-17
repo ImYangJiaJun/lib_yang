@@ -190,6 +190,8 @@ pub struct ActionSpec {
     pub permission_mode: PermissionMode,
     /// 是否允许匿名访问。
     pub is_public: bool,
+    /// 成功响应的静态类别，供调用方选择安全的展示方式。
+    pub response_kind: super::ActionResponseKind,
     /// 成功响应状态码。
     pub success_status: u16,
     /// OpenAPI/后台元数据标签。
@@ -215,6 +217,7 @@ impl ActionSpec {
             permissions: Vec::new(),
             permission_mode: PermissionMode::All,
             is_public: false,
+            response_kind: super::ActionResponseKind::Json,
             success_status: 200,
             tags: Vec::new(),
             input_schema: serde_json::Value::Null,
@@ -253,6 +256,13 @@ impl ActionSpec {
     #[must_use]
     pub fn public(mut self, is_public: bool) -> Self {
         self.is_public = is_public;
+        self
+    }
+
+    /// 声明成功响应的静态类别。
+    #[must_use]
+    pub fn response_kind(mut self, response_kind: super::ActionResponseKind) -> Self {
+        self.response_kind = response_kind;
         self
     }
 
