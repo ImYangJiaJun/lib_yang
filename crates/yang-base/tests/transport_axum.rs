@@ -14,10 +14,12 @@ use axum::Router;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower::ServiceExt;
-use yang_base::action::{Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction};
+use yang_base::action::{
+    Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction, UploadedFile,
+};
 use yang_base::definition::{
     AddonName, AddonSpec, AppBuilder, BuiltApp, ModuleName, ModuleSpec, ParamInput, Params,
     UI_SCHEMA_VERSION,
@@ -297,6 +299,76 @@ impl BusinessAction for ProtectedAction {
     }
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct UploadInput {
+    title: String,
+    file: UploadedFile,
+}
+
+impl ParamInput for UploadInput {
+    fn params() -> Params {
+        Params::new()
+    }
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct UploadOutput {
+    title: String,
+    field_name: String,
+    filename: String,
+    content_type: String,
+    size: u64,
+    content: String,
+}
+
+#[derive(Action)]
+#[action(
+    name = "upload",
+    display_name = "上传",
+    method = "POST",
+    path = "/api/upload/file",
+    public,
+    request_media = "multipart",
+    content_types("text/plain"),
+    max_fields = 1,
+    max_files = 1,
+    max_file_bytes = 8,
+    max_total_bytes = 1024
+)]
+struct UploadAction {
+    observed_path: Arc<Mutex<Option<PathBuf>>>,
+}
+
+#[async_trait::async_trait]
+impl BusinessAction for UploadAction {
+    type Input = UploadInput;
+    type Output = UploadOutput;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        let path = input.file.path().to_path_buf();
+        let content = tokio::fs::read_to_string(&path).await?;
+        *self.observed_path.lock().expect("上传路径锁不应中毒") = Some(path);
+        if input.title == "fail" {
+            return Err(BaseError::ParamInvalid(
+                "title".to_string(),
+                "测试 Handler 失败".to_string(),
+            ));
+        }
+        Ok(UploadOutput {
+            title: input.title,
+            field_name: input.file.field_name().to_string(),
+            filename: input.file.original_filename().to_string(),
+            content_type: input.file.content_type().to_string(),
+            size: input.file.size(),
+            content,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 测试辅助
 // ---------------------------------------------------------------------------
@@ -367,6 +439,62 @@ async fn body_bytes(response: Response) -> Vec<u8> {
 
 fn default_router() -> Router {
     router(build_app(), AxumTransportConfig::default()).expect("Router 应构建成功")
+}
+
+fn build_upload_app() -> (Arc<BuiltApp>, Arc<Mutex<Option<PathBuf>>>) {
+    let observed_path = Arc::new(Mutex::new(None));
+    let module = ModuleSpec::new(ModuleName::new("upload.file").expect("模块名应有效"))
+        .native_action(UploadAction {
+            observed_path: Arc::clone(&observed_path),
+        });
+    let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+    let app = Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("upload").expect("Addon 名应有效")).module(module))
+            .build(tools)
+            .expect("上传测试应用应构建成功"),
+    );
+    (app, observed_path)
+}
+
+fn multipart_payload(
+    boundary: &str,
+    text_parts: &[(&str, &str)],
+    file_parts: &[(&str, &str, &str, &[u8])],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in text_parts {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    for (name, filename, content_type, content) in file_parts {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(content);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn multipart_request(boundary: &str, body: Vec<u8>) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method("POST")
+        .uri("/api/upload/file")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .expect("multipart 测试请求应构建成功")
 }
 
 // ---------------------------------------------------------------------------
@@ -792,4 +920,181 @@ async fn compression_disabled_leaves_response_unencoded() {
         .insert("accept-encoding", "gzip".parse().unwrap());
     let response = oneshot(router, request).await;
     assert!(response.headers().get("content-encoding").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 受限 multipart 与请求作用域临时文件
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multipart_streams_to_generated_temp_file_and_cleans_after_success() {
+    let (app, observed_path) = build_upload_app();
+    let router = router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+    let boundary = "yang-boundary-success";
+    let body = multipart_payload(
+        boundary,
+        &[("title", "document")],
+        &[("file", "../../evil.txt", "text/plain", b"hello")],
+    );
+    let response = oneshot(router, multipart_request(boundary, body)).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["title"], "document");
+    assert_eq!(json["data"]["field_name"], "file");
+    assert_eq!(json["data"]["filename"], "evil.txt");
+    assert_eq!(json["data"]["content_type"], "text/plain");
+    assert_eq!(json["data"]["size"], 5);
+    assert_eq!(json["data"]["content"], "hello");
+
+    let path = observed_path
+        .lock()
+        .expect("上传路径锁不应中毒")
+        .clone()
+        .expect("Handler 应观察到临时文件");
+    assert_ne!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("evil.txt"),
+        "客户端文件名不得参与临时路径生成"
+    );
+    assert!(!path.exists(), "Handler 返回后请求作用域临时文件必须清理");
+}
+
+#[tokio::test]
+async fn multipart_cleans_temp_file_when_handler_returns_error() {
+    let (app, observed_path) = build_upload_app();
+    let router = router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+    let boundary = "yang-boundary-handler-error";
+    let body = multipart_payload(
+        boundary,
+        &[("title", "fail")],
+        &[("file", "report.txt", "text/plain", b"hello")],
+    );
+    let response = oneshot(router, multipart_request(boundary, body)).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let path = observed_path
+        .lock()
+        .expect("上传路径锁不应中毒")
+        .clone()
+        .expect("失败 Handler 也应观察到临时文件");
+    assert!(!path.exists(), "Handler 失败后临时文件也必须清理");
+}
+
+#[tokio::test]
+async fn multipart_rejects_wrong_media_oversized_and_excess_parts_before_dispatch() {
+    let oversized_text = "x".repeat(1_200);
+    let cases = [
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            multipart_payload(
+                "wrong-type",
+                &[("title", "document")],
+                &[("file", "report.bin", "application/octet-stream", b"hello")],
+            ),
+            "wrong-type",
+        ),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            multipart_payload(
+                "oversized",
+                &[("title", "document")],
+                &[("file", "report.txt", "text/plain", b"123456789")],
+            ),
+            "oversized",
+        ),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            multipart_payload(
+                "too-many-files",
+                &[("title", "document")],
+                &[
+                    ("file", "one.txt", "text/plain", b"one"),
+                    ("file", "two.txt", "text/plain", b"two"),
+                ],
+            ),
+            "too-many-files",
+        ),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            multipart_payload(
+                "too-many-fields",
+                &[("title", "document"), ("extra", "value")],
+                &[("file", "report.txt", "text/plain", b"hello")],
+            ),
+            "too-many-fields",
+        ),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            multipart_payload("raw-total", &[("title", &oversized_text)], &[]),
+            "raw-total",
+        ),
+    ];
+
+    for (expected, body, boundary) in cases {
+        let (app, observed_path) = build_upload_app();
+        let router = router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+        let response = oneshot(router, multipart_request(boundary, body)).await;
+        assert_eq!(response.status(), expected, "case={boundary}");
+        assert!(
+            observed_path.lock().expect("上传路径锁不应中毒").is_none(),
+            "拒绝请求不得进入 Handler: {boundary}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn multipart_rejects_json_malformed_and_mixed_same_name_parts() {
+    let (app, _) = build_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+    let json = oneshot(
+        upload_router,
+        json_request("POST", "/api/upload/file", r#"{"title":"x"}"#),
+    )
+    .await;
+    assert_eq!(json.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let (app, _) = build_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+    let malformed = HttpRequest::builder()
+        .method("POST")
+        .uri("/api/upload/file")
+        .header(
+            "content-type",
+            "multipart/form-data; boundary=missing-boundary",
+        )
+        .body(Body::from("not-a-multipart-body"))
+        .expect("畸形 multipart 请求应构建成功");
+    let malformed = oneshot(upload_router, malformed).await;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+
+    let boundary = "mixed-parts";
+    let mixed = multipart_payload(
+        boundary,
+        &[("file", "forged")],
+        &[("file", "report.txt", "text/plain", b"hello")],
+    );
+    let (app, _) = build_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("上传 Router 应构建成功");
+    let mixed = oneshot(upload_router, multipart_request(boundary, mixed)).await;
+    assert_eq!(mixed.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn multipart_router_rejects_global_body_limit_below_action_contract() {
+    let (app, _) = build_upload_app();
+    let result = router(
+        app,
+        AxumTransportConfig {
+            max_body_bytes: 512,
+            ..AxumTransportConfig::default()
+        },
+    );
+    assert!(
+        matches!(result, Err(BaseError::ConfigError(message)) if message.contains("max_total_bytes")),
+        "传输层不得静默收紧已投影给客户端的 Action 上限"
+    );
 }

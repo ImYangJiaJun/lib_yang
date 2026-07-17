@@ -52,7 +52,7 @@ openapi = []
 admin-metadata = []
 
 # Axum 0.8 HTTP 传输适配器（默认关闭；只拉入 axum/tower-http，不涉及 sqlx/reqwest）
-transport-axum = ["dep:axum", "dep:tower-http", "dep:serde_urlencoded"]
+transport-axum = ["dep:axum", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile"]
 
 [dependencies]
 # 内部依赖
@@ -116,6 +116,9 @@ axum = { workspace = true, optional = true }
 
 # HTTP 横切中间件（可选，通过 "transport-axum" feature 启用）
 tower-http = { workspace = true, optional = true }
+
+# 请求作用域上传临时目录（可选，通过 "transport-axum" feature 启用）
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

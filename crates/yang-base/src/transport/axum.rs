@@ -22,19 +22,23 @@
 //! ```
 
 use crate::action::{ApiResponse, Request, RequestId, RequestMeta, ResponseAttachment};
-use crate::definition::{ActionHandle, ActionRef, BuiltApp};
+use crate::definition::{ActionHandle, ActionMediaType, ActionRef, BuiltApp, MultipartSpec};
 use crate::error::{BaseError, ErrorCategory};
 use axum::body::{to_bytes, Body};
-use axum::extract::{ConnectInfo, Path, Request as AxumRequest, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, FromRequest, Multipart, Path, Request as AxumRequest, State,
+};
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{on, MethodFilter};
 use axum::{Json, Router};
 use serde_json::json;
+use serde_json::{map::Entry, Map, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
@@ -112,6 +116,20 @@ struct HttpState {
     max_body_bytes: usize,
 }
 
+#[derive(Clone)]
+enum RequestDecoder {
+    Json,
+    Multipart {
+        spec: MultipartSpec,
+        input_schema: Value,
+    },
+}
+
+struct DecodedBody {
+    value: Value,
+    resource_guard: Option<Arc<tempfile::TempDir>>,
+}
+
 /// 由冻结应用构建 Axum [`Router`]（不绑定端口，可用 tower `oneshot` 直接驱动测试）。
 ///
 /// # 返回
@@ -171,28 +189,57 @@ fn router_with_addr(
                     BaseError::ConfigError(format!("Action 未预编译到 Registry: {reference}"))
                 })?;
                 let success_status = action.success_status;
-                router = router.route(
-                    &path,
-                    on(
-                        method_filter,
-                        move |State(state): State<HttpState>,
-                              ConnectInfo(peer): ConnectInfo<SocketAddr>,
-                              Path(path_params): Path<HashMap<String, String>>,
-                              request: AxumRequest| {
-                            async move {
-                                dispatch_request(
-                                    state,
-                                    peer,
-                                    path_params,
-                                    request,
-                                    handle,
-                                    success_status,
-                                )
-                                .await
-                            }
-                        },
-                    ),
-                );
+                let (decoder, body_limit) = match action.request_media_type {
+                    ActionMediaType::Json => (RequestDecoder::Json, state.max_body_bytes),
+                    ActionMediaType::Multipart => {
+                        let spec = action.multipart.clone().ok_or_else(|| {
+                            BaseError::ConfigError(format!(
+                                "multipart Action 缺少资源限制: {reference}"
+                            ))
+                        })?;
+                        let action_limit = usize::try_from(spec.max_total_bytes).map_err(|_| {
+                            BaseError::ConfigError(format!(
+                                "multipart Action 请求上限超出平台 usize: {reference}"
+                            ))
+                        })?;
+                        if action_limit > state.max_body_bytes {
+                            return Err(BaseError::ConfigError(format!(
+                                "multipart Action {reference} 的 max_total_bytes={} 超过 AxumTransportConfig.max_body_bytes={}",
+                                spec.max_total_bytes, state.max_body_bytes
+                            )));
+                        }
+                        (
+                            RequestDecoder::Multipart {
+                                spec,
+                                input_schema: action.input_schema.clone(),
+                            },
+                            action_limit,
+                        )
+                    }
+                };
+                let method_router = on(
+                    method_filter,
+                    move |State(state): State<HttpState>,
+                          ConnectInfo(peer): ConnectInfo<SocketAddr>,
+                          Path(path_params): Path<HashMap<String, String>>,
+                          request: AxumRequest| {
+                        let decoder = decoder.clone();
+                        async move {
+                            dispatch_request(
+                                state,
+                                peer,
+                                path_params,
+                                request,
+                                handle,
+                                success_status,
+                                decoder,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .layer(DefaultBodyLimit::max(body_limit));
+                router = router.route(&path, method_router);
             }
         }
     }
@@ -305,33 +352,12 @@ async fn dispatch_request(
     request: AxumRequest,
     handle: ActionHandle,
     success_status: u16,
+    decoder: RequestDecoder,
 ) -> Response {
-    let (parts, body) = request.into_parts();
-    let body = match to_bytes(body, state.max_body_bytes).await {
-        Ok(body) => body,
-        Err(_) => {
-            return error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                BaseError::ParamInvalid("body".to_string(), "请求体过大".to_string()),
-            )
-        }
-    };
-    let body = if body.is_empty() {
-        json!({})
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(value) => value,
-            Err(_) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    BaseError::ParamInvalid("body".to_string(), "请求体必须是 JSON".to_string()),
-                )
-            }
-        }
-    };
-
-    let headers: HashMap<String, String> = parts
-        .headers
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let headers: HashMap<String, String> = request
+        .headers()
         .iter()
         .filter_map(|(name, value)| {
             value
@@ -340,7 +366,7 @@ async fn dispatch_request(
                 .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect();
-    let query = match parts.uri.query() {
+    let query = match uri.query() {
         Some(raw) => match serde_urlencoded::from_str::<HashMap<String, String>>(raw) {
             Ok(query) => query,
             Err(_) => {
@@ -352,20 +378,27 @@ async fn dispatch_request(
         },
         None => HashMap::new(),
     };
+    let decoded = match decode_request_body(&state, request, decoder).await {
+        Ok(decoded) => decoded,
+        Err((status, error)) => return error_response(status, error),
+    };
 
     // 上游 request_id 透传：解析失败（非十六进制/超长）时降级为新生成。
     let upstream_request_id = headers
         .get("x-request-id")
         .and_then(|raw| RequestId::parse_hex(raw));
 
-    let action_request = Request::new(body)
+    let mut action_request = Request::new(decoded.value)
         .headers(headers)
         .queries(query)
         .path_params(path_params);
+    if let Some(resource_guard) = decoded.resource_guard {
+        action_request = action_request.retain_resource(resource_guard);
+    }
     let request_meta = RequestMeta::new()
-        .with_method(parts.method.to_string())
-        .with_original_uri(parts.uri.to_string())
-        .with_scheme(parts.uri.scheme_str().unwrap_or("http"))
+        .with_method(method.to_string())
+        .with_original_uri(uri.to_string())
+        .with_scheme(uri.scheme_str().unwrap_or("http"))
         .with_peer_addr(peer);
     let request_meta = match state.local_addr {
         Some(addr) => request_meta.with_local_addr(addr),
@@ -395,6 +428,378 @@ async fn dispatch_request(
             error_response(status, error)
         }
     }
+}
+
+async fn decode_request_body(
+    state: &HttpState,
+    request: AxumRequest,
+    decoder: RequestDecoder,
+) -> Result<DecodedBody, (StatusCode, BaseError)> {
+    match decoder {
+        RequestDecoder::Json => {
+            let body = to_bytes(request.into_body(), state.max_body_bytes)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        BaseError::ParamInvalid("body".to_string(), "请求体过大".to_string()),
+                    )
+                })?;
+            let value = if body.is_empty() {
+                json!({})
+            } else {
+                serde_json::from_slice(&body).map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        BaseError::ParamInvalid(
+                            "body".to_string(),
+                            "请求体必须是 JSON".to_string(),
+                        ),
+                    )
+                })?
+            };
+            Ok(DecodedBody {
+                value,
+                resource_guard: None,
+            })
+        }
+        RequestDecoder::Multipart { spec, input_schema } => {
+            decode_multipart(state, request, &spec, &input_schema).await
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MultipartPartKind {
+    Text,
+    File,
+}
+
+async fn decode_multipart(
+    state: &HttpState,
+    request: AxumRequest,
+    spec: &MultipartSpec,
+    input_schema: &Value,
+) -> Result<DecodedBody, (StatusCode, BaseError)> {
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    if !media_type.eq_ignore_ascii_case("multipart/form-data") {
+        return Err(multipart_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "body",
+            "请求 Content-Type 必须是 multipart/form-data",
+        ));
+    }
+    if request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > spec.max_total_bytes)
+    {
+        return Err(multipart_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body",
+            "multipart 请求体过大",
+        ));
+    }
+
+    let scope = Arc::new(tempfile::tempdir().map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            BaseError::IoError(format!("创建上传临时目录失败: {error}")),
+        )
+    })?);
+    let mut multipart = Multipart::from_request(request, state)
+        .await
+        .map_err(|rejection| {
+            let status = rejection.status();
+            let status = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                status
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            multipart_error(status, "body", "multipart 请求格式无效")
+        })?;
+    let mut body = Map::new();
+    let mut kinds = HashMap::new();
+    let mut field_count = 0_u16;
+    let mut file_count = 0_u16;
+    let mut payload_bytes = 0_u64;
+
+    while let Some(mut field) = multipart.next_field().await.map_err(|error| {
+        let status = error.status();
+        let status = if status == StatusCode::PAYLOAD_TOO_LARGE {
+            status
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        multipart_error(status, "body", "multipart 字段读取失败")
+    })? {
+        let name = field
+            .name()
+            .filter(|name| !name.is_empty() && name.len() <= 255)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                multipart_error(
+                    StatusCode::BAD_REQUEST,
+                    "body",
+                    "multipart 字段名缺失或过长",
+                )
+            })?;
+        let raw_filename = field.file_name().map(str::to_string);
+
+        if let Some(raw_filename) = raw_filename {
+            file_count = file_count.checked_add(1).ok_or_else(|| {
+                multipart_error(StatusCode::PAYLOAD_TOO_LARGE, &name, "文件数量超过上限")
+            })?;
+            if file_count > spec.max_files {
+                return Err(multipart_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &name,
+                    "文件数量超过上限",
+                ));
+            }
+            let content_type = field
+                .content_type()
+                .map(|value| {
+                    value
+                        .split(';')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                })
+                .ok_or_else(|| {
+                    multipart_error(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        &name,
+                        "上传文件缺少 Content-Type",
+                    )
+                })?;
+            if !spec
+                .allowed_content_types
+                .iter()
+                .any(|allowed| allowed == &content_type)
+            {
+                return Err(multipart_error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    &name,
+                    "上传文件 Content-Type 不在 Action 白名单中",
+                ));
+            }
+
+            let named = tempfile::Builder::new()
+                .prefix("yang-upload-")
+                .tempfile_in(scope.path())
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        BaseError::IoError(format!("创建上传临时文件失败: {error}")),
+                    )
+                })?;
+            let (file, path) = named.keep().map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    BaseError::IoError(format!("持有上传临时文件失败: {}", error.error)),
+                )
+            })?;
+            let mut output = tokio::fs::File::from_std(file);
+            let mut file_bytes = 0_u64;
+            while let Some(chunk) = field.chunk().await.map_err(|error| {
+                let status = error.status();
+                let status = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    status
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                multipart_error(status, &name, "上传文件读取失败")
+            })? {
+                file_bytes = checked_payload_size(file_bytes, chunk.len(), spec.max_file_bytes)
+                    .map_err(|_| {
+                        multipart_error(StatusCode::PAYLOAD_TOO_LARGE, &name, "单文件大小超过上限")
+                    })?;
+                payload_bytes =
+                    checked_payload_size(payload_bytes, chunk.len(), spec.max_total_bytes)
+                        .map_err(|_| {
+                            multipart_error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "body",
+                                "multipart 请求体过大",
+                            )
+                        })?;
+                output.write_all(&chunk).await.map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        BaseError::IoError(format!("写入上传临时文件失败: {error}")),
+                    )
+                })?;
+            }
+            output.flush().await.map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    BaseError::IoError(format!("刷新上传临时文件失败: {error}")),
+                )
+            })?;
+            drop(output);
+
+            let value = json!({
+                "field_name": name,
+                "original_filename": sanitize_filename(&raw_filename),
+                "content_type": content_type,
+                "size": file_bytes,
+                "path": path
+            });
+            insert_multipart_value(&mut body, &mut kinds, name, MultipartPartKind::File, value)?;
+        } else {
+            field_count = field_count.checked_add(1).ok_or_else(|| {
+                multipart_error(StatusCode::PAYLOAD_TOO_LARGE, &name, "表单字段数量超过上限")
+            })?;
+            if field_count > spec.max_fields {
+                return Err(multipart_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &name,
+                    "表单字段数量超过上限",
+                ));
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(|error| {
+                let status = error.status();
+                let status = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    status
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                multipart_error(status, &name, "表单字段读取失败")
+            })? {
+                payload_bytes =
+                    checked_payload_size(payload_bytes, chunk.len(), spec.max_total_bytes)
+                        .map_err(|_| {
+                            multipart_error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "body",
+                                "multipart 请求体过大",
+                            )
+                        })?;
+                bytes.extend_from_slice(&chunk);
+            }
+            let text = String::from_utf8(bytes).map_err(|_| {
+                multipart_error(
+                    StatusCode::BAD_REQUEST,
+                    &name,
+                    "multipart 文本字段必须是 UTF-8",
+                )
+            })?;
+            let value = decode_text_value(input_schema, &name, text)?;
+            insert_multipart_value(&mut body, &mut kinds, name, MultipartPartKind::Text, value)?;
+        }
+    }
+
+    Ok(DecodedBody {
+        value: Value::Object(body),
+        resource_guard: Some(scope),
+    })
+}
+
+fn checked_payload_size(current: u64, added: usize, limit: u64) -> Result<u64, ()> {
+    let added = u64::try_from(added).map_err(|_| ())?;
+    let next = current.checked_add(added).ok_or(())?;
+    (next <= limit).then_some(next).ok_or(())
+}
+
+fn insert_multipart_value(
+    body: &mut Map<String, Value>,
+    kinds: &mut HashMap<String, MultipartPartKind>,
+    name: String,
+    kind: MultipartPartKind,
+    value: Value,
+) -> Result<(), (StatusCode, BaseError)> {
+    if kinds.get(&name).is_some_and(|existing| *existing != kind) {
+        return Err(multipart_error(
+            StatusCode::BAD_REQUEST,
+            &name,
+            "同名 multipart 字段不能混用文本和文件",
+        ));
+    }
+    kinds.entry(name.clone()).or_insert(kind);
+    match body.entry(name) {
+        Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+        Entry::Occupied(mut entry) => match entry.get_mut() {
+            Value::Array(values) => values.push(value),
+            existing => {
+                let first = std::mem::take(existing);
+                *existing = Value::Array(vec![first, value]);
+            }
+        },
+    }
+    Ok(())
+}
+
+fn decode_text_value(
+    input_schema: &Value,
+    name: &str,
+    text: String,
+) -> Result<Value, (StatusCode, BaseError)> {
+    let schema_type = input_schema
+        .get("properties")
+        .and_then(|properties| properties.get(name))
+        .and_then(|schema| schema.get("type"))
+        .and_then(Value::as_str);
+    match schema_type {
+        Some("integer") => text
+            .parse::<i64>()
+            .map(Value::from)
+            .map_err(|_| multipart_error(StatusCode::BAD_REQUEST, name, "表单字段必须是整数")),
+        Some("number") => text
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .ok_or_else(|| {
+                multipart_error(StatusCode::BAD_REQUEST, name, "表单字段必须是有限数值")
+            }),
+        Some("boolean") => match text.as_str() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(multipart_error(
+                StatusCode::BAD_REQUEST,
+                name,
+                "表单字段必须是 true 或 false",
+            )),
+        },
+        Some("object" | "array") => serde_json::from_str(&text)
+            .map_err(|_| multipart_error(StatusCode::BAD_REQUEST, name, "表单字段 JSON 格式无效")),
+        _ => Ok(Value::String(text)),
+    }
+}
+
+fn sanitize_filename(raw: &str) -> String {
+    let leaf = raw.rsplit(['/', '\\']).next().unwrap_or_default().trim();
+    let mut safe = String::new();
+    for character in leaf.chars().filter(|character| !character.is_control()) {
+        if safe.len() + character.len_utf8() > 255 {
+            break;
+        }
+        safe.push(character);
+    }
+    if safe.is_empty() || matches!(safe.as_str(), "." | "..") {
+        "upload.bin".to_string()
+    } else {
+        safe
+    }
+}
+
+fn multipart_error(status: StatusCode, field: &str, message: &str) -> (StatusCode, BaseError) {
+    (
+        status,
+        BaseError::ParamInvalid(field.to_string(), message.to_string()),
+    )
 }
 
 /// 把附件响应映射为真实 HTTP 响应。

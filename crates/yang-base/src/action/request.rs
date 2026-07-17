@@ -2,8 +2,10 @@
 //!
 //! 提供 Action 系统的请求封装，包含请求体、请求头、查询参数和路径参数。
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 fn parse_bearer_token(value: &str) -> Option<&str> {
     let mut parts = value.split_whitespace();
@@ -57,7 +59,6 @@ fn parse_bearer_token(value: &str) -> Option<&str> {
 ///     println!("Token: {}", token);
 /// }
 /// ```
-#[derive(Clone)]
 pub struct Request {
     /// 请求体（JSON）
     pub body: serde_json::Value,
@@ -70,6 +71,22 @@ pub struct Request {
 
     /// 路径参数
     pub path_params: HashMap<String, String>,
+
+    /// 绑定请求生命周期的非业务资源；例如 multipart 临时目录。
+    resource_guards: Vec<Arc<dyn Any + Send + Sync>>,
+}
+
+impl Clone for Request {
+    fn clone(&self) -> Self {
+        Self {
+            body: self.body.clone(),
+            headers: self.headers.clone(),
+            query: self.query.clone(),
+            path_params: self.path_params.clone(),
+            // 请求作用域资源不得通过 Request::clone 逃逸 Handler 生命周期。
+            resource_guards: Vec::new(),
+        }
+    }
 }
 
 impl Request {
@@ -100,6 +117,7 @@ impl Request {
             headers: HashMap::new(),
             query: HashMap::new(),
             path_params: HashMap::new(),
+            resource_guards: Vec::new(),
         }
     }
 
@@ -292,6 +310,14 @@ impl Request {
         self
     }
 
+    pub(crate) fn retain_resource<T>(mut self, resource: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        self.resource_guards.push(resource);
+        self
+    }
+
     /// 从 Authorization 头提取 Token
     ///
     /// 支持 Bearer Token 格式：`Authorization: Bearer <token>`
@@ -448,6 +474,7 @@ impl fmt::Debug for Request {
             .field("headers", &RedactedMap(&self.headers))
             .field("query", &RedactedMap(&self.query))
             .field("path_params", &RedactedMap(&self.path_params))
+            .field("resource_guard_count", &self.resource_guards.len())
             .finish()
     }
 }
@@ -462,6 +489,15 @@ impl Default for Request {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DropResource(Arc<AtomicUsize>);
+
+    impl Drop for DropResource {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn test_header_lookup_is_case_insensitive() {
@@ -472,6 +508,20 @@ mod tests {
         assert_eq!(request.get_header("content-type"), Some("application/json"));
         assert_eq!(request.get_header("AUTHORIZATION"), Some("Bearer token123"));
         assert_eq!(request.token(), Some("token123"));
+    }
+
+    #[test]
+    fn clone_does_not_extend_request_scoped_resource_lifetime() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let resource = Arc::new(DropResource(Arc::clone(&drops)));
+        let request = Request::new(json!({})).retain_resource(Arc::clone(&resource));
+        drop(resource);
+        let cloned = request.clone();
+
+        drop(request);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(cloned);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]
