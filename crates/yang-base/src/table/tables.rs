@@ -1,8 +1,10 @@
 //! BR 心智连续的 Tables 深模块。
 
+#[cfg(feature = "mysql")]
+use super::RelationBatchExecutor;
 use super::{
-    PaginatedResult, QueryParams, Record, RelationBatchExecutor, RelationData, RelationLoader,
-    SortOrder, TableQuery, WhereCondition, DEFAULT_QUERY_PAGE_SIZE,
+    PaginatedResult, QueryParams, Record, RelationData, RelationLoader, SortOrder, TableQuery,
+    WhereCondition, DEFAULT_QUERY_PAGE_SIZE,
 };
 use crate::definition::CompiledTableView;
 use crate::error::BaseError;
@@ -102,16 +104,19 @@ impl Tables {
     }
 
     /// 执行标准分页列表。
+    #[cfg(feature = "mysql")]
     pub async fn table_list(self) -> Result<PaginatedResult<Record>, BaseError> {
         self.query.paginate_records().await
     }
 
     /// 执行选择器数据查询；默认受 TableQuery 最大分页保护。
+    #[cfg(feature = "mysql")]
     pub async fn table_select(self) -> Result<Vec<Record>, BaseError> {
         self.query.all().await
     }
 
     /// 查询全量选择结果并按默认 `id` / `parent_id` 组装树。
+    #[cfg(feature = "mysql")]
     pub async fn table_tree(self) -> Result<Vec<TableTreeNode>, BaseError> {
         let rows = self.query.all().await?;
         Self::build_tree(rows, "id", "parent_id")
@@ -157,6 +162,7 @@ impl Tables {
     }
 
     /// 执行分页列表并按关系种类批量加载展示数据。
+    #[cfg(feature = "mysql")]
     pub async fn table_list_with_relations<E>(
         self,
         executor: &E,
