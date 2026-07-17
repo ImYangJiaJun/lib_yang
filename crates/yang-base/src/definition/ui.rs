@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.6";
+pub const UI_SCHEMA_VERSION: &str = "1.7";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -315,6 +315,17 @@ pub struct ActionDemoSchema {
     pub requires_auth: bool,
 }
 
+/// 关系字段的稳定 options 与展示契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RelationOptionsSchema {
+    /// 返回 [`RelationOptionsResponse`](crate::table::RelationOptionsResponse) 的 Action。
+    pub operation_id: String,
+    /// 关系值对应的限定目标字段。
+    pub value_field: String,
+    /// 用于解释已选值的限定展示字段。
+    pub label_fields: Vec<String>,
+}
+
 /// 通用表格页的单列展示契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TableColumnSchema {
@@ -332,6 +343,9 @@ pub struct TableColumnSchema {
     pub filterable: bool,
     /// 是否允许排序。
     pub sortable: bool,
+    /// 当前请求有权调用的关系 options 契约。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<RelationOptionsSchema>,
 }
 
 /// 通用表单的单字段契约。
@@ -351,6 +365,9 @@ pub struct FormFieldSchema {
     pub read_only: bool,
     /// 字段只允许提交，前端不得从详情数据预填。
     pub write_only: bool,
+    /// 当前请求有权调用的关系 options 契约。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<RelationOptionsSchema>,
 }
 
 /// 请求级通用表单契约。
@@ -893,6 +910,13 @@ mod tests {
         name.presentation.title = "名称".to_string();
         name.access.searchable = true;
         name.access.sortable = true;
+        let mut manager_id = FieldSpec::new(
+            FieldName::new("manager_id").expect("测试字段名应有效"),
+            FieldKind::Table,
+        );
+        manager_id.relation = Some(field_ref("id"));
+        manager_id.select = Some(action_ref("options"));
+        manager_id.presentation.display = vec![field_ref("name")];
         let mut parent_id = FieldSpec::new(
             FieldName::new("parent_id").expect("测试字段名应有效"),
             FieldKind::Int,
@@ -920,6 +944,7 @@ mod tests {
             .field(field_ref("id"))
             .field(field_ref("parent_id"))
             .field(field_ref("name"))
+            .field(field_ref("manager_id"))
             .field(field_ref("admin_note"))
             .field(field_ref("secret"))
             .field(field_ref("created_at"))
@@ -945,12 +970,18 @@ mod tests {
                     ))
                     .field(parent_id)
                     .field(name)
+                    .field(manager_id)
                     .field(admin_note)
                     .field(secret)
                     .field(created_at),
             )
             .default_permissions(["module:view"], PermissionMode::All)
             .action(action("list", "org.member.list"), NoopAction)
+            .action(
+                action("options", "org.member.options")
+                    .permissions(["member:options"], PermissionMode::All),
+                NoopAction,
+            )
             .action(
                 action("edit", "org.member.edit").permissions(["member:edit"], PermissionMode::All),
                 NoopAction,
@@ -1004,12 +1035,21 @@ mod tests {
                 .iter()
                 .map(|column| column.field.as_str())
                 .collect::<Vec<_>>(),
-            ["id", "name", "created_at"]
+            ["id", "name", "manager_id", "created_at"]
         );
         let name_column = &member.table_views[0].columns[1];
         assert_eq!(name_column.widget, WidgetHint::Text);
         assert!(name_column.filterable);
         assert!(name_column.sortable);
+        let member_relation = member.table_views[0]
+            .columns
+            .iter()
+            .find(|column| column.field == "manager_id")
+            .expect("成员目录应包含 manager_id");
+        assert!(
+            member_relation.relation.is_none(),
+            "无 selector Action 权限时不得泄漏 operation id"
+        );
         assert_eq!(member.table_views[0].actions, ["org.member.list"]);
         assert_eq!(member.table_views[0].action_presentations.len(), 1);
         let list_presentation = &member.table_views[0].action_presentations[0];
@@ -1042,7 +1082,7 @@ mod tests {
                 &app.context(Request::new(json!({}))).with_user(
                     User::new(8, "admin")
                         .with_roles(["admin"])
-                        .with_permissions(["module:view", "member:edit"]),
+                        .with_permissions(["module:view", "member:edit", "member:options"]),
                 ),
             )
             .expect("管理员 UI Catalog revision 应可计算");
@@ -1052,7 +1092,14 @@ mod tests {
                 .iter()
                 .map(|column| column.field.as_str())
                 .collect::<Vec<_>>(),
-            ["id", "parent_id", "name", "admin_note", "created_at"],
+            [
+                "id",
+                "parent_id",
+                "name",
+                "manager_id",
+                "admin_note",
+                "created_at"
+            ],
             "角色字段应出现，但 secret 字段即使 readable 也不得投影"
         );
         assert_eq!(
@@ -1067,6 +1114,23 @@ mod tests {
             admin.table_views[0].actions,
             ["org.member.list", "org.member.edit"]
         );
+        let manager_relation = admin.table_views[0]
+            .columns
+            .iter()
+            .find(|column| column.field == "manager_id")
+            .and_then(|column| column.relation.as_ref())
+            .expect("有权限时应投影关系 options 契约");
+        assert_eq!(manager_relation.operation_id, "org.member.options");
+        assert_eq!(manager_relation.value_field, "org_member.id");
+        assert_eq!(manager_relation.label_fields, ["org_member.name"]);
+        let manager_form_relation = admin.table_views[0]
+            .form
+            .fields
+            .iter()
+            .find(|field| field.field == "manager_id")
+            .and_then(|field| field.relation.as_ref())
+            .expect("表单应复用同一关系 options 契约");
+        assert_eq!(manager_form_relation, manager_relation);
         assert_eq!(admin.table_views[0].action_presentations.len(), 2);
         let edit_presentation = &admin.table_views[0].action_presentations[1];
         assert_eq!(edit_presentation.operation_id, "org.member.edit");
@@ -1105,7 +1169,7 @@ mod tests {
                 app.context(Request::new(json!({}))).with_user(
                     User::new(8, "admin")
                         .with_roles(["admin"])
-                        .with_permissions(["module:view", "member:edit"]),
+                        .with_permissions(["module:view", "member:edit", "member:options"]),
                 ),
             )
             .await
@@ -1181,6 +1245,48 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn relation_options_action_requires_relation_target() {
+        let module_name = ModuleName::new("org.unit").expect("测试 Module 名称应有效");
+        let table_name = TableName::new("org_unit").expect("测试 Table 名称应有效");
+        let options_ref = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("options").expect("测试 Action 名称应有效"),
+        );
+        let broken = FieldSpec::new(
+            FieldName::new("owner_id").expect("测试字段名应有效"),
+            FieldKind::Str,
+        )
+        .select(options_ref);
+        let module = ModuleSpec::new(module_name)
+            .table(
+                TableSpec::new(table_name)
+                    .field(FieldSpec::new(
+                        FieldName::new("id").expect("测试字段名应有效"),
+                        FieldKind::Key,
+                    ))
+                    .field(broken),
+            )
+            .action(action("options", "org.unit.options"), NoopAction);
+        let error = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect_err("selector Action 缺少关系目标必须在启动期失败");
+        assert!(
+            matches!(
+                error,
+                BuildError::InvalidReference {
+                    kind: "Relation Options Field",
+                    ..
+                }
+            ),
+            "实际错误: {error:?}"
+        );
     }
 
     #[test]
