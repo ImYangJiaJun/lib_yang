@@ -3,9 +3,10 @@
 
 use crate::action::meta::ActionMeta;
 use crate::action::typed::{DynAction, TypedAction, TypedHandler};
-use crate::action::{ActionContext, GlobalTools, Request};
+use crate::action::{ActionContext, Request};
 use crate::error::BaseError;
 use crate::token::TokenManager;
+use crate::tools::ToolsBuilder;
 use async_trait::async_trait;
 use jsonwebtoken::Algorithm;
 use serde::{Deserialize, Serialize};
@@ -85,7 +86,12 @@ fn make_ctx(body_json: serde_json::Value) -> ActionContext {
         86400,
     );
     let request = Request::new(body_json);
-    let tools = Arc::new(GlobalTools::new(token_manager));
+    let tools = Arc::new(
+        ToolsBuilder::new()
+            .token(token_manager)
+            .build()
+            .expect("测试 Tools 应构建成功"),
+    );
     ActionContext::new(request, tools)
 }
 
@@ -104,11 +110,12 @@ async fn test_blanket_dispatch_roundtrip() {
     assert_eq!(data["echoed"], "hi");
 }
 
-/// extract_input 在缺少必填字段时应返回 ParamInvalid("body", ...)
+/// TypedHandler 默认 body 解码在缺少必填字段时返回结构化错误。
 #[tokio::test]
 async fn test_extract_input_missing_field() {
     let ctx = make_ctx(serde_json::json!({}));
-    let result: Result<EchoInput, _> = ctx.extract_input();
+    let action: &dyn DynAction = &EchoAction;
+    let result = action.dispatch(ctx).await;
     assert!(result.is_err(), "缺少必填字段应返回错误");
     match result.unwrap_err() {
         BaseError::ParamInvalid(field, _) => {

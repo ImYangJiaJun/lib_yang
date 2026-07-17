@@ -104,20 +104,29 @@ async fn test_database_initializer_without_transaction() {
     let db = Database::connect(db_url).await.unwrap();
 
     // 验证表已创建
-    let table_exists = db.table_exists("test_users").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("test_users"))
+        .await
+        .unwrap();
     assert!(table_exists, "test_users 表未创建");
 
-    let table_exists = db.table_exists("test_orders").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("test_orders"))
+        .await
+        .unwrap();
     assert!(table_exists, "test_orders 表未创建");
 
     // 验证迁移记录表已创建
-    let table_exists = db.table_exists("_migrations").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("_migrations"))
+        .await
+        .unwrap();
     assert!(table_exists, "_migrations 表未创建");
 
     // 清理测试数据
-    let _ = db.drop_table("test_users").await;
-    let _ = db.drop_table("test_orders").await;
-    let _ = db.drop_table("_migrations").await;
+    let _ = db.drop_table(yang_db::table!("test_users")).await;
+    let _ = db.drop_table(yang_db::table!("test_orders")).await;
+    let _ = db.drop_table(yang_db::table!("_migrations")).await;
 }
 
 /// 测试数据库初始化（事务模式）
@@ -155,20 +164,29 @@ async fn test_database_initializer_with_transaction() {
     let db = Database::connect(db_url).await.unwrap();
 
     // 验证表已创建
-    let table_exists = db.table_exists("test_users").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("test_users"))
+        .await
+        .unwrap();
     assert!(table_exists, "test_users 表未创建");
 
-    let table_exists = db.table_exists("test_orders").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("test_orders"))
+        .await
+        .unwrap();
     assert!(table_exists, "test_orders 表未创建");
 
     // 验证迁移记录表已创建
-    let table_exists = db.table_exists("_migrations").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("_migrations"))
+        .await
+        .unwrap();
     assert!(table_exists, "_migrations 表未创建");
 
     // 清理测试数据
-    let _ = db.drop_table("test_users").await;
-    let _ = db.drop_table("test_orders").await;
-    let _ = db.drop_table("_migrations").await;
+    let _ = db.drop_table(yang_db::table!("test_users")).await;
+    let _ = db.drop_table(yang_db::table!("test_orders")).await;
+    let _ = db.drop_table(yang_db::table!("_migrations")).await;
 }
 
 /// 测试迁移幂等性
@@ -213,8 +231,8 @@ async fn test_migration_idempotency() {
 
     // 重新连接数据库以清理
     let db = Database::connect(db_url).await.unwrap();
-    let _ = db.drop_table("test_users").await;
-    let _ = db.drop_table("_migrations").await;
+    let _ = db.drop_table(yang_db::table!("test_users")).await;
+    let _ = db.drop_table(yang_db::table!("_migrations")).await;
 }
 
 /// 测试创建迁移记录表
@@ -244,9 +262,12 @@ async fn test_create_migration_table() {
     let db = Database::connect(db_url).await.unwrap();
 
     // 验证表已创建
-    let table_exists = db.table_exists("_migrations").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("_migrations"))
+        .await
+        .unwrap();
     assert!(table_exists, "_migrations 表未创建");
 
     // 清理测试数据
-    let _ = db.drop_table("_migrations").await;
+    let _ = db.drop_table(yang_db::table!("_migrations")).await;
 }

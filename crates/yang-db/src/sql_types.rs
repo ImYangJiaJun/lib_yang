@@ -60,22 +60,6 @@ impl QualifiedIdentifier {
     }
 }
 
-/// 调用方明确声明为可信的 SQL 表达式。
-///
-/// 本类型不尝试解析 SQL；它的作用是让内部存储和渲染点不再把表达式误当标识符。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TrustedSqlExpr(String);
-
-impl TrustedSqlExpr {
-    pub(crate) fn new(value: &str) -> Self {
-        Self(value.to_string())
-    }
-
-    pub(crate) fn into_string(self) -> String {
-        self.0
-    }
-}
-
 /// 一次完整且已校验的条件渲染结果。
 #[derive(Debug)]
 pub(crate) struct RenderedCondition<T> {

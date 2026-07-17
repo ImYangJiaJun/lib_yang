@@ -4,7 +4,9 @@
 //! `TableDefinition`。查询和 Action 的动态行数据统一使用 `Record`。
 
 use serde_json::json;
-use yang_base::router::ModuleRouter;
+use yang_base::definition::{
+    FieldName, Fields, Key, ModuleName, ModuleSpec, Str, TableName, TableSpec,
+};
 use yang_base::table::{col, Field, Record, Table, TableDefinition};
 
 fn users_table() -> Result<TableDefinition, yang_base::BaseError> {
@@ -87,8 +89,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let username: String = input.require("username")?;
     println!("Record 中的用户名: {username}");
 
-    // 绑定表定义后，crud() 一次注册标准增删改查与 schema API。
-    let _router = ModuleRouter::new("user", "用户管理").table(users).crud()?;
+    // 新应用从 Fields 唯一事实生成表定义，并由 ModuleSpec::crud() 注册标准 API。
+    let native_users = TableSpec::new(TableName::new("native_users")?).fields(
+        Fields::new()
+            .field(FieldName::new("id")?, Key::new().title("ID"))
+            .field(
+                FieldName::new("username")?,
+                Str::new()
+                    .title("用户名")
+                    .require(true)
+                    .max_length(50)
+                    .unique(true),
+            ),
+    );
+    let _module = ModuleSpec::new(ModuleName::new("account.user")?)
+        .table(native_users)
+        .crud()?;
 
     Ok(())
 }

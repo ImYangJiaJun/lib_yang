@@ -55,7 +55,7 @@ async fn test_table_exists() {
 
     if let Ok(db) = result {
         // 测试检查表是否存在
-        let exists = db.table_exists("information_schema").await;
+        let exists = db.table_exists(yang_db::table!("information_schema")).await;
 
         match exists {
             Ok(true) => println!("表存在检查功能正常"),
@@ -102,7 +102,7 @@ async fn test_insert_batch_sql_generation() {
 
     if let Ok(db) = result {
         // 生成 SQL（不实际执行）
-        let sql = db.table("test_users").to_sql();
+        let sql = db.table(yang_db::table!("test_users")).to_sql();
         println!("生成的 SQL: {}", sql);
 
         // 注意：实际的批量插入需要表存在，这里只测试 SQL 生成
@@ -142,7 +142,11 @@ async fn test_insert_batch_with_real_table() {
                     json!({"name": "王五", "email": "wangwu@example.com", "age": 28}),
                 ];
 
-                match db.table("test_batch_insert").insert_batch(&users).await {
+                match db
+                    .table(yang_db::table!("test_batch_insert"))
+                    .insert_batch(&users)
+                    .await
+                {
                     Ok(affected_rows) => {
                         println!("批量插入成功，影响 {} 行", affected_rows);
                         assert_eq!(affected_rows, 3, "应该插入 3 条记录");
@@ -159,7 +163,7 @@ async fn test_insert_batch_with_real_table() {
                 }
 
                 // 清理测试表
-                let _ = db.drop_table("test_batch_insert").await;
+                let _ = db.drop_table(yang_db::table!("test_batch_insert")).await;
             }
             Err(e) => {
                 println!("创建测试表失败: {}", e);
@@ -176,7 +180,11 @@ async fn test_insert_batch_empty_data() {
         // 测试空数据批量插入
         let empty_data: Vec<serde_json::Value> = vec![];
 
-        match db.table("test_users").insert_batch(&empty_data).await {
+        match db
+            .table(yang_db::table!("test_users"))
+            .insert_batch(&empty_data)
+            .await
+        {
             Ok(_) => {
                 panic!("空数据批量插入应该返回错误");
             }
@@ -222,7 +230,10 @@ async fn test_transaction_insert() {
             "email": "tx_test@example.com"
         });
 
-        let insert_result = tx.table("tx_test_users").insert(&user_data).await;
+        let insert_result = tx
+            .table(yang_db::table!("tx_test_users"))
+            .insert(&user_data)
+            .await;
 
         match insert_result {
             Ok(user_id) => {
@@ -233,7 +244,8 @@ async fn test_transaction_insert() {
                 assert!(commit_result.is_ok(), "提交事务失败");
 
                 // 验证数据已提交
-                let count: Result<i64, _> = db.table("tx_test_users").count().await;
+                let count: Result<i64, _> =
+                    db.table(yang_db::table!("tx_test_users")).count().await;
                 if let Ok(c) = count {
                     assert_eq!(c, 1, "事务提交后应该有 1 条记录");
                     println!("验证成功：事务提交后有 {} 条记录", c);
@@ -280,7 +292,7 @@ async fn test_transaction_update() {
         });
 
         let user_id = db
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .insert(&user_data)
             .await
             .expect("插入测试数据失败");
@@ -295,8 +307,12 @@ async fn test_transaction_update() {
         });
 
         let update_result = tx
-            .table("tx_test_users")
-            .where_and("id", "=", user_id as i64)
+            .table(yang_db::table!("tx_test_users"))
+            .where_and(
+                yang_db::field!("id"),
+                yang_db::CompareOp::Eq,
+                user_id as i64,
+            )
             .update(&update_data)
             .await;
 
@@ -350,7 +366,7 @@ async fn test_transaction_delete() {
         });
 
         let user_id = db
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .insert(&user_data)
             .await
             .expect("插入测试数据失败");
@@ -360,8 +376,12 @@ async fn test_transaction_delete() {
 
         // 在事务中删除数据
         let delete_result = tx
-            .table("tx_test_users")
-            .where_and("id", "=", user_id as i64)
+            .table(yang_db::table!("tx_test_users"))
+            .where_and(
+                yang_db::field!("id"),
+                yang_db::CompareOp::Eq,
+                user_id as i64,
+            )
             .delete()
             .await;
 
@@ -375,7 +395,8 @@ async fn test_transaction_delete() {
                 assert!(commit_result.is_ok(), "提交事务失败");
 
                 // 验证数据已删除
-                let count: Result<i64, _> = db.table("tx_test_users").count().await;
+                let count: Result<i64, _> =
+                    db.table(yang_db::table!("tx_test_users")).count().await;
                 if let Ok(c) = count {
                     assert_eq!(c, 0, "事务提交后应该没有记录");
                     println!("验证成功：事务提交后有 {} 条记录", c);
@@ -415,7 +436,7 @@ async fn test_transaction_rollback_with_queries() {
 
         // 获取初始记录数
         let initial_count: i64 = db
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .count()
             .await
             .expect("获取初始记录数失败");
@@ -429,7 +450,10 @@ async fn test_transaction_rollback_with_queries() {
             "email": "temp@example.com"
         });
 
-        let insert_result = tx.table("tx_test_users").insert(&user_data).await;
+        let insert_result = tx
+            .table(yang_db::table!("tx_test_users"))
+            .insert(&user_data)
+            .await;
 
         if insert_result.is_ok() {
             println!("事务中插入成功");
@@ -440,7 +464,7 @@ async fn test_transaction_rollback_with_queries() {
 
             // 验证数据已回滚
             let final_count: i64 = db
-                .table("tx_test_users")
+                .table(yang_db::table!("tx_test_users"))
                 .count()
                 .await
                 .expect("获取最终记录数失败");
@@ -494,7 +518,7 @@ async fn test_transaction_multiple_operations() {
         });
 
         let user1_id = tx
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .insert(&user1_data)
             .await
             .expect("插入用户1失败");
@@ -509,7 +533,7 @@ async fn test_transaction_multiple_operations() {
         });
 
         let user2_id = tx
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .insert(&user2_data)
             .await
             .expect("插入用户2失败");
@@ -522,8 +546,12 @@ async fn test_transaction_multiple_operations() {
         });
 
         let affected = tx
-            .table("tx_test_users")
-            .where_and("id", "=", user1_id as i64)
+            .table(yang_db::table!("tx_test_users"))
+            .where_and(
+                yang_db::field!("id"),
+                yang_db::CompareOp::Eq,
+                user1_id as i64,
+            )
             .update(&update_data)
             .await
             .expect("更新用户1失败");
@@ -536,7 +564,7 @@ async fn test_transaction_multiple_operations() {
 
         // 验证所有操作都已提交
         let count: i64 = db
-            .table("tx_test_users")
+            .table(yang_db::table!("tx_test_users"))
             .count()
             .await
             .expect("获取记录数失败");
@@ -578,7 +606,10 @@ async fn test_transaction_update_without_where_fails() {
             "name": "全部更新"
         });
 
-        let update_result = tx.table("tx_test_users").update(&update_data).await;
+        let update_result = tx
+            .table(yang_db::table!("tx_test_users"))
+            .update(&update_data)
+            .await;
 
         // 验证返回 MissingWhereClause 错误
         assert!(update_result.is_err(), "不带 WHERE 条件的更新应该失败");
@@ -624,7 +655,7 @@ async fn test_transaction_delete_without_where_fails() {
         let mut tx = db.transaction().await.expect("开始事务失败");
 
         // 尝试不带 WHERE 条件的删除（应该失败）
-        let delete_result = tx.table("tx_test_users").delete().await;
+        let delete_result = tx.table(yang_db::table!("tx_test_users")).delete().await;
 
         // 验证返回 MissingWhereClause 错误
         assert!(delete_result.is_err(), "不带 WHERE 条件的删除应该失败");

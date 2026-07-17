@@ -1,6 +1,6 @@
 //! 可选后台展示元数据。
 //!
-//! 本模块只保存对 Action/Table/ApiCatalog 稳定 ID 的引用，不持有或修改 dispatch 对象。
+//! 本模块只保存对 Action/Table/DefinitionCatalog 稳定 ID 的引用，不持有或修改 dispatch 对象。
 //! 审核流、业务状态机和权限判定仍属于业务插件，不进入这些展示类型。
 
 use crate::BaseError;
@@ -26,7 +26,7 @@ pub enum AdminDisplayKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AdminTarget {
-    /// ModuleRouter 中的 Action 稳定名称。
+    /// Registry 中的 Action 稳定名称。
     Action {
         /// 模块名。
         module: String,
@@ -40,7 +40,7 @@ pub enum AdminTarget {
         /// 表名。
         table: String,
     },
-    /// ApiCatalog 的 operation id。
+    /// DefinitionCatalog 的 operation id。
     ApiOperation {
         /// operation id。
         operation_id: String,
@@ -68,7 +68,7 @@ impl AdminTarget {
         })
     }
 
-    /// 构造 ApiCatalog operation id 引用。
+    /// 构造 DefinitionCatalog operation id 引用。
     pub fn api_operation(operation_id: &str) -> Result<Self, BaseError> {
         validate_stable_id(operation_id)?;
         Ok(Self::ApiOperation {

@@ -55,6 +55,7 @@ pub mod builtin;
 mod context;
 pub mod meta;
 mod request;
+mod request_context;
 mod request_id;
 mod request_meta;
 mod response;
@@ -67,13 +68,14 @@ pub use auth::{
     AuthAuditEvent, AuthAuditHook, CredentialVerifier, DefaultRefreshClaims, LoginAction,
     LogoutAction, RefreshAction, RefreshClaimsResolver, TokenAuthMiddleware, TracingAuditHook,
 };
-pub use context::{ActionContext, GlobalTools, User};
+pub use context::{ActionContext, User};
 pub use meta::ActionMeta;
 pub use request::Request;
+pub use request_context::{ActorContext, ContextKey, RequestContext, TenantContext, TenantId};
 pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
 pub use response::ApiResponse;
-pub use typed::{DynAction, TypedAction, TypedHandler};
+pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 
 #[cfg(test)]
 mod __tests__;

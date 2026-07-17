@@ -28,11 +28,10 @@ async fn test_crud_sql_generation() {
     if let Ok(db) = result {
         // 测试 SELECT SQL 生成（PostgreSQL 使用 $N 占位符）
         let select_sql = db
-            .table("test_users")
-            .field("id")
-            .field("name")
-            .where_and("status", "=", "active")
-            .unwrap()
+            .table(yang_db::table!("test_users"))
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"))
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
             .to_sql();
         assert!(select_sql.contains("SELECT"), "应该包含 SELECT");
         assert!(select_sql.contains("WHERE"), "应该包含 WHERE");
@@ -51,7 +50,7 @@ async fn test_crud_with_real_table() {
     let result = Database::connect(&test_db_url()).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_pg_crud_test";
+        let table_name = yang_db::table!("integration_pg_crud_test");
 
         // 创建测试表（PostgreSQL 用 SERIAL 自增主键）
         let _ = db.drop_table(table_name).await;
@@ -97,8 +96,7 @@ async fn test_crud_with_real_table() {
                 let update_data = json!({"age": 26});
                 let update_result = db
                     .table(table_name)
-                    .where_and("id", "=", id as i64)
-                    .unwrap()
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
                     .update(&update_data)
                     .await;
                 if let Ok(affected) = update_result {
@@ -109,8 +107,7 @@ async fn test_crud_with_real_table() {
                 // 测试 DELETE
                 let delete_result = db
                     .table(table_name)
-                    .where_and("id", "=", id as i64)
-                    .unwrap()
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
                     .delete()
                     .await;
                 if let Ok(deleted) = delete_result {
@@ -137,7 +134,7 @@ async fn test_upsert_on_conflict() {
     let result = Database::connect(&test_db_url()).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_pg_upsert_test";
+        let table_name = yang_db::table!("integration_pg_upsert_test");
 
         let _ = db.drop_table(table_name).await;
         let create_result = db
@@ -158,14 +155,14 @@ async fn test_upsert_on_conflict() {
         // 首次 upsert 插入，二次 upsert 触发 ON CONFLICT DO UPDATE
         let first = db
             .table(table_name)
-            .on_conflict(&["id"])
+            .on_conflict(&[yang_db::field!("id")])
             .upsert(&json!({"id": 1, "name": "初始", "value": 10}))
             .await;
         assert!(first.is_ok(), "首次 upsert 应成功");
 
         let second = db
             .table(table_name)
-            .on_conflict(&["id"])
+            .on_conflict(&[yang_db::field!("id")])
             .upsert(&json!({"id": 1, "name": "更新", "value": 20}))
             .await;
         assert!(second.is_ok(), "冲突 upsert 应成功更新");
@@ -189,7 +186,7 @@ async fn test_error_handling() {
     let result = Database::connect(&test_db_url()).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_pg_error_test";
+        let table_name = yang_db::table!("integration_pg_error_test");
 
         let _ = db.drop_table(table_name).await;
         let _ = db

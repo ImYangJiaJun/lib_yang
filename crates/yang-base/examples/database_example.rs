@@ -1,6 +1,6 @@
-//! GlobalDatabase 使用示例
+//! 显式 Database 使用示例
 //!
-//! 演示如何使用 GlobalDatabase 进行数据库操作
+//! 演示如何把 Database 作为应用拥有的资源进行数据库操作
 //!
 //! # 运行示例
 //!
@@ -16,15 +16,14 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use yang_base::database::GlobalDatabase;
-use yang_db::DatabaseConfig;
+use yang_db::{Database, DatabaseConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== GlobalDatabase 使用示例 ===\n");
+    println!("=== Database 使用示例 ===\n");
 
-    // 1. 初始化全局数据库
-    println!("1. 初始化全局数据库...");
+    // 1. 创建当前应用拥有的数据库
+    println!("1. 连接数据库...");
     let db_url = "mysql://root:password@localhost:3306/test_db";
     // DatabaseConfig 为 #[non_exhaustive]：跨 crate 不能用结构体字面量，
     // 改用 default() + 字段赋值 / 链式 setter 构造。
@@ -34,14 +33,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.idle_timeout = 600;
     config.enable_logging = true;
 
-    match GlobalDatabase::init(db_url, config).await {
-        Ok(_) => println!("   ✓ 数据库初始化成功\n"),
+    let db = match Database::connect_with_config(db_url, config).await {
+        Ok(database) => {
+            println!("   ✓ 数据库初始化成功\n");
+            database
+        }
         Err(e) => {
             eprintln!("   ✗ 数据库初始化失败: {}", e);
             eprintln!("   提示：请确保 MySQL 服务正在运行，并且连接信息正确");
             return Ok(());
         }
-    }
+    };
 
     // 2. 创建测试表
     println!("2. 创建测试表...");
@@ -54,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     "#;
 
-    match GlobalDatabase::execute(create_table_sql).await {
+    match db.execute(create_table_sql).await {
         Ok(_) => println!("   ✓ 表创建成功\n"),
         Err(e) => {
             eprintln!("   ✗ 表创建失败: {}", e);
@@ -71,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ('Charlie', 'charlie@example.com')
     "#;
 
-    match GlobalDatabase::execute(insert_sql).await {
+    match db.execute(insert_sql).await {
         Ok(affected) => println!("   ✓ 插入 {} 条记录\n", affected),
         Err(e) => {
             eprintln!("   ✗ 插入失败: {}", e);
@@ -88,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email: String,
     }
 
-    match GlobalDatabase::query::<User>("SELECT id, name, email FROM users").await {
+    match db.query::<User>("SELECT id, name, email FROM users").await {
         Ok(users) => {
             println!("   ✓ 查询到 {} 条记录:", users.len());
             for user in users {
@@ -107,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. 使用事务
     println!("5. 使用事务更新数据...");
-    match GlobalDatabase::transaction().await {
+    match db.transaction().await {
         Ok(mut tx) => {
             // 在事务中执行多个操作
             if let Err(e) = tx
@@ -142,7 +144,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. 验证事务结果
     println!("6. 验证事务结果...");
-    match GlobalDatabase::query::<User>("SELECT id, name, email FROM users ORDER BY id").await {
+    match db
+        .query::<User>("SELECT id, name, email FROM users ORDER BY id")
+        .await
+    {
         Ok(users) => {
             println!("   ✓ 当前数据库中的用户:");
             for user in users {
@@ -161,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 7. 清理测试数据
     println!("7. 清理测试数据...");
-    match GlobalDatabase::execute("DROP TABLE IF EXISTS users").await {
+    match db.execute("DROP TABLE IF EXISTS users").await {
         Ok(_) => println!("   ✓ 测试表已删除\n"),
         Err(e) => {
             eprintln!("   ✗ 删除表失败: {}", e);

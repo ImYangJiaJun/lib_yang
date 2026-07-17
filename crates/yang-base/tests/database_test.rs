@@ -1,50 +1,46 @@
-//! GlobalDatabase 集成测试
-//!
-//! 测试全局数据库的初始化和基本操作
+//! 显式数据库资源集成测试。
 
-use yang_base::database::GlobalDatabase;
-use yang_db::DatabaseConfig;
+use yang_base::tools::ToolsBuilder;
+use yang_db::{Database, DatabaseConfig};
 
-/// 测试数据库初始化
-///
-/// 注意：此测试需要真实的 MySQL 数据库连接
-/// 如果没有可用的数据库，测试将被跳过
+/// 真实数据库可用时，验证 Database 交给 Tools 后仍保持同一连接池能力。
 #[tokio::test]
-#[ignore] // 默认忽略，需要手动运行
-async fn test_global_database_init() {
-    // 使用测试数据库连接字符串
+#[ignore = "需要本地 MySQL"]
+async fn explicit_database_resource_is_available_from_tools() {
     let db_url = "mysql://root:password@localhost:3306/test_db";
-    let config = DatabaseConfig::default();
+    let database = match Database::connect_with_config(db_url, DatabaseConfig::default()).await {
+        Ok(database) => database,
+        Err(error) => {
+            println!("跳过测试：无法连接到数据库: {error}");
+            return;
+        }
+    };
 
-    // 初始化全局数据库
-    let result = GlobalDatabase::init(db_url, config).await;
+    let tools = ToolsBuilder::new()
+        .database(database)
+        .build()
+        .expect("Tools 应构建成功");
 
-    // 如果连接失败，跳过测试
-    if result.is_err() {
-        println!("跳过测试：无法连接到数据库");
-        return;
-    }
-
-    // 验证可以获取数据库实例
-    assert!(GlobalDatabase::get().is_ok());
-
-    // 验证可以创建查询构建器
-    assert!(GlobalDatabase::table("test_table").is_ok());
+    assert!(tools
+        .db()
+        .expect("数据库应存在")
+        .health_check()
+        .await
+        .is_ok());
+    let table = yang_db::table!("test_table");
+    assert!(tools
+        .db()
+        .expect("数据库应存在")
+        .table(table)
+        .try_to_sql()
+        .is_ok());
 }
 
-/// 测试重复初始化
-#[tokio::test]
-async fn test_global_database_already_initialized() {
-    // 注意：由于 OnceLock 的特性，这个测试可能会受到其他测试的影响
-    // 在实际使用中，GlobalDatabase 只应该初始化一次
-
-    // 如果数据库已经初始化，测试重复初始化会失败
-    // 这个测试主要验证错误处理逻辑
-}
-
-/// 测试未初始化时的错误处理
 #[test]
-fn test_global_database_not_initialized_errors() {
-    // 这些测试在 global.rs 的单元测试中已经覆盖
-    // 这里只是作为集成测试的补充
+fn missing_database_returns_a_structured_error() {
+    let tools = ToolsBuilder::new().build().expect("空 Tools 应可构建");
+    assert!(matches!(
+        tools.db(),
+        Err(yang_base::BaseError::DatabaseNotInitialized)
+    ));
 }

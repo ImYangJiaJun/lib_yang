@@ -165,9 +165,9 @@ impl DatabaseConfig {
 ///     let db = Database::connect("mysql://user:password@localhost:3306/test").await?;
 ///     
 ///     // 使用查询构建器
-///     let builder = db.table("users")
-///         .field("id")
-///         .field("name");
+///     let builder = db.table(yang_db::table!("users"))
+///         .field(yang_db::field!("id"))
+///         .field(yang_db::field!("name"));
 ///     
 ///     // 执行查询（需要实现 select 方法）
 ///     // let users = builder.select::<User>().await?;
@@ -221,9 +221,22 @@ impl Database {
         Ok(Self { pool, config })
     }
 
+    /// 从调用方已创建的连接池构造数据库入口。
+    ///
+    /// 该构造器不建立连接，也不写入进程全局状态，供应用启动器把连接池所有权显式
+    /// 注入 `Tools`，以及离线测试/基准使用 `connect_lazy` 构造资源。
+    ///
+    /// # 错误
+    ///
+    /// 当 `config` 的连接数或超时参数非法时返回 [`DbError::InvalidArgument`]。
+    pub fn from_pool(pool: MySqlPool, config: DatabaseConfig) -> Result<Self, DbError> {
+        config.validate()?;
+        Ok(Self { pool, config })
+    }
+
     /// 选择表，返回查询构建器
-    pub fn table(&self, table_name: &str) -> QueryBuilder<'_> {
-        QueryBuilder::new(&self.pool, table_name, self.config.enable_logging)
+    pub fn table(&self, table: &crate::TableRef) -> QueryBuilder<'_> {
+        QueryBuilder::new(&self.pool, table.as_str(), self.config.enable_logging)
     }
 
     /// 获取底层 sqlx 连接池的引用
@@ -255,8 +268,7 @@ impl Database {
 
     /// 健康检查：执行 `SELECT 1` 验证连接可用。
     ///
-    /// 与 yang-base 层 `GlobalDatabase::health_check` 语义一致，但下沉到持有连接池
-    /// 的这一层，使 yang-db 直接消费者也能探活。
+    /// 在当前数据库实例上探活，避免直接消费者依赖进程级全局状态。
     ///
     /// # 返回
     /// - `Ok(true)`：连接正常
@@ -375,8 +387,8 @@ impl Database {
     /// 表名经 `quote_identifier` 校验+转义（DB-6）；DDL 不支持占位符绑定，非法表名
     /// （含空格/分号/反引号等）返回 `InvalidArgument` 而非拼进 SQL。
     #[allow(deprecated)]
-    pub async fn drop_table(&self, table_name: &str) -> Result<(), DbError> {
-        let quoted = crate::mysql::identifier::quote_identifier(table_name)?;
+    pub async fn drop_table(&self, table_name: &crate::TableRef) -> Result<(), DbError> {
+        let quoted = crate::mysql::identifier::quote_identifier(table_name.as_str())?;
         let sql = format!("DROP TABLE IF EXISTS {}", quoted);
         self.execute(&sql).await?;
         Ok(())
@@ -385,12 +397,12 @@ impl Database {
     /// 检查表是否存在
     ///
     /// 表名走 `?` 参数化绑定（DB-6，对齐 PG 的 `$1`），消除字面量注入。
-    pub async fn table_exists(&self, table_name: &str) -> Result<bool, DbError> {
+    pub async fn table_exists(&self, table_name: &crate::TableRef) -> Result<bool, DbError> {
         let sql = "SELECT COUNT(*) as count FROM information_schema.tables \
              WHERE table_schema = DATABASE() AND table_name = ?";
 
         let row: (i64,) = sqlx::query_as(sql)
-            .bind(table_name)
+            .bind(table_name.as_str())
             .fetch_one(&self.pool)
             .await?;
 

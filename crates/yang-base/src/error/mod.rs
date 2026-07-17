@@ -162,9 +162,8 @@ pub enum BaseError {
 
     /// UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作
     ///
-    /// 与 yang-db 的 `MissingWhereClause` 安全网对齐：未显式调用
-    /// [`crate::table::TableQuery::allow_full_table`] 时，无 WHERE 的
-    /// 更新/删除会被拒绝以防止误操作整表。
+    /// 与 yang-db 的 `MissingWhereClause` 安全网对齐：无 WHERE 的更新/删除
+    /// 始终被拒绝，以防止误操作整表。
     #[error("UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作: {0}")]
     MissingWhereClause(String),
 

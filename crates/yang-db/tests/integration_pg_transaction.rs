@@ -33,7 +33,7 @@ async fn test_pg_transaction_rollback_on_drop() {
     let db = Database::connect(&test_db_url())
         .await
         .expect("连接数据库失败");
-    let table = "test_tx_rollback";
+    let table = yang_db::table!("test_tx_rollback");
 
     // 准备测试表
     let _ = db.drop_table(table).await;
@@ -93,7 +93,7 @@ async fn test_pg_transaction_concurrent_isolation() {
     let db = Database::connect(&test_db_url())
         .await
         .expect("连接数据库失败");
-    let table = "test_tx_isolation";
+    let table = yang_db::table!("test_tx_isolation");
 
     // 准备测试表 + 种子行
     let _ = db.drop_table(table).await;
@@ -121,14 +121,14 @@ async fn test_pg_transaction_concurrent_isolation() {
     // Task1: 开事务 → UPDATE → 等 Task2 读完 → commit
     let handle1 = tokio::spawn({
         let url = db_url.clone();
-        let tbl = table.to_string();
+        let tbl = table.clone();
         async move {
             let db = Database::connect(&url).await.expect("task1: 连接失败");
             let mut tx = db.transaction().await.expect("task1: 开启事务失败");
 
             // UPDATE value=2（在事务内）
             tx.table(&tbl)
-                .where_and("id", "=", 1i64)
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64)
                 .update(&json!({"value": 2}))
                 .await
                 .expect("task1: UPDATE 失败");
@@ -147,7 +147,7 @@ async fn test_pg_transaction_concurrent_isolation() {
     // Task2: 等 Task1 UPDATE 完成 → SELECT（应看到旧值）→ 通知 Task1 → Task1 commit → 再 SELECT
     let handle2 = tokio::spawn({
         let url = db_url.clone();
-        let tbl = table.to_string();
+        let tbl = table.clone();
         async move {
             let db = Database::connect(&url).await.expect("task2: 连接失败");
 
@@ -196,7 +196,7 @@ async fn test_pg_transaction_concurrent_isolation() {
 
             // UPDATE value=3 并 commit
             tx.table(&tbl)
-                .where_and("id", "=", 1i64)
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64)
                 .update(&json!({"value": 3}))
                 .await
                 .expect("task2: UPDATE 失败");

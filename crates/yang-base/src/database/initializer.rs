@@ -28,7 +28,6 @@
 //! initializer.initialize_all(&manager).await?;
 //! ```
 
-use crate::database::GlobalDatabase;
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
 use crate::table::{SchemaColumn, SchemaValidationReport, TableDefinition};
@@ -113,29 +112,6 @@ fn migration_execution_error(
     }
 }
 
-/// 数据库引用
-///
-/// 用于让 [`DatabaseInitializer`] 既能持有调用方传入的 owned [`Database`]，
-/// 也能引用进程级全局单例（`'static` 引用），二者共用同一套初始化逻辑。
-enum DbRef {
-    /// 调用方传入并交由初始化器持有的数据库实例
-    Owned(Database),
-    /// 指向全局单例 [`GlobalDatabase`] 的 `'static` 引用
-    Global(&'static Database),
-}
-
-impl DbRef {
-    /// 返回底层数据库实例的引用
-    ///
-    /// 两个变体统一收敛为 `&Database`，调用处无需关心数据库来源。
-    fn db(&self) -> &Database {
-        match self {
-            DbRef::Owned(db) => db,
-            DbRef::Global(db) => db,
-        }
-    }
-}
-
 /// 数据库初始化器
 ///
 /// 负责执行插件的数据库初始化脚本和迁移。
@@ -143,7 +119,7 @@ impl DbRef {
 ///
 /// # 字段
 ///
-/// - `db`: 数据库引用（owned 实例或全局单例的 `'static` 引用）
+/// - `db`: 调用方显式传入并交由初始化器持有的数据库实例
 /// - `use_transaction`: 是否启用事务模式
 ///
 /// # 示例
@@ -156,8 +132,8 @@ impl DbRef {
 /// let initializer = DatabaseInitializer::new(db, true);
 /// ```
 pub struct DatabaseInitializer {
-    /// 数据库引用（owned 实例或全局单例的 `'static` 引用）
-    db: DbRef,
+    /// 显式拥有的数据库实例。
+    db: Database,
 
     /// 是否启用事务模式
     use_transaction: bool,
@@ -192,55 +168,22 @@ impl DatabaseInitializer {
     /// ```
     pub fn new(db: Database, use_transaction: bool) -> Self {
         Self {
-            db: DbRef::Owned(db),
+            db,
             use_transaction,
         }
     }
 
-    /// 基于全局数据库单例创建初始化器
-    ///
-    /// 直接引用 [`GlobalDatabase`] 持有的进程级单例，无需调用方再传入 owned 实例，
-    /// 适合应用已通过 [`GlobalDatabase::init`] 或 `DatabaseBundle::init` 完成初始化的场景。
-    ///
-    /// # 参数
-    ///
-    /// - `use_transaction`: 是否启用事务模式
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(DatabaseInitializer)`: 引用全局单例的初始化器
-    /// - `Err(BaseError)`: 全局数据库尚未初始化
-    ///
-    /// # 错误
-    ///
-    /// - `DatabaseNotInitialized`: 全局数据库未初始化，需要先调用 `init`
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::database::DatabaseInitializer;
-    ///
-    /// let initializer = DatabaseInitializer::from_global(true)?;
-    /// ```
-    pub fn from_global(use_transaction: bool) -> Result<Self, BaseError> {
-        Ok(Self {
-            db: DbRef::Global(GlobalDatabase::get()?),
-            use_transaction,
-        })
-    }
-
     /// 返回底层数据库实例的引用
     ///
-    /// 收敛 [`DbRef`] 的两个变体，初始化逻辑无需关心数据库来源（owned 或全局单例）。
     pub(crate) fn db(&self) -> &Database {
-        self.db.db()
+        &self.db
     }
 
     /// 只读生成单个插件的迁移计划，不创建迁移表、不执行 SQL、不写迁移记录。
     pub async fn plan_migrations(&self, plugin: &dyn Plugin) -> Result<MigrationPlan, BaseError> {
         let table_exists = self
             .db()
-            .table_exists("_migrations")
+            .table_exists(yang_db::table!("_migrations"))
             .await
             .map_err(BaseError::DatabaseQueryFailed)?;
         let mut entries = Vec::new();

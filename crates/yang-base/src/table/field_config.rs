@@ -64,6 +64,9 @@ pub(crate) struct FieldConfig {
     /// 如果为 true，则该字段可以用于 ORDER BY 排序
     pub sortable: bool,
 
+    /// 是否为租户隔离键。
+    pub tenant_key: bool,
+
     /// 关联表配置
     ///
     /// 用于外键字段，定义与其他表的关联关系
@@ -95,6 +98,7 @@ impl FieldConfig {
             hidden: false,
             filterable: true,
             sortable: true,
+            tenant_key: false,
             relation: None,
         }
     }

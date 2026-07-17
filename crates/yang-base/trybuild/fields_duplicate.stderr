@@ -1,0 +1,25 @@
+error[E0124]: field `username` is already declared
+ --> trybuild/fields_duplicate.rs:4:13
+  |
+4 |       let _ = yang_base::fields! {
+  |  _____________^
+5 | |         username => Str::new(),
+6 | |         username => Str::new(),
+7 | |     };
+  | |     ^
+  | |     |
+  | |_____field already declared
+  |       `username` first declared here
+  |
+  = note: this error originates in the macro `yang_base::fields` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0062]: field `username` specified more than once
+ --> trybuild/fields_duplicate.rs:6:9
+  |
+4 |       let _ = yang_base::fields! {
+  |  _____________-
+5 | |         username => Str::new(),
+6 | |         username => Str::new(),
+  | |         ^^^^^^^^ used more than once
+7 | |     };
+  | |_____- first use of `username`

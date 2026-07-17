@@ -6,15 +6,14 @@
 //! - 小写 `x-request-id` 头兼容
 //! - 缺失 header 时回退为默认生成值
 //!
-//! 测试通过构造 Middleware 链（RequestIdMiddleware + CaptureMiddleware）绕过
-//! ModuleRouter::authorize_and_dispatch 的鉴权路径，直接验证中间件行为。
+//! 测试通过构造 Middleware 链（RequestIdMiddleware + CaptureMiddleware）直接验证行为。
 
-use crate::action::{
-    ActionContext, ActionMeta, ApiResponse, DynAction, GlobalTools, Request, RequestId,
-};
+use crate::action::{ActionContext, ActionMeta, ApiResponse, DynAction, Request, RequestId};
 use crate::error::BaseError;
-use crate::router::middleware::{Middleware, Next, RequestIdMiddleware};
-use crate::router::ModuleRouter;
+use crate::router::middleware::{
+    AuthorizationPolicy, Middleware, Next, PermissionGroup, RequestIdMiddleware,
+};
+use crate::tools::{Tools, ToolsBuilder};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -47,8 +46,8 @@ impl Middleware for CaptureMiddleware {
     }
 }
 
-/// 构造带 TokenManager 的 GlobalTools（当前 feature 组合下的最小构造路径）。
-fn test_tools() -> Arc<GlobalTools> {
+/// 构造带 TokenManager 的 Tools（当前 feature 组合下的最小构造路径）。
+fn test_tools() -> Arc<Tools> {
     let tm = crate::token::TokenManager::new_symmetric(
         "test_secret_for_request_id_test",
         jsonwebtoken::Algorithm::HS256,
@@ -57,7 +56,12 @@ fn test_tools() -> Arc<GlobalTools> {
         3600,
         86400,
     );
-    Arc::new(GlobalTools::new(tm))
+    Arc::new(
+        ToolsBuilder::new()
+            .token(tm)
+            .build()
+            .expect("测试 Tools 应构建成功"),
+    )
 }
 
 /// 执行一次 RequestIdMiddleware 测试。
@@ -72,13 +76,12 @@ async fn run_test(request: Request, default_rid: RequestId) -> Option<RequestId>
         captured: captured.clone(),
     });
     let remaining = [mw];
-    let router = ModuleRouter::new("test", "测试");
+    let policy = AuthorizationPolicy::new(false, Vec::<PermissionGroup>::new());
 
     let next = Next {
         remaining: &remaining,
-        router: &router,
         action: Arc::new(MockAction),
-        is_public: false,
+        policy: &policy,
     };
 
     RequestIdMiddleware

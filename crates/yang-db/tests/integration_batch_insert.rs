@@ -18,7 +18,7 @@ async fn test_small_batch_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_small_batch";
+        let table_name = yang_db::table!("test_small_batch");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -90,7 +90,7 @@ async fn test_medium_batch_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_medium_batch";
+        let table_name = yang_db::table!("test_medium_batch");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -162,7 +162,7 @@ async fn test_large_batch_insert_1000() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_large_batch_1000";
+        let table_name = yang_db::table!("test_large_batch_1000");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -234,7 +234,7 @@ async fn test_very_large_batch_insert_5000() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_very_large_batch_5000";
+        let table_name = yang_db::table!("test_very_large_batch_5000");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -312,7 +312,7 @@ async fn test_extreme_large_batch_insert_10000() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_extreme_large_batch_10000";
+        let table_name = yang_db::table!("test_extreme_large_batch_10000");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -388,7 +388,7 @@ async fn test_irregular_batch_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_irregular_batch";
+        let table_name = yang_db::table!("test_irregular_batch");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -460,7 +460,7 @@ async fn test_large_batch_insert_with_json() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "test_large_batch_json";
+        let table_name = yang_db::table!("test_large_batch_json");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -502,7 +502,7 @@ async fn test_large_batch_insert_with_json() {
         let start = std::time::Instant::now();
         let batch_result = db
             .table(table_name)
-            .json("metadata")
+            .json(yang_db::field!("metadata"))
             .insert_batch(&records)
             .await;
         let duration = start.elapsed();

@@ -133,6 +133,8 @@ pub enum Condition {
     Lte(String, SqlValue),
     /// IN 条件
     In(String, Vec<SqlValue>),
+    /// NOT IN 条件
+    NotIn(String, Vec<SqlValue>),
     /// BETWEEN 条件
     Between(String, SqlValue, SqlValue),
     /// LIKE 条件
@@ -376,6 +378,24 @@ fn write_condition_to_sql_owned_checked(
             out.push_str(&format!("{} IN (", quote_identifier(&field)?));
             for i in 0..count {
                 if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('?');
+            }
+            out.push(')');
+            Ok(())
+        }
+        Condition::NotIn(field, values) => {
+            if values.is_empty() {
+                return Err(DbError::InvalidArgument(format!(
+                    "NOT IN 条件 `{field}` 的值列表不能为空"
+                )));
+            }
+            let count = values.len();
+            params.extend(values);
+            out.push_str(&format!("{} NOT IN (", quote_identifier(&field)?));
+            for index in 0..count {
+                if index > 0 {
                     out.push_str(", ");
                 }
                 out.push('?');

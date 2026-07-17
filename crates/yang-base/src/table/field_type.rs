@@ -124,6 +124,14 @@ pub enum FieldType {
     /// ```
     Double,
 
+    /// 定点小数类型。
+    Decimal {
+        /// 总有效数字位数。
+        precision: u8,
+        /// 小数位数。
+        scale: u8,
+    },
+
     /// 布尔类型
     ///
     /// 用于存储布尔值（true/false）。
@@ -254,6 +262,7 @@ impl FieldType {
             FieldType::BigInt => "长整数",
             FieldType::Float => "单精度浮点数",
             FieldType::Double => "双精度浮点数",
+            FieldType::Decimal { .. } => "定点小数",
             FieldType::Boolean => "布尔值",
             FieldType::Date => "日期",
             FieldType::DateTime => "日期时间",
@@ -282,7 +291,11 @@ impl FieldType {
     pub fn is_numeric(&self) -> bool {
         matches!(
             self,
-            FieldType::Integer | FieldType::BigInt | FieldType::Float | FieldType::Double
+            FieldType::Integer
+                | FieldType::BigInt
+                | FieldType::Float
+                | FieldType::Double
+                | FieldType::Decimal { .. }
         )
     }
 
@@ -440,6 +453,10 @@ impl FieldType {
                 }
             }
 
+            FieldType::Decimal { precision, scale } => {
+                validate_decimal(field_name, value, *precision, *scale)
+            }
+
             // 布尔类型验证
             FieldType::Boolean => {
                 if value.is_boolean() {
@@ -507,6 +524,43 @@ impl FieldType {
                 }
             }
         }
+    }
+}
+
+fn validate_decimal(
+    field_name: &str,
+    value: &serde_json::Value,
+    precision: u8,
+    scale: u8,
+) -> Result<(), BaseError> {
+    let text = match value {
+        serde_json::Value::String(value) => std::borrow::Cow::Borrowed(value.as_str()),
+        serde_json::Value::Number(value) => std::borrow::Cow::Owned(value.to_string()),
+        _ => {
+            return Err(BaseError::InvalidFieldType(
+                field_name.to_string(),
+                format!(
+                    "期望十进制数字或字符串，实际类型: {}",
+                    value_type_name(value)
+                ),
+            ));
+        }
+    };
+    let unsigned = text.strip_prefix('-').unwrap_or(text.as_ref());
+    let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let digits = integer.len() + fraction.len();
+    let valid = !integer.is_empty()
+        && integer.bytes().all(|byte| byte.is_ascii_digit())
+        && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        && digits <= usize::from(precision)
+        && fraction.len() <= usize::from(scale);
+    if valid {
+        Ok(())
+    } else {
+        Err(BaseError::InvalidFieldType(
+            field_name.to_string(),
+            format!("值 {text} 不符合 DECIMAL({precision}, {scale})"),
+        ))
     }
 }
 
@@ -829,6 +883,26 @@ mod tests {
             .is_err());
         assert!(field_type
             .validate("amount", &serde_json::json!(true))
+            .is_err());
+    }
+
+    #[test]
+    fn test_validate_decimal_preserves_fixed_point_contract() {
+        let field_type = FieldType::Decimal {
+            precision: 8,
+            scale: 2,
+        };
+        assert!(field_type
+            .validate("amount", &serde_json::json!("123456.78"))
+            .is_ok());
+        assert!(field_type
+            .validate("amount", &serde_json::json!("1234567.89"))
+            .is_err());
+        assert!(field_type
+            .validate("amount", &serde_json::json!("1.234"))
+            .is_err());
+        assert!(field_type
+            .validate("amount", &serde_json::json!("not-a-number"))
             .is_err());
     }
 

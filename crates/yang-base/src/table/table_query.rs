@@ -113,12 +113,8 @@ pub struct TableQuery {
     /// 时读取全量（含已软删行）。
     include_trashed: bool,
 
-    /// 是否允许无 WHERE 的全表 UPDATE/DELETE
-    ///
-    /// 默认 `false`：无 WHERE 的更新/删除会返回 [`BaseError::MissingWhereClause`]，
-    /// 与 yang-db 的安全网对齐。置为 `true`（经 [`TableQuery::allow_full_table`]）
-    /// 时显式放行全表操作。
-    allow_full_table: bool,
+    /// 启动期定义并在请求期注入的租户范围；存在时所有读写均必须带该条件。
+    tenant_scope: Option<(String, Value)>,
 
     /// 数据库连接池引用（预留）
     ///
@@ -139,27 +135,150 @@ pub struct TableQuery {
     request_id: Option<crate::action::RequestId>,
 }
 
-/// 检查字符串是否为合法的 SQL 标识符
-///
-/// 合法标识符规则：
-/// - 首字符必须是 ASCII 字母或下划线
-/// - 后续字符必须是 ASCII 字母、数字或下划线
-/// - 不能为空
-/// - 不能包含分号、`--`、空白字符
-#[cfg(feature = "mysql")]
-fn is_valid_identifier(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
 impl TableQuery {
+    #[cfg(feature = "mysql")]
+    fn compile_predicate(
+        &self,
+        condition: &WhereCondition,
+    ) -> Result<yang_db::Predicate, BaseError> {
+        let field = |name: &str| {
+            self.table_config
+                .get_field_ref(name)
+                .cloned()
+                .ok_or_else(|| {
+                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.to_string())
+                })
+        };
+        Ok(match condition {
+            WhereCondition::Eq { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Eq, value.clone())
+            }
+            WhereCondition::Ne { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Ne, value.clone())
+            }
+            WhereCondition::Gt { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Gt, value.clone())
+            }
+            WhereCondition::Gte { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Gte, value.clone())
+            }
+            WhereCondition::Lt { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Lt, value.clone())
+            }
+            WhereCondition::Lte { field: name, value } => {
+                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Lte, value.clone())
+            }
+            WhereCondition::Like {
+                field: name,
+                pattern,
+            } => yang_db::Predicate::Compare(
+                field(name)?,
+                yang_db::CompareOp::Like,
+                Value::String(pattern.clone()),
+            ),
+            WhereCondition::In {
+                field: name,
+                values,
+            } => yang_db::Predicate::In(field(name)?, values.clone()),
+            WhereCondition::NotIn {
+                field: name,
+                values,
+            } => yang_db::Predicate::NotIn(field(name)?, values.clone()),
+            WhereCondition::Between {
+                field: name,
+                lo,
+                hi,
+            } => yang_db::Predicate::Between(field(name)?, lo.clone(), hi.clone()),
+            WhereCondition::IsNull { field: name } => yang_db::Predicate::IsNull(field(name)?),
+            WhereCondition::IsNotNull { field: name } => {
+                yang_db::Predicate::IsNotNull(field(name)?)
+            }
+            WhereCondition::And { conditions } => yang_db::Predicate::And(
+                conditions
+                    .iter()
+                    .map(|value| self.compile_predicate(value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            WhereCondition::Or { conditions } => yang_db::Predicate::Or(
+                conditions
+                    .iter()
+                    .map(|value| self.compile_predicate(value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        })
+    }
+
+    #[cfg(feature = "mysql")]
+    fn compile_db_query(&self) -> Result<yang_db::QueryBuilder<'_>, BaseError> {
+        let pool = self
+            .pool
+            .as_deref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
+        self.apply_db_plan(yang_db::QueryBuilder::from_pool(
+            pool,
+            &self.table_config.table_ref,
+        ))
+    }
+
+    #[cfg(feature = "mysql")]
+    fn apply_db_plan<'a>(
+        &self,
+        mut query: yang_db::QueryBuilder<'a>,
+    ) -> Result<yang_db::QueryBuilder<'a>, BaseError> {
+        let selected = self.query_params.fields.as_ref().map_or_else(
+            || {
+                self.default_read_fields()
+                    .map(|values| values.into_iter().map(str::to_string).collect())
+            },
+            |values| Ok(values.clone()),
+        )?;
+        for name in selected {
+            let field = self.table_config.get_field_ref(&name).ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
+            })?;
+            query = query.field(field);
+        }
+        for condition in &self.query_params.where_conditions {
+            query = query
+                .where_predicate(&self.compile_predicate(condition)?)
+                .map_err(BaseError::DatabaseQueryFailed)?;
+        }
+        if !self.include_trashed {
+            if let Some(name) = &self.table_config.soft_delete_field {
+                let field = self.table_config.get_field_ref(name).ok_or_else(|| {
+                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
+                })?;
+                query = query.where_null(field);
+            }
+        }
+        let orders = if self.query_params.order_by.is_empty() {
+            &self.table_config.default_order
+        } else {
+            &self.query_params.order_by
+        };
+        for (name, order) in orders {
+            let field = self.table_config.get_field_ref(name).ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
+            })?;
+            let order = match order {
+                SortOrder::Asc => yang_db::SortOrder::Asc,
+                SortOrder::Desc => yang_db::SortOrder::Desc,
+            };
+            query = query.order(field, order);
+        }
+        if let Some(page_size) = self.query_params.page_size {
+            let page = self.query_params.page.unwrap_or(1).max(1);
+            let limit = u64::try_from(page_size).map_err(|_| {
+                BaseError::ParamInvalid("page_size".to_string(), "分页大小超出范围".to_string())
+            })?;
+            let offset = u64::try_from((page - 1).saturating_mul(page_size)).map_err(|_| {
+                BaseError::ParamInvalid("page".to_string(), "分页偏移超出范围".to_string())
+            })?;
+            query = query.limit(limit).offset(offset);
+        }
+        Ok(query)
+    }
+
     /// 对字段名进行反引号转义
     ///
     /// 对合法标识符添加反引号，内部反引号转义为双反引号。
@@ -174,15 +293,14 @@ impl TableQuery {
     /// - `Ok(String)`: 转义后的字段名，如 `` `field_name` ``
     /// - `Err(BaseError)`: 字段名非法
     #[cfg(feature = "mysql")]
+    #[cfg(test)]
     fn quote_identifier(&self, field: &str) -> Result<String, BaseError> {
-        if !is_valid_identifier(field) {
-            return Err(BaseError::FieldNotFound(
-                self.table_config.table_name.clone(),
-                field.to_string(),
-            ));
-        }
-        // 反引号转义：内部反引号变双反引号
-        Ok(format!("`{}`", field.replace('`', "``")))
+        self.table_config
+            .get_field_ref(field)
+            .map(|field| field.mysql_quoted().to_string())
+            .ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
+            })
     }
 
     /// 对表名进行反引号转义（与字段名走同一条校验/转义路径）
@@ -195,15 +313,9 @@ impl TableQuery {
     /// - `Ok(String)`: 转义后的表名，如 `` `users` ``
     /// - `Err(BaseError)`: 表名非法
     #[cfg(feature = "mysql")]
+    #[cfg(test)]
     fn quoted_table_name(&self) -> Result<String, BaseError> {
-        let name = &self.table_config.table_name;
-        if !is_valid_identifier(name) {
-            return Err(BaseError::FieldNotFound(
-                name.clone(),
-                "非法表名".to_string(),
-            ));
-        }
-        Ok(format!("`{}`", name.replace('`', "``")))
+        Ok(format!("`{}`", self.table_config.table_ref.as_str()))
     }
 
     /// 创建新的查询构建器
@@ -230,7 +342,7 @@ impl TableQuery {
             user_roles_set,
             query_params: QueryParams::new(),
             include_trashed: false,
-            allow_full_table: false,
+            tenant_scope: None,
             pool,
             slow_threshold: None,
             request_id: None,
@@ -253,7 +365,7 @@ impl TableQuery {
             user_roles_set,
             query_params: QueryParams::new(),
             include_trashed: false,
-            allow_full_table: false,
+            tenant_scope: None,
             slow_threshold: None,
             request_id: None,
         }
@@ -881,6 +993,42 @@ impl TableQuery {
         Ok(self)
     }
 
+    /// 对当前角色可读、可筛选的文本字段应用一次 OR LIKE 搜索。
+    pub fn search(self, keyword: Option<&str>) -> Result<Self, BaseError> {
+        let Some(keyword) = keyword.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(self);
+        };
+        let mut fields = self
+            .table_config
+            .fields
+            .iter()
+            .filter(|(_, field)| {
+                field.field_type.is_text()
+                    && field.permissions.can_filter(&self.user_roles_set)
+                    && field.permissions.can_read(&self.user_roles_set)
+                    && !field.hidden
+            })
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        fields.sort();
+        if fields.is_empty() {
+            return Err(BaseError::PermissionDenied(format!(
+                "表 {} 没有当前角色可搜索的文本字段",
+                self.table_config.table_name
+            )));
+        }
+        let pattern = format!("%{keyword}%");
+        self.where_or(
+            fields
+                .into_iter()
+                .map(|field| WhereCondition::Like {
+                    field,
+                    pattern: pattern.clone(),
+                })
+                .collect(),
+        )
+    }
+
     /// 在读取路径包含软删除记录
     ///
     /// 默认情况下，配置了 `soft_delete_field` 的表会在 select/count/paginate
@@ -895,18 +1043,24 @@ impl TableQuery {
         self
     }
 
-    /// 允许无 WHERE 条件的全表 UPDATE/DELETE
-    ///
-    /// 默认情况下，未设置任何 WHERE 条件的更新/删除会返回
-    /// [`BaseError::MissingWhereClause`] 以防止误操作整表。调用本方法显式放行
-    /// 全表操作（如批量初始化、清空表）。
-    ///
-    /// # 返回值
-    ///
-    /// 返回 self 支持链式调用
-    pub fn allow_full_table(mut self) -> Self {
-        self.allow_full_table = true;
-        self
+    /// 注入强制租户范围。该条件绕过业务筛选权限，但字段必须是定义中的 tenant key。
+    pub(crate) fn scope_tenant(mut self, field: &str, value: Value) -> Result<Self, BaseError> {
+        let config = self.table_config.get_field(field).ok_or_else(|| {
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
+        })?;
+        if !config.tenant_key {
+            return Err(BaseError::ConfigError(format!(
+                "字段 {}.{} 未声明为 tenant_key",
+                self.table_config.table_name, field
+            )));
+        }
+        config.field_type.validate(field, &value)?;
+        self.query_params.where_conditions.push(WhereCondition::Eq {
+            field: field.to_string(),
+            value: value.clone(),
+        });
+        self.tenant_scope = Some((field.to_string(), value));
+        Ok(self)
     }
 
     /// 验证筛选字段的权限
@@ -986,6 +1140,7 @@ impl TableQuery {
                 | crate::table::FieldType::BigInt
                 | crate::table::FieldType::Float
                 | crate::table::FieldType::Double
+                | crate::table::FieldType::Decimal { .. }
                 | crate::table::FieldType::Date
                 | crate::table::FieldType::DateTime
                 | crate::table::FieldType::Timestamp
@@ -1239,6 +1394,30 @@ impl TableQuery {
         &self.query_params
     }
 
+    /// 应用通用列表参数，并复用本类型现有的字段/筛选/排序/分页权限校验。
+    pub fn apply_params(mut self, mut params: QueryParams) -> Result<Self, BaseError> {
+        params.normalize();
+        if let Some(fields) = params.fields {
+            let names = fields.iter().map(String::as_str).collect::<Vec<_>>();
+            self = self.select_fields(&names)?;
+        }
+        for condition in params.where_conditions {
+            self = self.where_tree(condition)?;
+        }
+        for (field, order) in params.order_by {
+            self = self.order_by(&field, order)?;
+        }
+        if params.page.is_some() || params.page_size.is_some() {
+            self = self.page(
+                params.page.unwrap_or(1),
+                params
+                    .page_size
+                    .unwrap_or(crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE),
+            )?;
+        }
+        Ok(self)
+    }
+
     /// 获取表配置的引用
     ///
     /// 用于测试或调试，获取表配置
@@ -1367,36 +1546,21 @@ impl TableQuery {
     async fn count_internal(&self) -> Result<usize, BaseError> {
         // COUNT 会泄露表基数，因此与 SELECT 使用相同的可读权限守卫。
         self.ensure_readable_projection()?;
-
-        // 1. 检查数据库连接池是否存在
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 构建 COUNT SQL 语句
-        let (sql, params) = self.build_count_sql()?;
-
-        // 3. 创建查询
-        let mut query = sqlx::query_scalar::<_, i64>(&sql);
-
-        // 4. 绑定参数
-        for param in params {
-            query = Self::bind_count_param(query, &param);
-        }
-
-        // 5. 执行查询（计时观测）
-        let count = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "count",
-            query.fetch_one(pool.as_ref()),
-        )
-        .await
-        .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
-
-        Ok(count as usize)
+        // 分页只约束当前页数据，不应改变总记录数。尤其是 OFFSET > 0 时，
+        // MySQL 会把 COUNT(*) 的唯一结果行跳过，进而把非空结果误判为 0。
+        let mut count_query = self.clone();
+        count_query.query_params.page = None;
+        count_query.query_params.page_size = None;
+        let count = count_query
+            .compile_db_query()?
+            .count()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        usize::try_from(count).map_err(|_| {
+            BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(
+                "COUNT 结果超出 usize 范围".to_string(),
+            ))
+        })
     }
 
     /// 执行 COUNT 查询获取总记录数
@@ -1444,6 +1608,7 @@ impl TableQuery {
     ///
     /// - `Ok(())`：拼接成功
     /// - `Err(BaseError)`：字段名非法、参数转换失败或嵌套层数超限
+    #[cfg(test)]
     fn append_where_to_sql(
         &self,
         sql: &mut String,
@@ -1490,6 +1655,7 @@ impl TableQuery {
     ///
     /// `depth` 从 0 起递增，超过 [`Self::MAX_WHERE_DEPTH`] 返回 `ParamInvalid`
     /// 而非 panic，保证受保护层不因深嵌套输入崩溃。
+    #[cfg(test)]
     fn render_condition(
         &self,
         condition: &WhereCondition,
@@ -1635,6 +1801,7 @@ impl TableQuery {
 
     /// 渲染逻辑组：`(c1 <sep> c2 <sep> ...)`；空组用 `empty_literal` 兜底
     /// （And→`1=1` 恒真，Or→`1=0` 恒假），避免拼出非法空括号。
+    #[cfg(test)]
     fn render_group(
         &self,
         conditions: &[WhereCondition],
@@ -1662,53 +1829,6 @@ impl TableQuery {
         Ok(())
     }
 
-    /// 构建 COUNT SQL 语句
-    ///
-    /// # 返回值
-    ///
-    /// 返回 (SQL 语句, 参数列表) 元组
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
-    fn build_count_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        self.ensure_readable_projection()?;
-        let mut sql = format!("SELECT COUNT(*) FROM {}", self.quoted_table_name()?);
-        let mut params = Vec::new();
-
-        // 通过统一方法拼接 WHERE 子句（读路径，应用软删过滤）
-        self.append_where_to_sql(&mut sql, &mut params, true)?;
-
-        Ok((sql, params))
-    }
-
-    /// 绑定参数到 COUNT 查询
-    ///
-    /// # 参数
-    ///
-    /// - `query`：sqlx 查询对象
-    /// - `param`：SQL 参数值
-    ///
-    /// # 返回值
-    ///
-    /// 绑定参数后的查询对象
-    fn bind_count_param<'q>(
-        query: sqlx::query::QueryScalar<'q, sqlx::MySql, i64, sqlx::mysql::MySqlArguments>,
-        param: &SqlParam,
-    ) -> sqlx::query::QueryScalar<'q, sqlx::MySql, i64, sqlx::mysql::MySqlArguments> {
-        match param {
-            SqlParam::Null => query.bind(Option::<i32>::None),
-            SqlParam::Bool(b) => query.bind(*b),
-            SqlParam::Int(i) => query.bind(*i),
-            SqlParam::Uint(u) => query.bind(*u),
-            SqlParam::Float(f) => query.bind(*f),
-            SqlParam::String(s) => query.bind(s.clone()),
-            SqlParam::DateTime(dt) => query.bind(*dt),
-            SqlParam::Bytes(b) => query.bind(b.clone()),
-            SqlParam::Json(j) => query.bind(j.clone()),
-        }
-    }
-
     /// 执行 SELECT 查询操作
     ///
     /// 使用 sqlx 构建 SELECT 语句，应用已配置的字段选择、WHERE 条件和排序规则，
@@ -1732,24 +1852,10 @@ impl TableQuery {
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
-        // 1. 检查数据库连接池是否存在
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 构建 SQL 语句
-        let (sql, params) = self.build_select_sql(None)?;
-
-        // 3. 在连接池上执行查询（计时观测，慢查询超阈值 warn）
-        Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "select",
-            Self::run_fetch_all(pool.as_ref(), &sql, &params),
-        )
-        .await
+        self.compile_db_query()?
+            .select::<T>()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 查询全部匹配记录。
@@ -1766,7 +1872,7 @@ impl TableQuery {
     /// # 参数
     ///
     /// - `tx`：由 [`ActionContext::begin_transaction`](crate::action::ActionContext::begin_transaction)
-    ///   或 [`GlobalDatabase::transaction`](crate::database::GlobalDatabase::transaction) 取得的活动事务
+    ///   或 [`Tools`](crate::tools::Tools) 所有数据库实例创建的活动事务
     ///
     /// # 错误
     ///
@@ -1779,24 +1885,11 @@ impl TableQuery {
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
-        // 构建 SQL（与普通路径一致，含字段权限/软删过滤）
-        let (sql, params) = self.build_select_sql(None)?;
-
-        // 借出事务底层连接执行；事务已结束则返回错误而非 panic
-        let executor = tx.executor().ok_or_else(|| {
-            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                "事务已提交或回滚".to_string(),
-            ))
-        })?;
-
-        Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "select_in_tx",
-            Self::run_fetch_all(executor, &sql, &params),
-        )
-        .await
+        let query = tx.table(&self.table_config.table_ref);
+        self.apply_db_plan(query)?
+            .select::<T>()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 在事务中查询全部匹配记录。
@@ -1816,6 +1909,7 @@ impl TableQuery {
     /// # 错误
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
+    #[cfg(test)]
     fn build_select_sql(
         &self,
         hard_limit: Option<usize>,
@@ -1898,36 +1992,6 @@ impl TableQuery {
         Ok((sql, params))
     }
 
-    /// 绑定参数到查询
-    ///
-    /// # 参数
-    ///
-    /// - `query`：sqlx 查询对象
-    /// - `param`：SQL 参数值
-    ///
-    /// # 返回值
-    ///
-    /// 绑定参数后的查询对象
-    fn bind_param<'q, T>(
-        query: sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>,
-        param: &SqlParam,
-    ) -> sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
-    {
-        match param {
-            SqlParam::Null => query.bind(Option::<i32>::None),
-            SqlParam::Bool(b) => query.bind(*b),
-            SqlParam::Int(i) => query.bind(*i),
-            SqlParam::Uint(u) => query.bind(*u),
-            SqlParam::Float(f) => query.bind(*f),
-            SqlParam::String(s) => query.bind(s.clone()),
-            SqlParam::DateTime(dt) => query.bind(*dt),
-            SqlParam::Bytes(b) => query.bind(b.clone()),
-            SqlParam::Json(j) => query.bind(j.clone()),
-        }
-    }
-
     /// 执行查询并返回可选的单条记录
     ///
     /// 执行 SELECT 查询，返回第一条匹配记录，如果没有匹配记录则返回 None。
@@ -1971,35 +2035,10 @@ impl TableQuery {
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
-        // 1. 检查数据库连接池是否存在
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 构建 SQL 语句（限制返回 1 条记录）
-        let (sql, params) = self.build_select_sql(Some(1))?;
-
-        // 3. 创建查询
-        let mut query = sqlx::query_as::<_, T>(&sql);
-
-        // 4. 绑定参数
-        for param in params {
-            query = Self::bind_param(query, &param);
-        }
-
-        // 5. 执行查询，返回可选结果（计时观测）
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "fetch_optional",
-            query.fetch_optional(pool.as_ref()),
-        )
-        .await
-        .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))?;
-
-        Ok(result)
+        self.compile_db_query()?
+            .find::<T>()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 查询可选单条记录。
@@ -2058,29 +2097,13 @@ impl TableQuery {
     /// # }
     /// ```
     pub async fn insert(self, data: crate::table::Record) -> Result<u64, BaseError> {
-        // 1. 检查数据库连接池是否存在
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 填充默认值/时间戳并校验（顺序：写权限→填充默认值→必填/类型校验）
+        // 填充默认值/时间戳并校验（顺序：写权限→填充默认值→必填/类型校验）
         let data = self.prepare_and_validate_insert(data.into_columns())?;
-
-        // 3. 构建 INSERT SQL 语句
-        let (sql, params) = self.build_insert_sql(&data)?;
-
-        // 4. 在连接池上执行插入（计时观测）
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "insert",
-            Self::run_execute(pool.as_ref(), &sql, &params),
-        )
-        .await?;
-
-        Ok(result.rows_affected())
+        self.compile_db_query()?
+            .insert(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        Ok(1)
     }
 
     /// 在事务中执行 INSERT 操作
@@ -2098,23 +2121,12 @@ impl TableQuery {
         data: crate::table::Record,
     ) -> Result<u64, BaseError> {
         let data = self.prepare_and_validate_insert(data.into_columns())?;
-        let (sql, params) = self.build_insert_sql(&data)?;
-
-        let executor = tx.executor().ok_or_else(|| {
-            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                "事务已提交或回滚".to_string(),
-            ))
-        })?;
-
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "insert_in_tx",
-            Self::run_execute(executor, &sql, &params),
-        )
-        .await?;
-        Ok(result.rows_affected())
+        let query = tx.table(&self.table_config.table_ref);
+        self.apply_db_plan(query)?
+            .insert(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        Ok(1)
     }
 
     /// 执行 INSERT 操作并返回自增主键
@@ -2142,24 +2154,13 @@ impl TableQuery {
         self,
         data: crate::table::Record,
     ) -> Result<(u64, u64), BaseError> {
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
         let data = self.prepare_and_validate_insert(data.into_columns())?;
-        let (sql, params) = self.build_insert_sql(&data)?;
-
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "insert_returning_id",
-            Self::run_execute(pool.as_ref(), &sql, &params),
-        )
-        .await?;
-
-        Ok((result.rows_affected(), result.last_insert_id()))
+        let id = self
+            .compile_db_query()?
+            .insert(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        Ok((1, id))
     }
 
     /// 在事务中执行 INSERT 并返回自增主键
@@ -2172,23 +2173,13 @@ impl TableQuery {
         data: crate::table::Record,
     ) -> Result<(u64, u64), BaseError> {
         let data = self.prepare_and_validate_insert(data.into_columns())?;
-        let (sql, params) = self.build_insert_sql(&data)?;
-
-        let executor = tx.executor().ok_or_else(|| {
-            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                "事务已提交或回滚".to_string(),
-            ))
-        })?;
-
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "insert_returning_id_in_tx",
-            Self::run_execute(executor, &sql, &params),
-        )
-        .await?;
-        Ok((result.rows_affected(), result.last_insert_id()))
+        let query = tx.table(&self.table_config.table_ref);
+        let id = self
+            .apply_db_plan(query)?
+            .insert(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        Ok((1, id))
     }
 
     /// 填充默认值/时间戳并验证插入数据
@@ -2214,6 +2205,16 @@ impl TableQuery {
     ) -> Result<std::collections::HashMap<String, Value>, BaseError> {
         let mut prepared = data;
 
+        // tenant key 只能由请求上下文注入，业务输入不得覆盖。
+        if let Some((field, value)) = &self.tenant_scope {
+            if prepared.contains_key(field) {
+                return Err(BaseError::PermissionDenied(format!(
+                    "禁止显式写入租户字段: {field}"
+                )));
+            }
+            prepared.insert(field.clone(), value.clone());
+        }
+
         // 1. 校验调用方显式提交的字段和写权限。只有 null 自增主键可视为“未提供”，
         // 其余只读字段即使提交 null 也必须拒绝，避免绕过字段边界并覆盖数据库默认值。
         for (field_name, value) in &prepared {
@@ -2221,7 +2222,13 @@ impl TableQuery {
                 BaseError::FieldNotFound(self.table_config.table_name.clone(), field_name.clone())
             })?;
             let omitted_auto_increment = field_config.auto_increment && value.is_null();
-            if !omitted_auto_increment && !field_config.permissions.can_write(&self.user_roles_set)
+            let injected_tenant = self
+                .tenant_scope
+                .as_ref()
+                .is_some_and(|(tenant_field, _)| tenant_field == field_name);
+            if !injected_tenant
+                && !omitted_auto_increment
+                && !field_config.permissions.can_write(&self.user_roles_set)
             {
                 return Err(BaseError::FieldPermissionDenied(
                     self.table_config.table_name.clone(),
@@ -2296,6 +2303,7 @@ impl TableQuery {
     /// # 错误
     ///
     /// - `BaseError::DatabaseQueryFailed`：SQL 构建失败
+    #[cfg(test)]
     fn build_insert_sql(
         &self,
         data: &std::collections::HashMap<String, Value>,
@@ -2383,30 +2391,11 @@ impl TableQuery {
     /// # }
     /// ```
     pub async fn update(self, data: crate::table::Record) -> Result<u64, BaseError> {
-        // 1. 检查数据库连接池是否存在
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 2. 验证所有字段值的合法性和权限
-        let data = data.into_columns();
-        self.validate_update_data(&data)?;
-
-        // 3. 构建 UPDATE SQL 语句
-        let (sql, params) = self.build_update_sql(&data)?;
-
-        // 4. 在连接池上执行更新（计时观测）
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "update",
-            Self::run_execute(pool.as_ref(), &sql, &params),
-        )
-        .await?;
-
-        Ok(result.rows_affected())
+        let data = self.prepare_update_data(data.into_columns())?;
+        self.compile_db_query()?
+            .update(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)
     }
 
     /// 在事务中执行 UPDATE 操作
@@ -2423,25 +2412,45 @@ impl TableQuery {
         tx: &mut yang_db::Transaction,
         data: crate::table::Record,
     ) -> Result<u64, BaseError> {
-        let data = data.into_columns();
+        let data = self.prepare_update_data(data.into_columns())?;
+        let query = tx.table(&self.table_config.table_ref);
+        self.apply_db_plan(query)?
+            .update(&data)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)
+    }
+
+    fn prepare_update_data(
+        &self,
+        data: std::collections::HashMap<String, Value>,
+    ) -> Result<std::collections::HashMap<String, Value>, BaseError> {
         self.validate_update_data(&data)?;
-        let (sql, params) = self.build_update_sql(&data)?;
+        self.with_updated_timestamp(data)
+    }
 
-        let executor = tx.executor().ok_or_else(|| {
-            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                "事务已提交或回滚".to_string(),
-            ))
-        })?;
-
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "update_in_tx",
-            Self::run_execute(executor, &sql, &params),
-        )
-        .await?;
-        Ok(result.rows_affected())
+    fn with_updated_timestamp(
+        &self,
+        mut data: std::collections::HashMap<String, Value>,
+    ) -> Result<std::collections::HashMap<String, Value>, BaseError> {
+        if data.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "data".to_string(),
+                "无可更新字段".to_string(),
+            ));
+        }
+        if let Some(updated_at) = self
+            .table_config
+            .timestamp_fields
+            .as_ref()
+            .and_then(|fields| fields.updated_at.as_ref())
+            .filter(|name| self.table_config.fields.contains_key(*name))
+        {
+            data.insert(
+                updated_at.clone(),
+                Value::Number(chrono::Utc::now().timestamp().into()),
+            );
+        }
+        Ok(data)
     }
 
     /// 验证更新数据
@@ -2492,6 +2501,15 @@ impl TableQuery {
         }
         // 只验证提供的字段（与 INSERT 不同，UPDATE 不需要验证所有字段）
         for (field_name, value) in data {
+            if self
+                .tenant_scope
+                .as_ref()
+                .is_some_and(|(tenant_field, _)| tenant_field == field_name)
+            {
+                return Err(BaseError::PermissionDenied(format!(
+                    "禁止修改租户字段: {field_name}"
+                )));
+            }
             // 1. 检查字段是否存在于表配置中
             let field_config = self.table_config.get_field(field_name).ok_or_else(|| {
                 BaseError::FieldNotFound(self.table_config.table_name.clone(), field_name.clone())
@@ -2536,16 +2554,8 @@ impl TableQuery {
         self.build_update_sql_impl(data)
     }
 
-    /// 构建 UPDATE SQL 语句（内部实现）
-    #[cfg(not(test))]
-    fn build_update_sql(
-        &self,
-        data: &std::collections::HashMap<String, Value>,
-    ) -> Result<(String, Vec<SqlParam>), BaseError> {
-        self.build_update_sql_impl(data)
-    }
-
     /// 构建 UPDATE SQL 语句的实际实现
+    #[cfg(test)]
     fn build_update_sql_impl(
         &self,
         data: &std::collections::HashMap<String, Value>,
@@ -2606,7 +2616,7 @@ impl TableQuery {
         );
 
         // 4. WHERE 守卫：无 WHERE 且未显式放行全表，拒绝全表更新
-        if self.query_params.where_conditions.is_empty() && !self.allow_full_table {
+        if self.query_params.where_conditions.is_empty() {
             return Err(BaseError::MissingWhereClause("UPDATE".to_string()));
         }
 
@@ -2661,49 +2671,21 @@ impl TableQuery {
     /// # }
     /// ```
     pub async fn delete(self) -> Result<u64, BaseError> {
-        // 1. 检查是否配置了软删除字段
         if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
-            // 软删除：走 build_update_sql_impl 跳过 validate_update_data_impl
-            // 的用户写权限检查，与 updated_at 自动写入语义对称。
-            let now = chrono::Utc::now().timestamp();
-            let mut data = std::collections::HashMap::new();
-            data.insert(soft_delete_field.clone(), Value::Number(now.into()));
-            let (sql, params) = self.build_update_sql_impl(&data)?;
-            let pool = self
-                .pool
-                .as_ref()
-                .ok_or(BaseError::DatabaseNotInitialized)?;
-            let result = Self::timed(
-                self.slow_threshold,
-                self.request_id,
-                &self.table_config.table_name,
-                "delete",
-                Self::run_execute(pool.as_ref(), &sql, &params),
-            )
-            .await?;
-            return Ok(result.rows_affected());
+            let data = self.with_updated_timestamp(std::collections::HashMap::from([(
+                soft_delete_field.clone(),
+                Value::Number(chrono::Utc::now().timestamp().into()),
+            )]))?;
+            return self
+                .compile_db_query()?
+                .update(&data)
+                .await
+                .map_err(BaseError::DatabaseExecuteFailed);
         }
-
-        // 2. 物理删除：检查连接池
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)?;
-
-        // 3. 物理删除：构建 DELETE SQL 语句
-        let (sql, params) = self.build_delete_sql()?;
-
-        // 4. 在连接池上执行删除（计时观测）
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "delete",
-            Self::run_execute(pool.as_ref(), &sql, &params),
-        )
-        .await?;
-
-        Ok(result.rows_affected())
+        self.compile_db_query()?
+            .delete()
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)
     }
 
     /// 在事务中执行 DELETE 操作
@@ -2716,46 +2698,22 @@ impl TableQuery {
     /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚
     /// - 其余同 [`TableQuery::delete`]
     pub async fn delete_in_tx(self, tx: &mut yang_db::Transaction) -> Result<u64, BaseError> {
-        // 软删除：走 build_update_sql_impl 跳过 validate_update_data_impl
-        // 的用户写权限检查，与 updated_at 自动写入语义对称。
+        let query = tx.table(&self.table_config.table_ref);
         if let Some(soft_delete_field) = &self.table_config.soft_delete_field {
-            let now = chrono::Utc::now().timestamp();
-            let mut data = std::collections::HashMap::new();
-            data.insert(soft_delete_field.clone(), Value::Number(now.into()));
-            let (sql, params) = self.build_update_sql_impl(&data)?;
-            let executor = tx.executor().ok_or_else(|| {
-                BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                    "事务已提交或回滚".to_string(),
-                ))
-            })?;
-            let result = Self::timed(
-                self.slow_threshold,
-                self.request_id,
-                &self.table_config.table_name,
-                "delete_in_tx",
-                Self::run_execute(executor, &sql, &params),
-            )
-            .await?;
-            return Ok(result.rows_affected());
+            let data = self.with_updated_timestamp(std::collections::HashMap::from([(
+                soft_delete_field.clone(),
+                Value::Number(chrono::Utc::now().timestamp().into()),
+            )]))?;
+            return self
+                .apply_db_plan(query)?
+                .update(&data)
+                .await
+                .map_err(BaseError::DatabaseExecuteFailed);
         }
-
-        let (sql, params) = self.build_delete_sql()?;
-
-        let executor = tx.executor().ok_or_else(|| {
-            BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
-                "事务已提交或回滚".to_string(),
-            ))
-        })?;
-
-        let result = Self::timed(
-            self.slow_threshold,
-            self.request_id,
-            &self.table_config.table_name,
-            "delete_in_tx",
-            Self::run_execute(executor, &sql, &params),
-        )
-        .await?;
-        Ok(result.rows_affected())
+        self.apply_db_plan(query)?
+            .delete()
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)
     }
 
     /// 构建 DELETE SQL 语句
@@ -2794,20 +2752,15 @@ impl TableQuery {
         self.build_insert_sql(&prepared)
     }
 
-    /// 构建 DELETE SQL 语句（内部实现）
-    #[cfg(not(test))]
-    fn build_delete_sql(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
-        self.build_delete_sql_impl()
-    }
-
     /// 构建 DELETE SQL 语句的实际实现
+    #[cfg(test)]
     fn build_delete_sql_impl(&self) -> Result<(String, Vec<SqlParam>), BaseError> {
         // 表名走统一转义路径
         let mut sql = format!("DELETE FROM {}", self.quoted_table_name()?);
         let mut params = Vec::new();
 
         // WHERE 守卫：无 WHERE 且未显式放行全表，拒绝全表物理删除
-        if self.query_params.where_conditions.is_empty() && !self.allow_full_table {
+        if self.query_params.where_conditions.is_empty() {
             return Err(BaseError::MissingWhereClause("DELETE".to_string()));
         }
 
@@ -2815,33 +2768,6 @@ impl TableQuery {
         self.append_where_to_sql(&mut sql, &mut params, false)?;
 
         Ok((sql, params))
-    }
-
-    /// 绑定参数到执行查询
-    ///
-    /// # 参数
-    ///
-    /// - `query`：sqlx 查询对象
-    /// - `param`：SQL 参数值
-    ///
-    /// # 返回值
-    ///
-    /// 绑定参数后的查询对象
-    fn bind_execute_param<'q>(
-        query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
-        param: &SqlParam,
-    ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
-        match param {
-            SqlParam::Null => query.bind(Option::<i32>::None),
-            SqlParam::Bool(b) => query.bind(*b),
-            SqlParam::Int(i) => query.bind(*i),
-            SqlParam::Uint(u) => query.bind(*u),
-            SqlParam::Float(f) => query.bind(*f),
-            SqlParam::String(s) => query.bind(s.clone()),
-            SqlParam::DateTime(dt) => query.bind(*dt),
-            SqlParam::Bytes(b) => query.bind(b.clone()),
-            SqlParam::Json(j) => query.bind(j.clone()),
-        }
     }
 
     /// 执行边界计时（慢查询观测，C4）。
@@ -2853,6 +2779,7 @@ impl TableQuery {
     /// 设计为关联函数（不借用 `&self`），以便在消费 `self` 的终端方法里，与
     /// 借用 `self.pool`/`sql`/`params` 的执行 future 共存而不冲突借用检查。
     /// SQL 文本**默认不记**（防泄漏 + 防高基数）。`op` 为静态操作名。
+    #[cfg(test)]
     pub(crate) async fn timed<F, R>(
         threshold: Option<std::time::Duration>,
         request_id: Option<crate::action::RequestId>,
@@ -2886,62 +2813,12 @@ impl TableQuery {
         }
         result
     }
-
-    /// 在给定执行器上绑定参数并执行写语句（INSERT/UPDATE/DELETE 共用）
-    ///
-    /// 执行器既可以是 `&MySqlPool`（普通路径），也可以是
-    /// `&mut sqlx::MySqlConnection`（事务路径，经 [`yang_db::Transaction::executor`]
-    /// 取得）。如此一来，受保护层的写操作可以直接执行，也可纳入同一事务原子提交，
-    /// 而所有权限/校验/软删/WHERE 守卫逻辑在调用方保持不变。
-    ///
-    /// 返回 `MySqlQueryResult`，由调用方按需提取 `rows_affected()` /
-    /// `last_insert_id()`。
-    async fn run_execute<'e, E>(
-        executor: E,
-        sql: &str,
-        params: &[SqlParam],
-    ) -> Result<sqlx::mysql::MySqlQueryResult, BaseError>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::MySql>,
-    {
-        let mut query = sqlx::query(sql);
-        for param in params {
-            query = Self::bind_execute_param(query, param);
-        }
-        query
-            .execute(executor)
-            .await
-            .map_err(|e| BaseError::DatabaseExecuteFailed(yang_db::DbError::from(e)))
-    }
-
-    /// 在给定执行器上绑定参数并执行 SELECT 查询，返回多行
-    ///
-    /// 与 [`TableQuery::run_execute`] 同理对执行器泛型，使 `select` 既能走连接池
-    /// 也能在事务内执行（read-modify-write 场景）。
-    async fn run_fetch_all<'e, E, T>(
-        executor: E,
-        sql: &str,
-        params: &[SqlParam],
-    ) -> Result<Vec<T>, BaseError>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::MySql>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
-    {
-        let mut query = sqlx::query_as::<_, T>(sql);
-        for param in params {
-            query = Self::bind_param(query, param);
-        }
-        query
-            .fetch_all(executor)
-            .await
-            .map_err(|e| BaseError::DatabaseQueryFailed(yang_db::DbError::from(e)))
-    }
 }
 
 /// SQL 参数类型
 ///
 /// 用于表示 SQL 查询中的参数值
-#[cfg(feature = "mysql")]
+#[cfg(all(test, feature = "mysql"))]
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
 #[allow(dead_code)] // DateTime/Bytes/Json 已声明，待 from_json 外部构造路径落地
@@ -2966,7 +2843,7 @@ pub(crate) enum SqlParam {
     Json(serde_json::Value),
 }
 
-#[cfg(feature = "mysql")]
+#[cfg(all(test, feature = "mysql"))]
 impl SqlParam {
     /// 从 JSON 值创建 SQL 参数
     ///
@@ -3058,6 +2935,49 @@ mod tests {
             .expect("null 自增主键应等价于未提供");
 
         assert!(!prepared.contains_key("id"));
+    }
+
+    #[test]
+    fn tenant_scope_is_fail_closed_for_query_and_writes() {
+        let config = test_config(
+            crate::table::Table::new("tenant_rows").fields([
+                crate::table::Field::id("id"),
+                crate::table::Field::bigint("org_id")
+                    .required()
+                    .tenant_key(),
+                crate::table::Field::string("name", 64).required(),
+            ]),
+        );
+        let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+        let query = TableQuery::new(config, roles, None)
+            .scope_tenant("org_id", serde_json::json!(7))
+            .expect("tenant scope 应有效");
+
+        let (sql, params) = query.build_select_sql(None).expect("租户查询 SQL 应可构建");
+        assert!(sql.contains("`org_id` = ?"));
+        assert!(params.contains(&SqlParam::Int(7)));
+
+        let prepared = query
+            .prepare_and_validate_insert(
+                [("name".to_string(), serde_json::json!("row"))]
+                    .into_iter()
+                    .collect(),
+            )
+            .expect("租户字段应由上下文注入");
+        assert_eq!(prepared.get("org_id"), Some(&serde_json::json!(7)));
+
+        let explicit_tenant = query.prepare_and_validate_insert(
+            [
+                ("name".to_string(), serde_json::json!("row")),
+                ("org_id".to_string(), serde_json::json!(9)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(matches!(
+            explicit_tenant,
+            Err(BaseError::PermissionDenied(_))
+        ));
     }
 
     #[test]

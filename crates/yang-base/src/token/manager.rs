@@ -7,6 +7,7 @@ use crate::token::TokenClaims;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+use yang_db::RedisClient;
 
 /// 获取当前 Unix 时间戳（秒）
 ///
@@ -119,6 +120,9 @@ pub struct TokenManager {
     /// 传引用，避免每次 `generate_*` 都重新分配 Header 与 `"JWT"` String
     /// （PERF-11 优化）。
     jwt_header: Header,
+
+    /// 显式注入的撤销存储；由 `ToolsBuilder` 在启动期连接。
+    revocation_cache: Option<RedisClient>,
 }
 
 impl TokenManager {
@@ -181,6 +185,7 @@ impl TokenManager {
             access_token_expiry,
             refresh_token_expiry,
             jwt_header,
+            revocation_cache: None,
         }
     }
 
@@ -248,7 +253,20 @@ impl TokenManager {
             access_token_expiry,
             refresh_token_expiry,
             jwt_header,
+            revocation_cache: None,
         })
+    }
+
+    /// 由应用资源构建器注入 Token 撤销所使用的 Redis 客户端。
+    pub(crate) fn attach_revocation_cache(&mut self, cache: RedisClient) {
+        self.revocation_cache = Some(cache);
+    }
+
+    /// 返回显式配置的 Token 撤销存储。
+    pub(crate) fn revocation_cache(&self) -> Result<&RedisClient, BaseError> {
+        self.revocation_cache
+            .as_ref()
+            .ok_or(BaseError::RedisNotInitialized)
     }
 
     /// 生成 Access Token
@@ -612,7 +630,7 @@ impl TokenManager {
     /// # 依赖
     ///
     /// 本方法依赖基于 Redis 的 Token 黑名单（见 [`TokenManager::verify_token_checked`]
-    /// 与 `TokenManager::try_revoke_once`），调用前需确保 [`crate::database::GlobalRedis`] 已初始化可用。
+    /// 与 `TokenManager::try_revoke_once`），调用前需由 `ToolsBuilder` 注入 Redis 撤销存储。
     pub async fn rotate_refresh_token(
         &self,
         old_refresh: &str,
@@ -662,7 +680,7 @@ impl TokenManager {
         // 2. 原子拉黑旧 Refresh Token（SET NX EX），防止并发双重使用
         let now = current_unix_timestamp()?;
         let ttl = old_claims.exp.saturating_sub(now);
-        if !TokenManager::try_revoke_once(&old_claims.jti, ttl).await? {
+        if !self.try_revoke_once(&old_claims.jti, ttl).await? {
             return Err(BaseError::TokenRevoked);
         }
 

@@ -49,9 +49,11 @@ mod field_config;
 mod field_type;
 mod query_params;
 mod record;
+mod relation_loader;
 mod schema_validation;
 mod table_config;
 mod table_query;
+mod tables;
 mod validator;
 
 #[cfg(test)]
@@ -63,10 +65,19 @@ pub use definition::{col, ColumnName, Field, FieldMetadata, Order, Table, TableD
 pub(crate) use field_config::FieldConfig;
 pub use field_config::RelationType;
 pub use field_type::FieldType;
-pub use query_params::{PaginatedResult, QueryParams, WhereCondition, MAX_QUERY_PAGE_SIZE};
+pub use query_params::{
+    PaginatedResult, QueryParams, TableQueryPlan, WhereCondition, DEFAULT_QUERY_PAGE_SIZE,
+    MAX_QUERY_PAGE_SIZE,
+};
 pub use record::Record;
+#[cfg(feature = "mysql")]
+pub use relation_loader::DatabaseRelationExecutor;
+pub use relation_loader::{
+    RelationBatch, RelationBatchExecutor, RelationData, RelationLoader, RelationSpec,
+};
 pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaValidationReport};
 pub use table_config::SortOrder;
 pub(crate) use table_config::TableConfig;
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
+pub use tables::{TableListResult, TableTreeNode, Tables};
 pub use validator::{Validator, ValidatorFn};

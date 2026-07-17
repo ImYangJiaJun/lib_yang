@@ -348,7 +348,7 @@ fn test_is_token_expiring_soon() {
 /// 测试 refresh_access_token 方法
 ///
 /// 此方法内部调用 `verify_token_checked`，需要 Redis 黑名单支持。
-/// 运行时需先初始化 `GlobalRedis`，并通过 `--ignored` 执行：
+/// 运行时需通过 `ToolsBuilder` 注入 Redis 撤销存储，并通过 `--ignored` 执行：
 /// ```bash
 /// cargo test --test '' test_refresh_access_token -- --ignored --test-threads=1
 /// ```
@@ -388,7 +388,7 @@ async fn test_refresh_access_token() {
 /// 测试使用 Access Token 刷新应该失败
 ///
 /// 此方法内部调用 `verify_token_checked`，需要 Redis 黑名单支持。
-/// 运行时需先初始化 `GlobalRedis`，并通过 `--ignored` 执行：
+/// 运行时需通过 `ToolsBuilder` 注入 Redis 撤销存储，并通过 `--ignored` 执行：
 /// ```bash
 /// cargo test --test '' test_refresh_with_access_token_should_fail -- --ignored --test-threads=1
 /// ```

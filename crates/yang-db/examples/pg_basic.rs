@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::connect(&db_url()).await?;
     println!("✓ 数据库连接成功\n");
 
-    let table_name = "example_pg_users";
+    let table_name = yang_db::table!("example_pg_users");
 
     // 准备表（PostgreSQL 用 SERIAL 自增主键）
     let _ = db.drop_table(table_name).await;
@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. UPSERT —— INSERT ... ON CONFLICT (id) DO UPDATE
     let affected = db
         .table(table_name)
-        .on_conflict(&["id"])
+        .on_conflict(&[yang_db::field!("id")])
         .upsert(&json!({"id": new_id as i64, "name": "张三(改)", "age": 26}))
         .await?;
     println!("✓ UPSERT 完成，影响 {} 行\n", affected);
@@ -67,11 +67,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. SELECT —— 带 WHERE 条件，解码为 User
     let users: Vec<User> = db
         .table(table_name)
-        .field("id")
-        .field("name")
-        .field("age")
-        .where_and("age", ">=", 18)?
-        .order("id", true)
+        .field(yang_db::field!("id"))
+        .field(yang_db::field!("name"))
+        .field(yang_db::field!("age"))
+        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18)
+        .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
         .limit(10)
         .select()
         .await?;

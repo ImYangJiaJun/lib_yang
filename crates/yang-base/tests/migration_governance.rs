@@ -67,7 +67,7 @@ async fn dry_run_drift_and_concurrent_reservation_are_verifiable() {
     assert_eq!(dry_plan.entries[0].status, MigrationPlanStatus::Pending);
     assert!(
         !verify_db
-            .table_exists("_migrations")
+            .table_exists(yang_db::table!("_migrations"))
             .await
             .expect("检查迁移表"),
         "dry-run 不得创建迁移表"

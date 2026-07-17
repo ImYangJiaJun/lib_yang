@@ -200,6 +200,12 @@ fn is_type_compatible(field_type: &FieldType, column: &SchemaColumn) -> bool {
         FieldType::BigInt => data_type == "bigint",
         FieldType::Float => matches!(data_type, "float" | "double" | "decimal"),
         FieldType::Double => matches!(data_type, "double" | "decimal"),
+        FieldType::Decimal { precision, scale } => {
+            data_type == "decimal"
+                && column
+                    .column_type
+                    .eq_ignore_ascii_case(&format!("decimal({precision},{scale})"))
+        }
         FieldType::Boolean => {
             matches!(data_type, "bool" | "boolean")
                 || (data_type == "tinyint"
@@ -234,6 +240,11 @@ fn normalize_declared_default(
             .as_bool()
             .map(|value| if value { "1" } else { "0" }.to_string()),
         FieldType::Float | FieldType::Double => value.as_f64().map(normalize_float),
+        FieldType::Decimal { .. } => match value {
+            serde_json::Value::String(value) => Some(value.clone()),
+            serde_json::Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        },
         _ => match value {
             serde_json::Value::String(value) => Some(value.clone()),
             serde_json::Value::Number(value) => Some(value.to_string()),
@@ -267,6 +278,7 @@ fn normalize_database_default(field_type: &FieldType, default: Option<&str>) -> 
                 || Some(value.to_string()),
                 |number| Some(normalize_float(number)),
             ),
+        FieldType::Decimal { .. } => Some(value.to_string()),
         _ => Some(value.to_string()),
     }
 }

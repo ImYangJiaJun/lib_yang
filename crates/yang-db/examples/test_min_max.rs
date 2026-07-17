@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::connect(TEST_DB_URL).await?;
     println!("✓ 数据库连接成功\n");
 
-    let table_name = "test_min_max";
+    let table_name = yang_db::table!("test_min_max");
 
     // 删除旧表（如果存在）
     let _ = db.drop_table(table_name).await;
@@ -50,42 +50,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 测试 MIN - 浮点数类型
     println!("--- 测试 MIN(price) - 浮点数类型 ---");
-    let min_price: Option<f64> = db.table(table_name).min("price").await?;
+    let min_price: Option<f64> = db.table(table_name).min(yang_db::field!("price")).await?;
     println!("最低价格: {:?}", min_price);
     assert_eq!(min_price, Some(59.99), "最低价格应该是 59.99");
     println!("✓ MIN(price) 测试通过\n");
 
     // 测试 MAX - 浮点数类型
     println!("--- 测试 MAX(price) - 浮点数类型 ---");
-    let max_price: Option<f64> = db.table(table_name).max("price").await?;
+    let max_price: Option<f64> = db.table(table_name).max(yang_db::field!("price")).await?;
     println!("最高价格: {:?}", max_price);
     assert_eq!(max_price, Some(199.99), "最高价格应该是 199.99");
     println!("✓ MAX(price) 测试通过\n");
 
     // 测试 MIN - 整数类型
     println!("--- 测试 MIN(stock) - 整数类型 ---");
-    let min_stock: Option<i32> = db.table(table_name).min("stock").await?;
+    let min_stock: Option<i32> = db.table(table_name).min(yang_db::field!("stock")).await?;
     println!("最小库存: {:?}", min_stock);
     assert_eq!(min_stock, Some(3), "最小库存应该是 3");
     println!("✓ MIN(stock) 测试通过\n");
 
     // 测试 MAX - 整数类型
     println!("--- 测试 MAX(stock) - 整数类型 ---");
-    let max_stock: Option<i32> = db.table(table_name).max("stock").await?;
+    let max_stock: Option<i32> = db.table(table_name).max(yang_db::field!("stock")).await?;
     println!("最大库存: {:?}", max_stock);
     assert_eq!(max_stock, Some(20), "最大库存应该是 20");
     println!("✓ MAX(stock) 测试通过\n");
 
     // 测试 MIN - 字符串类型（字典序）
     println!("--- 测试 MIN(name) - 字符串类型 ---");
-    let min_name: Option<String> = db.table(table_name).min("name").await?;
+    let min_name: Option<String> = db.table(table_name).min(yang_db::field!("name")).await?;
     println!("字典序最小名称: {:?}", min_name);
     assert_eq!(min_name, Some("产品A".to_string()), "字典序最小应该是产品A");
     println!("✓ MIN(name) 测试通过\n");
 
     // 测试 MAX - 字符串类型（字典序）
     println!("--- 测试 MAX(name) - 字符串类型 ---");
-    let max_name: Option<String> = db.table(table_name).max("name").await?;
+    let max_name: Option<String> = db.table(table_name).max(yang_db::field!("name")).await?;
     println!("字典序最大名称: {:?}", max_name);
     assert_eq!(max_name, Some("产品E".to_string()), "字典序最大应该是产品E");
     println!("✓ MAX(name) 测试通过\n");
@@ -94,8 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试 MIN 与 WHERE 条件组合 ---");
     let min_price_filtered: Option<f64> = db
         .table(table_name)
-        .where_and("stock", ">", 5)?
-        .min("price")
+        .where_and(yang_db::field!("stock"), yang_db::CompareOp::Gt, 5)
+        .min(yang_db::field!("price"))
         .await?;
     println!("库存>5的最低价格: {:?}", min_price_filtered);
     assert_eq!(
@@ -109,8 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试 MAX 与 WHERE 条件组合 ---");
     let max_rating_filtered: Option<f32> = db
         .table(table_name)
-        .where_and("price", "<", 150.0)?
-        .max("rating")
+        .where_and(yang_db::field!("price"), yang_db::CompareOp::Lt, 150.0)
+        .max(yang_db::field!("rating"))
         .await?;
     println!("价格<150的最高评分: {:?}", max_rating_filtered);
     assert_eq!(
@@ -124,8 +124,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试空结果集 ---");
     let min_empty: Option<f64> = db
         .table(table_name)
-        .where_and("price", ">", 1000.0)?
-        .min("price")
+        .where_and(yang_db::field!("price"), yang_db::CompareOp::Gt, 1000.0)
+        .min(yang_db::field!("price"))
         .await?;
     println!("空结果集的 MIN: {:?}", min_empty);
     assert_eq!(min_empty, None, "空结果集应该返回 None");
