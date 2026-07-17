@@ -57,6 +57,7 @@ impl FieldRef {
     pub fn new(value: impl Into<String>) -> Result<Self, DbError> {
         let raw = value.into();
         let identifier = QualifiedIdentifier::parse(&raw)?;
+        let _ = &identifier;
         Ok(Self {
             #[cfg(feature = "mysql")]
             mysql: identifier.render('`'),
@@ -304,6 +305,7 @@ impl SelectExpr {
         self.render('"', "DOUBLE PRECISION")
     }
 
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     fn render(&self, quote: char, double_type: &str) -> String {
         let function = match self.aggregate {
             Aggregate::Count => "COUNT",
@@ -328,6 +330,7 @@ impl SelectExpr {
     }
 }
 
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 fn quote_qualified(value: &str, quote: char) -> String {
     value
         .split('.')
@@ -336,6 +339,7 @@ fn quote_qualified(value: &str, quote: char) -> String {
         .join(".")
 }
 
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 impl SortOrder {
     pub(crate) const fn is_ascending(self) -> bool {
         matches!(self, Self::Asc)
@@ -353,6 +357,7 @@ mod tests {
         let field = FieldRef::new("org_user.username").expect("合法限定字段应创建成功");
 
         assert_eq!(table.as_str(), "org_user");
+        assert_eq!(field.as_str(), "org_user.username");
         #[cfg(feature = "mysql")]
         assert_eq!(field.mysql_quoted(), "`org_user`.`username`");
         #[cfg(feature = "postgres")]

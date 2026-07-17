@@ -23,6 +23,7 @@ impl Identifier {
         Ok(Self(value.to_string()))
     }
 
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
@@ -46,6 +47,7 @@ impl QualifiedIdentifier {
         }
     }
 
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn render(&self, quote: char) -> String {
         match self {
             Self::Unqualified(name) => quote_part(name, quote),
@@ -61,12 +63,14 @@ impl QualifiedIdentifier {
 }
 
 /// 一次完整且已校验的条件渲染结果。
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 #[derive(Debug)]
 pub(crate) struct RenderedCondition<T> {
     pub(crate) sql: String,
     pub(crate) params: Vec<T>,
 }
 
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 fn quote_part(identifier: &Identifier, quote: char) -> String {
     format!("{quote}{}{quote}", identifier.as_str())
 }
