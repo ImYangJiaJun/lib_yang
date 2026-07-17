@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-YANG Rust workspace：包含 `yang-db`、`yang-base`、`yang-base-derive`、`yang-pcg` 四个基础库 crate，以及用于联合调试基础库的 `yang-system` 应用。
+YANG Rust workspace：包含 `yang-db`、`yang-base`（+ `yang-base-derive` 宏）、`yang-migrate`、`yang-pcg` 五个基础库 crate，以及用于联合调试基础库的 `yang-system` 应用。
 
 ## STRUCTURE
 ```text
@@ -13,11 +13,12 @@ lib_yang/
 ├── Cargo.toml              # workspace root, resolver=2, shared deps/lints
 ├── crates/
 │   ├── yang-db/            # MySQL query builder + Redis client
-│   ├── yang-base/          # plugins, actions, tables, router, token, HTTP, global DB
+│   ├── yang-base/          # definition 内核、actions、tables、Tools、token、HTTP、transport-axum
+│   ├── yang-base-derive/   # #[derive(Action)] 与 params! 宏
+│   ├── yang-migrate/       # br-to-yang 迁移 codemod
 │   └── yang-pcg/           # deterministic PCG map generator + UE5 adapter
 ├── project/
 │   └── yang-system/        # independent nested Git/Cargo application for local integration
-├── .kiro/                  # requirements/design/tasks specs + steering hooks
 └── docs/                   # workspace API references and backlog
 ```
 
@@ -26,17 +27,18 @@ lib_yang/
 |------|----------|-------|
 | MySQL queries | `crates/yang-db/src/mysql/` | `query_builder.rs` is the 5.5k-line hotspot (~5,506 lines); `condition.rs` owns WHERE/HAVING expressions |
 | Redis operations | `crates/yang-db/src/redis/` | `client.rs` is the main API; pipeline/transaction wrap `redis::pipe()` patterns |
-| Backend globals | `crates/yang-base/src/database/` | `GlobalDatabase`, `GlobalRedis`, `DatabaseInitializer` |
-| Plugin system | `crates/yang-base/src/plugin/mod.rs` | single-file plugin lifecycle/registry implementation |
+| 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`：db/cache/token/http + 类型化 extension/config；GlobalDatabase/GlobalRedis 已删除 |
+| 定义内核 | `crates/yang-base/src/definition/` | `AppBuilder`/`BuiltApp`/Catalog/Registry，构建期校验 + slot 预解析 |
+| HTTP 传输 | `crates/yang-base/src/transport/` | `transport-axum` feature：Axum 0.8 适配器、CORS/超时/压缩、文件/重定向响应 |
+| Plugin system | `crates/yang-base/src/plugin/mod.rs` | 旧代插件生命周期；新链路用 definition Addon 组织业务 |
 | Action system | `crates/yang-base/src/action/` | child AGENTS.md covers trait, context, builtin CRUD |
 | Table system | `crates/yang-base/src/table/` | child AGENTS.md covers FieldType/FieldConfig/TableQuery/DynamicRow |
-| Router | `crates/yang-base/src/router/` | `ModuleRouter`, `AppRouter` |
 | Tokens | `crates/yang-base/src/token/` | JWT `TokenManager`, feature-gated |
-| HTTP client | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
-| 基础系统联调 | `project/yang-system/` | 独立嵌套仓库；固定 Git revision，临时 Cargo patch 联调本地库 |
+| HTTP client | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated；经 `Tools::http()`/`ctx.http()?` 获取 |
+| 基础系统联调 | `project/yang-system/` | 独立嵌套仓库；相对路径直接依赖 ../../crates 联调本地库 |
 | PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |
 | PCG terrain | `crates/yang-pcg/src/terrain/` | child AGENTS.md covers strategies, fallback, known connectivity gaps |
-| Specs/backlog | `.kiro/specs/`, `docs/BACKLOG.md` | requirements/design/tasks; some root summary docs are historical artifacts |
+| Specs/backlog | `docs/BACKLOG.md`, `docs/superpowers/` | requirements/design/tasks; some root summary docs are historical artifacts |
 | API docs | `docs/yang-db.md`, `docs/yang-base.md` | broad generated API references |
 
 ## CODE MAP
@@ -46,9 +48,13 @@ lib_yang/
 | `Condition` / `SqlValue` | enum | `crates/yang-db/src/mysql/condition.rs` | WHERE/HAVING expression tree and bind values |
 | `RedisClient` | struct | `crates/yang-db/src/redis/client.rs` | Redis string/hash/list/set/zset/pubsub/script API |
 | `Database` | struct | `crates/yang-db/src/mysql/database.rs` | sqlx MySQL pool wrapper and raw query entry |
+| `AppBuilder` / `BuiltApp` | structs | `crates/yang-base/src/definition/builder.rs` | 构建期组装/校验 → 冻结 Catalog/Registry/Tools |
+| `ToolsBuilder` / `Tools` | structs | `crates/yang-base/src/tools.rs` | 应用资源显式所有权与生命周期 |
+| `Action` / `TypedHandler` / `DynAction` | traits | `crates/yang-base/src/action/typed.rs` | 业务 Action::index → TypedHandler → TypedAction（derive）→ DynAction 擦除派发 |
+| `ApiResponse` / `ResponseBody` | structs | `crates/yang-base/src/action/response.rs` | 统一响应 + 文件/预览/重定向附件 |
 | `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/mod.rs` | build-time registration, dependency checks, runtime registry |
-| `TypedHandler` / `DynAction` | trait | `crates/yang-base/src/action/typed.rs` | H-1 类型化 action 系统：TypedHandler（用户实现）→ TypedAction（派生层）→ DynAction（注册表存储）；旧 Action trait 已删除，action_trait.rs 仅剩 Permission |
 | `ActionContext` | struct | `crates/yang-base/src/action/context.rs` | request/user/tools/table context passed to actions |
+| `router` / `serve` | functions | `crates/yang-base/src/transport/axum.rs` | Axum 0.8 传输适配器入口 |
 | `TableQuery` | struct | `crates/yang-base/src/table/table_query.rs` | table-aware query builder with permissions |
 | `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL field validation and type mapping |
 | `MapGenerator` | struct | `crates/yang-pcg/src/generator.rs` | PCG orchestration entry point |
@@ -70,6 +76,7 @@ lib_yang/
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not add production `unwrap()`/`expect()` even where crate lints allow them; existing hotspots include `query_builder.rs`, `plugin/mod.rs`, `validation.rs`, and `grammar/selector.rs`.
 - Do not use `_unchecked` query helpers unless caller already validated operators; prefer `having_cond`, `where_and`, `where_or` Result-returning APIs.
+- 资源一律经 `ToolsBuilder` 注册、`Tools` 获取；禁止在 yang-base 新增进程级全局单例（`static OnceLock`/`lazy_static`）。
 - Do not weaken or delete ignored property tests in `yang-pcg`; they document known algorithm gaps.
 - Do not hardcode credentials outside Docker/test examples; use `MYSQL_TEST_PASSWORD` or local ignored config.
 - Do not document `RedisConfig` pool params or `insert_batch` auto-batching as currently broken; current code applies pool config and `insert_batch` batches at 500 rows by default.
@@ -87,11 +94,12 @@ cargo test --lib -p yang-db
 cargo test --lib -p yang-pcg
 cargo test --test <name> -- --ignored --test-threads=1
 cargo run --example <name> -p <crate>
+python scripts/verify_feature_isolation.py --self-test
+python scripts/verify_ci_contract.py .github/workflows/ci.yml
 ```
 
 ## NOTES
-- No CI, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, Makefile, justfile, Dockerfile, or docker-compose file exists.
+- CI 位于 `.github/workflows/ci.yml`（fmt/test/clippy/doc-test 门禁、MSRV 1.80、feature 矩阵、docker 服务）；无 `rust-toolchain.toml`/`rustfmt.toml`/`clippy.toml`/Makefile/Dockerfile。
 - LSP rust-analyzer was unavailable in this environment; CodeGraph is indexed and should be preferred for structural lookup.
 - `.gitignore` includes `*/tests/`, which is unusual for Rust; be careful when reasoning about tracked integration tests.
-- `.kiro/` contains real requirements/design/tasks context, not throwaway docs.
-- Full Docker tests require MySQL 8.0 and Redis via testcontainers or the `.kiro/steering` standard containers.
+- Full Docker tests require MySQL 8.0 and Redis via testcontainers or standard containers.

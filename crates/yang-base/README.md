@@ -1,34 +1,34 @@
 # yang-base
 
-`yang-base` 0.2.0 是 YANG 后端基础库，提供 schema-first 数据表、类型化 Action、API 路由目录、插件生命周期、MySQL/Redis 全局访问、HTTP 客户端和 JWT Token 管理。
+`yang-base` 0.2.0 是 YANG 后端基础库，提供构建期定义内核（Addon/Module/Action/fields/params → 冻结 Catalog + Registry）、类型化 Action、显式资源所有权（`Tools`）、schema-first 数据表、HTTP 客户端、JWT Token 管理和可选 Axum HTTP 传输。
 
 当前应用侧的核心链路是：
 
 ```text
-Table + Field
-  -> TableDefinition
-  -> ModuleRouter::table(...).crud()
-  -> ApiCatalog / AppRouter
-  -> Record + TableQuery
+fields! / params! / #[derive(Action)]
+  -> AppBuilder::build(tools)
+  -> BuiltApp（DefinitionCatalog + Registry + TableDefinition）
+  -> ActionContext + TableQuery
 ```
 
-表结构由运行时 `TableDefinition` 描述，标准 CRUD 使用透明 JSON 对象 `Record`，自定义端点通过 `Api` 同时注册 Action 与 HTTP 元数据。
+应用定义在构建期一次性校验冻结，请求期只剩 slot 派发、类型化反序列化与受控 SQL。
 
 ## Features
 
 | Feature | 默认 | 能力 |
 |---|---:|---|
-| `mysql` | 是 | `GlobalDatabase`、schema 同步、`TableHandle`、`TableQuery` 与内置 CRUD |
-| `redis` | 是 | `GlobalRedis` 与 Redis 数据结构 API |
+| `mysql` | 是 | `Tools` MySQL 资源槽、schema 同步、`TableHandle`、`TableQuery` 与内置 CRUD |
+| `redis` | 是 | `Tools` Redis 资源槽与 Redis 数据结构 API |
 | `token` | 是 | JWT 签发、刷新与 Redis 撤销列表；自动启用 `redis` |
-| `http` | 是 | 带超时、重试和熔断的 HTTP 客户端 |
+| `http` | 是 | 带超时、重试和熔断的 HTTP 客户端（`Tools` http 槽） |
 | `validator` | 是 | Email、Phone、Regex 严格验证 |
 | `plugin-schema` | 是 | 插件配置 JSON Schema 验证 |
 | `metrics` | 否 | Action 指标门面，不绑定 exporter |
-| `openapi` | 否 | 从 `ApiCatalog` 投影 OpenAPI 3.1 JSON |
+| `openapi` | 否 | 从 `DefinitionCatalog` 投影 OpenAPI 3.1 JSON |
 | `admin-metadata` | 否 | 后台展示元数据；不改变 dispatch |
+| `transport-axum` | 否 | Axum 0.8 HTTP 传输适配器（CORS/超时/压缩/健康端点/文件与重定向响应） |
 
-`default-features = false` 保留插件、Action、Router 和表定义核心，不引入数据库或网络驱动。
+`default-features = false` 保留插件、definition 内核、Action 和表定义核心，不引入数据库或网络驱动。
 
 ## 安装
 
@@ -186,7 +186,7 @@ let nickname: Option<String> = row.optional("nickname").expect("nickname 类型�
 
 ## 数据库与 Redis
 
-启用默认 feature 后，可以初始化全局 MySQL/Redis 客户端。初始化配置类型来自 `yang-db`；直接调用这些入口的应用还需声明匹配的依赖：
+启用默认 feature 后，MySQL/Redis 客户端经 `ToolsBuilder` 注册进应用资源并由每个 `BuiltApp` 显式持有（无进程级全局单例）。初始化配置类型来自 `yang-db`；直接构造这些客户端的应用还需声明匹配的依赖：
 
 ```toml
 yang-db = { version = "0.1.4", default-features = false, features = ["mysql", "redis"] }
@@ -195,28 +195,32 @@ yang-db = { version = "0.1.4", default-features = false, features = ["mysql", "r
 初始化示例：
 
 ```rust
-use yang_base::database::{GlobalDatabase, GlobalRedis};
+use std::sync::Arc;
+use yang_base::tools::ToolsBuilder;
 use yang_base::BaseError;
-use yang_db::{redis::RedisConfig, DatabaseConfig};
+use yang_db::{redis::RedisConfig, Database, DatabaseConfig, RedisClient};
 
-async fn init_storage() -> Result<(), BaseError> {
-    GlobalDatabase::init(
+async fn build_tools() -> Result<Arc<yang_base::tools::Tools>, BaseError> {
+    let database = Database::connect_with_config(
         "mysql://root:password@localhost/mydb",
         DatabaseConfig::default(),
     )
     .await?;
-
-    GlobalRedis::init(
+    let cache = RedisClient::connect_with_config(
         "redis://127.0.0.1:6379",
         RedisConfig::default(),
     )
     .await?;
 
-    Ok(())
+    let tools = ToolsBuilder::new()
+        .database(database)
+        .cache(cache)
+        .build()?;
+    Ok(Arc::new(tools))
 }
 ```
 
-面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`GlobalDatabase` 更适合初始化、系统任务和明确承担授权责任的底层操作。
+面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`Tools::db()` 返回的是不受保护的连接池，只适合初始化、系统任务和明确承担授权责任的底层操作。
 
 `TableQuery` 会在 SQL 生成前按 `TableDefinition` 校验 WHERE 字段、筛选权限、操作符和值类型；`IN` 与 `BETWEEN` 的每个值都逐项校验。`where_eq(field, null)` / `where_ne(field, null)` 分别生成 `IS NULL` / `IS NOT NULL`，也可以显式调用 `where_null` / `where_not_null`，不会生成语义错误的 `= NULL` 或 `!= NULL`。
 
@@ -224,11 +228,14 @@ async fn init_storage() -> Result<(), BaseError> {
 
 ```text
 src/
-├── action/       # TypedHandler / TypedAction / DynAction 与 builtin CRUD
-├── database/     # MySQL、Redis 与启动期 schema 同步
-├── router/       # Api、ModuleRouter、AppRouter、ApiCatalog
+├── action/       # Action(业务 trait) / TypedHandler / TypedAction / DynAction 与 builtin CRUD
+├── definition/   # AppBuilder / BuiltApp / Catalog / Registry / fields! / params!
+├── tools.rs      # ToolsBuilder / Tools（db/cache/token/http + 类型化扩展）
+├── database/     # DatabaseInitializer（迁移治理与启动期 schema 同步）
+├── router/       # 洋葱中间件（RequestId / 鉴权）
 ├── table/        # Table、Field、TableDefinition、Record、TableQuery
-├── plugin/       # 插件生命周期与依赖管理
+├── plugin/       # 旧代插件生命周期与依赖管理
+├── transport/    # 可选 Axum 0.8 HTTP 适配器（transport-axum）
 ├── http/         # 可选 HTTP 客户端
 ├── token/        # 可选 JWT 与撤销列表
 └── error/        # BaseError
