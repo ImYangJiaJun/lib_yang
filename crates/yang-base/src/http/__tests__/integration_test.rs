@@ -64,17 +64,16 @@ async fn test_http_client_full_workflow() {
 }
 
 #[tokio::test]
-async fn test_global_client_workflow() {
-    // 尝试初始化全局客户端（可能已经被其他测试初始化）
-    let _ = HttpClient::init_global(30);
+async fn test_tools_http_client_workflow() {
+    // 经 Tools 资源槽获取客户端（替代原全局单例用法）
+    let tools = crate::tools::ToolsBuilder::new()
+        .http(HttpClient::new(30).unwrap())
+        .build()
+        .expect("注册 HTTP 客户端后应构建成功");
 
-    // 获取全局客户端
-    let client = HttpClient::global();
-    assert!(client.is_ok());
+    let client = tools.http().expect("已配置时应返回 HTTP 客户端");
 
-    let client = client.unwrap();
-
-    // 使用全局客户端创建请求
+    // 使用客户端创建请求
     let builder = client.get("https://httpbin.org/get").query("test", "value");
 
     drop(builder);

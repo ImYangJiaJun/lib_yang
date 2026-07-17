@@ -133,9 +133,8 @@ impl RetryConfig {
 /// # 示例
 ///
 /// ```rust,ignore
-/// use yang_base::http::HttpClient;
-///
-/// let response = HttpClient::global()?
+/// // tools 为启动期经 ToolsBuilder::http(...) 冻结的应用资源；Action 内则用 ctx.http()?
+/// let response = tools.http()?
 ///     .get("https://api.example.com/users")
 ///     .header("X-Custom-Header", "value")
 ///     .query("page", "1")

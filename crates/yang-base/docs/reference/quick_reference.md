@@ -6,6 +6,7 @@
 use yang_base::database::{GlobalDatabase, GlobalRedis};
 use yang_base::http::HttpClient;
 use yang_base::token::TokenManager;
+use yang_base::tools::ToolsBuilder;
 use yang_db::{DatabaseConfig, redis::RedisConfig};
 
 // MySQL
@@ -14,8 +15,8 @@ GlobalDatabase::init("mysql://root:pass@localhost/db", DatabaseConfig::default()
 // Redis
 GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
 
-// HTTP 客户端
-HttpClient::init_global(30)?;
+// HTTP 客户端（注册进 Tools 资源槽，运行期经 tools.http()? 获取）
+let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
 
 // Token 管理
 TokenManager::init("secret-key")?;
@@ -86,14 +87,13 @@ GlobalRedis::keys("user:*").await?;
 ## HTTP 请求
 
 ```rust
-// GET
-let resp: ApiResponse = HttpClient::get("https://api.example.com/users").await?;
+// 从 Tools（或 Action 内 ctx.http()?）获取客户端
+let client = tools.http()?;
 
-// POST
-let resp: ApiResponse = HttpClient::post("https://api.example.com/users", &data).await?;
+// GET / POST 等方法均返回 RequestBuilder，send() 后得到 Response
+let resp = client.get("https://api.example.com/users").send().await?;
 
 // 带请求头
-let client = HttpClient::get_global()?;
 let resp = client.get(url)
     .header("Authorization", "Bearer token")
     .send().await?

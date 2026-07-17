@@ -12,12 +12,13 @@
 //!
 //! ```rust,ignore
 //! use yang_base::http::HttpClient;
+//! use yang_base::tools::ToolsBuilder;
 //!
-//! // 初始化全局 HTTP 客户端
-//! HttpClient::init_global(30)?;
+//! // 启动期：把客户端注册进应用资源并冻结
+//! let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
 //!
-//! // 发起 GET 请求
-//! let response = HttpClient::global()?
+//! // 运行期：从 Tools（或 Action 内 ctx.http()?）获取客户端发起 GET 请求
+//! let response = tools.http()?
 //!     .get("https://api.example.com/users")
 //!     .bearer_token("your_token")
 //!     .send()

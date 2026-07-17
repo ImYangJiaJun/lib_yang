@@ -1,15 +1,14 @@
 //! HTTP 客户端核心实现
 //!
-//! 提供全局 HTTP 客户端和请求构建能力。
+//! 提供 HTTP 客户端和请求构建能力；实例在启动期经
+//! [`ToolsBuilder::http`](crate::tools::ToolsBuilder) 注册进应用资源，
+//! 运行期通过 `Tools::http()` 或 `ActionContext::http()` 获取。
 
 use crate::error::BaseError;
 use crate::http::request::RequestBuilder;
 use reqwest::{Client, Method};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-
-/// 全局 HTTP 客户端实例
-static GLOBAL_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
 
 /// HTTP 客户端配置
 ///
@@ -172,12 +171,13 @@ mod config_tests {
 ///
 /// ```rust,ignore
 /// use yang_base::http::HttpClient;
+/// use yang_base::tools::ToolsBuilder;
 ///
-/// // 初始化全局客户端
-/// HttpClient::init_global(30)?;
+/// // 启动期：把客户端注册进应用资源并冻结
+/// let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
 ///
-/// // 使用全局客户端发起请求
-/// let response = HttpClient::global()?
+/// // 运行期：从 Tools 获取客户端发起请求（Action 内为 ctx.http()?）
+/// let response = tools.http()?
 ///     .get("https://api.example.com/users")
 ///     .send()
 ///     .await?;
@@ -282,92 +282,6 @@ impl HttpClient {
             timeout_secs,
             ..Default::default()
         })
-    }
-
-    /// 使用完整配置初始化全局 HTTP 客户端
-    ///
-    /// 允许配置连接池大小、User-Agent、代理等高级选项。
-    /// 重复调用返回 `BaseError::HttpClientAlreadyInitialized`。
-    ///
-    /// # 参数
-    ///
-    /// - `config`: HTTP 客户端配置
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(())`: 初始化成功
-    /// - `Err(BaseError::HttpClientAlreadyInitialized)`: 已初始化（重复调用）
-    /// - `Err(BaseError::HttpClientCreateFailed)`: 客户端创建失败
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::http::HttpClientConfig;
-    ///
-    /// let config = HttpClientConfig {
-    ///     timeout_secs: 60,
-    ///     pool_max_idle_per_host: 20,
-    ///     user_agent: Some("MyApp/1.0".to_string()),
-    ///     ..Default::default()
-    /// };
-    /// HttpClient::init_global_with_config(config)?;
-    /// ```
-    pub fn init_global_with_config(config: HttpClientConfig) -> Result<(), BaseError> {
-        let timeout = config.timeout_secs;
-        let client = Self::with_config(config)?;
-
-        GLOBAL_HTTP_CLIENT
-            .set(client)
-            .map_err(|_| BaseError::HttpClientAlreadyInitialized)?;
-
-        log::info!("全局 HTTP 客户端已初始化，超时时间: {} 秒", timeout);
-        Ok(())
-    }
-
-    /// 初始化全局 HTTP 客户端（仅超时时间）
-    ///
-    /// 使用默认配置，仅覆盖超时时间。如需完整配置（连接池、UA、代理等），
-    /// 请使用 [`init_global_with_config`](Self::init_global_with_config)。
-    ///
-    /// # 参数
-    ///
-    /// - `timeout_secs`: 默认超时时间（秒）
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(())`: 初始化成功
-    /// - `Err(BaseError::HttpClientAlreadyInitialized)`: 已初始化（重复调用）
-    /// - `Err(BaseError::HttpClientCreateFailed)`: 客户端创建失败
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// HttpClient::init_global(30)?;
-    /// ```
-    pub fn init_global(timeout_secs: u64) -> Result<(), BaseError> {
-        Self::init_global_with_config(HttpClientConfig {
-            timeout_secs,
-            ..Default::default()
-        })
-    }
-
-    /// 获取全局 HTTP 客户端
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(&HttpClient)`: 客户端实例
-    /// - `Err(BaseError::HttpClientNotInitialized)`: 客户端未初始化
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// let client = HttpClient::global()?;
-    /// ```
-    pub fn global() -> Result<&'static HttpClient, BaseError> {
-        // 未初始化返回结构化错误
-        GLOBAL_HTTP_CLIENT
-            .get()
-            .ok_or(BaseError::HttpClientNotInitialized)
     }
 
     /// 设置默认 Token
