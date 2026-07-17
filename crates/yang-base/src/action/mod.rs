@@ -60,6 +60,8 @@ mod request_id;
 mod request_meta;
 mod response;
 pub mod sql_bridge;
+#[cfg(feature = "token")]
+mod step_up;
 mod tenant;
 pub mod typed;
 mod ui_catalog;
@@ -78,6 +80,11 @@ pub use request_context::{ActorContext, ContextKey, RequestContext, TenantContex
 pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
 pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
+#[cfg(feature = "token")]
+pub use step_up::{
+    StepUpChallenge, StepUpManager, StepUpProof, StepUpVerification, DEFAULT_STEP_UP_CHALLENGE_TTL,
+    DEFAULT_STEP_UP_PROOF_TTL,
+};
 pub use tenant::{TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 pub use ui_catalog::{UiCatalogAction, UiCatalogInput};
