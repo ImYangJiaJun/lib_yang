@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.0";
+pub const UI_SCHEMA_VERSION: &str = "1.1";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -136,6 +136,40 @@ pub struct ActionDemoSchema {
     pub requires_auth: bool,
 }
 
+/// 通用表格页的单列展示契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct TableColumnSchema {
+    /// 行数据中的字段名。
+    pub field: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// 字段帮助说明。
+    pub description: String,
+    /// 建议控件；未知值由消费者降级为 JSON/text。
+    pub widget: WidgetHint,
+    /// 输入时是否必填。
+    pub required: bool,
+    /// 是否允许作为筛选字段。
+    pub filterable: bool,
+    /// 是否允许排序。
+    pub sortable: bool,
+}
+
+/// 请求级通用表格 View 契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct TableViewSchema {
+    /// 稳定 View ID，不与前端文件路径绑定。
+    pub view_id: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// 服务端表定义名。
+    pub table: String,
+    /// 当前用户可读的有序列。
+    pub columns: Vec<TableColumnSchema>,
+    /// 当前用户可调用的有序 Action operation IDs。
+    pub actions: Vec<String>,
+}
+
 impl From<&ActionSpec> for ActionDemoSchema {
     fn from(action: &ActionSpec) -> Self {
         let params = action
@@ -178,6 +212,8 @@ pub struct UiCatalog {
     pub schema_version: &'static str,
     /// 当前请求有权访问的 Action 演示契约。
     pub actions: Vec<ActionDemoSchema>,
+    /// 当前请求有权访问的通用表格 Views。
+    pub table_views: Vec<TableViewSchema>,
 }
 
 impl UiCatalog {
@@ -191,7 +227,18 @@ impl UiCatalog {
         Self {
             schema_version: UI_SCHEMA_VERSION,
             actions,
+            table_views: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_table_views<I>(mut self, views: I) -> Self
+    where
+        I: IntoIterator<Item = TableViewSchema>,
+    {
+        self.table_views = views.into_iter().collect();
+        self.table_views
+            .sort_by(|left, right| left.view_id.cmp(&right.view_id));
+        self
     }
 }
 
@@ -200,8 +247,9 @@ mod tests {
     use super::*;
     use crate::action::{ActionContext, PermissionMode, Request, TypedHandler, User};
     use crate::definition::{
-        ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, FieldKind, FieldName, FieldSpec,
-        HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec,
+        AccessRule, ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, FieldKind, FieldName,
+        FieldRef, FieldSpec, HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec, TableName,
+        TableSpec, ViewName, ViewSpec,
     };
     use crate::error::BaseError;
     use crate::tools::ToolsBuilder;
@@ -484,6 +532,117 @@ mod tests {
         assert_eq!(
             serde_json::to_value(unknown).expect("fallback 应可序列化"),
             json!("json")
+        );
+    }
+
+    #[test]
+    fn table_view_projection_filters_module_fields_and_actions_with_same_request_identity() {
+        let module_name = ModuleName::new("org.member").expect("测试 Module 名称应有效");
+        let table_name = TableName::new("org_member").expect("测试 Table 名称应有效");
+        let field_ref = |name: &str| {
+            FieldRef::new(
+                table_name.clone(),
+                FieldName::new(name).expect("测试字段名应有效"),
+            )
+        };
+        let action_ref = |name: &str| {
+            ActionRef::new(
+                module_name.clone(),
+                ActionName::new(name).expect("测试 Action 名称应有效"),
+            )
+        };
+
+        let mut name = FieldSpec::new(
+            FieldName::new("name").expect("测试字段名应有效"),
+            FieldKind::Str,
+        );
+        name.presentation.title = "名称".to_string();
+        name.access.searchable = true;
+        name.access.sortable = true;
+        let mut admin_note = FieldSpec::new(
+            FieldName::new("admin_note").expect("测试字段名应有效"),
+            FieldKind::Text,
+        );
+        admin_note.access.readable = AccessRule::Roles(vec!["admin".to_string()]);
+        let mut secret = FieldSpec::new(
+            FieldName::new("secret").expect("测试字段名应有效"),
+            FieldKind::Str,
+        );
+        secret.access.secret = true;
+        secret.access.readable = AccessRule::Everyone;
+
+        let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .field(field_ref("name"))
+            .field(field_ref("admin_note"))
+            .field(field_ref("secret"))
+            .action(action_ref("list"))
+            .action(action_ref("edit"));
+        let module = ModuleSpec::new(module_name)
+            .table(
+                TableSpec::new(table_name)
+                    .title("组织成员")
+                    .field(FieldSpec::new(
+                        FieldName::new("id").expect("测试字段名应有效"),
+                        FieldKind::Key,
+                    ))
+                    .field(name)
+                    .field(admin_note)
+                    .field(secret),
+            )
+            .default_permissions(["module:view"], PermissionMode::All)
+            .action(action("list", "org.member.list"), NoopAction)
+            .action(
+                action("edit", "org.member.edit").permissions(["member:edit"], PermissionMode::All),
+                NoopAction,
+            )
+            .view(view);
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect("TableView 测试应用应构建成功");
+
+        let anonymous = app.ui_catalog(&app.context(Request::new(json!({}))));
+        assert!(
+            anonymous.table_views.is_empty(),
+            "匿名请求不得看到受保护 View"
+        );
+
+        let member = app.ui_catalog(
+            &app.context(Request::new(json!({})))
+                .with_user(User::new(7, "member").with_permissions(["module:view"])),
+        );
+        assert_eq!(member.table_views.len(), 1);
+        assert_eq!(member.table_views[0].view_id, "org.member.main");
+        assert_eq!(member.table_views[0].table, "org_member");
+        assert_eq!(member.table_views[0].columns.len(), 1);
+        assert_eq!(member.table_views[0].columns[0].field, "name");
+        assert_eq!(member.table_views[0].columns[0].widget, WidgetHint::Text);
+        assert!(member.table_views[0].columns[0].filterable);
+        assert!(member.table_views[0].columns[0].sortable);
+        assert_eq!(member.table_views[0].actions, ["org.member.list"]);
+
+        let admin = app.ui_catalog(
+            &app.context(Request::new(json!({}))).with_user(
+                User::new(8, "admin")
+                    .with_roles(["admin"])
+                    .with_permissions(["module:view", "member:edit"]),
+            ),
+        );
+        assert_eq!(
+            admin.table_views[0]
+                .columns
+                .iter()
+                .map(|column| column.field.as_str())
+                .collect::<Vec<_>>(),
+            ["name", "admin_note"],
+            "角色字段应出现，但 secret 字段即使 readable 也不得投影"
+        );
+        assert_eq!(
+            admin.table_views[0].actions,
+            ["org.member.list", "org.member.edit"]
         );
     }
 }
