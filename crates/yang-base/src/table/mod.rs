@@ -50,6 +50,7 @@ mod field_type;
 mod query_params;
 mod record;
 mod relation_loader;
+mod relation_options;
 mod schema_validation;
 mod table_config;
 mod table_query;
@@ -75,6 +76,7 @@ pub use relation_loader::DatabaseRelationExecutor;
 pub use relation_loader::{
     RelationBatch, RelationBatchExecutor, RelationData, RelationLoader, RelationSpec,
 };
+pub use relation_options::{RelationOption, RelationOptionsRequest, RelationOptionsResponse};
 pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaValidationReport};
 pub use table_config::SortOrder;
 pub(crate) use table_config::TableConfig;
