@@ -20,6 +20,7 @@ use tower::ServiceExt;
 use yang_base::action::{Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction};
 use yang_base::definition::{
     AddonName, AddonSpec, AppBuilder, BuiltApp, ModuleName, ModuleSpec, ParamInput, Params,
+    UI_SCHEMA_VERSION,
 };
 use yang_base::tools::ToolsBuilder;
 use yang_base::transport::axum::{router, AxumTransportConfig, CorsConfig};
@@ -404,7 +405,7 @@ async fn ui_catalog_endpoint_projects_only_anonymous_accessible_actions() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["code"], 0);
-    assert_eq!(json["data"]["schema_version"], "1.0");
+    assert_eq!(json["data"]["schema_version"], UI_SCHEMA_VERSION);
 
     let operation_ids = json["data"]["actions"]
         .as_array()

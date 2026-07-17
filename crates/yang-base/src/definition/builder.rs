@@ -73,6 +73,7 @@ impl DefinitionCatalog {
 pub struct Registry {
     actions: BTreeMap<ActionRef, ActionHandle>,
     handlers: Vec<RuntimeAction>,
+    table_views: Vec<RuntimeTableView>,
 }
 
 #[derive(Clone)]
@@ -84,6 +85,23 @@ struct RuntimeAction {
     action: String,
     table_definition: Option<TableDefinition>,
     ui_schema: super::ActionDemoSchema,
+}
+
+#[derive(Clone)]
+struct RuntimeTableView {
+    view_id: String,
+    title: String,
+    table: String,
+    columns: Arc<[RuntimeTableColumn]>,
+    actions: Arc<[ActionHandle]>,
+    policy: AuthorizationPolicy,
+}
+
+#[derive(Clone)]
+struct RuntimeTableColumn {
+    schema: super::TableColumnSchema,
+    readable: super::AccessRule,
+    secret: bool,
 }
 
 impl fmt::Debug for Registry {
@@ -150,12 +168,34 @@ impl Registry {
     }
 
     pub(crate) fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
-        super::UiCatalog::new(
-            self.handlers
-                .iter()
-                .filter(|runtime| runtime.policy.allows(context))
-                .map(|runtime| runtime.ui_schema.clone()),
-        )
+        let actions = self
+            .handlers
+            .iter()
+            .filter(|runtime| runtime.policy.allows(context))
+            .map(|runtime| runtime.ui_schema.clone());
+        let table_views = self
+            .table_views
+            .iter()
+            .filter(|view| view.policy.allows(context))
+            .map(|view| super::TableViewSchema {
+                view_id: view.view_id.clone(),
+                title: view.title.clone(),
+                table: view.table.clone(),
+                columns: view
+                    .columns
+                    .iter()
+                    .filter(|column| column_readable(column, context))
+                    .map(|column| column.schema.clone())
+                    .collect(),
+                actions: view
+                    .actions
+                    .iter()
+                    .filter_map(|handle| self.handlers.get(handle.slot()))
+                    .filter(|runtime| runtime.policy.allows(context))
+                    .map(|runtime| runtime.ui_schema.operation_id.clone())
+                    .collect(),
+            });
+        super::UiCatalog::new(actions).with_table_views(table_views)
     }
 
     /// 通过构建期 handle 执行唯一预绑定 Handler。
@@ -274,9 +314,9 @@ impl BuiltApp {
 
     /// 按当前请求的认证身份投影有权访问的版本化 UI 目录。
     ///
-    /// 本方法复用 dispatch 的构建期冻结授权策略；前端可见性与直接调用的
-    /// module/action `All`/`Any` 权限语义不会分叉。租户级字段和数据过滤由后续
-    /// View projector 负责，本目录只决定 Action 是否可见。
+    /// Action 和 View 均复用 dispatch 的构建期冻结授权策略；TableView 列同时按
+    /// 字段读取角色过滤，secret 字段始终 fail-closed。租户数据范围仍由实际
+    /// TableQuery 独立强制执行，前端目录不能替代服务端数据隔离。
     pub fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
         self.registry.ui_catalog(context)
     }
@@ -341,7 +381,9 @@ impl AppBuilder {
         validate_routes(&self.addons)?;
 
         sort_definitions(&mut self.addons);
-        let registry = build_registry(&self.addons)?;
+        let mut registry = build_registry(&self.addons)?;
+        let compiled_views = compile_views(&self.addons, &registry)?;
+        registry.table_views = compile_runtime_table_views(&self.addons, &registry)?;
         for runtime in &registry.handlers {
             runtime.handler.bind_registry(&registry).map_err(|error| {
                 BuildError::InvalidReference {
@@ -352,7 +394,6 @@ impl AppBuilder {
         }
         let registry = Arc::new(registry);
         let table_definitions = compile_table_definitions(&self.addons)?;
-        let compiled_views = compile_views(&self.addons, &registry)?;
         for module in self.addons.iter_mut().flat_map(|addon| &mut addon.modules) {
             module.clear_handlers();
         }
@@ -420,6 +461,9 @@ fn resolve_param_fields(addons: &mut [AddonSpec]) -> Result<(), BuildError> {
             }
             if param.presentation.description.is_empty() {
                 param.presentation.description = field.presentation.description.clone();
+            }
+            if param.presentation.widget.is_none() {
+                param.presentation.widget = field.presentation.widget;
             }
         }
     }
@@ -511,6 +555,136 @@ fn compile_views(
         }
     }
     Ok(compiled)
+}
+
+fn compile_runtime_table_views(
+    addons: &[AddonSpec],
+    registry: &Registry,
+) -> Result<Vec<RuntimeTableView>, BuildError> {
+    let fields = addons
+        .iter()
+        .flat_map(|addon| &addon.modules)
+        .filter_map(|module| module.table.as_ref())
+        .flat_map(|table| {
+            table
+                .fields
+                .iter()
+                .map(move |field| (FieldRef::new(table.name.clone(), field.name.clone()), field))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut compiled = Vec::new();
+
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let Some(table) = &module.table else {
+            continue;
+        };
+        let policy = module_view_policy(module);
+        if module.views.is_empty() {
+            let columns = table
+                .fields
+                .iter()
+                .map(runtime_table_column)
+                .collect::<Vec<_>>();
+            compiled.push(RuntimeTableView {
+                view_id: format!("{}.default", module.name),
+                title: if table.title.is_empty() {
+                    module.name.to_string()
+                } else {
+                    table.title.clone()
+                },
+                table: table.name.to_string(),
+                columns: columns.into(),
+                actions: Arc::from(Vec::new()),
+                policy,
+            });
+            continue;
+        }
+
+        for view in &module.views {
+            let columns = view
+                .fields
+                .iter()
+                .map(|reference| {
+                    fields
+                        .get(reference)
+                        .copied()
+                        .map(runtime_table_column)
+                        .ok_or_else(|| BuildError::InvalidReference {
+                            kind: "View Field",
+                            reference: reference.to_string(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let actions = view
+                .actions
+                .iter()
+                .map(|reference| {
+                    registry
+                        .resolve(reference)
+                        .ok_or_else(|| BuildError::InvalidReference {
+                            kind: "View Action",
+                            reference: reference.to_string(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            compiled.push(RuntimeTableView {
+                view_id: format!("{}.{}", module.name, view.name),
+                title: view.name.to_string(),
+                table: table.name.to_string(),
+                columns: columns.into(),
+                actions: actions.into(),
+                policy: policy.clone(),
+            });
+        }
+    }
+    Ok(compiled)
+}
+
+fn module_view_policy(module: &super::ModuleSpec) -> AuthorizationPolicy {
+    let groups = if module.default_permissions.is_empty() {
+        Vec::new()
+    } else {
+        vec![PermissionGroup::new(
+            "模块",
+            Arc::<[String]>::from(module.default_permissions.clone()),
+            module.default_permission_mode,
+        )]
+    };
+    AuthorizationPolicy::new(false, groups)
+}
+
+fn runtime_table_column(field: &super::FieldSpec) -> RuntimeTableColumn {
+    let name = field.name.to_string();
+    RuntimeTableColumn {
+        schema: super::TableColumnSchema {
+            title: if field.presentation.title.is_empty() {
+                name.clone()
+            } else {
+                field.presentation.title.clone()
+            },
+            field: name,
+            description: field.presentation.description.clone(),
+            widget: field.widget_hint(),
+            required: field.is_required(),
+            filterable: field.access.searchable,
+            sortable: field.access.sortable,
+        },
+        readable: field.access.readable.clone(),
+        secret: field.access.secret,
+    }
+}
+
+fn column_readable(column: &RuntimeTableColumn, context: &ActionContext) -> bool {
+    if column.secret {
+        return false;
+    }
+    match &column.readable {
+        super::AccessRule::Everyone => true,
+        super::AccessRule::Nobody => false,
+        super::AccessRule::Roles(roles) => context
+            .user_roles_set()
+            .is_some_and(|user_roles| roles.iter().any(|role| user_roles.contains(role))),
+    }
 }
 
 fn checked_runtime_field(
@@ -998,7 +1172,11 @@ fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildError> {
                 })?,
         });
     }
-    Ok(Registry { actions, handlers })
+    Ok(Registry {
+        actions,
+        handlers,
+        table_views: Vec::new(),
+    })
 }
 
 #[allow(dead_code)]
