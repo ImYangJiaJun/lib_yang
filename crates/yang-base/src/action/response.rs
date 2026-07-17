@@ -4,6 +4,7 @@
 
 use crate::error::BaseError;
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// API 响应
 ///
@@ -55,6 +56,13 @@ pub struct ApiResponse {
     /// 成功时包含业务数据，失败时通常为 None
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+
+    /// 非 JSON 附件（文件下载/预览/重定向），由传输层消费。
+    ///
+    /// 仅当 Action 以 [`ResponseBody`] 为输出时由派发边界填充；
+    /// `serde(skip)` 保证普通 Action 的 JSON 线格式不受影响。
+    #[serde(skip)]
+    pub attachment: Option<ResponseAttachment>,
 }
 
 impl ApiResponse {
@@ -102,6 +110,7 @@ impl ApiResponse {
             code: 0,
             message: message.into(),
             data: Some(json_value),
+            attachment: None,
         })
     }
 
@@ -135,6 +144,7 @@ impl ApiResponse {
             code: 0,
             message: message.into(),
             data: Some(data),
+            attachment: None,
         }
     }
 
@@ -170,6 +180,29 @@ impl ApiResponse {
             code,
             message: message.into(),
             data: None,
+            attachment: None,
+        }
+    }
+
+    /// 创建携带附件的成功响应
+    ///
+    /// 由派发边界在识别到 Action 返回 [`ResponseBody`] 时调用。`data` 为 None，
+    /// 附件信息仅对传输层可见（`serde(skip)`），JSON 线格式保持不变。
+    ///
+    /// # 参数
+    ///
+    /// - `attachment`: 传输层消费的附件描述
+    /// - `message`: 成功消息
+    ///
+    /// # 返回
+    ///
+    /// - ApiResponse 实例
+    pub fn attachment(attachment: ResponseAttachment, message: impl Into<String>) -> Self {
+        Self {
+            code: 0,
+            message: message.into(),
+            data: None,
+            attachment: Some(attachment),
         }
     }
 
@@ -213,8 +246,121 @@ impl Default for ApiResponse {
             code: 0,
             message: "OK".to_string(),
             data: None,
+            attachment: None,
         }
     }
+}
+
+/// Action 的特殊业务响应体：文件下载、文件预览、重定向。
+///
+/// Action 将本类型作为 `type Output` 返回时，派发边界
+/// （[`DynAction::dispatch`](crate::action::DynAction)）会识别并把它转为
+/// [`ApiResponse::attachment`]，普通输出的 JSON 线格式不受影响。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use yang_base::action::ResponseBody;
+///
+/// async fn index(&self, ctx: ActionContext, input: Self::Input) -> Result<Self::Output, BaseError> {
+///     // 文件下载
+///     Ok(ResponseBody::download("/data/report.pdf", "report.pdf"))
+///     // 文件预览
+///     // Ok(ResponseBody::preview("/data/a.png"))
+///     // 重定向
+///     // Ok(ResponseBody::redirect("https://example.com/next"))
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseBody {
+    /// 文件下载：传输层以 `Content-Disposition: attachment` 返回文件字节。
+    Download {
+        /// 服务器本地文件路径。
+        path: PathBuf,
+        /// 下载文件名（写入 Content-Disposition 的 filename 参数）。
+        filename: String,
+    },
+    /// 文件预览：传输层以 `Content-Disposition: inline` 返回文件字节。
+    Preview {
+        /// 服务器本地文件路径。
+        path: PathBuf,
+    },
+    /// 重定向：传输层返回 302 状态码与 `Location` 头。
+    Redirect {
+        /// 目标地址。
+        url: String,
+    },
+}
+
+impl ResponseBody {
+    /// 构造文件下载响应。
+    pub fn download(path: impl Into<PathBuf>, filename: impl Into<String>) -> Self {
+        Self::Download {
+            path: path.into(),
+            filename: filename.into(),
+        }
+    }
+
+    /// 构造文件预览响应。
+    pub fn preview(path: impl Into<PathBuf>) -> Self {
+        Self::Preview { path: path.into() }
+    }
+
+    /// 构造重定向响应。
+    pub fn redirect(url: impl Into<String>) -> Self {
+        Self::Redirect { url: url.into() }
+    }
+}
+
+/// 一次响应携带的非 JSON 附件描述，由传输层消费，不参与 JSON 序列化。
+///
+/// 与 [`ResponseBody`] 结构一一对应；拆开是为了让 Action 输出类型满足
+/// `Serialize + JsonSchema` 契约，而响应上的附件字段不受该契约约束。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseAttachment {
+    /// 文件下载（`Content-Disposition: attachment`）。
+    Download {
+        /// 服务器本地文件路径。
+        path: PathBuf,
+        /// 下载文件名。
+        filename: String,
+    },
+    /// 文件预览（`Content-Disposition: inline`）。
+    Preview {
+        /// 服务器本地文件路径。
+        path: PathBuf,
+    },
+    /// 重定向（302 + `Location`）。
+    Redirect {
+        /// 目标地址。
+        url: String,
+    },
+}
+
+impl From<ResponseBody> for ResponseAttachment {
+    fn from(body: ResponseBody) -> Self {
+        match body {
+            ResponseBody::Download { path, filename } => Self::Download { path, filename },
+            ResponseBody::Preview { path } => Self::Preview { path },
+            ResponseBody::Redirect { url } => Self::Redirect { url },
+        }
+    }
+}
+
+/// 派发边界的统一输出去向：[`ResponseBody`] 转为附件响应，其余照旧序列化进 `data`。
+///
+/// 通过 `&dyn Any` downcast 识别 `ResponseBody`，不引入新的 trait bound，
+/// 因此现有 Action 的输出契约与 `Result<ApiResponse, BaseError>` 派发签名保持不变。
+pub(crate) fn wrap_dispatch_output<T>(output: T, message: &str) -> Result<ApiResponse, BaseError>
+where
+    T: Serialize + 'static,
+{
+    let erased = &output as &dyn std::any::Any;
+    if let Some(body) = erased.downcast_ref::<ResponseBody>() {
+        return Ok(ApiResponse::attachment(body.clone().into(), message));
+    }
+    ApiResponse::success(output, message)
 }
 
 #[cfg(test)]
@@ -332,5 +478,129 @@ mod tests {
         assert!(json.contains("\"message\":\"服务器错误\""));
         // data 字段应该被跳过
         assert!(!json.contains("\"data\""));
+    }
+
+    #[test]
+    fn test_response_body_constructors() {
+        // download 携带路径与下载文件名
+        let download = ResponseBody::download("/tmp/report.pdf", "report.pdf");
+        assert_eq!(
+            download,
+            ResponseBody::Download {
+                path: std::path::PathBuf::from("/tmp/report.pdf"),
+                filename: "report.pdf".to_string(),
+            }
+        );
+        // preview 仅携带路径
+        assert_eq!(
+            ResponseBody::preview("/tmp/a.png"),
+            ResponseBody::Preview {
+                path: std::path::PathBuf::from("/tmp/a.png"),
+            }
+        );
+        // redirect 仅携带目标地址
+        assert_eq!(
+            ResponseBody::redirect("https://example.com/next"),
+            ResponseBody::Redirect {
+                url: "https://example.com/next".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_response_body_into_attachment() {
+        // ResponseBody 到传输层附件描述的一一映射
+        let attachment: ResponseAttachment = ResponseBody::download("/tmp/a.bin", "a.bin").into();
+        assert_eq!(
+            attachment,
+            ResponseAttachment::Download {
+                path: std::path::PathBuf::from("/tmp/a.bin"),
+                filename: "a.bin".to_string(),
+            }
+        );
+        let attachment: ResponseAttachment = ResponseBody::preview("/tmp/b.png").into();
+        assert_eq!(
+            attachment,
+            ResponseAttachment::Preview {
+                path: std::path::PathBuf::from("/tmp/b.png"),
+            }
+        );
+        let attachment: ResponseAttachment = ResponseBody::redirect("/home").into();
+        assert_eq!(
+            attachment,
+            ResponseAttachment::Redirect {
+                url: "/home".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_response_body_implements_action_output_contract() {
+        // 作为 Action::Output 必须满足 Serialize + JsonSchema + 'static
+        fn assert_output_contract<T: Serialize + schemars::JsonSchema + 'static>() {}
+        assert_output_contract::<ResponseBody>();
+
+        let body = ResponseBody::redirect("/next");
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains("/next"), "ResponseBody 应可序列化: {json}");
+        // schema 生成不应 panic（output_schema 由构建期消费）
+        let _schema = schemars::schema_for!(ResponseBody);
+    }
+
+    #[test]
+    fn test_attachment_response_json_wire_format_unchanged() {
+        // 附件响应序列化后不得出现 attachment 字段，保持 JSON 线格式不变
+        let response = ApiResponse::attachment(
+            ResponseAttachment::Redirect {
+                url: "/next".to_string(),
+            },
+            "成功",
+        );
+        assert_eq!(response.code, 0);
+        assert!(response.data.is_none());
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            !json.contains("attachment"),
+            "线格式不得包含附件信息: {json}"
+        );
+        assert!(json.contains("\"code\":0"));
+    }
+
+    #[test]
+    fn test_plain_response_has_no_attachment() {
+        // 普通成功/失败响应不带附件
+        let ok = ApiResponse::success(json!({"a": 1}), "ok").unwrap();
+        assert!(ok.attachment.is_none());
+        let fail = ApiResponse::fail(1, "bad");
+        assert!(fail.attachment.is_none());
+        let default = ApiResponse::default();
+        assert!(default.attachment.is_none());
+    }
+
+    #[test]
+    fn test_wrap_dispatch_output_recognizes_response_body() {
+        // ResponseBody 输出转为附件响应，不进 data
+        let response = wrap_dispatch_output(ResponseBody::redirect("/next"), "成功").unwrap();
+        assert_eq!(response.code, 0);
+        assert!(response.data.is_none());
+        assert_eq!(
+            response.attachment,
+            Some(ResponseAttachment::Redirect {
+                url: "/next".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_wrap_dispatch_output_passes_through_plain_output() {
+        // 普通输出照旧序列化进 data，attachment 为 None
+        #[derive(Serialize)]
+        struct Plain {
+            value: i32,
+        }
+        let response = wrap_dispatch_output(Plain { value: 7 }, "成功").unwrap();
+        assert_eq!(response.code, 0);
+        assert_eq!(response.data.unwrap()["value"], 7);
+        assert!(response.attachment.is_none());
     }
 }
