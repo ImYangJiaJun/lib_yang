@@ -54,6 +54,28 @@ impl AuthorizationPolicy {
             groups: groups.into(),
         }
     }
+
+    pub(crate) fn authorize(&self, context: &ActionContext) -> Result<(), BaseError> {
+        if self.is_public {
+            return Ok(());
+        }
+        let user = context
+            .authenticated_user()
+            .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+        for group in self.groups.iter() {
+            if !permissions_match(user, &group.permissions, group.mode) {
+                return Err(BaseError::PermissionDenied(format!(
+                    "缺少 {} 权限: {:?}",
+                    group.label, group.permissions
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn allows(&self, context: &ActionContext) -> bool {
+        self.authorize(context).is_ok()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -188,21 +210,7 @@ pub(crate) fn authorize(
     policy: &AuthorizationPolicy,
     context: &ActionContext,
 ) -> Result<(), BaseError> {
-    if policy.is_public {
-        return Ok(());
-    }
-    let user = context
-        .authenticated_user()
-        .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
-    for group in policy.groups.iter() {
-        if !permissions_match(user, &group.permissions, group.mode) {
-            return Err(BaseError::PermissionDenied(format!(
-                "缺少 {} 权限: {:?}",
-                group.label, group.permissions
-            )));
-        }
-    }
-    Ok(())
+    policy.authorize(context)
 }
 
 fn permissions_match(
