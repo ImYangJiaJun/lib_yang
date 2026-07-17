@@ -148,6 +148,12 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))
     }
 
+    fn allows(&self, handle: ActionHandle, context: &ActionContext) -> bool {
+        self.handlers
+            .get(handle.slot())
+            .is_some_and(|runtime| runtime.policy.allows(context))
+    }
+
     /// 通过构建期 handle 执行唯一预绑定 Handler。
     pub async fn dispatch(
         &self,
@@ -260,6 +266,29 @@ impl BuiltApp {
     /// 返回启动期解析完成的默认/显式 Table Views。
     pub fn compiled_views(&self) -> &[super::CompiledTableView] {
         &self.compiled_views
+    }
+
+    /// 按当前请求的认证身份投影有权访问的版本化 UI 目录。
+    ///
+    /// 本方法复用 dispatch 的构建期冻结授权策略；前端可见性与直接调用的
+    /// module/action `All`/`Any` 权限语义不会分叉。租户级字段和数据过滤由后续
+    /// View projector 负责，本目录只决定 Action 是否可见。
+    pub fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
+        let actions = self
+            .catalog
+            .addons()
+            .iter()
+            .flat_map(|addon| &addon.modules)
+            .flat_map(|module| {
+                module.actions().iter().filter_map(|action| {
+                    let reference = ActionRef::new(module.name.clone(), action.name.clone());
+                    self.registry
+                        .resolve(&reference)
+                        .filter(|handle| self.registry.allows(*handle, context))
+                        .map(|_| super::ActionDemoSchema::from(action))
+                })
+            });
+        super::UiCatalog::new(actions)
     }
 
     /// 为一次请求创建绑定当前应用资源的 ActionContext。
