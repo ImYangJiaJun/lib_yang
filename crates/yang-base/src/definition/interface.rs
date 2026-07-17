@@ -51,6 +51,7 @@ impl Actions {
         .description(handler.description())
         .permissions(permissions, handler.permission_mode())
         .public(handler.is_public())
+        .response_kind(handler.response_kind())
         .success_status(handler.success_status())
         .params(<A as BusinessAction>::params());
         for call in handler.calls() {

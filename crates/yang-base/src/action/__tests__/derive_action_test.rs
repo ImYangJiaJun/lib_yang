@@ -1,6 +1,7 @@
 //! #[derive(Action)] 派生宏测试
 
 use crate::action::{ActionContext, DynAction, TypedAction, TypedHandler};
+use crate::definition::ActionResponseKind;
 use crate::error::BaseError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,8 @@ pub struct PingOutput {
     public,
     display_name = "心跳",
     description = "测试连通性",
-    permissions("system:ping")
+    permissions("system:ping"),
+    response_kind = "redirect"
 )]
 pub struct PingAction;
 
@@ -47,6 +49,7 @@ fn test_derive_action_meta_correct() {
     let perms = a.permissions();
     assert_eq!(perms.len(), 1);
     assert_eq!(perms[0].name(), "system:ping");
+    assert_eq!(a.response_kind(), ActionResponseKind::Redirect);
 }
 
 #[test]
@@ -97,4 +100,5 @@ fn test_derive_action_default_values() {
     assert_eq!(a.description(), "");
     assert!(!a.is_public(), "默认非公开");
     assert!(a.permissions().is_empty());
+    assert_eq!(a.response_kind(), ActionResponseKind::Json);
 }

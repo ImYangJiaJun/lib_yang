@@ -162,6 +162,11 @@ pub trait TypedAction: TypedHandler {
         false
     }
 
+    /// 成功响应的静态类别；默认是普通 JSON。
+    fn response_kind(&self) -> crate::definition::ActionResponseKind {
+        crate::definition::ActionResponseKind::Json
+    }
+
     /// 权限匹配模式（默认 All，即 AND 语义）
     fn permission_mode(&self) -> PermissionMode {
         PermissionMode::default()

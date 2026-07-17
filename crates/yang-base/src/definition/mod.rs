@@ -14,6 +14,7 @@ mod openapi;
 mod param;
 mod plugins;
 mod spec;
+mod ui;
 mod view;
 
 pub use builder::{
@@ -42,6 +43,10 @@ pub use plugins::{ActionLink, Plugins};
 pub use spec::{
     ActionSpec, AddonSpec, FieldKind, HttpMethod, ModuleSpec, ParamSource, ParamSpec, RouteSpec,
     ViewSpec,
+};
+pub use ui::{
+    ActionDemoParamSchema, ActionDemoSchema, ActionResponseKind, UiCatalog, UiParamSource,
+    UI_SCHEMA_VERSION,
 };
 pub use view::CompiledTableView;
 
