@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.5";
+pub const UI_SCHEMA_VERSION: &str = "1.6";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -360,6 +360,17 @@ pub struct FormSchema {
     pub fields: Vec<FormFieldSchema>,
 }
 
+/// 请求级通用树 View 拓扑契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct TreeViewSchema {
+    /// 节点唯一标识字段。
+    pub id_field: String,
+    /// 父节点标识字段；根节点应返回 null。
+    pub parent_field: String,
+    /// 节点用户可见标签字段。
+    pub label_field: String,
+}
+
 /// 请求级通用表格 View 契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TableViewSchema {
@@ -373,6 +384,9 @@ pub struct TableViewSchema {
     pub columns: Vec<TableColumnSchema>,
     /// 当前用户可读或可写的通用表单字段。
     pub form: FormSchema,
+    /// 可选树拓扑；所需字段不可读时省略并安全降级为普通表格。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeViewSchema>,
     /// 当前用户可调用的有序 Action operation IDs。
     pub actions: Vec<String>,
     /// 当前用户可调用 Action 的声明式展示语义。
@@ -487,7 +501,7 @@ mod tests {
     use crate::definition::{
         AccessRule, ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, BuildError, FieldKind,
         FieldName, FieldRef, FieldSpec, HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec,
-        TableName, TableSpec, ViewName, ViewSpec,
+        TableName, TableSpec, TreeViewSpec, ViewName, ViewSpec,
     };
     use crate::error::BaseError;
     use crate::tools::ToolsBuilder;
@@ -612,6 +626,18 @@ mod tests {
             assert!(
                 required.iter().any(|value| value == field),
                 "UiCatalog 运行时 schema 应要求字段 {field}: {schema}"
+            );
+        }
+
+        let tree_schema = serde_json::to_value(schemars::schema_for!(TreeViewSchema))
+            .expect("TreeViewSchema JSON Schema 应可序列化");
+        let tree_required = tree_schema["required"]
+            .as_array()
+            .expect("TreeViewSchema schema.required 应存在");
+        for field in ["id_field", "parent_field", "label_field"] {
+            assert!(
+                tree_required.iter().any(|value| value == field),
+                "TreeViewSchema 运行时 schema 应要求字段 {field}: {tree_schema}"
             );
         }
     }
@@ -867,6 +893,11 @@ mod tests {
         name.presentation.title = "名称".to_string();
         name.access.searchable = true;
         name.access.sortable = true;
+        let mut parent_id = FieldSpec::new(
+            FieldName::new("parent_id").expect("测试字段名应有效"),
+            FieldKind::Int,
+        );
+        parent_id.access.readable = AccessRule::Roles(vec!["admin".to_string()]);
         let mut admin_note = FieldSpec::new(
             FieldName::new("admin_note").expect("测试字段名应有效"),
             FieldKind::Text,
@@ -887,6 +918,7 @@ mod tests {
 
         let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
             .field(field_ref("id"))
+            .field(field_ref("parent_id"))
             .field(field_ref("name"))
             .field(field_ref("admin_note"))
             .field(field_ref("secret"))
@@ -897,7 +929,12 @@ mod tests {
                 ActionPresentationSpec::new(ActionPlacement::Row, ActionInteraction::Form)
                     .confirmation(ActionConfirmation::new("确认修改", "将保存当前行的修改"))
                     .availability(AvailabilityHint::disabled("当前记录可能不允许修改")),
-            );
+            )
+            .tree(TreeViewSpec::new(
+                field_ref("id"),
+                field_ref("parent_id"),
+                field_ref("name"),
+            ));
         let module = ModuleSpec::new(module_name.clone())
             .table(
                 TableSpec::new(table_name)
@@ -906,6 +943,7 @@ mod tests {
                         FieldName::new("id").expect("测试字段名应有效"),
                         FieldKind::Key,
                     ))
+                    .field(parent_id)
                     .field(name)
                     .field(admin_note)
                     .field(secret)
@@ -926,6 +964,13 @@ mod tests {
             .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
             .expect("TableView 测试应用应构建成功");
 
+        let compiled_tree = app.compiled_views()[0]
+            .tree()
+            .expect("显式树拓扑应在启动期预编译");
+        assert_eq!(compiled_tree.id_field_name(), "id");
+        assert_eq!(compiled_tree.parent_field_name(), "parent_id");
+        assert_eq!(compiled_tree.label_field_name(), "name");
+
         let anonymous = app
             .ui_catalog(&app.context(Request::new(json!({}))))
             .expect("匿名 UI Catalog revision 应可计算");
@@ -943,6 +988,16 @@ mod tests {
         assert_eq!(member.table_views.len(), 1);
         assert_eq!(member.table_views[0].view_id, "org.member.main");
         assert_eq!(member.table_views[0].table, "org_member");
+        assert!(
+            member.table_views[0].tree.is_none(),
+            "任一拓扑字段不可读时必须安全降级为普通表格"
+        );
+        let member_wire =
+            serde_json::to_value(&member.table_views[0]).expect("成员 TableView schema 应可序列化");
+        assert!(
+            member_wire.get("tree").is_none(),
+            "不可用树拓扑不能以空壳契约泄漏给前端"
+        );
         assert_eq!(
             member.table_views[0]
                 .columns
@@ -997,8 +1052,16 @@ mod tests {
                 .iter()
                 .map(|column| column.field.as_str())
                 .collect::<Vec<_>>(),
-            ["id", "name", "admin_note", "created_at"],
+            ["id", "parent_id", "name", "admin_note", "created_at"],
             "角色字段应出现，但 secret 字段即使 readable 也不得投影"
+        );
+        assert_eq!(
+            admin.table_views[0].tree.as_ref().map(|tree| (
+                tree.id_field.as_str(),
+                tree.parent_field.as_str(),
+                tree.label_field.as_str(),
+            )),
+            Some(("id", "parent_id", "name"))
         );
         assert_eq!(
             admin.table_views[0].actions,
@@ -1048,6 +1111,76 @@ mod tests {
             .await
             .expect("availability disabled 不能替代服务端授权或阻断真实派发");
         assert_eq!(response.code, 0);
+    }
+
+    #[test]
+    fn tree_view_contract_rejects_implicit_or_ambiguous_topology() {
+        let build = |include_parent: bool, duplicate_id: bool| {
+            let module_name = ModuleName::new("org.unit").expect("测试 Module 名称应有效");
+            let table_name = TableName::new("org_unit").expect("测试 Table 名称应有效");
+            let field_ref = |name: &str| {
+                FieldRef::new(
+                    table_name.clone(),
+                    FieldName::new(name).expect("测试字段名应有效"),
+                )
+            };
+            let mut view = ViewSpec::new(ViewName::new("tree").expect("测试 View 名称应有效"))
+                .field(field_ref("id"))
+                .field(field_ref("name"));
+            if include_parent {
+                view = view.field(field_ref("parent_id"));
+            }
+            view = view.tree(TreeViewSpec::new(
+                field_ref("id"),
+                if duplicate_id {
+                    field_ref("id")
+                } else {
+                    field_ref("parent_id")
+                },
+                field_ref("name"),
+            ));
+            let module = ModuleSpec::new(module_name)
+                .table(
+                    TableSpec::new(table_name)
+                        .field(FieldSpec::new(
+                            FieldName::new("id").expect("测试字段名应有效"),
+                            FieldKind::Key,
+                        ))
+                        .field(FieldSpec::new(
+                            FieldName::new("parent_id").expect("测试字段名应有效"),
+                            FieldKind::Int,
+                        ))
+                        .field(FieldSpec::new(
+                            FieldName::new("name").expect("测试字段名应有效"),
+                            FieldKind::Str,
+                        )),
+                )
+                .view(view);
+            AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+        };
+
+        let missing = build(false, false).expect_err("树拓扑字段必须显式包含在 View 中");
+        assert!(matches!(
+            missing,
+            BuildError::InvalidReference {
+                kind: "Tree View Field",
+                ..
+            }
+        ));
+
+        let ambiguous = build(true, true).expect_err("树 id/parent 字段必须不同");
+        assert!(matches!(
+            ambiguous,
+            BuildError::InvalidReference {
+                kind: "Tree View",
+                ..
+            }
+        ));
     }
 
     #[test]

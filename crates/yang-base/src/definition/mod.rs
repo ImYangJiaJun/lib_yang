@@ -48,15 +48,15 @@ pub use param::{ParamInput, Params};
 pub use plugins::{ActionLink, Plugins};
 pub use spec::{
     ActionSpec, AddonSpec, FieldKind, HttpMethod, ModuleSpec, ParamSource, ParamSpec, RouteSpec,
-    ViewSpec,
+    TreeViewSpec, ViewSpec,
 };
 pub use ui::{
     ActionConfirmation, ActionDemoParamSchema, ActionDemoSchema, ActionInteraction,
     ActionPlacement, ActionPresentationSchema, ActionPresentationSpec, ActionResponseKind,
     AvailabilityHint, AvailabilityState, FormFieldSchema, FormSchema, TableColumnSchema,
-    TableViewSchema, UiCatalog, UiParamSource, WidgetHint, UI_SCHEMA_VERSION,
+    TableViewSchema, TreeViewSchema, UiCatalog, UiParamSource, WidgetHint, UI_SCHEMA_VERSION,
 };
-pub use view::CompiledTableView;
+pub use view::{CompiledTableView, CompiledTreeView};
 
 #[cfg(test)]
 mod tests;

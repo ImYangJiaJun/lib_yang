@@ -122,6 +122,19 @@ impl Tables {
         Self::build_tree(rows, "id", "parent_id")
     }
 
+    /// 按启动期已校验的 View 树拓扑查询并组装节点。
+    #[cfg(feature = "mysql")]
+    pub async fn table_tree_view(
+        self,
+        view: &CompiledTableView,
+    ) -> Result<Vec<TableTreeNode>, BaseError> {
+        let tree = view
+            .tree()
+            .ok_or_else(|| BaseError::ConfigError(format!("View {} 未声明树拓扑", view.name())))?;
+        let rows = self.view(view)?.query.all().await?;
+        Self::build_tree(rows, tree.id_field_name(), tree.parent_field_name())
+    }
+
     /// 将已查询记录组装为树；关系键只用于内存索引，不进入 SQL。
     pub fn build_tree(
         rows: Vec<Record>,
@@ -133,7 +146,17 @@ impl Tables {
             let id = row.get(id_field).ok_or_else(|| {
                 BaseError::ParamInvalid(id_field.to_string(), "树节点缺少主键".to_string())
             })?;
-            ids.insert(value_key(id), index);
+            if id.is_null() {
+                return Err(BaseError::ParamInvalid(
+                    id_field.to_string(),
+                    "树节点主键不能为 null".to_string(),
+                ));
+            }
+            if ids.insert(value_key(id), index).is_some() {
+                return Err(BaseError::ConfigError(format!(
+                    "树节点主键重复: {id_field}={id}"
+                )));
+            }
         }
 
         let mut children = vec![Vec::new(); rows.len()];
@@ -221,5 +244,43 @@ mod tests {
             tree[0].children[0].record.get("id"),
             Some(&serde_json::json!(2))
         );
+    }
+
+    #[test]
+    fn tree_builder_rejects_null_and_duplicate_ids() {
+        let null_id = Tables::build_tree(
+            vec![Record::new()
+                .set("id", Value::Null)
+                .set("parent_id", Value::Null)],
+            "id",
+            "parent_id",
+        )
+        .expect_err("null 主键必须失败");
+        assert!(matches!(null_id, BaseError::ParamInvalid(_, _)));
+
+        let duplicate = Tables::build_tree(
+            vec![
+                Record::new().set("id", 1).set("parent_id", Value::Null),
+                Record::new().set("id", 1).set("parent_id", Value::Null),
+            ],
+            "id",
+            "parent_id",
+        )
+        .expect_err("重复主键必须失败");
+        assert!(matches!(duplicate, BaseError::ConfigError(_)));
+    }
+
+    #[test]
+    fn tree_builder_rejects_cycles_without_roots() {
+        let cycle = Tables::build_tree(
+            vec![
+                Record::new().set("id", 1).set("parent_id", 2),
+                Record::new().set("id", 2).set("parent_id", 1),
+            ],
+            "id",
+            "parent_id",
+        )
+        .expect_err("无根循环必须失败");
+        assert!(matches!(cycle, BaseError::ConfigError(_)));
     }
 }
