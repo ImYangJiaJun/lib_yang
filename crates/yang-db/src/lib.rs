@@ -18,7 +18,6 @@ mod pool;
 
 mod row_lock;
 
-#[cfg(any(feature = "mysql", feature = "postgres"))]
 mod reference;
 
 // MySQL 数据库模块
@@ -33,7 +32,6 @@ pub mod postgres;
 #[cfg(feature = "redis")]
 pub mod redis;
 
-#[cfg(any(feature = "mysql", feature = "postgres"))]
 mod sql_types;
 
 // 重新导出错误类型
@@ -46,7 +44,6 @@ pub use error::{DbError, DbErrorCategory};
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
 pub use pool::PoolStatus;
-#[cfg(any(feature = "mysql", feature = "postgres"))]
 pub use reference::{CompareOp, FieldRef, Predicate, SelectExpr, SortOrder, TableRef};
 #[doc(hidden)]
 pub use reference::{__validate_field_literal, __validate_table_literal};
