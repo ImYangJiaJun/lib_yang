@@ -36,11 +36,11 @@
 //!         "mysql://user:pass@localhost/db",
 //!         DatabaseConfig::default(),
 //!     ).await?;
-//!     let tools = ToolsBuilder::new().database(database).build()?;
+//!     let tools = ToolsBuilder::new().mysql(database).build()?;
 //!     let app = AppBuilder::new()
 //!         .addon(AddonSpec::new(yang_base::addon!("account")))
 //!         .build(tools)?;
-//!     app.tools().db().health_check().await?;
+//!     app.tools().mysql().health_check().await?;
 //!     Ok(())
 //! }
 //! ```

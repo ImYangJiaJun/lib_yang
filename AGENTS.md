@@ -27,7 +27,7 @@ lib_yang/
 |------|----------|-------|
 | MySQL queries | `crates/yang-db/src/mysql/` | `query_builder.rs` is the 5.5k-line hotspot (~5,506 lines); `condition.rs` owns WHERE/HAVING expressions |
 | Redis operations | `crates/yang-db/src/redis/` | `client.rs` is the main API; pipeline/transaction wrap `redis::pipe()` patterns |
-| 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`：db/cache/token/http + 类型化 extension/config；GlobalDatabase/GlobalRedis 已删除 |
+| 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`：mysql/cache/token/http + 类型化 extension/config；GlobalDatabase/GlobalRedis 已删除 |
 | 定义内核 | `crates/yang-base/src/definition/` | `AppBuilder`/`BuiltApp`/Catalog/Registry，构建期校验 + slot 预解析 |
 | HTTP 传输 | `crates/yang-base/src/transport/` | `transport-axum` feature：Axum 0.8 适配器、CORS/超时/压缩、文件/重定向响应 |
 | Plugin system | `crates/yang-base/src/plugin/mod.rs` | 旧代插件生命周期；新链路用 definition Addon 组织业务 |

@@ -308,7 +308,7 @@ impl ActionContext {
         #[cfg(feature = "mysql")]
         let pool = self
             .tools
-            .optional_db()?
+            .optional_mysql()?
             .map(|database| Arc::new(database.pool().clone()));
         #[cfg(not(feature = "mysql"))]
         let pool = None;
@@ -362,7 +362,7 @@ impl ActionContext {
     #[cfg(feature = "mysql")]
     pub async fn begin_transaction(&self) -> Result<yang_db::Transaction, BaseError> {
         self.tools
-            .db()?
+            .mysql()?
             .transaction()
             .await
             .map_err(BaseError::DatabaseTransactionFailed)

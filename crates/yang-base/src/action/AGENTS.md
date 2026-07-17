@@ -119,6 +119,6 @@ let module = ModuleRouter::new("health", "健康检查")
 
 ## SECURITY: raw database bypass
 
-The pool behind `Tools::db()` (`ctx.tools().db()?`) is unguarded. Queries built from it bypass field permissions, soft-delete filters, validated where trees, slow-query metadata and request-id propagation. Custom Actions should use `ctx.table_query()?` for user-facing table access.
+The pool behind `Tools::mysql()` (`ctx.tools().mysql()?`) is unguarded. Queries built from it bypass field permissions, soft-delete filters, validated where trees, slow-query metadata and request-id propagation. Custom Actions should use `ctx.table_query()?` for user-facing table access.
 
 Direct pool use is reserved for narrow system operations such as offline migrations, health probes, or carefully controlled multi-table transactions. Those paths must perform their own authorization and observability wiring.

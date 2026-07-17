@@ -213,7 +213,7 @@ async fn build_tools() -> Result<Arc<yang_base::tools::Tools>, BaseError> {
     .await?;
 
     let tools = ToolsBuilder::new()
-        .database(database)
+        .mysql(database)
         .cache(cache)
         .build()?;
     Ok(Arc::new(tools))
