@@ -64,6 +64,15 @@ schemars = { version = "0.8", features = ["chrono"] }
 # 传输路由模板校验（与 Axum 0.8 使用同一匹配器）
 matchit = "0.8.4"
 
+# Axum HTTP 服务端（可选；yang-base transport-axum feature 使用）
+axum = "0.8.9"
+
+# HTTP 横切中间件（可选；trace/cors/timeout/compression 由 transport-axum 使用）
+tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compression-full"] }
+
+# tower Service 工具（测试 oneshot）
+tower = { version = "0.5", features = ["util"] }
+
 # 派生宏基础设施
 proc-macro2 = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }

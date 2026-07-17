@@ -21,6 +21,7 @@
 //! - `validator`：启用正则表达式校验器（依赖 `regex`）
 //! - `plugin-schema`：启用插件 JSON Schema 配置验证（依赖 `jsonschema`）
 //! - `admin-metadata`：启用独立后台展示描述（不新增依赖、不改变 dispatch）
+//! - `transport-axum`：启用 Axum 0.8 HTTP 传输适配器（依赖 `axum`、`tower-http`）
 //!
 //! # 快速开始
 //!
@@ -70,6 +71,8 @@ pub mod table;
 #[cfg(feature = "token")]
 pub mod token;
 pub mod tools;
+#[cfg(feature = "transport-axum")]
+pub mod transport;
 
 // 重新导出插件系统的核心类型，方便用户直接使用
 pub use plugin::{Plugin, PluginManager, PluginManagerBuilder, PluginRegistry};
