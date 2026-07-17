@@ -1,12 +1,13 @@
 //! 不可变定义的构建期输入模型。
 
 use super::{
-    ActionName, ActionRef, AddonName, FieldName, FieldRef, FieldSpec, ModuleName, Params,
-    PresentationSpec, TableSpec, ValidationSpec, ViewName,
+    ActionName, ActionPresentationSpec, ActionRef, AddonName, FieldName, FieldRef, FieldSpec,
+    ModuleName, Params, PresentationSpec, TableSpec, ValidationSpec, ViewName,
 };
 use crate::action::DynAction;
 use crate::action::PermissionMode;
 use crate::router::Middleware;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -344,6 +345,8 @@ pub struct ViewSpec {
     pub fields: Vec<FieldRef>,
     /// 有序按钮/操作引用。
     pub actions: Vec<ActionRef>,
+    /// 显式 Action 展示声明；未声明的 Action 在构建期按静态契约安全推导。
+    pub action_presentations: BTreeMap<ActionRef, ActionPresentationSpec>,
 }
 
 impl ViewSpec {
@@ -353,6 +356,7 @@ impl ViewSpec {
             name,
             fields: Vec::new(),
             actions: Vec::new(),
+            action_presentations: BTreeMap::new(),
         }
     }
 
@@ -367,6 +371,20 @@ impl ViewSpec {
     #[must_use]
     pub fn action(mut self, action: ActionRef) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    /// 增加一个带显式展示语义的按钮或操作引用。
+    #[must_use]
+    pub fn present_action(
+        mut self,
+        action: ActionRef,
+        presentation: ActionPresentationSpec,
+    ) -> Self {
+        if !self.actions.contains(&action) {
+            self.actions.push(action.clone());
+        }
+        self.action_presentations.insert(action, presentation);
         self
     }
 }

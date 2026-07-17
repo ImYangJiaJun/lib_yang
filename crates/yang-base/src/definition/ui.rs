@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.2";
+pub const UI_SCHEMA_VERSION: &str = "1.3";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -68,6 +68,125 @@ pub enum ActionResponseKind {
     Preview,
     /// HTTP 重定向。
     Redirect,
+}
+
+/// Action 在通用业务 View 中的展示位置。
+///
+/// 未知值必须降级到工具栏，避免在没有行或批量选择上下文时错误传参。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionPlacement {
+    /// 单行上下文操作。
+    Row,
+    /// 多选记录后的批量操作。
+    Bulk,
+    /// View 级工具栏操作，也是未知值的安全降级。
+    #[default]
+    #[serde(other)]
+    Toolbar,
+}
+
+/// Action 的声明式交互方式。
+///
+/// 该值不包含组件路径或动态代码。未知值降级为直接调用，由默认 Action 演示层
+/// 负责收集参数和展示响应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionInteraction {
+    /// 根据 Action 输入契约生成表单后调用。
+    Form,
+    /// 调用后下载文件。
+    Download,
+    /// 调用后在浏览器内预览文件。
+    Preview,
+    /// 调用后执行服务端声明的安全跳转。
+    Navigate,
+    /// 交给前端白名单注册的自定义 View。
+    Custom,
+    /// 直接调用 Action，也是未知值的安全降级。
+    #[default]
+    #[serde(other)]
+    Invoke,
+}
+
+/// 危险或不可逆 Action 的二次确认文案。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ActionConfirmation {
+    /// 确认框标题。
+    pub title: String,
+    /// 确认框正文。
+    pub message: String,
+}
+
+impl ActionConfirmation {
+    /// 创建二次确认文案。
+    pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// View 构建期声明的 Action 展示语义。
+///
+/// [`Custom`](ActionInteraction::Custom) 必须同时声明稳定 `view_id`；其它交互禁止
+/// 携带 `view_id`，避免把它误用为物理文件路径。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionPresentationSpec {
+    /// Action 展示位置。
+    pub placement: ActionPlacement,
+    /// Action 交互方式。
+    pub interaction: ActionInteraction,
+    /// 可选二次确认。
+    pub confirmation: Option<ActionConfirmation>,
+    /// 前端白名单注册表中的稳定标识。
+    pub view_id: Option<String>,
+}
+
+impl ActionPresentationSpec {
+    /// 创建显式展示声明。
+    pub fn new(placement: ActionPlacement, interaction: ActionInteraction) -> Self {
+        Self {
+            placement,
+            interaction,
+            confirmation: None,
+            view_id: None,
+        }
+    }
+
+    /// 设置二次确认文案。
+    #[must_use]
+    pub fn confirmation(mut self, confirmation: ActionConfirmation) -> Self {
+        self.confirmation = Some(confirmation);
+        self
+    }
+
+    /// 设置自定义 View 的稳定白名单标识。
+    #[must_use]
+    pub fn view_id(mut self, view_id: impl Into<String>) -> Self {
+        self.view_id = Some(view_id.into());
+        self
+    }
+}
+
+/// 请求级 Action 展示契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ActionPresentationSchema {
+    /// 全局唯一 operation id。
+    pub operation_id: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// Action 展示位置。
+    pub placement: ActionPlacement,
+    /// Action 交互方式。
+    pub interaction: ActionInteraction,
+    /// 可选二次确认。
+    pub confirmation: Option<ActionConfirmation>,
+    /// 前端白名单注册表中的稳定标识；仅 custom 交互可用。
+    pub view_id: Option<String>,
 }
 
 /// Action 参数在 HTTP 请求中的来源。
@@ -196,6 +315,8 @@ pub struct TableViewSchema {
     pub form: FormSchema,
     /// 当前用户可调用的有序 Action operation IDs。
     pub actions: Vec<String>,
+    /// 当前用户可调用 Action 的声明式展示语义。
+    pub action_presentations: Vec<ActionPresentationSchema>,
 }
 
 impl From<&ActionSpec> for ActionDemoSchema {
@@ -275,9 +396,9 @@ mod tests {
     use super::*;
     use crate::action::{ActionContext, PermissionMode, Request, TypedHandler, User};
     use crate::definition::{
-        AccessRule, ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, FieldKind, FieldName,
-        FieldRef, FieldSpec, HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec, TableName,
-        TableSpec, ViewName, ViewSpec,
+        AccessRule, ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, BuildError, FieldKind,
+        FieldName, FieldRef, FieldSpec, HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec,
+        TableName, TableSpec, ViewName, ViewSpec,
     };
     use crate::error::BaseError;
     use crate::tools::ToolsBuilder;
@@ -564,6 +685,17 @@ mod tests {
     }
 
     #[test]
+    fn action_presentation_unknown_values_have_safe_fallbacks() {
+        let placement: ActionPlacement =
+            serde_json::from_value(json!("floating_palette")).expect("未知位置应安全解析");
+        let interaction: ActionInteraction =
+            serde_json::from_value(json!("execute_script")).expect("未知交互应安全解析");
+
+        assert_eq!(placement, ActionPlacement::Toolbar);
+        assert_eq!(interaction, ActionInteraction::Invoke);
+    }
+
+    #[test]
     fn table_view_projection_filters_module_fields_and_actions_with_same_request_identity() {
         let module_name = ModuleName::new("org.member").expect("测试 Module 名称应有效");
         let table_name = TableName::new("org_member").expect("测试 Table 名称应有效");
@@ -612,7 +744,11 @@ mod tests {
             .field(field_ref("secret"))
             .field(field_ref("created_at"))
             .action(action_ref("list"))
-            .action(action_ref("edit"));
+            .present_action(
+                action_ref("edit"),
+                ActionPresentationSpec::new(ActionPlacement::Row, ActionInteraction::Form)
+                    .confirmation(ActionConfirmation::new("确认修改", "将保存当前行的修改")),
+            );
         let module = ModuleSpec::new(module_name)
             .table(
                 TableSpec::new(table_name)
@@ -667,6 +803,13 @@ mod tests {
         assert!(name_column.filterable);
         assert!(name_column.sortable);
         assert_eq!(member.table_views[0].actions, ["org.member.list"]);
+        assert_eq!(member.table_views[0].action_presentations.len(), 1);
+        let list_presentation = &member.table_views[0].action_presentations[0];
+        assert_eq!(list_presentation.operation_id, "org.member.list");
+        assert_eq!(list_presentation.placement, ActionPlacement::Toolbar);
+        assert_eq!(list_presentation.interaction, ActionInteraction::Form);
+        assert!(list_presentation.confirmation.is_none());
+        assert!(list_presentation.view_id.is_none());
 
         let form = &member.table_views[0].form.fields;
         let form_field = |name: &str| {
@@ -706,6 +849,18 @@ mod tests {
             admin.table_views[0].actions,
             ["org.member.list", "org.member.edit"]
         );
+        assert_eq!(admin.table_views[0].action_presentations.len(), 2);
+        let edit_presentation = &admin.table_views[0].action_presentations[1];
+        assert_eq!(edit_presentation.operation_id, "org.member.edit");
+        assert_eq!(edit_presentation.placement, ActionPlacement::Row);
+        assert_eq!(edit_presentation.interaction, ActionInteraction::Form);
+        assert_eq!(
+            edit_presentation
+                .confirmation
+                .as_ref()
+                .map(|confirmation| confirmation.title.as_str()),
+            Some("确认修改")
+        );
         let admin_note = admin.table_views[0]
             .form
             .fields
@@ -714,5 +869,90 @@ mod tests {
             .expect("管理员表单应包含 admin_note");
         assert!(!admin_note.read_only);
         assert!(!admin_note.write_only);
+    }
+
+    #[test]
+    fn custom_action_presentation_rejects_paths_missing_ids_and_response_mismatch() {
+        let build = |presentation: ActionPresentationSpec| {
+            let module_name = ModuleName::new("dms.task").expect("测试 Module 名称应有效");
+            let action_ref = ActionRef::new(
+                module_name.clone(),
+                ActionName::new("flow").expect("测试 Action 名称应有效"),
+            );
+            let module = ModuleSpec::new(module_name)
+                .table(
+                    TableSpec::new(TableName::new("dms_task").expect("测试 Table 名称应有效"))
+                        .field(FieldSpec::new(
+                            FieldName::new("id").expect("测试字段名应有效"),
+                            FieldKind::Key,
+                        )),
+                )
+                .action(action("flow", "dms.task.flow"), NoopAction)
+                .view(
+                    ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                        .present_action(action_ref, presentation),
+                );
+            AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("dms").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+        };
+
+        let missing_id = build(ActionPresentationSpec::new(
+            ActionPlacement::Toolbar,
+            ActionInteraction::Custom,
+        ))
+        .expect_err("custom 交互缺少 view_id 必须在启动期失败");
+        assert!(matches!(
+            missing_id,
+            BuildError::InvalidReference {
+                kind: "Action Presentation",
+                ..
+            }
+        ));
+
+        let physical_path = build(
+            ActionPresentationSpec::new(ActionPlacement::Toolbar, ActionInteraction::Custom)
+                .view_id("../views/TaskFlow.vue"),
+        )
+        .expect_err("物理路径不得作为 custom view_id");
+        assert!(matches!(
+            physical_path,
+            BuildError::InvalidReference {
+                kind: "Action Presentation",
+                ..
+            }
+        ));
+
+        let mismatch = build(ActionPresentationSpec::new(
+            ActionPlacement::Toolbar,
+            ActionInteraction::Preview,
+        ))
+        .expect_err("JSON Action 不得伪装成文件预览");
+        assert!(matches!(
+            mismatch,
+            BuildError::InvalidReference {
+                kind: "Action Presentation",
+                ..
+            }
+        ));
+
+        let app = build(
+            ActionPresentationSpec::new(ActionPlacement::Toolbar, ActionInteraction::Custom)
+                .view_id("dms.task.flow"),
+        )
+        .expect("稳定限定 view_id 应通过构建期校验");
+        let catalog = app.ui_catalog(
+            &app.context(Request::new(json!({})))
+                .with_user(User::new(9, "designer")),
+        );
+        assert_eq!(
+            catalog.table_views[0].action_presentations[0]
+                .view_id
+                .as_deref(),
+            Some("dms.task.flow")
+        );
     }
 }
