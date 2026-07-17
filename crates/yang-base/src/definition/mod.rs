@@ -45,8 +45,10 @@ pub use spec::{
     ViewSpec,
 };
 pub use ui::{
-    ActionDemoParamSchema, ActionDemoSchema, ActionResponseKind, FormFieldSchema, FormSchema,
-    TableColumnSchema, TableViewSchema, UiCatalog, UiParamSource, WidgetHint, UI_SCHEMA_VERSION,
+    ActionConfirmation, ActionDemoParamSchema, ActionDemoSchema, ActionInteraction,
+    ActionPlacement, ActionPresentationSchema, ActionPresentationSpec, ActionResponseKind,
+    FormFieldSchema, FormSchema, TableColumnSchema, TableViewSchema, UiCatalog, UiParamSource,
+    WidgetHint, UI_SCHEMA_VERSION,
 };
 pub use view::CompiledTableView;
 

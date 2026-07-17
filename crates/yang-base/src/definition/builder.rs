@@ -93,8 +93,14 @@ struct RuntimeTableView {
     title: String,
     table: String,
     columns: Arc<[RuntimeTableColumn]>,
-    actions: Arc<[ActionHandle]>,
+    actions: Arc<[RuntimeViewAction]>,
     policy: AuthorizationPolicy,
+}
+
+#[derive(Clone)]
+struct RuntimeViewAction {
+    handle: ActionHandle,
+    presentation: super::ActionPresentationSpec,
 }
 
 #[derive(Clone)]
@@ -179,30 +185,50 @@ impl Registry {
             .table_views
             .iter()
             .filter(|view| view.policy.allows(context))
-            .map(|view| super::TableViewSchema {
-                view_id: view.view_id.clone(),
-                title: view.title.clone(),
-                table: view.table.clone(),
-                columns: view
-                    .columns
-                    .iter()
-                    .filter(|column| column_readable(column, context))
-                    .map(|column| column.schema.clone())
-                    .collect(),
-                form: super::FormSchema {
-                    fields: view
-                        .columns
-                        .iter()
-                        .filter_map(|column| form_field(column, context))
-                        .collect(),
-                },
-                actions: view
+            .map(|view| {
+                let allowed_actions = view
                     .actions
                     .iter()
-                    .filter_map(|handle| self.handlers.get(handle.slot()))
-                    .filter(|runtime| runtime.policy.allows(context))
-                    .map(|runtime| runtime.ui_schema.operation_id.clone())
-                    .collect(),
+                    .filter_map(|action| {
+                        self.handlers
+                            .get(action.handle.slot())
+                            .filter(|runtime| runtime.policy.allows(context))
+                            .map(|runtime| (runtime, &action.presentation))
+                    })
+                    .collect::<Vec<_>>();
+                super::TableViewSchema {
+                    view_id: view.view_id.clone(),
+                    title: view.title.clone(),
+                    table: view.table.clone(),
+                    columns: view
+                        .columns
+                        .iter()
+                        .filter(|column| column_readable(column, context))
+                        .map(|column| column.schema.clone())
+                        .collect(),
+                    form: super::FormSchema {
+                        fields: view
+                            .columns
+                            .iter()
+                            .filter_map(|column| form_field(column, context))
+                            .collect(),
+                    },
+                    actions: allowed_actions
+                        .iter()
+                        .map(|(runtime, _)| runtime.ui_schema.operation_id.clone())
+                        .collect(),
+                    action_presentations: allowed_actions
+                        .into_iter()
+                        .map(|(runtime, presentation)| super::ActionPresentationSchema {
+                            operation_id: runtime.ui_schema.operation_id.clone(),
+                            title: runtime.ui_schema.title.clone(),
+                            placement: presentation.placement,
+                            interaction: presentation.interaction,
+                            confirmation: presentation.confirmation.clone(),
+                            view_id: presentation.view_id.clone(),
+                        })
+                        .collect(),
+                }
             });
         super::UiCatalog::new(actions).with_table_views(table_views)
     }
@@ -628,12 +654,28 @@ fn compile_runtime_table_views(
                 .actions
                 .iter()
                 .map(|reference| {
-                    registry
-                        .resolve(reference)
-                        .ok_or_else(|| BuildError::InvalidReference {
+                    let handle = registry.resolve(reference).ok_or_else(|| {
+                        BuildError::InvalidReference {
                             kind: "View Action",
                             reference: reference.to_string(),
-                        })
+                        }
+                    })?;
+                    let runtime = registry.handlers.get(handle.slot()).ok_or_else(|| {
+                        BuildError::InvalidReference {
+                            kind: "View Action",
+                            reference: reference.to_string(),
+                        }
+                    })?;
+                    let presentation = view
+                        .action_presentations
+                        .get(reference)
+                        .cloned()
+                        .unwrap_or_else(|| infer_action_presentation(runtime));
+                    validate_action_presentation(reference, &presentation, runtime)?;
+                    Ok(RuntimeViewAction {
+                        handle,
+                        presentation,
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
@@ -647,6 +689,59 @@ fn compile_runtime_table_views(
         }
     }
     Ok(compiled)
+}
+
+fn infer_action_presentation(runtime: &RuntimeAction) -> super::ActionPresentationSpec {
+    let interaction = match runtime.ui_schema.response_kind {
+        super::ActionResponseKind::Download => super::ActionInteraction::Download,
+        super::ActionResponseKind::Preview => super::ActionInteraction::Preview,
+        super::ActionResponseKind::Redirect => super::ActionInteraction::Navigate,
+        super::ActionResponseKind::Json => match runtime.ui_schema.method.as_str() {
+            "POST" | "PUT" | "PATCH" => super::ActionInteraction::Form,
+            _ => super::ActionInteraction::Invoke,
+        },
+    };
+    super::ActionPresentationSpec::new(super::ActionPlacement::Toolbar, interaction)
+}
+
+fn validate_action_presentation(
+    action: &ActionRef,
+    presentation: &super::ActionPresentationSpec,
+    runtime: &RuntimeAction,
+) -> Result<(), BuildError> {
+    let invalid = |reason: &str| BuildError::InvalidReference {
+        kind: "Action Presentation",
+        reference: format!("{action}: {reason}"),
+    };
+
+    match (presentation.interaction, presentation.view_id.as_deref()) {
+        (super::ActionInteraction::Custom, Some(view_id)) => {
+            ModuleName::new(view_id).map_err(|_| invalid("custom view_id 必须是稳定限定标识"))?;
+        }
+        (super::ActionInteraction::Custom, None) => {
+            return Err(invalid("custom 交互缺少 view_id"));
+        }
+        (_, Some(_)) => {
+            return Err(invalid("只有 custom 交互可以声明 view_id"));
+        }
+        (_, None) => {}
+    }
+
+    let expected_response = match presentation.interaction {
+        super::ActionInteraction::Download => Some(super::ActionResponseKind::Download),
+        super::ActionInteraction::Preview => Some(super::ActionResponseKind::Preview),
+        super::ActionInteraction::Navigate => Some(super::ActionResponseKind::Redirect),
+        super::ActionInteraction::Form | super::ActionInteraction::Invoke => {
+            Some(super::ActionResponseKind::Json)
+        }
+        super::ActionInteraction::Custom => None,
+    };
+    if let Some(expected) = expected_response {
+        if runtime.ui_schema.response_kind != expected {
+            return Err(invalid("交互方式与 Action 响应类型不一致"));
+        }
+    }
+    Ok(())
 }
 
 fn module_view_policy(module: &super::ModuleSpec) -> AuthorizationPolicy {
