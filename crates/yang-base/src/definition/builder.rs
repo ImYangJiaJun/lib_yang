@@ -113,10 +113,17 @@ struct RuntimeViewAction {
 #[derive(Clone)]
 struct RuntimeTableColumn {
     schema: super::TableColumnSchema,
+    relation: Option<RuntimeRelationOptions>,
     readable: super::AccessRule,
     writable: super::AccessRule,
     secret: bool,
     server_managed: bool,
+}
+
+#[derive(Clone)]
+struct RuntimeRelationOptions {
+    schema: super::RelationOptionsSchema,
+    policy: AuthorizationPolicy,
 }
 
 impl fmt::Debug for Registry {
@@ -214,7 +221,7 @@ impl Registry {
                         .columns
                         .iter()
                         .filter(|column| column_readable(column, context))
-                        .map(|column| column.schema.clone())
+                        .map(|column| table_column_schema(column, context))
                         .collect(),
                     form: super::FormSchema {
                         fields: view
@@ -642,8 +649,8 @@ fn compile_runtime_table_views(
             let columns = table
                 .fields
                 .iter()
-                .map(runtime_table_column)
-                .collect::<Vec<_>>();
+                .map(|field| runtime_table_column(field, registry))
+                .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
                 view_id: format!("{}.default", module.name),
                 title: if table.title.is_empty() {
@@ -665,14 +672,13 @@ fn compile_runtime_table_views(
                 .fields
                 .iter()
                 .map(|reference| {
-                    fields
-                        .get(reference)
-                        .copied()
-                        .map(runtime_table_column)
-                        .ok_or_else(|| BuildError::InvalidReference {
+                    let field = fields.get(reference).copied().ok_or_else(|| {
+                        BuildError::InvalidReference {
                             kind: "View Field",
                             reference: reference.to_string(),
-                        })
+                        }
+                    })?;
+                    runtime_table_column(field, registry)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let actions = view
@@ -708,14 +714,13 @@ fn compile_runtime_table_views(
                 .as_ref()
                 .map(|tree| {
                     let column = |reference: &FieldRef| {
-                        fields
-                            .get(reference)
-                            .copied()
-                            .map(runtime_table_column)
-                            .ok_or_else(|| BuildError::InvalidReference {
+                        let field = fields.get(reference).copied().ok_or_else(|| {
+                            BuildError::InvalidReference {
                                 kind: "Tree View Field",
                                 reference: reference.to_string(),
-                            })
+                            }
+                        })?;
+                        runtime_table_column(field, registry)
                     };
                     Ok(RuntimeTreeView {
                         schema: super::TreeViewSchema {
@@ -826,9 +831,48 @@ fn module_view_policy(module: &super::ModuleSpec) -> AuthorizationPolicy {
     AuthorizationPolicy::new(false, groups)
 }
 
-fn runtime_table_column(field: &super::FieldSpec) -> RuntimeTableColumn {
+fn runtime_table_column(
+    field: &super::FieldSpec,
+    registry: &Registry,
+) -> Result<RuntimeTableColumn, BuildError> {
     let name = field.name.to_string();
-    RuntimeTableColumn {
+    let relation = match (&field.select, &field.relation) {
+        (Some(select), Some(target)) => {
+            let handle = registry
+                .resolve(select)
+                .ok_or_else(|| BuildError::InvalidReference {
+                    kind: "Relation Options Action",
+                    reference: select.to_string(),
+                })?;
+            let runtime = registry.handlers.get(handle.slot()).ok_or_else(|| {
+                BuildError::InvalidReference {
+                    kind: "Relation Options Action",
+                    reference: select.to_string(),
+                }
+            })?;
+            Some(RuntimeRelationOptions {
+                schema: super::RelationOptionsSchema {
+                    operation_id: runtime.ui_schema.operation_id.clone(),
+                    value_field: target.to_string(),
+                    label_fields: field
+                        .presentation
+                        .display
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                },
+                policy: runtime.policy.clone(),
+            })
+        }
+        (Some(select), None) => {
+            return Err(BuildError::InvalidReference {
+                kind: "Relation Options Field",
+                reference: format!("{}: {select}", field.name),
+            });
+        }
+        (None, _) => None,
+    };
+    Ok(RuntimeTableColumn {
         schema: super::TableColumnSchema {
             title: if field.presentation.title.is_empty() {
                 name.clone()
@@ -841,14 +885,29 @@ fn runtime_table_column(field: &super::FieldSpec) -> RuntimeTableColumn {
             required: field.is_required(),
             filterable: field.access.searchable,
             sortable: field.access.sortable,
+            relation: None,
         },
+        relation,
         readable: field.access.readable.clone(),
         writable: field.access.writable.clone(),
         secret: field.access.secret,
         server_managed: field.kind == FieldKind::Key
             || (field.kind == FieldKind::Timestamp
                 && field.timestamp_mode != super::TimestampMode::Value),
-    }
+    })
+}
+
+fn table_column_schema(
+    column: &RuntimeTableColumn,
+    context: &ActionContext,
+) -> super::TableColumnSchema {
+    let mut schema = column.schema.clone();
+    schema.relation = column
+        .relation
+        .as_ref()
+        .filter(|relation| relation.policy.allows(context))
+        .map(|relation| relation.schema.clone());
+    schema
 }
 
 fn column_readable(column: &RuntimeTableColumn, context: &ActionContext) -> bool {
@@ -872,6 +931,11 @@ fn form_field(
         required: column.schema.required && writable,
         read_only: !writable,
         write_only: column.secret || !readable,
+        relation: column
+            .relation
+            .as_ref()
+            .filter(|relation| relation.policy.allows(context))
+            .map(|relation| relation.schema.clone()),
     })
 }
 
@@ -1271,7 +1335,26 @@ fn validate_references(
                     validate_field_ref(relation, fields)?;
                 }
                 if let Some(select) = &field.select {
+                    if field.relation.is_none() {
+                        return Err(BuildError::InvalidReference {
+                            kind: "Relation Options Field",
+                            reference: format!("{}.{}: {select}", table.name, field.name),
+                        });
+                    }
                     validate_action_ref(select, actions)?;
+                }
+                for display in &field.presentation.display {
+                    validate_field_ref(display, fields)?;
+                    let same_target_table = field
+                        .relation
+                        .as_ref()
+                        .is_some_and(|relation| display.table() == relation.table());
+                    if !same_target_table {
+                        return Err(BuildError::InvalidReference {
+                            kind: "Relation Display Field",
+                            reference: format!("{}.{}: {display}", table.name, field.name),
+                        });
+                    }
                 }
             }
         }
