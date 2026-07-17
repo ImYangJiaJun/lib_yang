@@ -342,7 +342,7 @@ let report = initializer.sync_app_schema(&app).await?;
 
 `HttpClient` / `RequestBuilder` 支持 GET/POST/PUT/PATCH/DELETE、header、query、JSON、form、text、Bearer token、每请求 timeout、指数退避重试和按 host 隔离的熔断器。
 
-全局客户端通过 `HttpClient::init_global` 初始化；自定义客户端使用 `HttpClient::with_config(HttpClientConfig)`。
+客户端实例经 `ToolsBuilder::http(...)` 注册进应用资源，运行期通过 `Tools::http()` 或 `ActionContext::http()` 获取；自定义客户端使用 `HttpClient::with_config(HttpClientConfig)`。
 
 ## 错误与可观测性
 

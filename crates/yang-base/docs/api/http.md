@@ -8,11 +8,11 @@ HTTP 客户端模块提供了灵活的 HTTP 请求构建和响应处理能力，
 
 ### 1. HttpClient
 
-HTTP 客户端核心，提供全局单例和实例两种使用方式。
+HTTP 客户端核心，实例在启动期注册进 `Tools` 资源槽，运行期共享获取。
 
 **功能特性：**
 - 支持创建独立客户端实例
-- 支持全局单例模式
+- 支持经 `ToolsBuilder::http(...)` 注册为应用共享资源
 - 支持设置默认 Token
 - 支持所有常用 HTTP 方法（GET、POST、PUT、DELETE、PATCH）
 - 支持自定义超时时间
@@ -21,13 +21,14 @@ HTTP 客户端核心，提供全局单例和实例两种使用方式。
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 
 // 方式 1: 创建独立客户端
 let client = HttpClient::new(30)?;
 
-// 方式 2: 使用全局客户端
-HttpClient::init_global(30)?;
-let client = HttpClient::global()?;
+// 方式 2: 注册进应用资源，运行期从 Tools 获取（Action 内为 ctx.http()?）
+let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
+let client = tools.http()?;
 
 // 设置默认 Token
 client.set_default_token("your_token".to_string());
@@ -125,14 +126,15 @@ let bytes = response.bytes().await?;
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化全局客户端
-    HttpClient::init_global(30)?;
+    // 启动期：把客户端注册进应用资源并冻结
+    let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
     
     // 发起 GET 请求
-    let response = HttpClient::global()?
+    let response = tools.http()?
         .get("https://api.github.com/users/octocat")
         .user_agent("MyApp/1.0")
         .send()
@@ -152,6 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize)]
@@ -169,14 +172,14 @@ struct UserResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    HttpClient::init_global(30)?;
+    let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
     
     let new_user = CreateUser {
         name: "Alice".to_string(),
         email: "alice@example.com".to_string(),
     };
     
-    let response = HttpClient::global()?
+    let response = tools.http()?
         .post("https://api.example.com/users")
         .bearer_token("your_access_token")
         .json(&new_user)?
@@ -196,12 +199,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    HttpClient::init_global(30)?;
+    let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
     
-    let response = HttpClient::global()?
+    let response = tools.http()?
         .get("https://api.example.com/search")
         .queries(vec![
             ("q", "rust"),
@@ -223,12 +227,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    HttpClient::init_global(30)?;
+    let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
     
-    let response = HttpClient::global()?
+    let response = tools.http()?
         .get("https://api.example.com/data")
         .headers(vec![
             ("X-API-Key", "your_api_key"),
@@ -249,14 +254,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use yang_base::http::HttpClient;
+use yang_base::tools::ToolsBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化全局客户端
-    HttpClient::init_global(30)?;
+    // 启动期：把客户端注册进应用资源并冻结
+    let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
     
     // 设置默认 Token
-    let client = HttpClient::global()?;
+    let client = tools.http()?;
     client.set_default_token("default_access_token".to_string());
     
     // 所有请求都会自动使用默认 Token
@@ -282,10 +288,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use yang_base::error::BaseError;
-use yang_base::http::HttpClient;
+use yang_base::tools::Tools;
 
-async fn fetch_data() -> Result<String, BaseError> {
-    let response = HttpClient::global()?
+async fn fetch_data(tools: &Tools) -> Result<String, BaseError> {
+    let response = tools.http()?
         .get("https://api.example.com/data")
         .send()
         .await?;
@@ -315,7 +321,7 @@ cargo test --package yang-base --lib http::__tests__::client_test
 
 ## 注意事项
 
-1. **全局客户端初始化**：全局客户端只能初始化一次，重复初始化会返回错误
+1. **资源注册**：HTTP 客户端经 `ToolsBuilder::http(...)` 注册为应用唯一槽位，重复注册会在 `build()` 时返回「重复注册」错误
 2. **超时设置**：默认超时时间为创建客户端时指定的值，可以为单个请求覆盖
 3. **Token 管理**：默认 Token 可以被单个请求的 Token 覆盖
 4. **错误处理**：所有网络错误都会被转换为 `BaseError`，便于统一处理
@@ -326,6 +332,6 @@ cargo test --package yang-base --lib http::__tests__::client_test
 
 - **需求 16.1**: 支持 GET、POST、PUT、DELETE、PATCH 等常用 HTTP 方法 ✓
 - **需求 16.2**: 支持异步请求模式 ✓
-- **需求 16.3**: 提供全局静态访问接口 ✓
+- **需求 16.3**: 提供经 Tools 资源槽共享的访问接口 ✓
 - **需求 16.4**: 返回包含状态码、响应头和响应体的响应对象 ✓
 - **需求 16.5**: 请求失败时返回包含错误详情的错误信息 ✓

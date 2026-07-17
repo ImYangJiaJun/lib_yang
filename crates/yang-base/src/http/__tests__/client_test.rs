@@ -46,43 +46,32 @@ fn test_set_default_token() {
 }
 
 #[test]
-fn test_global_client_not_initialized() {
-    // 测试未初始化的全局客户端
-    // 注意：这个测试可能会失败，如果其他测试已经初始化了全局客户端
-    // 在实际测试中，应该使用独立的测试环境
-    let result = HttpClient::global();
+fn test_tools_http_not_configured() {
+    // 未配置 HTTP 客户端时，Tools::http() 返回 HttpClientNotInitialized
+    let tools = crate::tools::ToolsBuilder::new()
+        .build()
+        .expect("空 Tools 应构建成功");
 
-    // 如果全局客户端未初始化，应该返回错误
-    // 如果已初始化（被其他测试），则跳过此断言
-    if let Err(err) = result {
-        match err {
-            BaseError::HttpClientNotInitialized => {
-                // 正确：全局客户端未初始化
-            }
-            _ => panic!("期望 HttpClientNotInitialized 错误"),
+    match tools.http() {
+        Err(BaseError::HttpClientNotInitialized) => {
+            // 正确：HTTP 客户端未配置
         }
+        other => panic!("期望 HttpClientNotInitialized 错误，实际: {:?}", other),
     }
 }
 
 #[test]
-fn test_init_global_client() {
-    // 测试初始化全局客户端
-    // 注意：由于 OnceLock 的特性，这个测试只能运行一次
-    let result = HttpClient::init_global(30);
+fn test_tools_http_slot_workflow() {
+    // 经 ToolsBuilder 注册 HTTP 客户端后可从 Tools 获取并使用
+    let client = HttpClient::new(30).unwrap();
+    let tools = crate::tools::ToolsBuilder::new()
+        .http(client)
+        .build()
+        .expect("注册 HTTP 客户端后应构建成功");
 
-    // 如果是第一次初始化，应该成功
-    // 如果已经初始化过，会返回错误
-    match result {
-        Ok(_) => {
-            // 验证可以获取全局客户端
-            let global_result = HttpClient::global();
-            assert!(global_result.is_ok());
-        }
-        Err(BaseError::HttpClientAlreadyInitialized) => {
-            // 已经初始化过，符合预期
-        }
-        Err(_) => panic!("期望 HttpClientCreateFailed 错误"),
-    }
+    let client = tools.http().expect("已配置时应返回 HTTP 客户端");
+    let builder = client.get("https://api.example.com/test");
+    drop(builder);
 }
 
 #[test]

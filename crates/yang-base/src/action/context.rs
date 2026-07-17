@@ -152,6 +152,26 @@ impl ActionContext {
         &self.tools
     }
 
+    /// 获取当前应用配置的 HTTP 客户端（`http` feature）。
+    ///
+    /// 委托给 [`Tools::http`]：未配置时返回 `BaseError::HttpClientNotInitialized`，
+    /// Tools 生命周期已结束时返回对应错误。
+    #[cfg(feature = "http")]
+    pub fn http(&self) -> Result<&crate::http::HttpClient, BaseError> {
+        self.tools.http()
+    }
+
+    /// 从 Tools 配置槽解析慢查询阈值。
+    ///
+    /// 未注册 [`ObservabilityConfig`](crate::observability::ObservabilityConfig) 时返回
+    /// `None`（关闭慢查询日志），与历史上全局单例未初始化的行为一致。
+    fn slow_query_threshold(&self) -> Option<std::time::Duration> {
+        self.tools
+            .config::<crate::observability::ObservabilityConfig>()
+            .ok()
+            .and_then(|config| config.slow_query_threshold)
+    }
+
     /// 返回当前请求独占的类型化上下文。
     pub fn request_context(&mut self) -> &mut RequestContext {
         &mut self.request_context
@@ -293,9 +313,9 @@ impl ActionContext {
         #[cfg(not(feature = "mysql"))]
         let pool = None;
 
-        // 注入可观测性：慢查询阈值（全局配置）+ 本次派发 request_id，
+        // 注入可观测性：慢查询阈值（Tools 配置槽）+ 本次派发 request_id，
         // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
-        let slow_threshold = crate::observability::ObservabilityConfig::get().slow_query_threshold;
+        let slow_threshold = self.slow_query_threshold();
         let mut query = TableQuery::new(definition.shared_config(), user_roles, pool)
             .with_slow_threshold(slow_threshold)
             .with_request_id(self.request_id);
@@ -371,5 +391,65 @@ impl ActionContext {
     /// - `None`: 用户未登录
     pub fn user_roles_set(&self) -> Option<&HashSet<String>> {
         self.user.as_ref().map(|u| &u.roles)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observability::ObservabilityConfig;
+    use crate::tools::ToolsBuilder;
+    use std::time::Duration;
+
+    fn empty_context() -> ActionContext {
+        let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+        ActionContext::new(Request::new(serde_json::json!({})), tools)
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_shortcut_returns_client_when_configured() {
+        let tools = Arc::new(
+            ToolsBuilder::new()
+                .http(crate::http::HttpClient::new(30).expect("测试 HTTP 客户端应创建成功"))
+                .build()
+                .expect("配置 HTTP 客户端后应构建成功"),
+        );
+        let context = ActionContext::new(Request::new(serde_json::json!({})), tools);
+
+        let client = context.http().expect("已配置时 ctx.http() 应可用");
+        let _builder = client.get("https://api.example.com/test");
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_shortcut_errors_when_not_configured() {
+        let context = empty_context();
+
+        assert!(matches!(
+            context.http(),
+            Err(BaseError::HttpClientNotInitialized)
+        ));
+    }
+
+    #[test]
+    fn slow_query_threshold_is_none_without_registered_config() {
+        let context = empty_context();
+
+        assert_eq!(context.slow_query_threshold(), None);
+    }
+
+    #[test]
+    fn slow_query_threshold_reads_from_tools_config_slot() {
+        let threshold = Duration::from_millis(200);
+        let tools = Arc::new(
+            ToolsBuilder::new()
+                .config(ObservabilityConfig::new().with_slow_query_threshold(threshold))
+                .build()
+                .expect("注册可观测性配置后应构建成功"),
+        );
+        let context = ActionContext::new(Request::new(serde_json::json!({})), tools);
+
+        assert_eq!(context.slow_query_threshold(), Some(threshold));
     }
 }

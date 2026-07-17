@@ -10,6 +10,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::Mutex;
 
+#[cfg(feature = "http")]
+use crate::http::HttpClient;
 #[cfg(feature = "token")]
 use crate::token::TokenManager;
 #[cfg(feature = "mysql")]
@@ -69,6 +71,8 @@ pub struct Tools {
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
     token: Option<TokenManager>,
+    #[cfg(feature = "http")]
+    http: Option<HttpClient>,
     extensions: TypeMap,
     config: TypeMap,
     state: AtomicU8,
@@ -134,6 +138,17 @@ impl Tools {
         self.token
             .as_ref()
             .ok_or_else(|| BaseError::ConfigError("Tools 未配置 TokenManager".to_string()))
+    }
+
+    /// 获取 HTTP 客户端；未配置或生命周期已结束时失败。
+    ///
+    /// reqwest 客户端无需显式关闭，故该槽位不参与 close/health_check 流程。
+    #[cfg(feature = "http")]
+    pub fn http(&self) -> Result<&HttpClient, BaseError> {
+        self.ensure_running()?;
+        self.http
+            .as_ref()
+            .ok_or(BaseError::HttpClientNotInitialized)
     }
 
     /// 按具体类型获取低频扩展。
@@ -242,6 +257,8 @@ pub struct ToolsBuilder {
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
     token: Option<TokenManager>,
+    #[cfg(feature = "http")]
+    http: Option<HttpClient>,
     extensions: TypeMap,
     config: TypeMap,
     duplicate: Option<String>,
@@ -287,6 +304,17 @@ impl ToolsBuilder {
     pub fn token(mut self, token: TokenManager) -> Self {
         if self.token.replace(token).is_some() {
             self.record_duplicate("TokenManager");
+        }
+        self
+    }
+
+    /// 设置唯一 HTTP 客户端。
+    ///
+    /// reqwest 客户端无需显式关闭，构建后只读共享，不参与 close/health_check 流程。
+    #[cfg(feature = "http")]
+    pub fn http(mut self, client: HttpClient) -> Self {
+        if self.http.replace(client).is_some() {
+            self.record_duplicate("HttpClient");
         }
         self
     }
@@ -347,6 +375,8 @@ impl ToolsBuilder {
             cache: self.cache,
             #[cfg(feature = "token")]
             token: self.token,
+            #[cfg(feature = "http")]
+            http: self.http,
             extensions: self.extensions,
             config: self.config,
             state: AtomicU8::new(RUNNING),
@@ -411,6 +441,64 @@ mod tests {
         assert!(!health.is_healthy());
         assert!(matches!(
             tools.extension::<TestExtension>(),
+            Err(BaseError::ConfigError(message)) if message == "Tools 已关闭"
+        ));
+    }
+
+    #[cfg(feature = "http")]
+    fn test_http_client() -> crate::http::HttpClient {
+        crate::http::HttpClient::new(30).expect("测试 HTTP 客户端应创建成功")
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_slot_returns_client_when_configured() {
+        let tools = ToolsBuilder::new()
+            .http(test_http_client())
+            .build()
+            .expect("配置 HTTP 客户端后应构建成功");
+
+        let client = tools.http().expect("已配置时应返回 HTTP 客户端");
+        // 验证拿到的是可用客户端（能构建请求）
+        let _builder = client.get("https://api.example.com/test");
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_slot_errors_when_not_configured() {
+        let tools = ToolsBuilder::new().build().expect("空资源集合应构建成功");
+
+        assert!(matches!(
+            tools.http(),
+            Err(BaseError::HttpClientNotInitialized)
+        ));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_slot_duplicate_registration_is_rejected_at_build_time() {
+        let result = ToolsBuilder::new()
+            .http(test_http_client())
+            .http(test_http_client())
+            .build();
+
+        assert!(
+            matches!(result, Err(BaseError::ConfigError(message)) if message.contains("重复注册"))
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn http_slot_errors_after_close() {
+        let tools = ToolsBuilder::new()
+            .http(test_http_client())
+            .build()
+            .expect("配置 HTTP 客户端后应构建成功");
+
+        tools.close().await;
+
+        assert!(matches!(
+            tools.http(),
             Err(BaseError::ConfigError(message)) if message == "Tools 已关闭"
         ));
     }
