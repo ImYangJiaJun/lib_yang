@@ -350,6 +350,31 @@ impl ActionSpec {
     }
 }
 
+/// 通用树 View 的显式拓扑声明。
+///
+/// 树拓扑属于 View 语义，不能从字段存储类型或约定列名推断。三个字段都必须同时
+/// 出现在所属 [`ViewSpec`] 中，并在构建期解析到同一张主表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeViewSpec {
+    /// 节点唯一标识字段。
+    pub id_field: FieldRef,
+    /// 父节点标识字段；根节点应返回 null。
+    pub parent_field: FieldRef,
+    /// 节点用户可见标签字段。
+    pub label_field: FieldRef,
+}
+
+impl TreeViewSpec {
+    /// 创建显式树拓扑声明。
+    pub fn new(id_field: FieldRef, parent_field: FieldRef, label_field: FieldRef) -> Self {
+        Self {
+            id_field,
+            parent_field,
+            label_field,
+        }
+    }
+}
+
 /// 后台 Table/Select 等展示定义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewSpec {
@@ -361,6 +386,8 @@ pub struct ViewSpec {
     pub actions: Vec<ActionRef>,
     /// 显式 Action 展示声明；未声明的 Action 在构建期按静态契约安全推导。
     pub action_presentations: BTreeMap<ActionRef, ActionPresentationSpec>,
+    /// 可选树拓扑；未声明时按普通表格投影。
+    pub tree: Option<TreeViewSpec>,
 }
 
 impl ViewSpec {
@@ -371,6 +398,7 @@ impl ViewSpec {
             fields: Vec::new(),
             actions: Vec::new(),
             action_presentations: BTreeMap::new(),
+            tree: None,
         }
     }
 
@@ -399,6 +427,13 @@ impl ViewSpec {
             self.actions.push(action.clone());
         }
         self.action_presentations.insert(action, presentation);
+        self
+    }
+
+    /// 将当前 View 显式声明为树 View。
+    #[must_use]
+    pub fn tree(mut self, tree: TreeViewSpec) -> Self {
+        self.tree = Some(tree);
         self
     }
 }

@@ -94,7 +94,14 @@ struct RuntimeTableView {
     table: String,
     columns: Arc<[RuntimeTableColumn]>,
     actions: Arc<[RuntimeViewAction]>,
+    tree: Option<RuntimeTreeView>,
     policy: AuthorizationPolicy,
+}
+
+#[derive(Clone)]
+struct RuntimeTreeView {
+    schema: super::TreeViewSchema,
+    fields: [RuntimeTableColumn; 3],
 }
 
 #[derive(Clone)]
@@ -216,6 +223,7 @@ impl Registry {
                             .filter_map(|column| form_field(column, context))
                             .collect(),
                     },
+                    tree: project_tree(view, context),
                     actions: allowed_actions
                         .iter()
                         .map(|(runtime, _)| runtime.ui_schema.operation_id.clone())
@@ -558,6 +566,7 @@ fn compile_views(
                 table_ref,
                 fields,
                 Vec::new(),
+                None,
             ));
             continue;
         }
@@ -580,12 +589,27 @@ fn compile_views(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let tree = view
+                .tree
+                .as_ref()
+                .map(|tree| {
+                    Ok(super::CompiledTreeView::new(
+                        checked_runtime_field(tree.id_field.table(), tree.id_field.field())?,
+                        checked_runtime_field(
+                            tree.parent_field.table(),
+                            tree.parent_field.field(),
+                        )?,
+                        checked_runtime_field(tree.label_field.table(), tree.label_field.field())?,
+                    ))
+                })
+                .transpose()?;
             compiled.push(super::CompiledTableView::new(
                 module.name.clone(),
                 view.name.clone(),
                 table_ref.clone(),
                 fields,
                 actions,
+                tree,
             ));
         }
     }
@@ -630,6 +654,7 @@ fn compile_runtime_table_views(
                 table: table.name.to_string(),
                 columns: columns.into(),
                 actions: Arc::from(Vec::new()),
+                tree: None,
                 policy,
             });
             continue;
@@ -678,17 +703,54 @@ fn compile_runtime_table_views(
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let tree = view
+                .tree
+                .as_ref()
+                .map(|tree| {
+                    let column = |reference: &FieldRef| {
+                        fields
+                            .get(reference)
+                            .copied()
+                            .map(runtime_table_column)
+                            .ok_or_else(|| BuildError::InvalidReference {
+                                kind: "Tree View Field",
+                                reference: reference.to_string(),
+                            })
+                    };
+                    Ok(RuntimeTreeView {
+                        schema: super::TreeViewSchema {
+                            id_field: tree.id_field.field().to_string(),
+                            parent_field: tree.parent_field.field().to_string(),
+                            label_field: tree.label_field.field().to_string(),
+                        },
+                        fields: [
+                            column(&tree.id_field)?,
+                            column(&tree.parent_field)?,
+                            column(&tree.label_field)?,
+                        ],
+                    })
+                })
+                .transpose()?;
             compiled.push(RuntimeTableView {
                 view_id: format!("{}.{}", module.name, view.name),
                 title: view.name.to_string(),
                 table: table.name.to_string(),
                 columns: columns.into(),
                 actions: actions.into(),
+                tree,
                 policy: policy.clone(),
             });
         }
     }
     Ok(compiled)
+}
+
+fn project_tree(view: &RuntimeTableView, context: &ActionContext) -> Option<super::TreeViewSchema> {
+    let tree = view.tree.as_ref()?;
+    tree.fields
+        .iter()
+        .all(|column| column_readable(column, context))
+        .then(|| tree.schema.clone())
 }
 
 fn infer_action_presentation(runtime: &RuntimeAction) -> super::ActionPresentationSpec {
@@ -1233,6 +1295,31 @@ fn validate_references(
             }
             for field in &view.fields {
                 validate_field_ref(field, fields)?;
+            }
+            if let Some(tree) = &view.tree {
+                let table = module
+                    .table
+                    .as_ref()
+                    .ok_or_else(|| BuildError::InvalidReference {
+                        kind: "Tree View",
+                        reference: format!("{view_ref}: 缺少主表"),
+                    })?;
+                let tree_fields = [&tree.id_field, &tree.parent_field, &tree.label_field];
+                if tree.id_field == tree.parent_field {
+                    return Err(BuildError::InvalidReference {
+                        kind: "Tree View",
+                        reference: format!("{view_ref}: id/parent 字段必须不同"),
+                    });
+                }
+                for field in tree_fields {
+                    validate_field_ref(field, fields)?;
+                    if field.table() != &table.name || !view.fields.contains(field) {
+                        return Err(BuildError::InvalidReference {
+                            kind: "Tree View Field",
+                            reference: format!("{view_ref}: {field}"),
+                        });
+                    }
+                }
             }
             for action in &view.actions {
                 validate_action_ref(action, actions)?;
