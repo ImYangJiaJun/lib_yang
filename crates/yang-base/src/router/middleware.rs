@@ -36,6 +36,7 @@
 //! ```
 
 use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode};
+use crate::definition::ActionRef;
 use crate::error::BaseError;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -120,6 +121,14 @@ pub enum MiddlewareScope {
 /// 注入逻辑，或不调用 `next` 直接短路返回。
 #[async_trait]
 pub trait Middleware: Send + Sync + 'static {
+    /// 返回只应执行此中间件的确定 Action。
+    ///
+    /// 默认 `None` 表示不限定 Action。返回目标时，App 构建期会验证引用存在且属于
+    /// 当前注册模块，派发期再以 Registry 注入的可信目标进行匹配。
+    fn target_action(&self) -> Option<&ActionRef> {
+        None
+    }
+
     /// 返回此中间件适用的 Action 范围。
     ///
     /// 默认覆盖全部 Action，以保持日志、限流、追踪和其他通用中间件的直观语义。
@@ -167,11 +176,17 @@ impl<'a> Next<'a> {
 
         while let Some((current, rest)) = remaining.split_first() {
             remaining = rest;
-            let applies = match current.scope() {
+            let action_applies = match current.target_action() {
+                None => true,
+                Some(target) => ctx.dispatch_target().is_some_and(|(module, action)| {
+                    module == target.module().as_str() && action == target.action().as_str()
+                }),
+            };
+            let scope_applies = match current.scope() {
                 MiddlewareScope::AllActions => true,
                 MiddlewareScope::ProtectedActions => !self.policy.is_public,
             };
-            if applies {
+            if action_applies && scope_applies {
                 let next = Next {
                     remaining: rest,
                     action: self.action,
