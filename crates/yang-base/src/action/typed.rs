@@ -237,7 +237,8 @@ impl<T: TypedAction> DynAction for T {
             let mut ctx = ctx;
             let input: T::Input = self.decode_input(&mut ctx)?;
             let output = self.handle_future(ctx, input).await?;
-            ApiResponse::success(output, "成功")
+            // 输出去向统一收口：ResponseBody 转附件响应，其余照旧序列化进 data
+            super::response::wrap_dispatch_output(output, "成功")
         }
         .instrument(span)
         .await;
@@ -309,5 +310,95 @@ impl<T: TypedAction> DynAction for T {
 
     fn bind_registry(&self, registry: &crate::definition::Registry) -> Result<(), BaseError> {
         TypedHandler::bind_registry(self, registry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::{ActionContext, Request, ResponseAttachment, ResponseBody};
+    use crate::tools::ToolsBuilder;
+    use serde::Deserialize;
+    use std::sync::Arc;
+    use yang_base_derive::Action;
+
+    #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct EmptyInput {}
+
+    /// 返回重定向附件的探针 Action。
+    #[derive(Action)]
+    #[action(name = "redirect_probe", display_name = "重定向探针")]
+    struct RedirectProbe;
+
+    #[async_trait]
+    impl TypedHandler for RedirectProbe {
+        type Input = EmptyInput;
+        type Output = ResponseBody;
+
+        async fn handle(
+            &self,
+            _ctx: ActionContext,
+            _input: Self::Input,
+        ) -> Result<Self::Output, BaseError> {
+            Ok(ResponseBody::redirect("/next"))
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+    struct PlainOutput {
+        value: i32,
+    }
+
+    /// 返回普通 JSON 输出的对照 Action。
+    #[derive(Action)]
+    #[action(name = "plain_probe", display_name = "普通探针")]
+    struct PlainProbe;
+
+    #[async_trait]
+    impl TypedHandler for PlainProbe {
+        type Input = EmptyInput;
+        type Output = PlainOutput;
+
+        async fn handle(
+            &self,
+            _ctx: ActionContext,
+            _input: Self::Input,
+        ) -> Result<Self::Output, BaseError> {
+            Ok(PlainOutput { value: 1 })
+        }
+    }
+
+    fn test_context() -> ActionContext {
+        let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+        ActionContext::new(Request::new(serde_json::json!({})), tools)
+    }
+
+    #[tokio::test]
+    async fn dispatch_wraps_response_body_into_attachment() {
+        // ResponseBody 输出经 dispatch 后应成为附件，不进 data
+        let response = RedirectProbe
+            .dispatch(test_context())
+            .await
+            .expect("dispatch 应成功");
+        assert_eq!(response.code, 0);
+        assert!(response.data.is_none());
+        assert_eq!(
+            response.attachment,
+            Some(ResponseAttachment::Redirect {
+                url: "/next".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_keeps_plain_output_in_data() {
+        // 普通输出照旧进 data，无附件
+        let response = PlainProbe
+            .dispatch(test_context())
+            .await
+            .expect("dispatch 应成功");
+        assert_eq!(response.data.as_ref().expect("应有 data")["value"], 1);
+        assert!(response.attachment.is_none());
     }
 }

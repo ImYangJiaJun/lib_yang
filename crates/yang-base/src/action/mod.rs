@@ -74,7 +74,7 @@ pub use request::Request;
 pub use request_context::{ActorContext, ContextKey, RequestContext, TenantContext, TenantId};
 pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
-pub use response::ApiResponse;
+pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 
 #[cfg(test)]
