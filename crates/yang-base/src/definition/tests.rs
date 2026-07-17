@@ -104,6 +104,17 @@ impl crate::action::Action for LinkedCreateAction {
 struct NoopAction;
 
 #[derive(crate::Action)]
+#[action(
+    name = "upload",
+    request_media = "multipart",
+    content_types("application/pdf"),
+    max_files = 1,
+    max_file_bytes = 1024,
+    max_total_bytes = 2048
+)]
+struct MultipartNoopAction;
+
+#[derive(crate::Action)]
 #[action(name = "echo", public)]
 struct EchoAction;
 
@@ -118,6 +129,22 @@ impl TypedHandler for NoopAction {
         _input: Self::Input,
     ) -> Result<Self::Output, BaseError> {
         Ok(NoopOutput {})
+    }
+}
+
+#[async_trait]
+impl crate::action::Action for MultipartNoopAction {
+    type Input = CreateUserInput;
+    type Output = EchoOutput;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(EchoOutput {
+            value: i64::from(input.status),
+        })
     }
 }
 
@@ -300,6 +327,98 @@ fn addon_and_module_traits_feed_the_only_app_builder_path() {
     assert_eq!(action.route.path, "/native/users");
     assert_eq!(action.success_status, 201);
     assert_eq!(action.params.len(), 3);
+}
+
+#[test]
+fn native_multipart_contract_reaches_catalog_and_ui_projection() {
+    let app = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("upload"))
+                .module(ModuleSpec::new(module("upload.file")).native_action(MultipartNoopAction)),
+        )
+        .build(test_tools())
+        .expect("合法 multipart Action 应构建成功");
+    let action = &app.catalog().addons()[0].modules[0].actions()[0];
+    assert_eq!(action.request_media_type, ActionMediaType::Multipart);
+    let multipart = action.multipart.as_ref().expect("Catalog 应保留上传限制");
+    assert_eq!(multipart.max_files, 1);
+    assert_eq!(multipart.max_file_bytes, 1024);
+    assert_eq!(multipart.max_total_bytes, 2048);
+    assert_eq!(multipart.allowed_content_types, ["application/pdf"]);
+
+    let catalog = app.ui_catalog(
+        &app.context(crate::action::Request::new(serde_json::Value::Null))
+            .with_user(crate::action::User::new(1, "uploader")),
+    );
+    assert_eq!(
+        catalog.actions[0].request_media_type,
+        ActionMediaType::Multipart
+    );
+    assert_eq!(
+        catalog.actions[0]
+            .multipart
+            .as_ref()
+            .map(|spec| spec.lifecycle),
+        Some(UploadLifecycle::RequestScoped)
+    );
+}
+
+#[test]
+fn app_builder_rejects_unsafe_or_inconsistent_multipart_contracts() {
+    let build = |action: ActionSpec| {
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(addon("upload"))
+                    .module(ModuleSpec::new(module("upload.file")).action(action, NoopAction)),
+            )
+            .build(test_tools())
+    };
+    let post = || {
+        ActionSpec::new(
+            action("upload"),
+            RouteSpec::new(HttpMethod::Post, "/upload", "upload.file.upload"),
+        )
+    };
+    let valid = || MultipartSpec::new(["application/pdf"]);
+
+    let mut json_with_limits = post();
+    json_with_limits.multipart = Some(valid());
+    let mut missing_limits = post();
+    missing_limits.request_media_type = ActionMediaType::Multipart;
+    let get_upload = ActionSpec::new(
+        action("upload"),
+        RouteSpec::new(HttpMethod::Get, "/upload", "upload.file.upload"),
+    )
+    .multipart(valid());
+    let zero_files = post().multipart(valid().max_files(0));
+    let oversized_file = post().multipart(valid().max_file_bytes(4096).max_total_bytes(2048));
+    let wildcard = post().multipart(MultipartSpec::new(["image/*"]));
+    let duplicate = post().multipart(MultipartSpec::new(["image/png", "image/png"]));
+
+    for (name, spec) in [
+        ("json_with_limits", json_with_limits),
+        ("missing_limits", missing_limits),
+        ("get_upload", get_upload),
+        ("zero_files", zero_files),
+        ("oversized_file", oversized_file),
+        ("wildcard", wildcard),
+        ("duplicate", duplicate),
+    ] {
+        let error = match build(spec) {
+            Ok(_) => panic!("{name} 必须在启动期失败"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                BuildError::InvalidReference {
+                    kind: "Action request media",
+                    ..
+                }
+            ),
+            "{name} 返回了错误类型: {error}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -706,4 +825,31 @@ fn definition_catalog_projects_typed_openapi_contract() {
             ["data"]
             .is_object()
     );
+}
+
+#[cfg(feature = "openapi")]
+#[test]
+fn openapi_projects_multipart_content_type_and_resource_limits() {
+    let app = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("upload"))
+                .module(ModuleSpec::new(module("upload.file")).native_action(MultipartNoopAction)),
+        )
+        .build(test_tools())
+        .expect("multipart OpenAPI 测试应用应构建成功");
+    let document = app
+        .catalog()
+        .to_openapi(OpenApiInfo::new("YANG", "0.3"))
+        .expect("Catalog 应生成 multipart OpenAPI");
+    let media =
+        &document["paths"]["/upload"]["post"]["requestBody"]["content"]["multipart/form-data"];
+
+    assert!(media["schema"].is_object());
+    assert_eq!(media["x-yang-multipart"]["max_files"], 1);
+    assert_eq!(media["x-yang-multipart"]["max_file_bytes"], 1024);
+    assert_eq!(
+        media["x-yang-multipart"]["allowed_content_types"][0],
+        "application/pdf"
+    );
+    assert_eq!(media["x-yang-multipart"]["lifecycle"], "request_scoped");
 }

@@ -1,0 +1,5 @@
+error: multipart action 必须声明 content_types
+  --> trybuild/action_invalid_multipart.rs:15:8
+   |
+15 | struct InvalidMultipart;
+   |        ^^^^^^^^^^^^^^^^

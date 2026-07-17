@@ -967,6 +967,7 @@ fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), BuildError> {
                     ),
                 });
             }
+            validate_action_media(module, action)?;
             let mut permissions = BTreeSet::new();
             for permission in &action.permissions {
                 if permission.trim().is_empty() {
@@ -1013,6 +1014,91 @@ fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), BuildError> {
         }
     }
     Ok(())
+}
+
+fn validate_action_media(
+    module: &super::ModuleSpec,
+    action: &super::ActionSpec,
+) -> Result<(), BuildError> {
+    let invalid = |reason: &str| BuildError::InvalidReference {
+        kind: "Action request media",
+        reference: format!("{}.{} -> {reason}", module.name, action.name),
+    };
+    match (action.request_media_type, action.multipart.as_ref()) {
+        (super::ActionMediaType::Json, None) => return Ok(()),
+        (super::ActionMediaType::Json, Some(_)) => {
+            return Err(invalid("JSON Action 不得携带 multipart 配置"));
+        }
+        (super::ActionMediaType::Multipart, None) => {
+            return Err(invalid("multipart Action 缺少资源限制"));
+        }
+        (super::ActionMediaType::Multipart, Some(_)) => {}
+    }
+    if !matches!(
+        action.route.method,
+        super::HttpMethod::Post | super::HttpMethod::Put | super::HttpMethod::Patch
+    ) {
+        return Err(invalid("multipart 只允许 POST/PUT/PATCH"));
+    }
+
+    let multipart = action
+        .multipart
+        .as_ref()
+        .ok_or_else(|| invalid("multipart Action 缺少资源限制"))?;
+    if multipart.max_files == 0 {
+        return Err(invalid("max_files 必须大于 0"));
+    }
+    if multipart.max_file_bytes == 0 || multipart.max_total_bytes == 0 {
+        return Err(invalid("文件与请求字节上限必须大于 0"));
+    }
+    if multipart.max_file_bytes > multipart.max_total_bytes {
+        return Err(invalid("max_file_bytes 不能大于 max_total_bytes"));
+    }
+    if multipart.allowed_content_types.is_empty() {
+        return Err(invalid("allowed_content_types 不能为空"));
+    }
+    let mut content_types = BTreeSet::new();
+    for content_type in &multipart.allowed_content_types {
+        if !is_exact_mime_type(content_type) {
+            return Err(invalid("allowed_content_types 必须是小写精确 MIME 类型"));
+        }
+        if !content_types.insert(content_type) {
+            return Err(invalid("allowed_content_types 不能重复"));
+        }
+    }
+    Ok(())
+}
+
+fn is_exact_mime_type(value: &str) -> bool {
+    let Some((top, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !top.is_empty()
+        && !subtype.is_empty()
+        && !subtype.contains('/')
+        && top.bytes().all(is_mime_token_byte)
+        && subtype.bytes().all(is_mime_token_byte)
+}
+
+fn is_mime_token_byte(value: u8) -> bool {
+    value.is_ascii_lowercase()
+        || value.is_ascii_digit()
+        || matches!(
+            value,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 fn collect_fields(

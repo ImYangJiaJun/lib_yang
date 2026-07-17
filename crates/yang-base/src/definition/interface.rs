@@ -54,6 +54,9 @@ impl Actions {
         .response_kind(handler.response_kind())
         .success_status(handler.success_status())
         .params(<A as BusinessAction>::params());
+        if let Some(multipart) = handler.multipart_spec() {
+            spec = spec.multipart(multipart);
+        }
         for call in handler.calls() {
             spec = spec.calls(call);
         }

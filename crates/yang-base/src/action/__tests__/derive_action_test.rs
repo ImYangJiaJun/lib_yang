@@ -1,7 +1,7 @@
 //! #[derive(Action)] 派生宏测试
 
 use crate::action::{ActionContext, DynAction, TypedAction, TypedHandler};
-use crate::definition::ActionResponseKind;
+use crate::definition::{ActionResponseKind, UploadLifecycle};
 use crate::error::BaseError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,18 @@ pub struct PingOutput {
 )]
 pub struct PingAction;
 
+#[derive(Action)]
+#[action(
+    name = "upload_avatar",
+    request_media = "multipart",
+    content_types("image/png", "image/jpeg"),
+    max_fields = 4,
+    max_files = 2,
+    max_file_bytes = 1048576,
+    max_total_bytes = 2097152
+)]
+pub struct UploadAvatarAction;
+
 #[async_trait]
 impl TypedHandler for PingAction {
     type Input = PingInput;
@@ -35,6 +47,18 @@ impl TypedHandler for PingAction {
     async fn handle(&self, _ctx: ActionContext, input: PingInput) -> Result<PingOutput, BaseError> {
         Ok(PingOutput {
             reply: format!("pong: {}", input.msg),
+        })
+    }
+}
+
+#[async_trait]
+impl TypedHandler for UploadAvatarAction {
+    type Input = PingInput;
+    type Output = PingOutput;
+
+    async fn handle(&self, _ctx: ActionContext, input: PingInput) -> Result<PingOutput, BaseError> {
+        Ok(PingOutput {
+            reply: format!("uploaded: {}", input.msg),
         })
     }
 }
@@ -62,6 +86,19 @@ fn test_derive_action_meta_static_dyn() {
     assert!(v_in.is_object(), "input_schema 应序列化为 JSON object");
     let v_out = serde_json::to_value(m.output_schema).unwrap();
     assert!(v_out.is_object(), "output_schema 应序列化为 JSON object");
+}
+
+#[test]
+fn test_derive_action_multipart_contract() {
+    let spec = UploadAvatarAction
+        .multipart_spec()
+        .expect("multipart Action 应生成上传契约");
+    assert_eq!(spec.max_fields, 4);
+    assert_eq!(spec.max_files, 2);
+    assert_eq!(spec.max_file_bytes, 1_048_576);
+    assert_eq!(spec.max_total_bytes, 2_097_152);
+    assert_eq!(spec.allowed_content_types, ["image/png", "image/jpeg"]);
+    assert_eq!(spec.lifecycle, UploadLifecycle::RequestScoped);
 }
 
 #[test]

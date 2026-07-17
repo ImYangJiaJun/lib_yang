@@ -119,15 +119,35 @@ fn operation_json(action: &ActionSpec) -> Value {
             })
         })
         .collect();
-    let has_body = action
-        .params
-        .iter()
-        .any(|param| param.source == ParamSource::Body)
+    let has_body = action.request_media_type == super::ActionMediaType::Multipart
+        || action
+            .params
+            .iter()
+            .any(|param| param.source == ParamSource::Body)
         || action.params.is_empty();
     let request_body = has_body.then(|| {
+        let mut media_schema = json!({ "schema": body_schema(action) });
+        let content_type = match action.request_media_type {
+            super::ActionMediaType::Json => "application/json",
+            super::ActionMediaType::Multipart => {
+                if let Some(spec) = &action.multipart {
+                    media_schema["x-yang-multipart"] = json!({
+                        "max_fields": spec.max_fields,
+                        "max_files": spec.max_files,
+                        "max_file_bytes": spec.max_file_bytes,
+                        "max_total_bytes": spec.max_total_bytes,
+                        "allowed_content_types": spec.allowed_content_types,
+                        "lifecycle": "request_scoped"
+                    });
+                }
+                "multipart/form-data"
+            }
+        };
+        let mut content = Map::new();
+        content.insert(content_type.to_string(), media_schema);
         json!({
             "required": action.params.iter().any(|param| param.source == ParamSource::Body && param.required),
-            "content": { "application/json": { "schema": body_schema(action) } }
+            "content": content
         })
     });
 

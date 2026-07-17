@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.3";
+pub const UI_SCHEMA_VERSION: &str = "1.4";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -249,6 +249,10 @@ pub struct ActionDemoSchema {
     pub input_schema: serde_json::Value,
     /// Handler Output 的 JSON Schema。
     pub output_schema: serde_json::Value,
+    /// 请求媒体类型。
+    pub request_media_type: super::ActionMediaType,
+    /// multipart 资源与类型限制；JSON Action 为 `None`。
+    pub multipart: Option<super::MultipartSpec>,
     /// 成功响应的展示类别。
     pub response_kind: ActionResponseKind,
     /// 是否必须先建立认证身份。
@@ -348,6 +352,8 @@ impl From<&ActionSpec> for ActionDemoSchema {
             params,
             input_schema: action.input_schema.clone(),
             output_schema: action.output_schema.clone(),
+            request_media_type: action.request_media_type,
+            multipart: action.multipart.clone(),
             response_kind: action.response_kind,
             requires_auth: !action.is_public,
         }
