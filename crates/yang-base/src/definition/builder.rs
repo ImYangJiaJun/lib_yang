@@ -175,7 +175,10 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))
     }
 
-    pub(crate) fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
+    pub(crate) fn ui_catalog(
+        &self,
+        context: &ActionContext,
+    ) -> Result<super::UiCatalog, BaseError> {
         let actions = self
             .handlers
             .iter()
@@ -230,7 +233,7 @@ impl Registry {
                         .collect(),
                 }
             });
-        super::UiCatalog::new(actions).with_table_views(table_views)
+        super::UiCatalog::new(actions)?.with_table_views(table_views)
     }
 
     /// 通过构建期 handle 执行唯一预绑定 Handler。
@@ -348,7 +351,7 @@ impl BuiltApp {
     /// Action 和 View 均复用 dispatch 的构建期冻结授权策略；TableView 列同时按
     /// 字段读取角色过滤，secret 字段始终 fail-closed。租户数据范围仍由实际
     /// TableQuery 独立强制执行，前端目录不能替代服务端数据隔离。
-    pub fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
+    pub fn ui_catalog(&self, context: &ActionContext) -> Result<super::UiCatalog, BaseError> {
         self.registry.ui_catalog(context)
     }
 

@@ -346,10 +346,12 @@ fn native_multipart_contract_reaches_catalog_and_ui_projection() {
     assert_eq!(multipart.max_total_bytes, 2048);
     assert_eq!(multipart.allowed_content_types, ["application/pdf"]);
 
-    let catalog = app.ui_catalog(
-        &app.context(crate::action::Request::new(serde_json::Value::Null))
-            .with_user(crate::action::User::new(1, "uploader")),
-    );
+    let catalog = app
+        .ui_catalog(
+            &app.context(crate::action::Request::new(serde_json::Value::Null))
+                .with_user(crate::action::User::new(1, "uploader")),
+        )
+        .expect("multipart UI Catalog revision 应可计算");
     assert_eq!(
         catalog.actions[0].request_media_type,
         ActionMediaType::Multipart

@@ -6,6 +6,7 @@
 use super::{ActionSpec, ParamSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
 pub const UI_SCHEMA_VERSION: &str = "1.4";
@@ -365,6 +366,11 @@ impl From<&ActionSpec> for ActionDemoSchema {
 pub struct UiCatalog {
     /// UI schema 版本；前端必须按版本选择解析器。
     pub schema_version: &'static str,
+    /// 当前过滤后完整目录的确定性 SHA-256 修订标识。
+    ///
+    /// 消费端可用它判断缓存内容是否变化；身份或租户切换仍必须重新请求目录，不能
+    /// 把 revision 当作授权凭据。
+    pub revision: String,
     /// 当前请求有权访问的 Action 演示契约。
     pub actions: Vec<ActionDemoSchema>,
     /// 当前请求有权访问的通用表格 Views。
@@ -373,27 +379,49 @@ pub struct UiCatalog {
 
 impl UiCatalog {
     /// 从已经完成请求级过滤的 Action 集合构造目录，并按 operation id 稳定排序。
-    pub fn new<I>(actions: I) -> Self
+    pub fn new<I>(actions: I) -> Result<Self, crate::error::BaseError>
     where
         I: IntoIterator<Item = ActionDemoSchema>,
     {
         let mut actions = actions.into_iter().collect::<Vec<_>>();
         actions.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
-        Self {
+        let mut catalog = Self {
             schema_version: UI_SCHEMA_VERSION,
+            revision: String::new(),
             actions,
             table_views: Vec::new(),
-        }
+        };
+        catalog.refresh_revision()?;
+        Ok(catalog)
     }
 
-    pub(crate) fn with_table_views<I>(mut self, views: I) -> Self
+    pub(crate) fn with_table_views<I>(mut self, views: I) -> Result<Self, crate::error::BaseError>
     where
         I: IntoIterator<Item = TableViewSchema>,
     {
         self.table_views = views.into_iter().collect();
         self.table_views
             .sort_by(|left, right| left.view_id.cmp(&right.view_id));
-        self
+        self.refresh_revision()?;
+        Ok(self)
+    }
+
+    fn refresh_revision(&mut self) -> Result<(), crate::error::BaseError> {
+        let payload = serde_json::to_vec(&(
+            self.schema_version,
+            self.actions.as_slice(),
+            self.table_views.as_slice(),
+        ))
+        .map_err(|error| crate::error::BaseError::JsonSerializeFailed(error.to_string()))?;
+        let digest = Sha256::digest(payload);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut revision = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            revision.push(HEX[usize::from(byte >> 4)] as char);
+            revision.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        self.revision = revision;
+        Ok(())
     }
 }
 
@@ -475,10 +503,16 @@ mod tests {
         let catalog = UiCatalog::new([
             ActionDemoSchema::from(&protected),
             ActionDemoSchema::from(&public),
-        ]);
+        ])
+        .expect("UI Catalog revision 应可计算");
 
         let value = serde_json::to_value(catalog).expect("UI Catalog 应可序列化");
         assert_eq!(value["schema_version"], UI_SCHEMA_VERSION);
+        let revision = value["revision"]
+            .as_str()
+            .expect("UI Catalog 应携带 revision");
+        assert_eq!(revision.len(), 64);
+        assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(value["actions"][0]["operation_id"], "health.check");
         assert_eq!(value["actions"][0]["requires_auth"], false);
         assert_eq!(value["actions"][1]["response_kind"], "download");
@@ -494,6 +528,37 @@ mod tests {
             protected.output_schema
         );
         assert_eq!(value["actions"][1]["method"], "POST");
+    }
+
+    #[test]
+    fn catalog_revision_is_order_independent_and_content_sensitive() {
+        let first = ActionDemoSchema::from(&action("first", "org.user.first"));
+        let second = ActionDemoSchema::from(&action("second", "org.user.second"));
+        let ordered =
+            UiCatalog::new([first.clone(), second.clone()]).expect("有序目录 revision 应可计算");
+        let reversed = UiCatalog::new([second.clone(), first]).expect("逆序目录 revision 应可计算");
+        assert_eq!(ordered.actions, reversed.actions);
+        assert_eq!(ordered.revision, reversed.revision);
+
+        let mut changed = second;
+        changed.title = "新的展示标题".to_string();
+        let changed = UiCatalog::new([changed]).expect("变更目录 revision 应可计算");
+        assert_ne!(ordered.revision, changed.revision);
+    }
+
+    #[test]
+    fn catalog_json_schema_requires_version_revision_actions_and_views() {
+        let schema = serde_json::to_value(schemars::schema_for!(UiCatalog))
+            .expect("UiCatalog JSON Schema 应可序列化");
+        let required = schema["required"]
+            .as_array()
+            .expect("UiCatalog schema.required 应存在");
+        for field in ["schema_version", "revision", "actions", "table_views"] {
+            assert!(
+                required.iter().any(|value| value == field),
+                "UiCatalog 运行时 schema 应要求字段 {field}: {schema}"
+            );
+        }
     }
 
     #[test]
@@ -545,6 +610,17 @@ mod tests {
             .expect("测试 App 应构建成功");
 
         let anonymous = app.context(Request::new(serde_json::Value::Null));
+        let anonymous_revision = app
+            .ui_catalog(&anonymous)
+            .expect("匿名 UI Catalog revision 应可计算")
+            .revision;
+        assert_eq!(
+            anonymous_revision,
+            app.ui_catalog(&anonymous)
+                .expect("重复投影 revision 应可计算")
+                .revision,
+            "相同请求表示必须产生稳定 revision"
+        );
         assert_eq!(
             operation_ids(app.ui_catalog(&anonymous)),
             ["org.user.public"]
@@ -553,6 +629,13 @@ mod tests {
         let module_only = app
             .context(Request::new(serde_json::Value::Null))
             .with_user(User::new(1, "module").with_permissions(["module:access"]));
+        assert_ne!(
+            anonymous_revision,
+            app.ui_catalog(&module_only)
+                .expect("成员 UI Catalog revision 应可计算")
+                .revision,
+            "权限过滤后的不同表示必须使用不同 revision"
+        );
         assert_eq!(
             operation_ids(app.ui_catalog(&module_only)),
             ["org.user.member", "org.user.public"]
@@ -638,7 +721,8 @@ mod tests {
         );
     }
 
-    fn operation_ids(catalog: UiCatalog) -> Vec<String> {
+    fn operation_ids(catalog: Result<UiCatalog, BaseError>) -> Vec<String> {
+        let catalog = catalog.expect("UI Catalog revision 应可计算");
         catalog
             .actions
             .into_iter()
@@ -783,16 +867,20 @@ mod tests {
             .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
             .expect("TableView 测试应用应构建成功");
 
-        let anonymous = app.ui_catalog(&app.context(Request::new(json!({}))));
+        let anonymous = app
+            .ui_catalog(&app.context(Request::new(json!({}))))
+            .expect("匿名 UI Catalog revision 应可计算");
         assert!(
             anonymous.table_views.is_empty(),
             "匿名请求不得看到受保护 View"
         );
 
-        let member = app.ui_catalog(
-            &app.context(Request::new(json!({})))
-                .with_user(User::new(7, "member").with_permissions(["module:view"])),
-        );
+        let member = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(7, "member").with_permissions(["module:view"])),
+            )
+            .expect("成员 UI Catalog revision 应可计算");
         assert_eq!(member.table_views.len(), 1);
         assert_eq!(member.table_views[0].view_id, "org.member.main");
         assert_eq!(member.table_views[0].table, "org_member");
@@ -835,13 +923,15 @@ mod tests {
         assert!(secret_form.required);
         assert_eq!(secret_form.widget, WidgetHint::Password);
 
-        let admin = app.ui_catalog(
-            &app.context(Request::new(json!({}))).with_user(
-                User::new(8, "admin")
-                    .with_roles(["admin"])
-                    .with_permissions(["module:view", "member:edit"]),
-            ),
-        );
+        let admin = app
+            .ui_catalog(
+                &app.context(Request::new(json!({}))).with_user(
+                    User::new(8, "admin")
+                        .with_roles(["admin"])
+                        .with_permissions(["module:view", "member:edit"]),
+                ),
+            )
+            .expect("管理员 UI Catalog revision 应可计算");
         assert_eq!(
             admin.table_views[0]
                 .columns
@@ -950,10 +1040,12 @@ mod tests {
                 .view_id("dms.task.flow"),
         )
         .expect("稳定限定 view_id 应通过构建期校验");
-        let catalog = app.ui_catalog(
-            &app.context(Request::new(json!({})))
-                .with_user(User::new(9, "designer")),
-        );
+        let catalog = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(9, "designer")),
+            )
+            .expect("custom view UI Catalog revision 应可计算");
         assert_eq!(
             catalog.table_views[0].action_presentations[0]
                 .view_id
