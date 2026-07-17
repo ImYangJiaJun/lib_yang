@@ -5,10 +5,52 @@
 
 use super::{ActionSpec, ParamSource};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 当前 UI 契约版本。
 pub const UI_SCHEMA_VERSION: &str = "1.0";
+
+/// 与存储类型解耦的前端控件提示。
+///
+/// 该值只表达建议展示方式，不改变字段验证、权限或数据库语义。消费者遇到新版本
+/// 未知值时必须降级为 [`Json`](Self::Json)，而不是拒绝整个页面契约。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum WidgetHint {
+    /// 单行文本。
+    Text,
+    /// 多行文本。
+    Textarea,
+    /// 密码输入。
+    Password,
+    /// 邮箱输入。
+    Email,
+    /// URL 输入。
+    Url,
+    /// 颜色输入。
+    Color,
+    /// 富文本或编辑器输入。
+    Editor,
+    /// 整数输入。
+    Integer,
+    /// 定点小数输入。
+    Decimal,
+    /// 布尔开关。
+    Switch,
+    /// 固定枚举单选。
+    Radio,
+    /// 关系选项选择器。
+    RelationSelect,
+    /// 树关系选择器。
+    TreeSelect,
+    /// 日期时间输入。
+    DateTime,
+    /// 安全的通用 JSON/text fallback。
+    #[default]
+    #[serde(other)]
+    Json,
+}
 
 /// Action 成功响应的静态类别。
 ///
@@ -158,8 +200,8 @@ mod tests {
     use super::*;
     use crate::action::{ActionContext, PermissionMode, Request, TypedHandler, User};
     use crate::definition::{
-        ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, FieldName, HttpMethod, ModuleName,
-        ModuleSpec, ParamSpec, RouteSpec,
+        ActionName, ActionRef, AddonName, AddonSpec, AppBuilder, FieldKind, FieldName, FieldSpec,
+        HttpMethod, ModuleName, ModuleSpec, ParamSpec, RouteSpec,
     };
     use crate::error::BaseError;
     use crate::tools::ToolsBuilder;
@@ -399,5 +441,49 @@ mod tests {
             .into_iter()
             .map(|action| action.operation_id)
             .collect()
+    }
+
+    #[test]
+    fn widget_hint_maps_field_semantics_without_changing_storage_kind() {
+        let field = |kind| FieldSpec::new(FieldName::new("value").expect("字段名应有效"), kind);
+
+        assert_eq!(field(FieldKind::Key).widget_hint(), WidgetHint::Integer);
+        assert_eq!(field(FieldKind::Str).widget_hint(), WidgetHint::Text);
+        assert_eq!(field(FieldKind::Text).widget_hint(), WidgetHint::Textarea);
+        assert_eq!(field(FieldKind::Int).widget_hint(), WidgetHint::Integer);
+        assert_eq!(field(FieldKind::Decimal).widget_hint(), WidgetHint::Decimal);
+        assert_eq!(field(FieldKind::Switch).widget_hint(), WidgetHint::Switch);
+        assert_eq!(field(FieldKind::Radio).widget_hint(), WidgetHint::Radio);
+        assert_eq!(
+            field(FieldKind::Table).widget_hint(),
+            WidgetHint::RelationSelect
+        );
+        assert_eq!(field(FieldKind::Tree).widget_hint(), WidgetHint::TreeSelect);
+        assert_eq!(
+            field(FieldKind::Timestamp).widget_hint(),
+            WidgetHint::DateTime
+        );
+    }
+
+    #[test]
+    fn widget_hint_explicit_override_and_unknown_value_have_safe_fallbacks() {
+        let mut secret = FieldSpec::new(
+            FieldName::new("secret").expect("字段名应有效"),
+            FieldKind::Str,
+        );
+        secret.access.secret = true;
+        assert_eq!(secret.widget_hint(), WidgetHint::Password);
+
+        secret.presentation.widget = Some(WidgetHint::Email);
+        assert_eq!(secret.widget_hint(), WidgetHint::Email);
+        assert_eq!(secret.kind, FieldKind::Str, "控件提示不得改变字段数据种类");
+
+        let unknown: WidgetHint =
+            serde_json::from_value(json!("future_spatial_editor")).expect("未知提示应安全解析");
+        assert_eq!(unknown, WidgetHint::Json);
+        assert_eq!(
+            serde_json::to_value(unknown).expect("fallback 应可序列化"),
+            json!("json")
+        );
     }
 }

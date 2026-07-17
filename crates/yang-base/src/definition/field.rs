@@ -1,6 +1,6 @@
 //! BR 风格 Fields 定义及其原生 YANG 投影。
 
-use super::{ActionRef, FieldKind, FieldName, FieldRef, TableName};
+use super::{ActionRef, FieldKind, FieldName, FieldRef, TableName, WidgetHint};
 use crate::error::BaseError;
 use crate::table::{Field, RelationType, Table as SchemaTable, TableDefinition};
 use serde_json::Value;
@@ -87,6 +87,8 @@ pub struct PresentationSpec {
     pub description: String,
     /// 关系字段的默认展示列。
     pub display: Vec<FieldRef>,
+    /// 可选前端控件提示；不改变字段数据和权限语义。
+    pub widget: Option<WidgetHint>,
 }
 
 /// 时间戳字段的自动写入语义。
@@ -174,6 +176,28 @@ impl FieldSpec {
     pub fn tenant_key(mut self, tenant_key: bool) -> Self {
         self.tenant_key = tenant_key;
         self
+    }
+
+    /// 返回字段的前端控件提示。
+    ///
+    /// 显式 [`PresentationSpec::widget`] 优先；未设置时按字段数据语义确定性映射。
+    /// secret 字符串默认使用密码控件，但该展示提示不改变服务端读写权限。
+    pub fn widget_hint(&self) -> WidgetHint {
+        if let Some(widget) = self.presentation.widget {
+            return widget;
+        }
+        match self.kind {
+            FieldKind::Key | FieldKind::Int => WidgetHint::Integer,
+            FieldKind::Str if self.access.secret => WidgetHint::Password,
+            FieldKind::Str => WidgetHint::Text,
+            FieldKind::Text => WidgetHint::Textarea,
+            FieldKind::Decimal => WidgetHint::Decimal,
+            FieldKind::Switch => WidgetHint::Switch,
+            FieldKind::Radio => WidgetHint::Radio,
+            FieldKind::Table => WidgetHint::RelationSelect,
+            FieldKind::Tree => WidgetHint::TreeSelect,
+            FieldKind::Timestamp => WidgetHint::DateTime,
+        }
     }
 
     fn into_schema_field(self) -> Result<Field, BaseError> {
@@ -383,6 +407,12 @@ macro_rules! simple_builder {
                 self
             }
 
+            /// 设置前端控件提示；不改变字段存储和权限语义。
+            pub fn widget(mut self, value: WidgetHint) -> Self {
+                self.0.presentation.widget = Some(value);
+                self
+            }
+
             /// 设置必填。
             pub fn require(mut self, value: bool) -> Self {
                 self.0.storage.required = value;
@@ -502,12 +532,19 @@ impl Password {
         let mut inner = FieldBuilder::new(FieldKind::Str);
         inner.access.secret = true;
         inner.access.readable = AccessRule::Nobody;
+        inner.presentation.widget = Some(WidgetHint::Password);
         Self(inner)
     }
 
     /// 设置展示标题。
     pub fn title(mut self, value: impl Into<String>) -> Self {
         self.0.presentation.title = value.into();
+        self
+    }
+
+    /// 设置前端控件提示；不改变密码字段的 secret 访问语义。
+    pub fn widget(mut self, value: WidgetHint) -> Self {
+        self.0.presentation.widget = Some(value);
         self
     }
 
@@ -642,6 +679,12 @@ impl<T> Radio<T> {
     /// 设置展示标题。
     pub fn title(mut self, value: impl Into<String>) -> Self {
         self.inner.presentation.title = value.into();
+        self
+    }
+
+    /// 设置前端控件提示；不改变枚举值集合。
+    pub fn widget(mut self, value: WidgetHint) -> Self {
+        self.inner.presentation.widget = Some(value);
         self
     }
 
