@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.4";
+pub const UI_SCHEMA_VERSION: &str = "1.5";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -131,6 +131,49 @@ impl ActionConfirmation {
     }
 }
 
+/// 通用 View 对 Action 的非安全性可用状态提示。
+///
+/// 未声明表示正常可用。未知状态按 disabled 处理，避免前端在无法理解新状态时误触发
+/// 操作。该提示只改善界面体验，服务端仍必须独立执行授权和业务前置条件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AvailabilityState {
+    /// 从界面隐藏，但不能据此推断 Action 不可直接调用。
+    Hidden,
+    /// 显示为禁用，也是未知值的安全降级。
+    #[default]
+    #[serde(other)]
+    Disabled,
+}
+
+/// Action 的展示可用性与用户可见原因。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AvailabilityHint {
+    /// 隐藏或禁用提示。
+    pub state: AvailabilityState,
+    /// 用户可见原因；构建期拒绝空白和超长内容。
+    pub reason: String,
+}
+
+impl AvailabilityHint {
+    /// 创建禁用提示。
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            state: AvailabilityState::Disabled,
+            reason: reason.into(),
+        }
+    }
+
+    /// 创建隐藏提示。
+    pub fn hidden(reason: impl Into<String>) -> Self {
+        Self {
+            state: AvailabilityState::Hidden,
+            reason: reason.into(),
+        }
+    }
+}
+
 /// View 构建期声明的 Action 展示语义。
 ///
 /// [`Custom`](ActionInteraction::Custom) 必须同时声明稳定 `view_id`；其它交互禁止
@@ -143,6 +186,8 @@ pub struct ActionPresentationSpec {
     pub interaction: ActionInteraction,
     /// 可选二次确认。
     pub confirmation: Option<ActionConfirmation>,
+    /// 可选的非安全性可用提示。
+    pub availability: Option<AvailabilityHint>,
     /// 前端白名单注册表中的稳定标识。
     pub view_id: Option<String>,
 }
@@ -154,6 +199,7 @@ impl ActionPresentationSpec {
             placement,
             interaction,
             confirmation: None,
+            availability: None,
             view_id: None,
         }
     }
@@ -162,6 +208,13 @@ impl ActionPresentationSpec {
     #[must_use]
     pub fn confirmation(mut self, confirmation: ActionConfirmation) -> Self {
         self.confirmation = Some(confirmation);
+        self
+    }
+
+    /// 设置展示可用性提示。
+    #[must_use]
+    pub fn availability(mut self, availability: AvailabilityHint) -> Self {
+        self.availability = Some(availability);
         self
     }
 
@@ -186,6 +239,8 @@ pub struct ActionPresentationSchema {
     pub interaction: ActionInteraction,
     /// 可选二次确认。
     pub confirmation: Option<ActionConfirmation>,
+    /// 可选的非安全性可用提示。
+    pub availability: Option<AvailabilityHint>,
     /// 前端白名单注册表中的稳定标识；仅 custom 交互可用。
     pub view_id: Option<String>,
 }
@@ -780,13 +835,16 @@ mod tests {
             serde_json::from_value(json!("floating_palette")).expect("未知位置应安全解析");
         let interaction: ActionInteraction =
             serde_json::from_value(json!("execute_script")).expect("未知交互应安全解析");
+        let availability: AvailabilityState =
+            serde_json::from_value(json!("scheduled")).expect("未知可用状态应安全解析");
 
         assert_eq!(placement, ActionPlacement::Toolbar);
         assert_eq!(interaction, ActionInteraction::Invoke);
+        assert_eq!(availability, AvailabilityState::Disabled);
     }
 
-    #[test]
-    fn table_view_projection_filters_module_fields_and_actions_with_same_request_identity() {
+    #[tokio::test]
+    async fn table_view_projection_filters_module_fields_and_actions_with_same_request_identity() {
         let module_name = ModuleName::new("org.member").expect("测试 Module 名称应有效");
         let table_name = TableName::new("org_member").expect("测试 Table 名称应有效");
         let field_ref = |name: &str| {
@@ -837,9 +895,10 @@ mod tests {
             .present_action(
                 action_ref("edit"),
                 ActionPresentationSpec::new(ActionPlacement::Row, ActionInteraction::Form)
-                    .confirmation(ActionConfirmation::new("确认修改", "将保存当前行的修改")),
+                    .confirmation(ActionConfirmation::new("确认修改", "将保存当前行的修改"))
+                    .availability(AvailabilityHint::disabled("当前记录可能不允许修改")),
             );
-        let module = ModuleSpec::new(module_name)
+        let module = ModuleSpec::new(module_name.clone())
             .table(
                 TableSpec::new(table_name)
                     .title("组织成员")
@@ -957,6 +1016,13 @@ mod tests {
                 .map(|confirmation| confirmation.title.as_str()),
             Some("确认修改")
         );
+        assert_eq!(
+            edit_presentation
+                .availability
+                .as_ref()
+                .map(|hint| (hint.state, hint.reason.as_str())),
+            Some((AvailabilityState::Disabled, "当前记录可能不允许修改"))
+        );
         let admin_note = admin.table_views[0]
             .form
             .fields
@@ -965,6 +1031,23 @@ mod tests {
             .expect("管理员表单应包含 admin_note");
         assert!(!admin_note.read_only);
         assert!(!admin_note.write_only);
+
+        let edit_handle = app
+            .registry()
+            .resolve(&action_ref("edit"))
+            .expect("edit Action 应已注册");
+        let response = app
+            .dispatch_context(
+                edit_handle,
+                app.context(Request::new(json!({}))).with_user(
+                    User::new(8, "admin")
+                        .with_roles(["admin"])
+                        .with_permissions(["module:view", "member:edit"]),
+                ),
+            )
+            .await
+            .expect("availability disabled 不能替代服务端授权或阻断真实派发");
+        assert_eq!(response.code, 0);
     }
 
     #[test]
@@ -1016,6 +1099,19 @@ mod tests {
         .expect_err("物理路径不得作为 custom view_id");
         assert!(matches!(
             physical_path,
+            BuildError::InvalidReference {
+                kind: "Action Presentation",
+                ..
+            }
+        ));
+
+        let blank_availability = build(
+            ActionPresentationSpec::new(ActionPlacement::Toolbar, ActionInteraction::Invoke)
+                .availability(AvailabilityHint::hidden("   ")),
+        )
+        .expect_err("空白 availability reason 必须在启动期失败");
+        assert!(matches!(
+            blank_availability,
             BuildError::InvalidReference {
                 kind: "Action Presentation",
                 ..

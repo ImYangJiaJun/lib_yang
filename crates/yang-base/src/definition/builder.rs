@@ -228,6 +228,7 @@ impl Registry {
                             placement: presentation.placement,
                             interaction: presentation.interaction,
                             confirmation: presentation.confirmation.clone(),
+                            availability: presentation.availability.clone(),
                             view_id: presentation.view_id.clone(),
                         })
                         .collect(),
@@ -724,6 +725,13 @@ fn validate_action_presentation(
             return Err(invalid("只有 custom 交互可以声明 view_id"));
         }
         (_, None) => {}
+    }
+
+    if let Some(availability) = &presentation.availability {
+        let reason = availability.reason.trim();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(invalid("availability reason 必须在 1..=500 字符"));
+        }
     }
 
     let expected_response = match presentation.interaction {

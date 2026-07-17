@@ -53,8 +53,8 @@ pub use spec::{
 pub use ui::{
     ActionConfirmation, ActionDemoParamSchema, ActionDemoSchema, ActionInteraction,
     ActionPlacement, ActionPresentationSchema, ActionPresentationSpec, ActionResponseKind,
-    FormFieldSchema, FormSchema, TableColumnSchema, TableViewSchema, UiCatalog, UiParamSource,
-    WidgetHint, UI_SCHEMA_VERSION,
+    AvailabilityHint, AvailabilityState, FormFieldSchema, FormSchema, TableColumnSchema,
+    TableViewSchema, UiCatalog, UiParamSource, WidgetHint, UI_SCHEMA_VERSION,
 };
 pub use view::CompiledTableView;
 
