@@ -1,7 +1,7 @@
 //! Token 撤销 / 黑名单机制（H-4）
 //!
 //! JWT 一经签发，在过期前本身无法失效。对登出、改密、强制下线等场景，
-//! 需要一个额外的撤销层。本模块基于 [`GlobalRedis`] 提供两层撤销能力：
+//! 需要一个额外的撤销层。本模块基于 `ToolsBuilder` 显式注入的 Redis 客户端提供两层撤销能力：
 //!
 //! 1. **按单个 Token 撤销（jti 黑名单）**：用于登出。撤销时把 Token 的 `jti`
 //!    写入 Redis，TTL 设为 Token 剩余有效期（过期后 key 自动消失，黑名单不会
@@ -15,7 +15,6 @@
 //! 设计约束：**不修改** [`TokenManager::verify_token`] 的现有签名与行为，
 //! 撤销校验通过 [`TokenManager::verify_token_checked`] 提供，保持向后兼容。
 
-use crate::database::GlobalRedis;
 use crate::error::BaseError;
 use crate::token::manager::current_unix_timestamp;
 use crate::token::{TokenClaims, TokenManager};
@@ -96,7 +95,10 @@ impl TokenManager {
             return Ok(());
         }
 
-        GlobalRedis::set(blacklist_key(&claims.jti), "1", Some(ttl as i64)).await?;
+        self.revocation_cache()?
+            .setex(blacklist_key(&claims.jti), ttl as i64, "1")
+            .await
+            .map_err(BaseError::RedisOperationFailed)?;
         Ok(())
     }
 
@@ -112,7 +114,11 @@ impl TokenManager {
     /// - `Ok(false)`: 未撤销
     /// - `Err(BaseError::RedisOperationFailed)`: Redis 查询失败
     pub async fn is_revoked(&self, jti: &str) -> Result<bool, BaseError> {
-        let count = GlobalRedis::exists(&[blacklist_key(jti)]).await?;
+        let count = self
+            .revocation_cache()?
+            .exists(&[blacklist_key(jti)])
+            .await
+            .map_err(BaseError::RedisOperationFailed)?;
         Ok(count > 0)
     }
 
@@ -137,11 +143,14 @@ impl TokenManager {
     ///
     /// # 依赖
     ///
-    /// 依赖 [`crate::database::GlobalRedis`] 已初始化可用。
+    /// 依赖 `ToolsBuilder` 已为 TokenManager 连接 Redis 撤销存储。
     pub async fn revoke_by_subject(&self, sub: &str) -> Result<(), BaseError> {
         let now = current_unix_timestamp()?;
         let ttl = self.refresh_token_expiry();
-        GlobalRedis::set(subject_min_iat_key(sub), now.to_string(), Some(ttl as i64)).await?;
+        self.revocation_cache()?
+            .setex(subject_min_iat_key(sub), ttl as i64, now.to_string())
+            .await
+            .map_err(BaseError::RedisOperationFailed)?;
         Ok(())
     }
 
@@ -157,7 +166,12 @@ impl TokenManager {
     /// - `Ok(None)`: 该用户无批量撤销记录
     /// - `Err(BaseError::RedisOperationFailed)`: Redis 查询失败
     pub async fn subject_min_iat(&self, sub: &str) -> Result<Option<u64>, BaseError> {
-        match GlobalRedis::get(subject_min_iat_key(sub)).await? {
+        match self
+            .revocation_cache()?
+            .get(subject_min_iat_key(sub))
+            .await
+            .map_err(BaseError::RedisOperationFailed)?
+        {
             // 解析失败视为无水位线，避免因脏数据误杀合法 Token
             Some(raw) => {
                 if let Ok(ts) = raw.parse::<u64>() {
@@ -187,11 +201,14 @@ impl TokenManager {
     ///
     /// - `Ok(true)`: 成功将 jti 写入黑名单（本次是第一个到达的）
     /// - `Ok(false)`: jti 已在黑名单中（竞态中落败），或 ttl 为 0（Token 已过期）
-    pub(crate) async fn try_revoke_once(jti: &str, ttl: u64) -> Result<bool, BaseError> {
+    pub(crate) async fn try_revoke_once(&self, jti: &str, ttl: u64) -> Result<bool, BaseError> {
         if ttl == 0 {
             return Ok(false);
         }
-        GlobalRedis::set_nx_ex(blacklist_key(jti), "1", ttl as i64).await
+        self.revocation_cache()?
+            .set_nx_ex(blacklist_key(jti), "1", ttl as i64)
+            .await
+            .map_err(BaseError::RedisOperationFailed)
     }
 
     /// 验证 Token，并额外检查黑名单。
@@ -218,11 +235,14 @@ impl TokenManager {
 
         // PERF-2: 将两次 Redis 读（EXISTS + GET）合并为一条 pipeline，2 RTT → 1 RTT。
         // 对已黑名单 token 会失去短路（不再提前返回），但撤销场景罕见，可接受。
-        let mut pipeline = GlobalRedis::client()?.pipeline();
+        let mut pipeline = self.revocation_cache()?.pipeline();
         pipeline
             .exists(blacklist_key(&claims.jti))
             .get(subject_min_iat_key(&claims.sub));
-        let results = pipeline.execute().await?;
+        let results = pipeline
+            .execute()
+            .await
+            .map_err(BaseError::RedisOperationFailed)?;
 
         // results[0]: EXISTS → Int(0) 或 Int(1)
         let revoked_count = results[0].as_i64().unwrap_or(0);

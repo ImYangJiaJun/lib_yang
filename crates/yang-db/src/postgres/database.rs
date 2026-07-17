@@ -133,9 +133,9 @@ impl DatabaseConfig {
 ///     let db = Database::connect("postgres://user:password@localhost:5432/test").await?;
 ///
 ///     // 使用查询构建器
-///     let builder = db.table("users")
-///         .field("id")
-///         .field("name");
+///     let builder = db.table(yang_db::table!("users"))
+///         .field(yang_db::field!("id"))
+///         .field(yang_db::field!("name"));
 ///
 ///     // 执行查询（需要实现 select 方法）
 ///     // let users = builder.select::<User>().await?;
@@ -188,9 +188,21 @@ impl Database {
         Ok(Self { pool, config })
     }
 
+    /// 从调用方已创建的连接池构造数据库入口。
+    ///
+    /// 该构造器不建立连接，也不写入进程全局状态，供显式资源所有权与离线测试使用。
+    ///
+    /// # 错误
+    ///
+    /// 当 `config` 的连接数或超时参数非法时返回 [`DbError::InvalidArgument`]。
+    pub fn from_pool(pool: PgPool, config: DatabaseConfig) -> Result<Self, DbError> {
+        config.validate()?;
+        Ok(Self { pool, config })
+    }
+
     /// 选择表，返回查询构建器
-    pub fn table(&self, table_name: &str) -> QueryBuilder<'_> {
-        QueryBuilder::new(&self.pool, table_name, self.config.enable_logging)
+    pub fn table(&self, table: &crate::TableRef) -> QueryBuilder<'_> {
+        QueryBuilder::new(&self.pool, table.as_str(), self.config.enable_logging)
     }
 
     /// 获取底层 sqlx 连接池的引用
@@ -337,21 +349,21 @@ impl Database {
     /// 表名经 `quote_identifier` 校验+转义（DB-6，双引号方言）；非法表名返回
     /// `InvalidArgument`。
     #[allow(deprecated)]
-    pub async fn drop_table(&self, table_name: &str) -> Result<(), DbError> {
-        let quoted = crate::postgres::identifier::quote_identifier(table_name)?;
+    pub async fn drop_table(&self, table_name: &crate::TableRef) -> Result<(), DbError> {
+        let quoted = crate::postgres::identifier::quote_identifier(table_name.as_str())?;
         let sql = format!("DROP TABLE IF EXISTS {}", quoted);
         self.execute(&sql).await?;
         Ok(())
     }
 
     /// 检查表是否存在
-    pub async fn table_exists(&self, table_name: &str) -> Result<bool, DbError> {
+    pub async fn table_exists(&self, table_name: &crate::TableRef) -> Result<bool, DbError> {
         // PostgreSQL 使用 current_schema() 限定当前模式，并以 $1 绑定表名避免注入
         let sql = "SELECT COUNT(*) FROM information_schema.tables \
              WHERE table_schema = current_schema() AND table_name = $1";
 
         let row: (i64,) = sqlx::query_as(sql)
-            .bind(table_name)
+            .bind(table_name.as_str())
             .fetch_one(&self.pool)
             .await?;
 

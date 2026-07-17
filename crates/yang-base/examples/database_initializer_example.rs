@@ -162,21 +162,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::connect(db_url).await?;
 
     // 检查用户表
-    if db.table_exists("users").await? {
+    if db.table_exists(yang_db::table!("users")).await? {
         println!("   ✓ users 表已创建");
     } else {
         println!("   ✗ users 表未创建");
     }
 
     // 检查订单表
-    if db.table_exists("orders").await? {
+    if db.table_exists(yang_db::table!("orders")).await? {
         println!("   ✓ orders 表已创建");
     } else {
         println!("   ✗ orders 表未创建");
     }
 
     // 检查迁移记录表
-    if db.table_exists("_migrations").await? {
+    if db.table_exists(yang_db::table!("_migrations")).await? {
         println!("   ✓ _migrations 表已创建");
     } else {
         println!("   ✗ _migrations 表未创建");

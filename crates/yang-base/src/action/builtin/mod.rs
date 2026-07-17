@@ -16,7 +16,7 @@ pub use put::{PutAction, PutInput};
 pub use select::{OrderByItem, SelectAction, SelectQuery, SelectResult};
 pub use table::{EmptyInput, TableAction, TableSchemaResponse};
 
-pub(crate) use catalog_schema::crud_contracts;
+pub(crate) use catalog_schema::{crud_contracts, BuiltinActionContract};
 
 #[cfg(test)]
 mod __tests__;

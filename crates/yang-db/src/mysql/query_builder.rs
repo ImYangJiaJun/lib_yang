@@ -1,6 +1,5 @@
 use crate::mysql::condition::{Condition, SqlValue};
 use crate::mysql::field::{FieldType, JoinClause, OrderClause};
-use crate::sql_types::TrustedSqlExpr;
 use sqlx::mysql::MySqlPool;
 use std::collections::HashMap;
 
@@ -938,19 +937,6 @@ impl SqlGenerator {
 /// 仅处理比较操作符（`=`、`!=`、`>`、`<`、`>=`、`<=`）。无法匹配时把 `value`
 /// 原样通过 `Err` 交还调用方，便于上层继续处理 like 等其它操作符而不丢失所有权。
 /// 抽出此助手以消除 `where_and` / `where_or` / `having_cond` 三处重复的映射 match。
-fn map_comparison_condition(field: &str, op: &str, value: SqlValue) -> Result<Condition, SqlValue> {
-    match op {
-        "=" => Ok(Condition::Eq(field.to_string(), value)),
-        "!=" => Ok(Condition::Ne(field.to_string(), value)),
-        ">" => Ok(Condition::Gt(field.to_string(), value)),
-        "<" => Ok(Condition::Lt(field.to_string(), value)),
-        ">=" => Ok(Condition::Gte(field.to_string(), value)),
-        "<=" => Ok(Condition::Lte(field.to_string(), value)),
-        // 非比较操作符：把值原样交还调用方处理
-        _ => Err(value),
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 enum UnionOperator {
     Distinct,
@@ -973,9 +959,13 @@ impl ArithmeticOperator {
 }
 
 /// 查询构建器
+enum QueryExecutor<'a> {
+    Pool(&'a MySqlPool),
+    Transaction(&'a mut crate::mysql::Transaction),
+}
+
 pub struct QueryBuilder<'a> {
-    #[allow(dead_code)]
-    pool: &'a MySqlPool,
+    executor: QueryExecutor<'a>,
     table: String,
     fields: Vec<String>,
     #[allow(dead_code)]
@@ -998,10 +988,39 @@ pub struct QueryBuilder<'a> {
 }
 
 impl<'a> QueryBuilder<'a> {
+    /// 从共享 pool 与受控表引用创建查询；供上层权限/租户计划编译器使用。
+    #[doc(hidden)]
+    pub fn from_pool(pool: &'a MySqlPool, table: &crate::TableRef) -> Self {
+        Self::new(pool, table.as_str(), false)
+    }
+
     /// 创建新的查询构建器
     pub(crate) fn new(pool: &'a MySqlPool, table_name: &str, enable_logging: bool) -> Self {
         Self {
-            pool,
+            executor: QueryExecutor::Pool(pool),
+            table: table_name.to_string(),
+            fields: Vec::new(),
+            conditions: Vec::new(),
+            joins: Vec::new(),
+            order_by: Vec::new(),
+            group_by: Vec::new(),
+            having_clause: Vec::new(),
+            limit: None,
+            offset: None,
+            distinct: false,
+            unions: Vec::new(),
+            field_types: HashMap::new(),
+            enable_logging,
+        }
+    }
+
+    pub(crate) fn new_transaction(
+        transaction: &'a mut crate::mysql::Transaction,
+        table_name: &str,
+        enable_logging: bool,
+    ) -> Self {
+        Self {
+            executor: QueryExecutor::Transaction(transaction),
             table: table_name.to_string(),
             fields: Vec::new(),
             conditions: Vec::new(),
@@ -1027,71 +1046,64 @@ impl<'a> QueryBuilder<'a> {
     /// [`is_valid_identifier`](crate::mysql::is_valid_identifier) /
     /// [`quote_identifier`](crate::mysql::quote_identifier) 校验或转义后再传入。
     /// 写入路径（INSERT/UPDATE/UPSERT 的列名与各 DML 表名）已在生成层强制 quote。
-    pub fn field(mut self, field: &str) -> Self {
-        self.fields.push(TrustedSqlExpr::new(field).into_string());
+    pub fn field(mut self, field: &crate::FieldRef) -> Self {
+        self.fields.push(field.mysql_quoted().to_string());
+        self
+    }
+
+    /// 添加受控聚合表达式。
+    pub fn expr(mut self, expression: crate::SelectExpr) -> Self {
+        self.fields.push(expression.mysql_sql());
         self
     }
 
     /// 选择多个字段
-    pub fn fields(mut self, fields: &[&str]) -> Self {
+    pub fn fields(mut self, fields: &[&crate::FieldRef]) -> Self {
         for field in fields {
-            self.fields.push(TrustedSqlExpr::new(field).into_string());
+            self.fields.push(field.mysql_quoted().to_string());
         }
         self
     }
 
-    /// 选择一个受严格校验并按 MySQL 方言转义的列名。
-    pub fn field_identifier(mut self, field: &str) -> Result<Self, crate::error::DbError> {
-        self.fields
-            .push(crate::mysql::identifier::quote_qualified(field)?);
-        Ok(self)
-    }
-
-    /// 选择多个受严格校验并按 MySQL 方言转义的列名。
-    pub fn field_identifiers(mut self, fields: &[&str]) -> Result<Self, crate::error::DbError> {
-        for field in fields {
-            self.fields
-                .push(crate::mysql::identifier::quote_qualified(field)?);
-        }
-        Ok(self)
-    }
-
     /// 标记字段为 JSON 类型
-    pub fn json(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Json);
+    pub fn json(mut self, field: &crate::FieldRef) -> Self {
+        self.field_types
+            .insert(field.as_str().to_string(), FieldType::Json);
         self
     }
 
     /// 标记字段为 DATETIME 类型
-    pub fn datetime(mut self, field: &str) -> Self {
+    pub fn datetime(mut self, field: &crate::FieldRef) -> Self {
         self.field_types
-            .insert(field.to_string(), FieldType::DateTime);
+            .insert(field.as_str().to_string(), FieldType::DateTime);
         self
     }
 
     /// 标记字段为 TIMESTAMP 类型
-    pub fn timestamp(mut self, field: &str) -> Self {
+    pub fn timestamp(mut self, field: &crate::FieldRef) -> Self {
         self.field_types
-            .insert(field.to_string(), FieldType::Timestamp);
+            .insert(field.as_str().to_string(), FieldType::Timestamp);
         self
     }
 
     /// 标记字段为 DECIMAL 类型
-    pub fn decimal(mut self, field: &str) -> Self {
+    pub fn decimal(mut self, field: &crate::FieldRef) -> Self {
         self.field_types
-            .insert(field.to_string(), FieldType::Decimal);
+            .insert(field.as_str().to_string(), FieldType::Decimal);
         self
     }
 
     /// 标记字段为 BLOB 类型
-    pub fn blob(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Blob);
+    pub fn blob(mut self, field: &crate::FieldRef) -> Self {
+        self.field_types
+            .insert(field.as_str().to_string(), FieldType::Blob);
         self
     }
 
     /// 标记字段为 TEXT 类型
-    pub fn text(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Text);
+    pub fn text(mut self, field: &crate::FieldRef) -> Self {
+        self.field_types
+            .insert(field.as_str().to_string(), FieldType::Text);
         self
     }
 
@@ -1145,59 +1157,31 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
     /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_and<V>(
-        mut self,
-        field: &str,
-        op: &str,
-        value: V,
-    ) -> Result<Self, crate::error::DbError>
+    pub fn where_and<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         use crate::mysql::condition::{Condition, SqlValue};
 
-        let sql_value = value.into();
-        // 先尝试 6 个比较操作符的共享映射；Err 时拿回值继续判断 like
-        let condition = match map_comparison_condition(field, op, sql_value) {
-            Ok(c) => c,
-            Err(sql_value) => match op {
-                "like" | "LIKE" => {
-                    if let SqlValue::String(s) = sql_value {
-                        Condition::Like(field.to_string(), s)
-                    } else {
-                        // 如果不是字符串，转换为字符串
-                        Condition::Like(field.to_string(), format!("{:?}", sql_value))
-                    }
-                }
-                // 不支持的操作符：返回错误而非 panic
-                _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
-            },
+        let field = field.as_str().to_string();
+        let value = value.into();
+        let condition = match op {
+            crate::CompareOp::Eq => Condition::Eq(field, value),
+            crate::CompareOp::Ne => Condition::Ne(field, value),
+            crate::CompareOp::Gt => Condition::Gt(field, value),
+            crate::CompareOp::Lt => Condition::Lt(field, value),
+            crate::CompareOp::Gte => Condition::Gte(field, value),
+            crate::CompareOp::Lte => Condition::Lte(field, value),
+            crate::CompareOp::Like => Condition::Like(
+                field,
+                match value {
+                    SqlValue::String(value) => value,
+                    other => format!("{other:?}"),
+                },
+            ),
         };
-
         self.conditions.push(condition);
-        Ok(self)
-    }
-
-    /// 添加 AND 条件（不检查操作符，保持向后兼容）
-    ///
-    /// 与 `where_and` 相同，但遇到不支持的操作符时直接 panic，
-    /// 保持原有行为，供需要链式调用且确定操作符合法的场景使用。
-    ///
-    /// # 参数
-    /// - `field`: 字段名
-    /// - `op`: 比较操作符（必须是支持的操作符，否则 panic）
-    /// - `value`: 比较值
-    #[deprecated(
-        since = "0.1.3",
-        note = "使用 `where_and` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
-    )]
-    pub fn where_and_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
-    where
-        V: Into<crate::mysql::condition::SqlValue>,
-    {
-        // 调用 where_and 并在出错时 panic，保持原有行为
-        self.where_and(field, op, value)
-            .unwrap_or_else(|e| panic!("{}", e))
+        self
     }
 
     /// 添加 OR 条件
@@ -1213,32 +1197,28 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
     /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_or<V>(
-        mut self,
-        field: &str,
-        op: &str,
-        value: V,
-    ) -> Result<Self, crate::error::DbError>
+    pub fn where_or<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         use crate::mysql::condition::{Condition, SqlValue};
 
-        let sql_value = value.into();
-        // 先尝试 6 个比较操作符的共享映射；Err 时拿回值继续判断 like
-        let condition = match map_comparison_condition(field, op, sql_value) {
-            Ok(c) => c,
-            Err(sql_value) => match op {
-                "like" | "LIKE" => {
-                    if let SqlValue::String(s) = sql_value {
-                        Condition::Like(field.to_string(), s)
-                    } else {
-                        Condition::Like(field.to_string(), format!("{:?}", sql_value))
-                    }
-                }
-                // 不支持的操作符：返回错误而非 panic
-                _ => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
-            },
+        let field = field.as_str().to_string();
+        let value = value.into();
+        let condition = match op {
+            crate::CompareOp::Eq => Condition::Eq(field, value),
+            crate::CompareOp::Ne => Condition::Ne(field, value),
+            crate::CompareOp::Gt => Condition::Gt(field, value),
+            crate::CompareOp::Lt => Condition::Lt(field, value),
+            crate::CompareOp::Gte => Condition::Gte(field, value),
+            crate::CompareOp::Lte => Condition::Lte(field, value),
+            crate::CompareOp::Like => Condition::Like(
+                field,
+                match value {
+                    SqlValue::String(value) => value,
+                    other => format!("{other:?}"),
+                },
+            ),
         };
 
         // 如果已有条件，将新条件与现有条件用 OR 组合
@@ -1257,33 +1237,11 @@ impl<'a> QueryBuilder<'a> {
             self.conditions.push(condition);
         }
 
-        Ok(self)
-    }
-
-    /// 添加 OR 条件（不检查操作符，保持向后兼容）
-    ///
-    /// 与 `where_or` 相同，但遇到不支持的操作符时直接 panic，
-    /// 保持原有行为，供需要链式调用且确定操作符合法的场景使用。
-    ///
-    /// # 参数
-    /// - `field`: 字段名
-    /// - `op`: 比较操作符（必须是支持的操作符，否则 panic）
-    /// - `value`: 比较值
-    #[deprecated(
-        since = "0.1.3",
-        note = "使用 `where_or` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
-    )]
-    pub fn where_or_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
-    where
-        V: Into<crate::mysql::condition::SqlValue>,
-    {
-        // 调用 where_or 并在出错时 panic，保持原有行为
-        self.where_or(field, op, value)
-            .unwrap_or_else(|e| panic!("{}", e))
+        self
     }
 
     /// 添加 IN 条件
-    pub fn where_in<V>(mut self, field: &str, values: Vec<V>) -> Self
+    pub fn where_in<V>(mut self, field: &crate::FieldRef, values: Vec<V>) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
@@ -1291,7 +1249,7 @@ impl<'a> QueryBuilder<'a> {
 
         let sql_values: Vec<_> = values.into_iter().map(|v| v.into()).collect();
         self.conditions
-            .push(Condition::In(field.to_string(), sql_values));
+            .push(Condition::In(field.as_str().to_string(), sql_values));
         self
     }
 
@@ -1311,24 +1269,25 @@ impl<'a> QueryBuilder<'a> {
     /// 添加受控 IN 子查询，外层字段必须是合法的单段或两段标识符。
     pub fn where_in_subquery(
         mut self,
-        field: &str,
+        field: &crate::FieldRef,
         subquery: crate::mysql::Subquery,
-    ) -> Result<Self, crate::error::DbError> {
-        crate::mysql::identifier::quote_qualified(field)?;
-        self.conditions
-            .push(Condition::InSubquery(field.to_string(), Box::new(subquery)));
-        Ok(self)
+    ) -> Self {
+        self.conditions.push(Condition::InSubquery(
+            field.as_str().to_string(),
+            Box::new(subquery),
+        ));
+        self
     }
 
     /// 添加 BETWEEN 条件
-    pub fn where_between<V>(mut self, field: &str, start: V, end: V) -> Self
+    pub fn where_between<V>(mut self, field: &crate::FieldRef, start: V, end: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
         use crate::mysql::condition::Condition;
 
         self.conditions.push(Condition::Between(
-            field.to_string(),
+            field.as_str().to_string(),
             start.into(),
             end.into(),
         ));
@@ -1348,15 +1307,16 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct User { id: i64 }
-    /// let users = db.table("users")
-    ///     .where_null("deleted_at")
+    /// let users = db.table(yang_db::table!("users"))
+    ///     .where_null(yang_db::field!("deleted_at"))
     ///     .select::<User>()
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn where_null(mut self, field: &str) -> Self {
-        self.conditions.push(Condition::IsNull(field.to_string()));
+    pub fn where_null(mut self, field: &crate::FieldRef) -> Self {
+        self.conditions
+            .push(Condition::IsNull(field.as_str().to_string()));
         self
     }
 
@@ -1366,10 +1326,19 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # 参数
     /// - `field`: 字段名
-    pub fn where_not_null(mut self, field: &str) -> Self {
+    pub fn where_not_null(mut self, field: &crate::FieldRef) -> Self {
         self.conditions
-            .push(Condition::IsNotNull(field.to_string()));
+            .push(Condition::IsNotNull(field.as_str().to_string()));
         self
+    }
+
+    /// 应用由上层权限模块编译的受控布尔查询树。
+    pub fn where_predicate(
+        mut self,
+        predicate: &crate::Predicate,
+    ) -> Result<Self, crate::error::DbError> {
+        self.conditions.push(predicate_condition(predicate)?);
+        Ok(self)
     }
 
     /// 添加 HAVING 条件
@@ -1389,169 +1358,109 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct OrderSummary { user_id: i64, cnt: i64 }
-    /// let result = db.table("orders")
-    ///     .field("user_id")
-    ///     .field("COUNT(*) as cnt")
-    ///     .group("user_id")
-    ///     .having_cond("cnt", ">", 5i64)?
+    /// let result = db.table(yang_db::table!("orders"))
+    ///     .field(yang_db::field!("user_id"))
+    ///     .expr(yang_db::SelectExpr::count_all().alias(yang_db::field!("cnt")))
+    ///     .group(yang_db::field!("user_id"))
+    ///     .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
     ///     .select::<OrderSummary>()
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn having_cond<V>(
-        mut self,
-        field: &str,
-        op: &str,
-        value: V,
-    ) -> Result<Self, crate::error::DbError>
+    pub fn having_cond<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
-        let sql_value = value.into();
-        // HAVING 仅支持 6 个比较操作符；like 等其它操作符仍返回 UnsupportedOperator（不 panic）
-        let condition = match map_comparison_condition(field, op, sql_value) {
-            Ok(c) => c,
-            Err(_) => return Err(crate::error::DbError::UnsupportedOperator(op.to_string())),
+        let field = field.as_str().to_string();
+        let value = value.into();
+        let condition = match op {
+            crate::CompareOp::Eq => Condition::Eq(field, value),
+            crate::CompareOp::Ne => Condition::Ne(field, value),
+            crate::CompareOp::Gt => Condition::Gt(field, value),
+            crate::CompareOp::Lt => Condition::Lt(field, value),
+            crate::CompareOp::Gte => Condition::Gte(field, value),
+            crate::CompareOp::Lte => Condition::Lte(field, value),
+            crate::CompareOp::Like => Condition::Like(
+                field,
+                match value {
+                    crate::mysql::condition::SqlValue::String(value) => value,
+                    other => format!("{other:?}"),
+                },
+            ),
         };
         self.having_clause.push(condition);
-        Ok(self)
-    }
-
-    /// 添加 HAVING 条件（不检查操作符，保持向后兼容）
-    ///
-    /// 与 `having_cond` 相同，但遇到不支持的操作符时直接 panic，
-    /// 保持原有行为，供需要链式调用且确定操作符合法的场景使用。
-    ///
-    /// # 弃用说明
-    ///
-    /// 请改用 [`having_cond`]，它在操作符非法时返回 `Err` 而非 panic，
-    /// 可安全地在链式调用中传播错误：
-    ///
-    /// ```no_run
-    /// # use yang_db::Database;
-    /// # async fn example() -> Result<(), yang_db::DbError> {
-    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// # #[derive(serde::Deserialize, sqlx::FromRow)] struct Row { user_id: i64 }
-    /// let result = db.table("orders")
-    ///     .group("user_id")
-    ///     .having_cond("cnt", ">", 5i64)?  // 返回 Result，而非 panic
-    ///     .select::<Row>()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # 参数
-    /// - `field`: 聚合字段或聚合表达式
-    /// - `op`: 比较运算符（必须是支持的操作符，否则 panic）
-    /// - `value`: 比较值
-    #[deprecated(
-        since = "0.1.3",
-        note = "使用 `having_cond` 替代：它在操作符非法时返回 Err 而非 panic，更安全。"
-    )]
-    pub fn having_cond_unchecked<V>(self, field: &str, op: &str, value: V) -> Self
-    where
-        V: Into<crate::mysql::condition::SqlValue>,
-    {
-        // 调用 having_cond 并在出错时 panic，保持原有行为
-        self.having_cond(field, op, value)
-            .unwrap_or_else(|e| panic!("{}", e))
+        self
     }
 
     /// 使用可信表/ON 表达式的 INNER JOIN。
     ///
     /// 外部标识符的等值连接请使用 [`Self::join_on_identifiers`]。
-    pub fn join(mut self, table: &str, on: &str) -> Self {
+    pub fn join(
+        mut self,
+        table: &crate::TableRef,
+        left: &crate::FieldRef,
+        right: &crate::FieldRef,
+    ) -> Self {
         use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Inner,
-            table: TrustedSqlExpr::new(table).into_string(),
-            on: TrustedSqlExpr::new(on).into_string(),
+            table: format!("`{}`", table.as_str()),
+            on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
     }
 
     /// LEFT JOIN
-    pub fn left_join(mut self, table: &str, on: &str) -> Self {
+    pub fn left_join(
+        mut self,
+        table: &crate::TableRef,
+        left: &crate::FieldRef,
+        right: &crate::FieldRef,
+    ) -> Self {
         use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Left,
-            table: TrustedSqlExpr::new(table).into_string(),
-            on: TrustedSqlExpr::new(on).into_string(),
+            table: format!("`{}`", table.as_str()),
+            on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
     }
 
     /// RIGHT JOIN
-    pub fn right_join(mut self, table: &str, on: &str) -> Self {
+    pub fn right_join(
+        mut self,
+        table: &crate::TableRef,
+        left: &crate::FieldRef,
+        right: &crate::FieldRef,
+    ) -> Self {
         use crate::mysql::field::{JoinClause, JoinType};
 
         self.joins.push(JoinClause {
             join_type: JoinType::Right,
-            table: TrustedSqlExpr::new(table).into_string(),
-            on: TrustedSqlExpr::new(on).into_string(),
+            table: format!("`{}`", table.as_str()),
+            on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
     }
 
     /// 按可信 SQL 表达式排序；外部列名请使用 [`Self::order_identifier`]。
-    pub fn order(mut self, field: &str, asc: bool) -> Self {
+    pub fn order(mut self, field: &crate::FieldRef, order: crate::SortOrder) -> Self {
         use crate::mysql::field::OrderClause;
 
         self.order_by.push(OrderClause {
-            field: TrustedSqlExpr::new(field).into_string(),
-            asc,
+            field: field.mysql_quoted().to_string(),
+            asc: order.is_ascending(),
         });
         self
     }
 
     /// 按可信 SQL 表达式分组；外部列名请使用 [`Self::group_identifier`]。
-    pub fn group(mut self, field: &str) -> Self {
-        self.group_by.push(TrustedSqlExpr::new(field).into_string());
+    pub fn group(mut self, field: &crate::FieldRef) -> Self {
+        self.group_by.push(field.mysql_quoted().to_string());
         self
-    }
-
-    /// 按受严格校验的列名排序。
-    pub fn order_identifier(
-        mut self,
-        field: &str,
-        asc: bool,
-    ) -> Result<Self, crate::error::DbError> {
-        self.order_by.push(OrderClause {
-            field: crate::mysql::identifier::quote_qualified(field)?,
-            asc,
-        });
-        Ok(self)
-    }
-
-    /// 按受严格校验的列名分组。
-    pub fn group_identifier(mut self, field: &str) -> Result<Self, crate::error::DbError> {
-        self.group_by
-            .push(crate::mysql::identifier::quote_qualified(field)?);
-        Ok(self)
-    }
-
-    /// 使用受严格校验的表名和两侧列名构造 INNER JOIN 等值条件。
-    pub fn join_on_identifiers(
-        mut self,
-        table: &str,
-        left: &str,
-        right: &str,
-    ) -> Result<Self, crate::error::DbError> {
-        use crate::mysql::field::JoinType;
-
-        let table = crate::mysql::identifier::quote_identifier(table)?;
-        let left = crate::mysql::identifier::quote_qualified(left)?;
-        let right = crate::mysql::identifier::quote_qualified(right)?;
-        self.joins.push(JoinClause {
-            join_type: JoinType::Inner,
-            table,
-            on: format!("{left} = {right}"),
-        });
-        Ok(self)
     }
 
     /// 限制返回数量
@@ -1648,8 +1557,8 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// let user: Option<User> = db.table("users")
-    ///     .where_and("id", "=", 1)?
+    /// let user: Option<User> = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
     ///     .find()
     ///     .await?;
     ///
@@ -1688,8 +1597,16 @@ impl<'a> QueryBuilder<'a> {
             query = bind_param(query, param);
         }
 
-        // 执行查询
-        let result = query.fetch_optional(self.pool).await;
+        // pool 与事务共享同一份查询计划，只在最终执行器上分流。
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.fetch_optional(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.fetch_optional(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(row) => {
@@ -1733,9 +1650,9 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
-    /// let users: Vec<User> = db.table("users")
-    ///     .where_and("status", "=", 1)?
-    ///     .order("name", true)
+    /// let users: Vec<User> = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .order(yang_db::field!("name"), yang_db::SortOrder::Asc)
     ///     .select()
     ///     .await?;
     ///
@@ -1771,8 +1688,16 @@ impl<'a> QueryBuilder<'a> {
             query = bind_param(query, param);
         }
 
-        // 执行查询
-        let result = query.fetch_all(self.pool).await;
+        // pool 与事务共享同一份查询计划，只在最终执行器上分流。
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.fetch_all(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.fetch_all(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(rows) => {
@@ -1827,7 +1752,17 @@ impl<'a> QueryBuilder<'a> {
             query = bind_scalar_param(query, param);
         }
 
-        match query.fetch_optional(self.pool).await {
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.fetch_optional(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.fetch_optional(&mut *connection).await
+            }
+        };
+
+        match result {
             Ok(value) => Ok(value),
             Err(e) => {
                 log::error!("标量查询失败: {}", e);
@@ -1859,9 +1794,9 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 查询用户名
-    /// let name: Option<String> = db.table("users")
-    ///     .where_and("id", "=", 1)?
-    ///     .value("name")
+    /// let name: Option<String> = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+    ///     .value(yang_db::field!("name"))
     ///     .await?;
     ///
     /// match name {
@@ -1870,8 +1805,8 @@ impl<'a> QueryBuilder<'a> {
     /// }
     ///
     /// // 查询用户数量
-    /// let count: Option<i64> = db.table("users")
-    ///     .where_and("status", "=", 1)?
+    /// let count: Option<i64> = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
     ///     .value("COUNT(*)")
     ///     .await?;
     ///
@@ -1879,18 +1814,19 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn value<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    pub async fn value<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
     {
         if self.enable_logging {
-            log::debug!("执行 value() 查询，字段: {}", field);
+            log::debug!("执行 value() 查询，字段: {}", field.as_str());
         }
 
         // 直接解码为 T（NULL 列触发解码错误的语义保持不变）
         // 验证需求: ID-1 — field 按设计接受 SQL 表达式，与 field() 一致；
         // 若字段来自不可信输入，调用方需先通过 quote_identifier 转义
-        self.fetch_scalar::<T>(field).await
+        let field = super::identifier::quote_identifier(field.as_str())?;
+        self.fetch_scalar::<T>(&field).await
     }
 
     /// 统计记录数量
@@ -1909,14 +1845,14 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 统计所有用户数量
-    /// let total_users = db.table("users")
+    /// let total_users = db.table(yang_db::table!("users"))
     ///     .count()
     ///     .await?;
     /// println!("总用户数: {}", total_users);
     ///
     /// // 统计活跃用户数量
-    /// let active_users = db.table("users")
-    ///     .where_and("status", "=", 1)?
+    /// let active_users = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
     ///     .count()
     ///     .await?;
     /// println!("活跃用户数: {}", active_users);
@@ -1930,7 +1866,7 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 使用 value() 方法查询 COUNT(*)
-        let result = self.value::<i64>("COUNT(*)").await?;
+        let result = self.fetch_scalar::<i64>("COUNT(*)").await?;
 
         // COUNT(*) 总是返回一个值（至少是 0），所以这里 unwrap_or(0) 是安全的
         Ok(result.unwrap_or(0))
@@ -1960,8 +1896,8 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 计算所有订单总金额
-    /// let total_amount = db.table("orders")
-    ///     .sum("amount")
+    /// let total_amount = db.table(yang_db::table!("orders"))
+    ///     .sum(yang_db::field!("amount"))
     ///     .await?;
     ///
     /// match total_amount {
@@ -1970,25 +1906,25 @@ impl<'a> QueryBuilder<'a> {
     /// }
     ///
     /// // 计算已完成订单的总金额
-    /// let completed_amount = db.table("orders")
-    ///     .where_and("status", "=", "completed")?
-    ///     .sum("amount")
+    /// let completed_amount = db.table(yang_db::table!("orders"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")
+    ///     .sum(yang_db::field!("amount"))
     ///     .await?;
     ///
     /// println!("已完成订单总金额: {:.2}", completed_amount.unwrap_or(0.0));
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn sum(self, field: &str) -> Result<Option<f64>, crate::error::DbError> {
+    pub async fn sum(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
-            log::debug!("执行 sum() 查询，字段: {}", field);
+            log::debug!("执行 sum() 查询，字段: {}", field.as_str());
         }
 
         // 构建 SUM(field) 表达式，并使用 CAST 转换为 DOUBLE
         // 这样可以统一处理整数和浮点数字段的求和结果
         // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
-        let quoted_field = super::identifier::quote_identifier(field)?;
+        let quoted_field = super::identifier::quote_identifier(field.as_str())?;
         let sum_expr = format!("CAST(SUM({quoted_field}) AS DOUBLE)");
 
         // 用 Option<f64> 解码处理 NULL；fetch_scalar 外层 Option 表示有无行，
@@ -2025,8 +1961,8 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 计算所有用户的平均年龄
-    /// let avg_age = db.table("users")
-    ///     .avg("age")
+    /// let avg_age = db.table(yang_db::table!("users"))
+    ///     .avg(yang_db::field!("age"))
     ///     .await?;
     ///
     /// if let Some(age) = avg_age {
@@ -2036,25 +1972,25 @@ impl<'a> QueryBuilder<'a> {
     /// }
     ///
     /// // 计算已完成订单的平均金额
-    /// let avg_amount = db.table("orders")
-    ///     .where_and("status", "=", "completed")?
-    ///     .avg("amount")
+    /// let avg_amount = db.table(yang_db::table!("orders"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")
+    ///     .avg(yang_db::field!("amount"))
     ///     .await?;
     ///
     /// println!("已完成订单平均金额: {:.2}", avg_amount.unwrap_or(0.0));
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn avg(self, field: &str) -> Result<Option<f64>, crate::error::DbError> {
+    pub async fn avg(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
-            log::debug!("执行 avg() 查询，字段: {}", field);
+            log::debug!("执行 avg() 查询，字段: {}", field.as_str());
         }
 
         // 构建 AVG(field) 表达式，并使用 CAST 转换为 DOUBLE
         // 这样可以统一处理整数和浮点数字段的平均值结果
         // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
-        let quoted_field = super::identifier::quote_identifier(field)?;
+        let quoted_field = super::identifier::quote_identifier(field.as_str())?;
         let avg_expr = format!("CAST(AVG({quoted_field}) AS DOUBLE)");
 
         // 用 Option<f64> 解码处理 NULL；flatten 后与原实现返回完全一致
@@ -2096,8 +2032,8 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 查询最低价格（浮点数）
-    /// let min_price: Option<f64> = db.table("products")
-    ///     .min("price")
+    /// let min_price: Option<f64> = db.table(yang_db::table!("products"))
+    ///     .min(yang_db::field!("price"))
     ///     .await?;
     ///
     /// if let Some(price) = min_price {
@@ -2107,16 +2043,16 @@ impl<'a> QueryBuilder<'a> {
     /// }
     ///
     /// // 查询最小库存数量（整数）
-    /// let min_stock: Option<i32> = db.table("products")
-    ///     .where_and("status", "=", 1)?
-    ///     .min("stock")
+    /// let min_stock: Option<i32> = db.table(yang_db::table!("products"))
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .min(yang_db::field!("stock"))
     ///     .await?;
     ///
     /// println!("最小库存: {}", min_stock.unwrap_or(0));
     ///
     /// // 查询最早注册时间（字符串）
-    /// let earliest_date: Option<String> = db.table("users")
-    ///     .min("created_at")
+    /// let earliest_date: Option<String> = db.table(yang_db::table!("users"))
+    ///     .min(yang_db::field!("created_at"))
     ///     .await?;
     ///
     /// if let Some(date) = earliest_date {
@@ -2125,18 +2061,18 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn min<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    pub async fn min<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
     {
         // 记录日志
         if self.enable_logging {
-            log::debug!("执行 min() 查询，字段: {}", field);
+            log::debug!("执行 min() 查询，字段: {}", field.as_str());
         }
 
         // 构建 MIN(field) 表达式
         // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
-        let quoted_field = super::identifier::quote_identifier(field)?;
+        let quoted_field = super::identifier::quote_identifier(field.as_str())?;
         let min_expr = format!("MIN({quoted_field})");
 
         // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
@@ -2178,8 +2114,8 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 查询最高价格（浮点数）
-    /// let max_price: Option<f64> = db.table("products")
-    ///     .max("price")
+    /// let max_price: Option<f64> = db.table(yang_db::table!("products"))
+    ///     .max(yang_db::field!("price"))
     ///     .await?;
     ///
     /// if let Some(price) = max_price {
@@ -2189,16 +2125,16 @@ impl<'a> QueryBuilder<'a> {
     /// }
     ///
     /// // 查询最高分数（整数）
-    /// let max_score: Option<i32> = db.table("scores")
-    ///     .where_and("exam_id", "=", 1)?
-    ///     .max("score")
+    /// let max_score: Option<i32> = db.table(yang_db::table!("scores"))
+    ///     .where_and(yang_db::field!("exam_id"), yang_db::CompareOp::Eq, 1)
+    ///     .max(yang_db::field!("score"))
     ///     .await?;
     ///
     /// println!("最高分: {}", max_score.unwrap_or(0));
     ///
     /// // 查询最新更新时间（字符串）
-    /// let latest_date: Option<String> = db.table("articles")
-    ///     .max("updated_at")
+    /// let latest_date: Option<String> = db.table(yang_db::table!("articles"))
+    ///     .max(yang_db::field!("updated_at"))
     ///     .await?;
     ///
     /// if let Some(date) = latest_date {
@@ -2207,18 +2143,18 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn max<T>(self, field: &str) -> Result<Option<T>, crate::error::DbError>
+    pub async fn max<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
     {
         // 记录日志
         if self.enable_logging {
-            log::debug!("执行 max() 查询，字段: {}", field);
+            log::debug!("执行 max() 查询，字段: {}", field.as_str());
         }
 
         // 构建 MAX(field) 表达式
         // 验证需求: ID-1 — 聚合方法对标识符做转义，杜绝注入
-        let quoted_field = super::identifier::quote_identifier(field)?;
+        let quoted_field = super::identifier::quote_identifier(field.as_str())?;
         let max_expr = format!("MAX({quoted_field})");
 
         // 用 Option<T> 解码处理 NULL；flatten 后与原实现返回完全一致
@@ -2257,7 +2193,7 @@ impl<'a> QueryBuilder<'a> {
     ///     "age": 25
     /// });
     ///
-    /// let user_id = db.table("users")
+    /// let user_id = db.table(yang_db::table!("users"))
     ///     .insert(&user_data)
     ///     .await?;
     ///
@@ -2270,8 +2206,8 @@ impl<'a> QueryBuilder<'a> {
     ///     "items": [{"id": 1, "qty": 2}, {"id": 2, "qty": 1}]
     /// });
     ///
-    /// let order_id = db.table("orders")
-    ///     .json("items")  // 标记 items 字段为 JSON 类型
+    /// let order_id = db.table(yang_db::table!("orders"))
+    ///     .json(yang_db::field!("items"))  // 标记 items 字段为 JSON 类型
     ///     .insert(&order_data)
     ///     .await?;
     ///
@@ -2315,7 +2251,15 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 执行插入
-        let result = query.execute(self.pool).await;
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(query_result) => {
@@ -2370,7 +2314,7 @@ impl<'a> QueryBuilder<'a> {
     ///     json!({"name": "王五", "email": "wangwu@example.com", "age": 28}),
     /// ];
     ///
-    /// let affected_rows = db.table("users")
+    /// let affected_rows = db.table(yang_db::table!("users"))
     ///     .insert_batch(&users)
     ///     .await?;
     ///
@@ -2390,8 +2334,8 @@ impl<'a> QueryBuilder<'a> {
     ///     }),
     /// ];
     ///
-    /// let affected_rows = db.table("orders")
-    ///     .json("items")  // 标记 items 字段为 JSON 类型
+    /// let affected_rows = db.table(yang_db::table!("orders"))
+    ///     .json(yang_db::field!("items"))  // 标记 items 字段为 JSON 类型
     ///     .insert_batch(&orders)
     ///     .await?;
     ///
@@ -2440,7 +2384,7 @@ impl<'a> QueryBuilder<'a> {
     /// ];
     ///
     /// // 每批最多插入 100 条记录
-    /// let affected_rows = db.table("users")
+    /// let affected_rows = db.table(yang_db::table!("users"))
     ///     .insert_batch_with_size(&users, 100)
     ///     .await?;
     ///
@@ -2486,56 +2430,55 @@ impl<'a> QueryBuilder<'a> {
         // PERF-12: 用 div_ceil 计算批次数，避免仅为取 len 而 collect 整个 Vec。
         let chunk_count = data.len().div_ceil(batch_size);
         if chunk_count == 1 {
+            let enable_logging = self.enable_logging;
             let affected = self.insert_chunk(data).await?;
-            if self.enable_logging {
+            if enable_logging {
                 log::debug!("insert_batch_with_size() 单批完成，影响 {} 行", affected);
             }
             return Ok(affected);
         }
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(crate::error::DbError::from)?;
         let mut total_affected = 0u64;
-
-        for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
-            // 序列化本批数据
-            let json_data_list: Vec<serde_json::Value> = chunk
-                .iter()
-                .map(|item| {
-                    serde_json::to_value(item).map_err(|e| {
-                        crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-
-            let mut generator = SqlGenerator::new();
-            generator.build_insert_batch(&self.table, &json_data_list, &self.field_types)?;
-            let sql = generator.get_sql();
-            let params = generator.get_params();
-
-            let mut query = sqlx::query(sql);
-            for param in params {
-                query = bind_execute_param(query, param);
+        match self.executor {
+            QueryExecutor::Pool(pool) => {
+                let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
+                for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
+                    let result = execute_insert_chunk(
+                        &mut transaction,
+                        &self.table,
+                        chunk,
+                        &self.field_types,
+                    )
+                    .await?;
+                    total_affected += result;
+                    if self.enable_logging {
+                        log::debug!("第 {} 批插入成功，影响 {} 行", batch_index + 1, result);
+                    }
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::DbError::from)?;
             }
-            let result = query
-                .execute(&mut *tx)
-                .await
-                .map_err(crate::error::DbError::from)?;
-            total_affected += result.rows_affected();
-
-            if self.enable_logging {
-                log::debug!(
-                    "第 {} 批插入成功，影响 {} 行",
-                    batch_index + 1,
-                    result.rows_affected()
-                );
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                for (batch_index, chunk) in data.chunks(batch_size).enumerate() {
+                    let result = execute_insert_chunk(
+                        &mut *connection,
+                        &self.table,
+                        chunk,
+                        &self.field_types,
+                    )
+                    .await?;
+                    total_affected += result;
+                    if self.enable_logging {
+                        log::debug!("第 {} 批插入成功，影响 {} 行", batch_index + 1, result);
+                    }
+                }
             }
         }
-
-        tx.commit().await.map_err(crate::error::DbError::from)?;
 
         if self.enable_logging {
             log::debug!(
@@ -2561,7 +2504,7 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - Ok(u64): 插入成功，返回受影响的行数
     /// - Err(DbError): 插入失败
-    async fn insert_chunk<T>(&self, data: &[T]) -> Result<u64, crate::error::DbError>
+    async fn insert_chunk<T>(self, data: &[T]) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
     {
@@ -2599,7 +2542,15 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 执行批量插入
-        let result = query.execute(self.pool).await;
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(query_result) => {
@@ -2645,8 +2596,8 @@ impl<'a> QueryBuilder<'a> {
     ///     "age": 30
     /// });
     ///
-    /// let rows_affected = db.table("users")
-    ///     .where_and("id", "=", 1)?
+    /// let rows_affected = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
     ///     .update(&update_data)
     ///     .await?;
     ///
@@ -2696,7 +2647,15 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 执行更新
-        let result = query.execute(self.pool).await;
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(query_result) => {
@@ -2714,27 +2673,35 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 原子增加字段值；增量使用绑定参数，且必须提供 WHERE。
-    pub async fn increment(self, field: &str, amount: i64) -> Result<u64, crate::error::DbError> {
+    pub async fn increment(
+        self,
+        field: &crate::FieldRef,
+        amount: i64,
+    ) -> Result<u64, crate::error::DbError> {
         self.execute_arithmetic_update(field, amount, ArithmeticOperator::Add)
             .await
     }
 
     /// 原子减少字段值；增量使用绑定参数，且必须提供 WHERE。
-    pub async fn decrement(self, field: &str, amount: i64) -> Result<u64, crate::error::DbError> {
+    pub async fn decrement(
+        self,
+        field: &crate::FieldRef,
+        amount: i64,
+    ) -> Result<u64, crate::error::DbError> {
         self.execute_arithmetic_update(field, amount, ArithmeticOperator::Subtract)
             .await
     }
 
     async fn execute_arithmetic_update(
         self,
-        field: &str,
+        field: &crate::FieldRef,
         amount: i64,
         operator: ArithmeticOperator,
     ) -> Result<u64, crate::error::DbError> {
         let mut generator = SqlGenerator::new();
         generator.build_arithmetic_update(
             &self.table,
-            field,
+            field.as_str(),
             operator,
             amount,
             &self.conditions,
@@ -2743,7 +2710,16 @@ impl<'a> QueryBuilder<'a> {
         for param in generator.get_params() {
             query = bind_execute_param(query, param);
         }
-        Ok(query.execute(self.pool).await?.rows_affected())
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        }?;
+        Ok(result.rows_affected())
     }
 
     /// 删除数据
@@ -2763,8 +2739,8 @@ impl<'a> QueryBuilder<'a> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     ///
     /// // 删除指定用户
-    /// let rows_affected = db.table("users")
-    ///     .where_and("id", "=", 1)?
+    /// let rows_affected = db.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
     ///     .delete()
     ///     .await?;
     ///
@@ -2806,7 +2782,15 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // 执行删除
-        let result = query.execute(self.pool).await;
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        };
 
         match result {
             Ok(query_result) => {
@@ -2845,7 +2829,7 @@ impl<'a> QueryBuilder<'a> {
     ///     json!({"id": 1, "name": "张三", "age": 25}),
     ///     json!({"id": 2, "name": "李四", "age": 30}),
     /// ];
-    /// let affected = db.table("users")
+    /// let affected = db.table(yang_db::table!("users"))
     ///     .update_batch(&records, "id")
     ///     .await?;
     /// println!("批量更新了 {} 行", affected);
@@ -2855,7 +2839,7 @@ impl<'a> QueryBuilder<'a> {
     pub async fn update_batch<T>(
         self,
         records: &[T],
-        where_field: &str,
+        where_field: &crate::FieldRef,
     ) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -2875,33 +2859,41 @@ impl<'a> QueryBuilder<'a> {
             })
             .collect::<Result<_, _>>()?;
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(crate::error::DbError::from)?;
         let mut total = 0u64;
-
-        for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
-            let mut generator = SqlGenerator::new();
-            generator.build_update_batch(&self.table, chunk, where_field, &self.field_types)?;
-
-            let sql = generator.get_sql();
-            let params = generator.get_params();
-
-            let mut query = sqlx::query(sql);
-            for param in params {
-                query = bind_execute_param(query, param);
+        match self.executor {
+            QueryExecutor::Pool(pool) => {
+                let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
+                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                    total += execute_update_chunk(
+                        &mut transaction,
+                        &self.table,
+                        chunk,
+                        where_field,
+                        &self.field_types,
+                    )
+                    .await?;
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::DbError::from)?;
             }
-
-            let result = query
-                .execute(&mut *tx)
-                .await
-                .map_err(crate::error::DbError::from)?;
-            total += result.rows_affected();
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                    total += execute_update_chunk(
+                        &mut *connection,
+                        &self.table,
+                        chunk,
+                        where_field,
+                        &self.field_types,
+                    )
+                    .await?;
+                }
+            }
         }
-
-        tx.commit().await.map_err(crate::error::DbError::from)?;
         Ok(total)
     }
 
@@ -2920,7 +2912,7 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// let data = json!({"id": 1, "name": "张三", "email": "zhangsan@example.com"});
-    /// let rows = db.table("users").upsert(&data).await?;
+    /// let rows = db.table(yang_db::table!("users")).upsert(&data).await?;
     /// if rows == 1 {
     ///     println!("新插入记录");
     /// } else if rows == 2 {
@@ -2956,10 +2948,16 @@ impl<'a> QueryBuilder<'a> {
             query = bind_execute_param(query, param);
         }
 
-        let result = query
-            .execute(self.pool)
-            .await
-            .map_err(crate::error::DbError::from)?;
+        let result = match self.executor {
+            QueryExecutor::Pool(pool) => query.execute(pool).await,
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                query.execute(&mut *connection).await
+            }
+        }
+        .map_err(crate::error::DbError::from)?;
         let rows = result.rows_affected();
 
         if self.enable_logging {
@@ -2967,6 +2965,151 @@ impl<'a> QueryBuilder<'a> {
         }
 
         Ok(rows)
+    }
+}
+
+async fn execute_insert_chunk<T>(
+    connection: &mut sqlx::MySqlConnection,
+    table: &str,
+    data: &[T],
+    field_types: &HashMap<String, FieldType>,
+) -> Result<u64, crate::error::DbError>
+where
+    T: serde::Serialize,
+{
+    let json_data_list = data
+        .iter()
+        .map(|item| {
+            serde_json::to_value(item).map_err(|error| {
+                crate::error::DbError::SerializationError(format!("数据序列化失败: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut generator = SqlGenerator::new();
+    generator.build_insert_batch(table, &json_data_list, field_types)?;
+    let mut query = sqlx::query(generator.get_sql());
+    for param in generator.get_params() {
+        query = bind_execute_param(query, param);
+    }
+    Ok(query.execute(connection).await?.rows_affected())
+}
+
+async fn execute_update_chunk(
+    connection: &mut sqlx::MySqlConnection,
+    table: &str,
+    records: &[serde_json::Value],
+    where_field: &crate::FieldRef,
+    field_types: &HashMap<String, FieldType>,
+) -> Result<u64, crate::error::DbError> {
+    let mut generator = SqlGenerator::new();
+    generator.build_update_batch(table, records, where_field.as_str(), field_types)?;
+    let mut query = sqlx::query(generator.get_sql());
+    for param in generator.get_params() {
+        query = bind_execute_param(query, param);
+    }
+    Ok(query.execute(connection).await?.rows_affected())
+}
+
+fn predicate_condition(predicate: &crate::Predicate) -> Result<Condition, crate::error::DbError> {
+    let condition = match predicate {
+        crate::Predicate::Compare(field, operator, value) => {
+            let name = field.as_str().to_string();
+            if matches!(operator, crate::CompareOp::Like) {
+                return value
+                    .as_str()
+                    .map(|pattern| Condition::Like(name, pattern.to_string()))
+                    .ok_or_else(|| {
+                        crate::error::DbError::InvalidArgument(
+                            "LIKE predicate requires string value".to_string(),
+                        )
+                    });
+            }
+            let value = predicate_value(value);
+            match operator {
+                crate::CompareOp::Eq => Condition::Eq(name, value),
+                crate::CompareOp::Ne => Condition::Ne(name, value),
+                crate::CompareOp::Gt => Condition::Gt(name, value),
+                crate::CompareOp::Lt => Condition::Lt(name, value),
+                crate::CompareOp::Gte => Condition::Gte(name, value),
+                crate::CompareOp::Lte => Condition::Lte(name, value),
+                crate::CompareOp::Like => {
+                    return Err(crate::error::DbError::InvalidArgument(
+                        "LIKE predicate normalization failed".to_string(),
+                    ));
+                }
+            }
+        }
+        crate::Predicate::In(field, values) => Condition::In(
+            field.as_str().to_string(),
+            values.iter().map(predicate_value).collect(),
+        ),
+        crate::Predicate::NotIn(field, values) => Condition::NotIn(
+            field.as_str().to_string(),
+            values.iter().map(predicate_value).collect(),
+        ),
+        crate::Predicate::Between(field, start, end) => Condition::Between(
+            field.as_str().to_string(),
+            predicate_value(start),
+            predicate_value(end),
+        ),
+        crate::Predicate::IsNull(field) => Condition::IsNull(field.as_str().to_string()),
+        crate::Predicate::IsNotNull(field) => Condition::IsNotNull(field.as_str().to_string()),
+        crate::Predicate::And(values) => Condition::And(
+            values
+                .iter()
+                .map(predicate_condition)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        crate::Predicate::Or(values) => Condition::Or(
+            values
+                .iter()
+                .map(predicate_condition)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    };
+    Ok(condition)
+}
+
+fn predicate_value(value: &serde_json::Value) -> SqlValue {
+    match value {
+        serde_json::Value::Null => SqlValue::Null,
+        serde_json::Value::Bool(value) => SqlValue::Bool(*value),
+        serde_json::Value::Number(value) => {
+            value.as_i64().map(SqlValue::Int).unwrap_or_else(|| {
+                value
+                    .as_u64()
+                    .map(SqlValue::from)
+                    .or_else(|| value.as_f64().map(SqlValue::Float))
+                    .unwrap_or_else(|| SqlValue::String(value.to_string()))
+            })
+        }
+        serde_json::Value::String(value) => SqlValue::String(value.clone()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => SqlValue::Json(value.clone()),
+    }
+}
+
+#[cfg(test)]
+mod predicate_scalar_tests {
+    use super::{predicate_value, SqlValue};
+
+    #[test]
+    fn controlled_predicates_bind_json_scalars_as_sql_scalars() {
+        assert!(matches!(
+            predicate_value(&serde_json::json!("alice")),
+            SqlValue::String(value) if value == "alice"
+        ));
+        assert!(matches!(
+            predicate_value(&serde_json::json!(42)),
+            SqlValue::Int(42)
+        ));
+        assert!(matches!(
+            predicate_value(&serde_json::json!(true)),
+            SqlValue::Bool(true)
+        ));
+        assert!(matches!(
+            predicate_value(&serde_json::json!({"role": "admin"})),
+            SqlValue::Json(_)
+        ));
     }
 }
 
@@ -3048,6 +3191,20 @@ where
 }
 
 #[cfg(test)]
+macro_rules! test_field {
+    ($value:expr) => {{
+        &crate::FieldRef::new(($value).to_string()).expect("测试策略必须生成合法字段名")
+    }};
+}
+
+#[cfg(test)]
+macro_rules! test_table {
+    ($value:expr) => {{
+        &crate::TableRef::new(($value).to_string()).expect("测试策略必须生成合法表名")
+    }};
+}
+
+#[cfg(test)]
 #[allow(deprecated)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -3110,11 +3267,13 @@ mod tests {
             .expect("合法绑定条件");
 
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and("users.tenant_id", "=", 7)
-            .expect("合法外层条件")
+            .where_and(
+                yang_db::field!("users.tenant_id"),
+                yang_db::CompareOp::Eq,
+                7,
+            )
             .where_exists(paid_order)
-            .where_in_subquery("users.id", active_user)
-            .expect("合法 IN 子查询")
+            .where_in_subquery(yang_db::field!("users.id"), active_user)
             .where_not_exists(banned_user);
         let mut generator = SqlGenerator::new();
         generator.build_select(&builder).expect("子查询应可渲染");
@@ -3156,38 +3315,25 @@ mod tests {
             .expect("合法子查询")
             .where_value("orders.status --", "=", "paid")
             .is_err());
-        assert!(QueryBuilder::new(make_sync_test_pool(), "users", false)
-            .where_in_subquery(
-                "users.id) OR 1=1 --",
-                Subquery::new("orders", "user_id").expect("合法子查询"),
-            )
-            .is_err());
+        assert!(crate::FieldRef::new("users.id) OR 1=1 --").is_err());
     }
 
     #[test]
     fn test_union_all_keeps_branch_scope_and_parameter_order() {
         let pool = make_sync_test_pool();
         let branch = QueryBuilder::new(pool, "archived_users", false)
-            .field_identifier("id")
-            .expect("合法字段")
-            .field_identifier("kind")
-            .expect("合法字段")
-            .where_and("tenant_id", "=", 8)
-            .expect("合法条件")
-            .order_identifier("id", false)
-            .expect("合法排序")
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("kind"))
+            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 8)
+            .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
             .limit(2);
         let builder = QueryBuilder::new(pool, "users", false)
-            .field_identifier("id")
-            .expect("合法字段")
-            .field_identifier("kind")
-            .expect("合法字段")
-            .where_and("tenant_id", "=", 7)
-            .expect("合法条件")
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("kind"))
+            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
             .union_all(branch)
             .expect("输出列数一致")
-            .order_identifier("id", true)
-            .expect("合法排序")
+            .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
             .limit(5);
         let mut generator = SqlGenerator::new();
         generator
@@ -3208,23 +3354,18 @@ mod tests {
             .union(QueryBuilder::new(pool, "archive", false))
             .is_err());
         assert!(QueryBuilder::new(pool, "users", false)
-            .field_identifier("id")
-            .expect("合法字段")
+            .field(yang_db::field!("id"))
             .union(
                 QueryBuilder::new(pool, "archive", false)
-                    .field_identifier("id")
-                    .expect("合法字段")
-                    .field_identifier("kind")
-                    .expect("合法字段"),
+                    .field(yang_db::field!("id"))
+                    .field(yang_db::field!("kind")),
             )
             .is_err());
         let builder = QueryBuilder::new(pool, "users", false)
-            .field_identifier("id")
-            .expect("合法字段")
+            .field(yang_db::field!("id"))
             .union(
                 QueryBuilder::new(pool, "archive; DROP TABLE users", false)
-                    .field_identifier("id")
-                    .expect("合法字段"),
+                    .field(yang_db::field!("id")),
             )
             .expect("列数一致");
         let mut generator = SqlGenerator::new();
@@ -3235,10 +3376,8 @@ mod tests {
     #[test]
     fn test_transaction_row_lock_rendering_is_typed_and_parameterized() {
         let builder = QueryBuilder::new(make_sync_test_pool(), "accounts", false)
-            .field_identifier("balance")
-            .expect("合法投影")
-            .where_and("id", "=", 42)
-            .expect("合法条件")
+            .field(yang_db::field!("balance"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 42)
             .limit(1);
         let (sql, params) = builder
             .render_for_transaction(Some(crate::RowLock::ForUpdate))
@@ -3254,22 +3393,16 @@ mod tests {
     fn test_transaction_row_lock_rejects_unsupported_query_shapes() {
         let pool = make_sync_test_pool();
         let grouped = QueryBuilder::new(pool, "accounts", false)
-            .field("COUNT(*)")
-            .group_identifier("tenant_id")
-            .expect("合法分组");
+            .expr(crate::SelectExpr::count_all())
+            .group(yang_db::field!("tenant_id"));
         assert!(grouped
             .render_for_transaction(Some(crate::RowLock::ForShare))
             .is_err());
 
         let union = QueryBuilder::new(pool, "accounts", false)
-            .field_identifier("id")
-            .expect("合法投影")
-            .union(
-                QueryBuilder::new(pool, "archived_accounts", false)
-                    .field_identifier("id")
-                    .expect("合法投影"),
-            )
-            .expect("列数一致");
+            .field(yang_db::field!("id"))
+            .union(QueryBuilder::new(pool, "archived_accounts", false).field(yang_db::field!("id")))
+            .expect("列数一致的 UNION 应构建成功");
         assert!(union
             .render_for_transaction(Some(crate::RowLock::ForUpdate))
             .is_err());
@@ -3277,21 +3410,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_atomic_update_rejects_missing_where_and_adversarial_field_before_io() {
-        let pool = create_test_pool().await;
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("mysql://root:111111@localhost:3306/test")
+            .expect("合法测试数据库 URL");
         let missing_where = QueryBuilder::new(&pool, "accounts", false)
-            .increment("balance", 1)
+            .increment(yang_db::field!("balance"), 1)
             .await;
         assert!(matches!(
             missing_where,
             Err(crate::DbError::MissingWhereClause)
         ));
 
-        let bad_field = QueryBuilder::new(&pool, "accounts", false)
-            .where_and("id", "=", 1)
-            .expect("合法条件")
-            .decrement("balance = 0; DROP TABLE accounts --", 1)
-            .await;
-        assert!(matches!(bad_field, Err(crate::DbError::InvalidArgument(_))));
+        assert!(crate::FieldRef::new("balance = 0; DROP TABLE accounts --").is_err());
     }
 
     #[test]
@@ -3380,25 +3511,29 @@ mod tests {
     async fn test_field_selection() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("id")
-            .field("name");
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"));
         let sql = builder.to_sql();
-        assert!(sql.contains("id, name"));
+        assert!(sql.contains("`id`, `name`"));
     }
 
     #[tokio::test]
     async fn test_fields_selection() {
         let pool = create_test_pool().await;
-        let builder = QueryBuilder::new(&pool, "users", false).fields(&["id", "name", "email"]);
+        let builder = QueryBuilder::new(&pool, "users", false).fields(&[
+            yang_db::field!("id"),
+            yang_db::field!("name"),
+            yang_db::field!("email"),
+        ]);
         let sql = builder.to_sql();
-        assert!(sql.contains("id, name, email"));
+        assert!(sql.contains("`id`, `name`, `email`"));
     }
 
     #[tokio::test]
     async fn test_distinct() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("name")
+            .field(yang_db::field!("name"))
             .distinct();
         let sql = builder.to_sql();
         assert!(sql.contains("SELECT DISTINCT"));
@@ -3408,12 +3543,12 @@ mod tests {
     async fn test_field_type_marking() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .json("data")
-            .datetime("created_at")
-            .timestamp("updated_at")
-            .decimal("price")
-            .blob("content")
-            .text("description");
+            .json(yang_db::field!("data"))
+            .datetime(yang_db::field!("created_at"))
+            .timestamp(yang_db::field!("updated_at"))
+            .decimal(yang_db::field!("price"))
+            .blob(yang_db::field!("content"))
+            .text(yang_db::field!("description"));
 
         assert_eq!(builder.field_types.get("data"), Some(&FieldType::Json));
         assert_eq!(
@@ -3436,8 +3571,8 @@ mod tests {
     async fn test_where_and() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_and_unchecked("name", "=", "test")
-            .where_and_unchecked("age", ">", 18);
+            .where_and(yang_db::field!("name"), yang_db::CompareOp::Eq, "test")
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18);
 
         assert_eq!(builder.conditions.len(), 2);
     }
@@ -3446,8 +3581,8 @@ mod tests {
     async fn test_where_or() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_or_unchecked("status", "=", 1)
-            .where_or_unchecked("status", "=", 2);
+            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 2);
 
         // where_or 会将条件组合成 OR
         assert_eq!(builder.conditions.len(), 1);
@@ -3456,7 +3591,8 @@ mod tests {
     #[tokio::test]
     async fn test_where_in() {
         let pool = create_test_pool().await;
-        let builder = QueryBuilder::new(&pool, "users", false).where_in("id", vec![1, 2, 3]);
+        let builder =
+            QueryBuilder::new(&pool, "users", false).where_in(yang_db::field!("id"), vec![1, 2, 3]);
 
         assert_eq!(builder.conditions.len(), 1);
     }
@@ -3464,7 +3600,8 @@ mod tests {
     #[tokio::test]
     async fn test_where_between() {
         let pool = create_test_pool().await;
-        let builder = QueryBuilder::new(&pool, "users", false).where_between("age", 18, 65);
+        let builder =
+            QueryBuilder::new(&pool, "users", false).where_between(yang_db::field!("age"), 18, 65);
 
         assert_eq!(builder.conditions.len(), 1);
     }
@@ -3472,8 +3609,11 @@ mod tests {
     #[tokio::test]
     async fn test_join() {
         let pool = create_test_pool().await;
-        let builder =
-            QueryBuilder::new(&pool, "users", false).join("orders", "users.id = orders.user_id");
+        let builder = QueryBuilder::new(&pool, "users", false).join(
+            yang_db::table!("orders"),
+            yang_db::field!("users.id"),
+            yang_db::field!("orders.user_id"),
+        );
 
         assert_eq!(builder.joins.len(), 1);
     }
@@ -3481,8 +3621,11 @@ mod tests {
     #[tokio::test]
     async fn test_left_join() {
         let pool = create_test_pool().await;
-        let builder = QueryBuilder::new(&pool, "users", false)
-            .left_join("orders", "users.id = orders.user_id");
+        let builder = QueryBuilder::new(&pool, "users", false).left_join(
+            yang_db::table!("orders"),
+            yang_db::field!("users.id"),
+            yang_db::field!("orders.user_id"),
+        );
 
         assert_eq!(builder.joins.len(), 1);
     }
@@ -3490,8 +3633,11 @@ mod tests {
     #[tokio::test]
     async fn test_right_join() {
         let pool = create_test_pool().await;
-        let builder = QueryBuilder::new(&pool, "users", false)
-            .right_join("orders", "users.id = orders.user_id");
+        let builder = QueryBuilder::new(&pool, "users", false).right_join(
+            yang_db::table!("orders"),
+            yang_db::field!("users.id"),
+            yang_db::field!("orders.user_id"),
+        );
 
         assert_eq!(builder.joins.len(), 1);
     }
@@ -3500,8 +3646,8 @@ mod tests {
     async fn test_order() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .order("name", true)
-            .order("age", false);
+            .order(yang_db::field!("name"), yang_db::SortOrder::Asc)
+            .order(yang_db::field!("age"), yang_db::SortOrder::Desc);
 
         assert_eq!(builder.order_by.len(), 2);
     }
@@ -3510,8 +3656,8 @@ mod tests {
     async fn test_group() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .group("status")
-            .group("role");
+            .group(yang_db::field!("status"))
+            .group(yang_db::field!("role"));
 
         assert_eq!(builder.group_by.len(), 2);
     }
@@ -3521,12 +3667,12 @@ mod tests {
     async fn test_select_with_where() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("id")
-            .field("name")
-            .where_and_unchecked("status", "=", 1);
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"))
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1);
 
         let sql = builder.to_sql();
-        assert!(sql.contains("SELECT id, name FROM `users`"));
+        assert!(sql.contains("SELECT `id`, `name` FROM `users`"));
         assert!(sql.contains("WHERE"));
     }
 
@@ -3534,43 +3680,47 @@ mod tests {
     async fn test_select_with_join() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("users.id")
-            .field("orders.total")
-            .join("orders", "users.id = orders.user_id");
+            .field(yang_db::field!("users.id"))
+            .field(yang_db::field!("orders.total"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            );
 
         let sql = builder.to_sql();
-        assert!(sql.contains("SELECT users.id, orders.total FROM `users`"));
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
+        assert!(sql.contains("SELECT `users`.`id`, `orders`.`total` FROM `users`"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
     }
 
     #[tokio::test]
     async fn test_select_with_order_by() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("name")
-            .order("name", true)
-            .order("age", false);
+            .field(yang_db::field!("name"))
+            .order(yang_db::field!("name"), yang_db::SortOrder::Asc)
+            .order(yang_db::field!("age"), yang_db::SortOrder::Desc);
 
         let sql = builder.to_sql();
-        assert!(sql.contains("ORDER BY name ASC, age DESC"));
+        assert!(sql.contains("ORDER BY `name` ASC, `age` DESC"));
     }
 
     #[tokio::test]
     async fn test_select_with_group_by() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("status")
-            .group("status");
+            .field(yang_db::field!("status"))
+            .group(yang_db::field!("status"));
 
         let sql = builder.to_sql();
-        assert!(sql.contains("GROUP BY status"));
+        assert!(sql.contains("GROUP BY `status`"));
     }
 
     #[tokio::test]
     async fn test_select_with_limit_offset() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("id")
+            .field(yang_db::field!("id"))
             .limit(10)
             .offset(20);
 
@@ -3583,25 +3733,29 @@ mod tests {
     async fn test_select_complex_query() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("users.id")
-            .field("users.name")
-            .field("orders.total")
+            .field(yang_db::field!("users.id"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.total"))
             .distinct()
-            .join("orders", "users.id = orders.user_id")
-            .where_and_unchecked("users.status", "=", 1)
-            .where_and_unchecked("orders.total", ">", 100)
-            .group("users.id")
-            .order("orders.total", false)
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1)
+            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100)
+            .group(yang_db::field!("users.id"))
+            .order(yang_db::field!("orders.total"), yang_db::SortOrder::Desc)
             .limit(50);
 
         let sql = builder.to_sql();
         assert!(sql.contains("SELECT DISTINCT"));
-        assert!(sql.contains("users.id, users.name, orders.total"));
+        assert!(sql.contains("`users`.`id`, `users`.`name`, `orders`.`total`"));
         assert!(sql.contains("FROM `users`"));
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
         assert!(sql.contains("WHERE"));
-        assert!(sql.contains("GROUP BY users.id"));
-        assert!(sql.contains("ORDER BY orders.total DESC"));
+        assert!(sql.contains("GROUP BY `users`.`id`"));
+        assert!(sql.contains("ORDER BY `orders`.`total` DESC"));
         assert!(sql.contains("LIMIT 50"));
     }
 
@@ -3609,23 +3763,31 @@ mod tests {
     async fn test_select_with_multiple_joins() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("users.name")
-            .field("orders.total")
-            .field("products.name")
-            .join("orders", "users.id = orders.user_id")
-            .left_join("products", "orders.product_id = products.id");
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.total"))
+            .field(yang_db::field!("products.name"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .left_join(
+                yang_db::table!("products"),
+                yang_db::field!("orders.product_id"),
+                yang_db::field!("products.id"),
+            );
 
         let sql = builder.to_sql();
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
-        assert!(sql.contains("LEFT JOIN products ON orders.product_id = products.id"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
+        assert!(sql.contains("LEFT JOIN `products` ON `orders`.`product_id` = `products`.`id`"));
     }
 
     #[tokio::test]
     async fn test_select_with_in_condition() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("name")
-            .where_in("id", vec![1, 2, 3, 4, 5]);
+            .field(yang_db::field!("name"))
+            .where_in(yang_db::field!("id"), vec![1, 2, 3, 4, 5]);
 
         let sql = builder.to_sql();
         assert!(sql.contains("WHERE"));
@@ -3636,8 +3798,8 @@ mod tests {
     async fn test_select_with_between_condition() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("name")
-            .where_between("age", 18, 65);
+            .field(yang_db::field!("name"))
+            .where_between(yang_db::field!("age"), 18, 65);
 
         let sql = builder.to_sql();
         assert!(sql.contains("WHERE"));
@@ -3647,7 +3809,8 @@ mod tests {
     #[test]
     fn test_where_null_generates_is_null_sql() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false).where_null("deleted_at");
+        let builder =
+            QueryBuilder::new(pool, "users", false).where_null(yang_db::field!("deleted_at"));
         let sql = builder.to_sql();
         assert!(sql.contains("`deleted_at` IS NULL"));
     }
@@ -3655,7 +3818,8 @@ mod tests {
     #[test]
     fn test_where_not_null_generates_is_not_null_sql() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false).where_not_null("email");
+        let builder =
+            QueryBuilder::new(pool, "users", false).where_not_null(yang_db::field!("email"));
         let sql = builder.to_sql();
         assert!(sql.contains("`email` IS NOT NULL"));
     }
@@ -3664,8 +3828,8 @@ mod tests {
     fn test_is_null_with_and_condition() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and_unchecked("status", "=", 1i64)
-            .where_null("deleted_at");
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1i64)
+            .where_null(yang_db::field!("deleted_at"));
         let sql = builder.to_sql();
         assert!(sql.contains("`status` = ?"));
         assert!(sql.contains("`deleted_at` IS NULL"));
@@ -3675,10 +3839,10 @@ mod tests {
     fn test_having_clause_sql_generation() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
-            .field("user_id")
-            .field("COUNT(*) as cnt")
-            .group("user_id")
-            .having_cond_unchecked("cnt", ">", 5i64);
+            .field(yang_db::field!("user_id"))
+            .expr(crate::SelectExpr::count_all().alias(yang_db::field!("cnt")))
+            .group(yang_db::field!("user_id"))
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64);
         let sql = builder.to_sql();
         assert!(sql.contains("HAVING"));
         assert!(sql.contains("`cnt` > ?"));
@@ -3687,8 +3851,11 @@ mod tests {
     #[test]
     fn test_having_without_group_returns_error() {
         let pool = make_sync_test_pool();
-        let builder =
-            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
+        let builder = QueryBuilder::new(pool, "orders", false).having_cond(
+            yang_db::field!("cnt"),
+            yang_db::CompareOp::Gt,
+            5i64,
+        );
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
         assert!(result.is_err());
@@ -3702,18 +3869,18 @@ mod tests {
     fn test_identifier_apis_quote_every_structural_fragment() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .field_identifier("users.id")
-            .expect("合法字段")
-            .field("COUNT(*) AS cnt")
-            .join_on_identifiers("profiles", "users.id", "profiles.user_id")
-            .expect("合法 JOIN 标识符")
-            .group_identifier("users.id")
-            .expect("合法分组字段")
-            .order_identifier("users.id", true)
-            .expect("合法排序字段");
+            .field(yang_db::field!("users.id"))
+            .expr(crate::SelectExpr::count_all().alias(yang_db::field!("cnt")))
+            .join(
+                yang_db::table!("profiles"),
+                yang_db::field!("users.id"),
+                yang_db::field!("profiles.user_id"),
+            )
+            .group(yang_db::field!("users.id"))
+            .order(yang_db::field!("users.id"), yang_db::SortOrder::Asc);
 
         let sql = builder.try_to_sql().expect("安全 API 应生成 SQL");
-        assert!(sql.contains("SELECT `users`.`id`, COUNT(*) AS cnt"));
+        assert!(sql.contains("SELECT `users`.`id`, COUNT(*) AS `cnt`"));
         assert!(sql.contains("INNER JOIN `profiles` ON `users`.`id` = `profiles`.`user_id`"));
         assert!(sql.contains("GROUP BY `users`.`id`"));
         assert!(sql.contains("ORDER BY `users`.`id` ASC"));
@@ -3721,7 +3888,6 @@ mod tests {
 
     #[test]
     fn test_identifier_apis_reject_adversarial_fragments() {
-        let pool = make_sync_test_pool();
         let payloads = [
             "",
             ".id",
@@ -3735,22 +3901,9 @@ mod tests {
         ];
 
         for payload in payloads {
-            assert!(QueryBuilder::new(pool, "users", false)
-                .field_identifier(payload)
-                .is_err());
-            assert!(QueryBuilder::new(pool, "users", false)
-                .group_identifier(payload)
-                .is_err());
-            assert!(QueryBuilder::new(pool, "users", false)
-                .order_identifier(payload, true)
-                .is_err());
-            assert!(QueryBuilder::new(pool, "users", false)
-                .join_on_identifiers("profiles", payload, "profiles.user_id")
-                .is_err());
+            assert!(crate::FieldRef::new(payload).is_err());
         }
-        assert!(QueryBuilder::new(pool, "users", false)
-            .join_on_identifiers("profiles p", "users.id", "profiles.user_id")
-            .is_err());
+        assert!(crate::TableRef::new("profiles p").is_err());
     }
 
     #[test]
@@ -3764,21 +3917,24 @@ mod tests {
 
     #[test]
     fn test_try_to_sql_rejects_invalid_condition_identifier() {
-        let pool = make_sync_test_pool();
-        let builder =
-            QueryBuilder::new(pool, "users", false).where_and_unchecked("id;DROP", "=", 1i64);
-        let result = builder.try_to_sql();
-
-        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+        assert!(crate::FieldRef::new("id;DROP").is_err());
     }
 
     #[test]
     fn test_try_to_sql_accepts_qualified_where_and_having_identifiers() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and_unchecked("users.status", "=", 1i64)
-            .group("users.id")
-            .having_cond_unchecked("users.score", ">", 10i64);
+            .where_and(
+                yang_db::field!("users.status"),
+                yang_db::CompareOp::Eq,
+                1i64,
+            )
+            .group(yang_db::field!("users.id"))
+            .having_cond(
+                yang_db::field!("users.score"),
+                yang_db::CompareOp::Gt,
+                10i64,
+            );
 
         let sql = builder
             .try_to_sql()
@@ -3790,7 +3946,6 @@ mod tests {
 
     #[test]
     fn test_try_to_sql_rejects_malicious_qualified_where_and_having_identifiers() {
-        let pool = make_sync_test_pool();
         let invalid_fields = [
             "",
             ".id",
@@ -3803,30 +3958,18 @@ mod tests {
         ];
 
         for field in invalid_fields {
-            let where_builder =
-                QueryBuilder::new(pool, "users", false).where_and_unchecked(field, "=", 1i64);
-            assert!(matches!(
-                where_builder.try_to_sql(),
-                Err(crate::DbError::InvalidArgument(_))
-            ));
-            assert_eq!(where_builder.to_sql(), "/* SQL generation failed */");
-
-            let having_builder = QueryBuilder::new(pool, "users", false)
-                .group("users.id")
-                .having_cond_unchecked(field, "=", 1i64);
-            assert!(matches!(
-                having_builder.try_to_sql(),
-                Err(crate::DbError::InvalidArgument(_))
-            ));
-            assert_eq!(having_builder.to_sql(), "/* SQL generation failed */");
+            assert!(crate::FieldRef::new(field).is_err());
         }
     }
 
     #[test]
     fn test_try_to_sql_surfaces_missing_group_by() {
         let pool = make_sync_test_pool();
-        let builder =
-            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
+        let builder = QueryBuilder::new(pool, "orders", false).having_cond(
+            yang_db::field!("cnt"),
+            yang_db::CompareOp::Gt,
+            5i64,
+        );
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));
@@ -3835,7 +3978,8 @@ mod tests {
     #[test]
     fn test_try_to_sql_rejects_empty_in_condition() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "users", false).where_in("id", Vec::<i64>::new());
+        let builder = QueryBuilder::new(pool, "users", false)
+            .where_in(yang_db::field!("id"), Vec::<i64>::new());
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
@@ -3866,9 +4010,9 @@ mod tests {
     fn test_having_clause_order() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
-            .group("user_id")
-            .having_cond_unchecked("cnt", ">", 5i64)
-            .order("cnt", false);
+            .group(yang_db::field!("user_id"))
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .order(yang_db::field!("cnt"), yang_db::SortOrder::Desc);
         let sql = builder.to_sql();
         let group_pos = sql.find("GROUP BY").unwrap();
         let having_pos = sql.find("HAVING").unwrap();
@@ -3932,28 +4076,28 @@ mod tests {
     async fn test_sql_generator_build_select_basic() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("id")
-            .field("name");
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"));
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
 
         assert!(result.is_ok());
-        assert_eq!(generator.get_sql(), "SELECT id, name FROM `users`");
+        assert_eq!(generator.get_sql(), "SELECT `id`, `name` FROM `users`");
     }
 
     #[tokio::test]
     async fn test_sql_generator_build_select_with_distinct() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("name")
+            .field(yang_db::field!("name"))
             .distinct();
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
 
         assert!(result.is_ok());
-        assert_eq!(generator.get_sql(), "SELECT DISTINCT name FROM `users`");
+        assert_eq!(generator.get_sql(), "SELECT DISTINCT `name` FROM `users`");
     }
 
     #[tokio::test]
@@ -3973,8 +4117,8 @@ mod tests {
     async fn test_sql_generator_build_where() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_and_unchecked("status", "=", 1)
-            .where_and_unchecked("age", ">", 18);
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18);
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
@@ -3991,16 +4135,24 @@ mod tests {
     async fn test_sql_generator_build_joins() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .join("orders", "users.id = orders.user_id")
-            .left_join("profiles", "users.id = profiles.user_id");
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .left_join(
+                yang_db::table!("profiles"),
+                yang_db::field!("users.id"),
+                yang_db::field!("profiles.user_id"),
+            );
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
 
         assert!(result.is_ok());
         let sql = generator.get_sql();
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
-        assert!(sql.contains("LEFT JOIN profiles ON users.id = profiles.user_id"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
+        assert!(sql.contains("LEFT JOIN `profiles` ON `users`.`id` = `profiles`.`user_id`"));
     }
 
     // 测试 ORDER BY 子句生成
@@ -4008,15 +4160,15 @@ mod tests {
     async fn test_sql_generator_build_order_by() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .order("name", true)
-            .order("created_at", false);
+            .order(yang_db::field!("name"), yang_db::SortOrder::Asc)
+            .order(yang_db::field!("created_at"), yang_db::SortOrder::Desc);
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
 
         assert!(result.is_ok());
         let sql = generator.get_sql();
-        assert!(sql.contains("ORDER BY name ASC, created_at DESC"));
+        assert!(sql.contains("ORDER BY `name` ASC, `created_at` DESC"));
     }
 
     // 测试 GROUP BY 子句生成
@@ -4024,15 +4176,15 @@ mod tests {
     async fn test_sql_generator_build_group_by() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .group("status")
-            .group("role");
+            .group(yang_db::field!("status"))
+            .group(yang_db::field!("role"));
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
 
         assert!(result.is_ok());
         let sql = generator.get_sql();
-        assert!(sql.contains("GROUP BY status, role"));
+        assert!(sql.contains("GROUP BY `status`, `role`"));
     }
 
     // 测试 LIMIT 和 OFFSET 子句生成
@@ -4057,16 +4209,23 @@ mod tests {
     async fn test_sql_generator_complex_query() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("users.id")
-            .field("users.name")
-            .field("COUNT(orders.id) as order_count")
+            .field(yang_db::field!("users.id"))
+            .field(yang_db::field!("users.name"))
+            .expr(
+                crate::SelectExpr::count(yang_db::field!("orders.id"))
+                    .alias(yang_db::field!("order_count")),
+            )
             .distinct()
-            .join("orders", "users.id = orders.user_id")
-            .where_and_unchecked("users.status", "=", 1)
-            .where_and_unchecked("orders.total", ">", 100)
-            .group("users.id")
-            .group("users.name")
-            .order("order_count", false)
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1)
+            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100)
+            .group(yang_db::field!("users.id"))
+            .group(yang_db::field!("users.name"))
+            .order(yang_db::field!("order_count"), yang_db::SortOrder::Desc)
             .limit(20)
             .offset(10);
 
@@ -4078,12 +4237,12 @@ mod tests {
 
         // 验证各个部分都存在
         assert!(sql.starts_with("SELECT DISTINCT"));
-        assert!(sql.contains("users.id, users.name, COUNT(orders.id) as order_count"));
+        assert!(sql.contains("`users`.`id`, `users`.`name`, COUNT(`orders`.`id`) AS `order_count`"));
         assert!(sql.contains("FROM `users`"));
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
         assert!(sql.contains("WHERE"));
-        assert!(sql.contains("GROUP BY users.id, users.name"));
-        assert!(sql.contains("ORDER BY order_count DESC"));
+        assert!(sql.contains("GROUP BY `users`.`id`, `users`.`name`"));
+        assert!(sql.contains("ORDER BY `order_count` DESC"));
         assert!(sql.contains("LIMIT 20"));
         assert!(sql.contains("OFFSET 10"));
     }
@@ -4093,18 +4252,18 @@ mod tests {
     async fn test_find_adds_limit_one() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .field("id")
-            .field("name")
-            .where_and_unchecked("id", "=", 1);
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1);
 
         // 在调用 find() 之前，limit 应该是 None
         assert_eq!(builder.limit, None);
 
         // 创建一个新的 builder 来测试 SQL 生成
         let builder_with_limit = QueryBuilder::new(&pool, "users", false)
-            .field("id")
-            .field("name")
-            .where_and_unchecked("id", "=", 1)
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
             .limit(1);
 
         let sql = builder_with_limit.to_sql();
@@ -4215,8 +4374,11 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟 avg() 方法与 WHERE 条件组合
-        let mut test_builder =
-            QueryBuilder::new(&pool, "products", false).where_and_unchecked("status", "=", 1);
+        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and(
+            yang_db::field!("status"),
+            yang_db::CompareOp::Eq,
+            1,
+        );
         test_builder.fields.clear();
         test_builder
             .fields
@@ -4304,7 +4466,8 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟聚合函数与 GROUP BY 组合
-        let mut test_builder = QueryBuilder::new(&pool, "orders", false).group("user_id");
+        let mut test_builder =
+            QueryBuilder::new(&pool, "orders", false).group(yang_db::field!("user_id"));
         test_builder.fields.clear();
         test_builder.fields.push("user_id".to_string());
         test_builder
@@ -4314,7 +4477,7 @@ mod tests {
         let sql = test_builder.to_sql();
         assert!(sql.contains("SELECT user_id, CAST(AVG(amount) AS DOUBLE) as avg_amount"));
         assert!(sql.contains("FROM `orders`"));
-        assert!(sql.contains("GROUP BY user_id"));
+        assert!(sql.contains("GROUP BY `user_id`"));
     }
 
     /// 测试多个聚合函数组合
@@ -4323,9 +4486,9 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟多个聚合函数组合
-        let mut test_builder = QueryBuilder::new(&pool, "orders", false).where_and_unchecked(
-            "status",
-            "=",
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false).where_and(
+            yang_db::field!("status"),
+            yang_db::CompareOp::Eq,
             "completed",
         );
         test_builder.fields.clear();
@@ -4358,9 +4521,13 @@ mod tests {
 
         // 创建包含 WHERE、GROUP BY、ORDER BY 的查询
         let mut test_builder = QueryBuilder::new(&pool, "orders", false)
-            .where_and_unchecked("status", "=", "completed")
-            .group("user_id")
-            .order("total_amount", false);
+            .where_and(
+                yang_db::field!("status"),
+                yang_db::CompareOp::Eq,
+                "completed",
+            )
+            .group(yang_db::field!("user_id"))
+            .order(yang_db::field!("total_amount"), yang_db::SortOrder::Desc);
         test_builder.fields.clear();
         test_builder.fields.push("user_id".to_string());
         test_builder
@@ -4384,8 +4551,11 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 创建一个不会匹配任何记录的查询
-        let mut test_builder =
-            QueryBuilder::new(&pool, "products", false).where_and_unchecked("id", "=", -1); // 假设 id 不会是负数
+        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and(
+            yang_db::field!("id"),
+            yang_db::CompareOp::Eq,
+            -1,
+        ); // 假设 id 不会是负数
         test_builder.fields.clear();
         test_builder
             .fields
@@ -4441,25 +4611,29 @@ mod tests {
     async fn test_aggregates_with_join() {
         let pool = create_test_pool().await;
 
-        // 模拟聚合函数与 JOIN 组合
-        let mut test_builder = QueryBuilder::new(&pool, "users", false)
-            .join("orders", "users.id = orders.user_id")
-            .group("users.id");
-        test_builder.fields.clear();
-        test_builder.fields.push("users.id".to_string());
-        test_builder.fields.push("users.name".to_string());
-        test_builder
-            .fields
-            .push("COUNT(orders.id) as order_count".to_string());
-        test_builder
-            .fields
-            .push("SUM(orders.amount) as total_amount".to_string());
+        let test_builder = QueryBuilder::new(&pool, "users", false)
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .group(yang_db::field!("users.id"))
+            .field(yang_db::field!("users.id"))
+            .field(yang_db::field!("users.name"))
+            .expr(
+                crate::SelectExpr::count(yang_db::field!("orders.id"))
+                    .alias(yang_db::field!("order_count")),
+            )
+            .expr(
+                crate::SelectExpr::sum(yang_db::field!("orders.amount"))
+                    .alias(yang_db::field!("total_amount")),
+            );
 
         let sql = test_builder.to_sql();
-        assert!(sql.contains("INNER JOIN orders ON users.id = orders.user_id"));
-        assert!(sql.contains("COUNT(orders.id) as order_count"));
-        assert!(sql.contains("SUM(orders.amount) as total_amount"));
-        assert!(sql.contains("GROUP BY users.id"));
+        assert!(sql.contains("INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`"));
+        assert!(sql.contains("COUNT(`orders`.`id`) AS `order_count`"));
+        assert!(sql.contains("SUM(`orders`.`amount`) AS `total_amount`"));
+        assert!(sql.contains("GROUP BY `users`.`id`"));
     }
 
     /// 测试聚合函数参数化查询防止 SQL 注入
@@ -4468,9 +4642,9 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 测试 WHERE 条件使用参数化查询
-        let builder = QueryBuilder::new(&pool, "products", false).where_and_unchecked(
-            "category",
-            "=",
+        let builder = QueryBuilder::new(&pool, "products", false).where_and(
+            yang_db::field!("category"),
+            yang_db::CompareOp::Eq,
             "'; DROP TABLE products; --",
         );
 
@@ -4609,7 +4783,7 @@ mod property_tests {
 
             // 添加所有字段
             for field in &fields {
-                builder = builder.field(field);
+                builder = builder.field(test_field!(field));
             }
 
             let sql = builder.to_sql();
@@ -4633,7 +4807,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .field(&field)
+                .field(test_field!(field))
                 .distinct();
 
             let sql = builder.to_sql();
@@ -4677,12 +4851,12 @@ mod property_tests {
 
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .json(&json_field)
-                .datetime(&datetime_field)
-                .timestamp(&timestamp_field)
-                .decimal(&decimal_field)
-                .blob(&blob_field)
-                .text(&text_field);
+                .json(test_field!(json_field))
+                .datetime(test_field!(datetime_field))
+                .timestamp(test_field!(timestamp_field))
+                .decimal(test_field!(decimal_field))
+                .blob(test_field!(blob_field))
+                .text(test_field!(text_field));
 
             // 验证字段类型映射包含正确的类型标记
             prop_assert_eq!(builder.field_types.get(&json_field), Some(&FieldType::Json));
@@ -4707,7 +4881,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", value);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value);
 
             // 验证条件已添加
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -4722,8 +4896,8 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_or_unchecked(&field, "=", value1)
-                .where_or_unchecked(&field, "=", value2);
+                .where_or(test_field!(&field), crate::CompareOp::Eq, value1)
+                .where_or(test_field!(&field), crate::CompareOp::Eq, value2);
 
             // where_or 会将条件组合，所以应该有 1 个条件（OR 组合）
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -4743,7 +4917,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_in(&field, values);
+                .where_in(test_field!(field), values);
 
             // 验证 IN 条件已添加
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -4764,7 +4938,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_between(&field, start, end);
+                .where_between(test_field!(field), start, end);
 
             // 验证 BETWEEN 条件已添加
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -4787,7 +4961,7 @@ mod property_tests {
 
             // 添加多个 AND 条件
             for value in &values {
-                builder = builder.where_and_unchecked(&field, "=", *value);
+                builder = builder.where_and(test_field!(&field), crate::CompareOp::Eq, *value);
             }
 
             // 验证所有条件都已添加
@@ -4807,20 +4981,21 @@ mod property_tests {
             on_condition in "[a-z][a-z0-9_]{0,20}\\.[a-z][a-z0-9_]{0,20} = [a-z][a-z0-9_]{0,20}\\.[a-z][a-z0-9_]{0,20}"
         ) {
             let pool = create_test_pool_sync();
+            let (left, right) = on_condition.split_once(" = ").expect("测试策略生成等值连接");
 
             // 测试 INNER JOIN
             let builder_inner = QueryBuilder::new(&pool, &table_name, false)
-                .join(&join_table, &on_condition);
+                .join(test_table!(&join_table), test_field!(left), test_field!(right));
             prop_assert_eq!(builder_inner.joins.len(), 1);
 
             // 测试 LEFT JOIN
             let builder_left = QueryBuilder::new(&pool, &table_name, false)
-                .left_join(&join_table, &on_condition);
+                .left_join(test_table!(&join_table), test_field!(left), test_field!(right));
             prop_assert_eq!(builder_left.joins.len(), 1);
 
             // 测试 RIGHT JOIN
             let builder_right = QueryBuilder::new(&pool, &table_name, false)
-                .right_join(&join_table, &on_condition);
+                .right_join(test_table!(&join_table), test_field!(left), test_field!(right));
             prop_assert_eq!(builder_right.joins.len(), 1);
         }
     }
@@ -4840,8 +5015,13 @@ mod property_tests {
 
             // 添加多个 JOIN
             for join_table in &join_tables {
-                let on_condition = format!("{}.id = {}.id", table_name, join_table);
-                builder = builder.join(join_table, &on_condition);
+                let left = format!("{}.id", table_name);
+                let right = format!("{}.id", join_table);
+                builder = builder.join(
+                    test_table!(join_table),
+                    test_field!(left),
+                    test_field!(right),
+                );
             }
 
             // 验证所有 JOIN 都已添加
@@ -4855,53 +5035,29 @@ mod property_tests {
         #![proptest_config(ProptestConfig::with_cases(100))]
 
         #[test]
-        // 验证需求: ID-1 — build_select 现统一对表名做 quote_identifier，
-        // 内联别名语法（"table AS alias"）因含空格无法通过标识符校验。
-        // 表别名需走未来独立的 alias API；本测试暂忽略。
-        #[ignore]
-        fn prop_table_alias_support(
+        fn prop_qualified_table_support(
             base_table in table_name_strategy(),
-            join_table in table_name_strategy(),
-            base_alias in "[a-z][a-z0-9]{0,5}",
-            join_alias in "[a-z][a-z0-9]{0,5}"
+            join_table in table_name_strategy()
         ) {
             prop_assume!(base_table != join_table);
-            prop_assume!(base_alias != join_alias);
 
             let pool = create_test_pool_sync();
-
-            // 构建带别名的表名
-            let base_table_with_alias = format!("{} AS {}", base_table, base_alias);
-            let join_table_with_alias = format!("{} AS {}", join_table, join_alias);
-
-            // 使用别名构建 ON 条件
-            let on_condition = format!("{}.id = {}.id", base_alias, join_alias);
-
-            // 创建查询构建器，使用带别名的表名
-            let builder = QueryBuilder::new(&pool, &base_table_with_alias, false)
-                .field(&format!("{}.id", base_alias))
-                .field(&format!("{}.name", base_alias))
-                .join(&join_table_with_alias, &on_condition);
+            let base_id = format!("{}.id", base_table);
+            let base_name = format!("{}.name", base_table);
+            let join_id = format!("{}.id", join_table);
+            let builder = QueryBuilder::new(&pool, &base_table, false)
+                .field(test_field!(&base_id))
+                .field(test_field!(&base_name))
+                .join(
+                    test_table!(&join_table),
+                    test_field!(&base_id),
+                    test_field!(&join_id),
+                );
 
             let sql = builder.to_sql();
-
-            // 验证 SQL 包含带别名的主表
-            prop_assert!(sql.contains(&format!("FROM {}", base_table_with_alias)),
-                "SQL 应该包含带别名的主表: FROM {}", base_table_with_alias);
-
-            // 验证 SQL 包含带别名的 JOIN 表
-            prop_assert!(sql.contains(&join_table_with_alias),
-                "SQL 应该包含带别名的 JOIN 表: {}", join_table_with_alias);
-
-            // 验证 SQL 包含使用别名的 ON 条件
-            prop_assert!(sql.contains(&on_condition),
-                "SQL 应该包含使用别名的 ON 条件: {}", on_condition);
-
-            // 验证 SQL 包含使用别名的字段选择
-            prop_assert!(sql.contains(&format!("{}.id", base_alias)),
-                "SQL 应该包含使用别名的字段: {}.id", base_alias);
-            prop_assert!(sql.contains(&format!("{}.name", base_alias)),
-                "SQL 应该包含使用别名的字段: {}.name", base_alias);
+            prop_assert!(sql.contains(&base_table));
+            prop_assert!(sql.contains(&join_table));
+            prop_assert!(sql.contains(" JOIN "));
         }
     }
 
@@ -4918,11 +5074,14 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .order(&field, asc);
+                .order(
+                    test_field!(field),
+                    if asc { crate::SortOrder::Asc } else { crate::SortOrder::Desc },
+                );
 
             // 验证 ORDER BY 已添加
             prop_assert_eq!(builder.order_by.len(), 1);
-            prop_assert_eq!(&builder.order_by[0].field, &field);
+            prop_assert_eq!(&builder.order_by[0].field, &format!("`{}`", field));
             prop_assert_eq!(builder.order_by[0].asc, asc);
         }
     }
@@ -4942,7 +5101,7 @@ mod property_tests {
 
             // 添加多个排序字段
             for field in &fields {
-                builder = builder.order(field, true);
+                builder = builder.order(test_field!(field), crate::SortOrder::Asc);
             }
 
             // 验证所有排序字段都已添加
@@ -4962,11 +5121,11 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .group(&field);
+                .group(test_field!(field));
 
             // 验证 GROUP BY 已添加
             prop_assert_eq!(builder.group_by.len(), 1);
-            prop_assert_eq!(&builder.group_by[0], &field);
+            prop_assert_eq!(&builder.group_by[0], &format!("`{}`", field));
         }
     }
 
@@ -4985,7 +5144,7 @@ mod property_tests {
 
             // 添加多个分组字段
             for field in &fields {
-                builder = builder.group(field);
+                builder = builder.group(test_field!(field));
             }
 
             // 验证所有分组字段都已添加
@@ -5011,7 +5170,7 @@ mod property_tests {
 
             // 添加字段
             for field in &fields {
-                builder = builder.field(field);
+                builder = builder.field(test_field!(field));
             }
 
             // 可选的 DISTINCT
@@ -5078,7 +5237,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", value);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value);
 
             let sql = builder.to_sql();
 
@@ -5100,9 +5259,10 @@ mod property_tests {
             on_field2 in field_name_strategy()
         ) {
             let pool = create_test_pool_sync();
-            let on_condition = format!("{}.{} = {}.{}", table_name, on_field1, join_table, on_field2);
+            let left = format!("{}.{}", table_name, on_field1);
+            let right = format!("{}.{}", join_table, on_field2);
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .join(&join_table, &on_condition);
+                .join(test_table!(&join_table), test_field!(left), test_field!(right));
 
             let sql = builder.to_sql();
 
@@ -5125,8 +5285,11 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .order(&order_field, asc)
-                .group(&group_field);
+                .order(
+                    test_field!(order_field),
+                    if asc { crate::SortOrder::Asc } else { crate::SortOrder::Desc },
+                )
+                .group(test_field!(group_field));
 
             let sql = builder.to_sql();
 
@@ -5156,21 +5319,26 @@ mod property_tests {
 
             // 添加字段
             for field in &fields {
-                builder = builder.field(field);
+                builder = builder.field(test_field!(field));
             }
 
             // 添加 JOIN
-            let on_condition = format!("{}.id = {}.id", table_name, join_table);
-            builder = builder.join(&join_table, &on_condition);
+            let left = format!("{}.id", table_name);
+            let right = format!("{}.id", join_table);
+            builder = builder.join(
+                test_table!(&join_table),
+                test_field!(left),
+                test_field!(right),
+            );
 
             // 添加 WHERE 条件
-            builder = builder.where_and_unchecked(&where_field, "=", 1);
+            builder = builder.where_and(test_field!(&where_field), crate::CompareOp::Eq, 1);
 
             // 添加 ORDER BY
-            builder = builder.order(&order_field, true);
+            builder = builder.order(test_field!(order_field), crate::SortOrder::Asc);
 
             // 添加 GROUP BY
-            builder = builder.group(&group_field);
+            builder = builder.group(test_field!(group_field));
 
             // 添加 LIMIT
             builder = builder.limit(10);
@@ -5220,7 +5388,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
 
             let sql = builder.to_sql();
 
@@ -5243,7 +5411,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
 
             let sql = builder.to_sql();
 
@@ -5264,7 +5432,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
 
             let sql = builder.to_sql();
 
@@ -5285,7 +5453,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "'; DROP TABLE users; --";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
 
             let sql = builder.to_sql();
 
@@ -5310,7 +5478,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "' UNION SELECT * FROM passwords --";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
 
             let sql = builder.to_sql();
 
@@ -5336,7 +5504,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "' OR '1'='1";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
 
             let sql = builder.to_sql();
 
@@ -5363,7 +5531,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "=", malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
 
             let sql = builder.to_sql();
 
@@ -5384,7 +5552,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_in(&field, malicious_values.clone());
+                .where_in(test_field!(field), malicious_values.clone());
 
             let sql = builder.to_sql();
 
@@ -5413,7 +5581,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field, "like", malicious_pattern.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Like, malicious_pattern.as_str());
 
             let sql = builder.to_sql();
 
@@ -5436,7 +5604,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_between(&field, malicious_start.as_str(), malicious_end.as_str());
+                .where_between(test_field!(field), malicious_start.as_str(), malicious_end.as_str());
 
             let sql = builder.to_sql();
 
@@ -5472,8 +5640,8 @@ mod property_tests {
 
             // 创建一个带 WHERE 条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .field(&field)
-                .where_and_unchecked(&field, "=", value)
+                .field(test_field!(field))
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value)
                 .limit(1); // 模拟 find() 会添加的 LIMIT 1
 
             let sql = builder.to_sql();
@@ -5503,7 +5671,7 @@ mod property_tests {
             // 创建一个查询构建器并使用 field("COUNT(*)") 模拟 count() 方法的行为
             // count() 方法内部调用 value("COUNT(*)")，这等同于 field("COUNT(*)")
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .field("COUNT(*)");
+                .expr(crate::SelectExpr::count_all());
 
             let sql = builder.to_sql();
 
@@ -5550,8 +5718,8 @@ mod property_tests {
 
             // 创建带条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&field_name, "=", field_value)
-                .field("COUNT(*)");
+                .where_and(test_field!(&field_name), crate::CompareOp::Eq, field_value)
+                .expr(crate::SelectExpr::count_all());
 
             let sql = builder.to_sql();
 
@@ -5596,15 +5764,14 @@ mod property_tests {
             let pool = create_test_pool_sync();
 
             // 创建查询构建器，统计特定字段
-            let count_expr = format!("COUNT({})", field_name);
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .field(&count_expr);
+                .expr(crate::SelectExpr::count(test_field!(&field_name)));
 
             let sql = builder.to_sql();
 
             // 验证 SQL 包含 COUNT(field_name)
             prop_assert!(
-                sql.contains(&count_expr),
+                sql.contains(&format!("COUNT(`{}`)", field_name)),
                 "COUNT 特定字段应该包含 COUNT(field_name)，实际 SQL: {}",
                 sql
             );
@@ -5644,9 +5811,8 @@ mod property_tests {
 
             // 创建一个查询构建器并生成 SUM 查询的 SQL
             // 模拟 sum() 方法会生成的 SQL
-            let sum_expr = format!("CAST(SUM({}) AS DOUBLE)", field);
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .field(&sum_expr);
+                .expr(crate::SelectExpr::sum(test_field!(&field)).cast_double());
 
             let sql = builder.to_sql();
 
@@ -5711,10 +5877,9 @@ mod property_tests {
             let pool = create_test_pool_sync();
 
             // 创建带条件的查询构建器
-            let sum_expr = format!("CAST(SUM({}) AS DOUBLE)", sum_field);
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&where_field, "=", where_value)
-                .field(&sum_expr);
+                .where_and(test_field!(&where_field), crate::CompareOp::Eq, where_value)
+                .expr(crate::SelectExpr::sum(test_field!(&sum_field)).cast_double());
 
             let sql = builder.to_sql();
 
@@ -5776,11 +5941,10 @@ mod property_tests {
             let pool = create_test_pool_sync();
 
             // 创建带多个条件的查询构建器
-            let sum_expr = format!("CAST(SUM({}) AS DOUBLE)", sum_field);
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and_unchecked(&where_field1, "=", value1)
-                .where_and_unchecked(&where_field2, ">", value2)
-                .field(&sum_expr);
+                .where_and(test_field!(&where_field1), crate::CompareOp::Eq, value1)
+                .where_and(test_field!(&where_field2), crate::CompareOp::Gt, value2)
+                .expr(crate::SelectExpr::sum(test_field!(&sum_field)).cast_double());
 
             let sql = builder.to_sql();
 
@@ -5815,212 +5979,39 @@ mod property_tests {
         }
     }
 
-    // ==================== 任务 5.7：属性测试 P2 - 不支持操作符返回错误 ====================
-
-    // **Validates: Requirements 3.1**
-    // 属性 P2：对于任意不在支持集合 {=, !=, >, <, >=, <=, like, LIKE} 中的操作符字符串，
-    // where_and 必须返回 Err(DbError::UnsupportedOperator(_))
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(200))]
-
-        #[test]
-        fn prop_unsupported_operator_returns_error(
-            // 生成不在支持集合中的操作符字符串
-            // 排除所有支持的操作符：=, !=, >, <, >=, <=, like, LIKE
-            op in "[a-zA-Z0-9!@#$%^&*]{1,10}"
-        ) {
-            // 过滤掉支持的操作符
-            let supported = ["=", "!=", ">", "<", ">=", "<=", "like", "LIKE"];
-            prop_assume!(!supported.contains(&op.as_str()));
-
-            let pool = create_test_pool_sync();
-            let builder = QueryBuilder::new(&pool, "users", false);
-
-            // 调用 where_and 并验证返回 Err(DbError::UnsupportedOperator)
-            let result = builder.where_and("field", &op, 1i64);
-
-            prop_assert!(
-                matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
-                "不支持的操作符 '{}' 应该返回 Err(DbError::UnsupportedOperator)，实际结果: {:?}",
-                op,
-                result.map(|_| "Ok")
+    // CompareOp 是封闭枚举，不支持的字符串操作符在业务 API 中不可表达。
+    #[test]
+    fn typed_compare_operators_preserve_condition_semantics() {
+        let pool = make_sync_test_pool();
+        for operator in [
+            crate::CompareOp::Eq,
+            crate::CompareOp::Ne,
+            crate::CompareOp::Gt,
+            crate::CompareOp::Lt,
+            crate::CompareOp::Gte,
+            crate::CompareOp::Lte,
+            crate::CompareOp::Like,
+        ] {
+            let builder = QueryBuilder::new(pool, "users", false).where_and(
+                yang_db::field!("age"),
+                operator,
+                18i64,
             );
-        }
-    }
-
-    // ==================== 任务 5.8：单元测试 - 已支持操作符的现有行为不变 ====================
-
-    #[test]
-    fn test_where_and_supported_operators_eq() {
-        // 验证需求: 5.8  支持的操作符 = 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("age", "=", 18i64);
-        assert!(result.is_ok(), "操作符 '=' 应该返回 Ok");
-        let builder = result.unwrap();
-        assert_eq!(builder.conditions.len(), 1);
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_ne() {
-        // 验证需求: 5.8  支持的操作符 != 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("status", "!=", 0i64);
-        assert!(result.is_ok(), "操作符 '!=' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_gt() {
-        // 验证需求: 5.8  支持的操作符 > 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("age", ">", 18i64);
-        assert!(result.is_ok(), "操作符 '>' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_lt() {
-        // 验证需求: 5.8  支持的操作符 < 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("age", "<", 65i64);
-        assert!(result.is_ok(), "操作符 '<' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_gte() {
-        // 验证需求: 5.8  支持的操作符 >= 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("score", ">=", 60i64);
-        assert!(result.is_ok(), "操作符 '>=' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_lte() {
-        // 验证需求: 5.8  支持的操作符 <= 行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("score", "<=", 100i64);
-        assert!(result.is_ok(), "操作符 '<=' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_like_lowercase() {
-        // 验证需求: 5.8  支持的操作符 like（小写）行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("name", "like", "%test%");
-        assert!(result.is_ok(), "操作符 'like' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_supported_operators_like_uppercase() {
-        // 验证需求: 5.8  支持的操作符 LIKE（大写）行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("name", "LIKE", "%test%");
-        assert!(result.is_ok(), "操作符 'LIKE' 应该返回 Ok");
-    }
-
-    #[test]
-    fn test_where_and_unsupported_operator_returns_error() {
-        // 验证需求: 5.1  不支持的操作符返回 Err(DbError::UnsupportedOperator)
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("age", "BETWEEN", 18i64);
-        assert!(
-            matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
-            "不支持的操作符 'BETWEEN' 应该返回 Err(DbError::UnsupportedOperator)"
-        );
-    }
-
-    #[test]
-    fn test_where_and_unsupported_operator_error_message() {
-        // 验证需求: 5.1  错误消息包含操作符名称
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_and("age", "XOR", 1i64);
-        match result {
-            Err(crate::DbError::UnsupportedOperator(op)) => {
-                assert_eq!(op, "XOR", "错误消息应该包含操作符名称");
-            }
-            _ => panic!("应该返回 UnsupportedOperator 错误"),
+            assert_eq!(builder.conditions.len(), 1);
         }
     }
 
     #[test]
-    fn test_where_or_unsupported_operator_returns_error() {
-        // 验证需求: 5.2  where_or 遇到不支持操作符时返回 Err
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_or("age", "IN", 18i64);
-        assert!(
-            matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
-            "where_or 遇到不支持的操作符 'IN' 应该返回 Err(DbError::UnsupportedOperator)"
-        );
-    }
-
-    #[test]
-    fn test_where_or_supported_operators_work() {
-        // 验证需求: 5.8  where_or 支持的操作符行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false).where_or("status", "=", 1i64);
-        assert!(result.is_ok(), "where_or 操作符 '=' 应该返回 Ok");
-        let builder = result.unwrap();
-        assert_eq!(builder.conditions.len(), 1);
-    }
-
-    #[test]
-    fn test_having_cond_unsupported_operator_returns_error() {
-        // 验证需求: 5.3  having_cond 遇到不支持操作符时返回 Err
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "orders", false).having_cond("cnt", "LIKE", 5i64);
-        assert!(
-            matches!(result, Err(crate::DbError::UnsupportedOperator(_))),
-            "having_cond 遇到不支持的操作符 'LIKE' 应该返回 Err(DbError::UnsupportedOperator)"
-        );
-    }
-
-    #[test]
-    fn test_having_cond_supported_operators_work() {
-        // 验证需求: 5.8  having_cond 支持的操作符行为不变
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "orders", false).having_cond("cnt", ">", 5i64);
-        assert!(result.is_ok(), "having_cond 操作符 '>' 应该返回 Ok");
-        let builder = result.unwrap();
-        assert_eq!(builder.having_clause.len(), 1);
-    }
-
-    #[test]
-    fn test_where_and_unchecked_works_with_valid_operator() {
-        // 验证需求: 5.4  where_and_unchecked 对合法操作符正常工作
-        let pool = make_sync_test_pool();
-        let builder =
-            QueryBuilder::new(pool, "users", false).where_and_unchecked("age", "=", 18i64);
-        assert_eq!(builder.conditions.len(), 1);
-    }
-
-    #[test]
-    fn test_where_or_unchecked_works_with_valid_operator() {
-        // 验证需求: 5.5  where_or_unchecked 对合法操作符正常工作
+    fn typed_where_or_having_and_chaining_work() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_or_unchecked("status", "=", 1i64)
-            .where_or_unchecked("status", "=", 2i64);
-        // where_or 会将条件组合成 OR
+            .where_and(yang_db::field!("age"), crate::CompareOp::Gt, 18i64)
+            .where_and(yang_db::field!("status"), crate::CompareOp::Eq, 1i64)
+            .where_or(yang_db::field!("status"), crate::CompareOp::Eq, 2i64)
+            .group(yang_db::field!("age"))
+            .having_cond(yang_db::field!("age"), crate::CompareOp::Gt, 0i64);
         assert_eq!(builder.conditions.len(), 1);
-    }
-
-    #[test]
-    fn test_having_cond_unchecked_works_with_valid_operator() {
-        // 验证需求: 5.6  having_cond_unchecked 对合法操作符正常工作
-        let pool = make_sync_test_pool();
-        let builder =
-            QueryBuilder::new(pool, "orders", false).having_cond_unchecked("cnt", ">", 5i64);
         assert_eq!(builder.having_clause.len(), 1);
-    }
-
-    #[test]
-    fn test_where_and_chaining_with_result() {
-        // 验证需求: 5.1  where_and 返回 Result 后可以链式调用
-        let pool = make_sync_test_pool();
-        let result = QueryBuilder::new(pool, "users", false)
-            .where_and("age", ">", 18i64)
-            .and_then(|b| b.where_and("status", "=", 1i64));
-        assert!(result.is_ok(), "链式 where_and 调用应该成功");
-        let builder = result.unwrap();
-        assert_eq!(builder.conditions.len(), 2);
     }
 
     // ==================== 任务 8.5：属性测试 P5 - 批次大小分割正确性 ====================
@@ -6086,40 +6077,34 @@ mod property_tests {
     }
 
     // 单元测试：验证 batch_size 为 0 时返回错误
-    #[test]
-    fn test_insert_batch_with_size_zero_batch_size_returns_error() {
+    #[tokio::test]
+    async fn test_insert_batch_with_size_zero_batch_size_returns_error() {
         // 验证需求: 7.2  batch_size 为 0 时返回 SerializationError
         // 此测试不需要数据库连接，直接验证错误处理逻辑
-        // 使用 tokio 运行时执行异步测试
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // 创建一个懒连接池（不需要真实连接）
-            // batch_size == 0 的检查在任何数据库操作之前就会返回
-            let pool = make_sync_test_pool();
-            let builder = QueryBuilder::new(pool, "users", false);
+        // 创建一个懒连接池（不需要真实连接）；复用当前异步测试运行时。
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("mysql://root:111111@localhost:3306/test")
+            .expect("合法测试数据库 URL");
+        let builder = QueryBuilder::new(&pool, "users", false);
 
-            // 准备测试数据
-            let data = vec![serde_json::json!({"name": "张三"})];
+        let data = vec![serde_json::json!({"name": "张三"})];
 
-            // 调用 insert_batch_with_size，batch_size = 0
-            let result = builder.insert_batch_with_size(&data, 0).await;
+        let result = builder.insert_batch_with_size(&data, 0).await;
 
-            // 验证返回 SerializationError
+        assert!(
+            matches!(result, Err(crate::DbError::SerializationError(_))),
+            "batch_size 为 0 应返回 SerializationError，实际结果: {:?}",
+            result.as_ref().map(|_| "Ok")
+        );
+
+        if let Err(crate::DbError::SerializationError(msg)) = result {
             assert!(
-                matches!(result, Err(crate::DbError::SerializationError(_))),
-                "batch_size 为 0 应返回 SerializationError，实际结果: {:?}",
-                result.map(|_| "Ok")
+                msg.contains("batch_size") || msg.contains('0'),
+                "错误消息应提及 batch_size 不能为 0，实际消息: {}",
+                msg
             );
-
-            // 验证错误消息包含预期内容
-            if let Err(crate::DbError::SerializationError(msg)) = result {
-                assert!(
-                    msg.contains("batch_size") || msg.contains("0"),
-                    "错误消息应提及 batch_size 不能为 0，实际消息: {}",
-                    msg
-                );
-            }
-        });
+        }
     }
 
     // 单元测试：验证分批逻辑的边界情况

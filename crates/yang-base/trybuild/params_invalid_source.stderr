@@ -1,0 +1,13 @@
+error: 参数来源必须是 body/query/path/header
+ --> trybuild/params_invalid_source.rs:5:26
+  |
+5 |         #[param(source = cookie)]
+  |                          ^^^^^^
+
+warning: unused import: `yang_base::definition::Str`
+ --> trybuild/params_invalid_source.rs:1:5
+  |
+1 | use yang_base::definition::Str;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

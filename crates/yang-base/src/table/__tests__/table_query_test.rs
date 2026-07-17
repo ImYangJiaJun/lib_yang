@@ -596,28 +596,10 @@ fn test_build_update_sql_basic() {
     data.insert("name".to_string(), json!("张三"));
     data.insert("email".to_string(), json!("zhangsan@example.com"));
 
-    // 无 WHERE 条件且未放行全表：应被 WHERE 守卫拒绝
-    let query = TableQuery::new(
-        table_config.clone(),
-        Arc::from(vec!["user".to_string()]),
-        None,
-    );
+    // 无 WHERE 条件始终被 WHERE 守卫拒绝；不存在全表写绕过 API。
+    let query = TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None);
     let result = query.build_update_sql(&data);
     assert!(matches!(result, Err(BaseError::MissingWhereClause(op)) if op == "UPDATE"));
-
-    // 显式放行全表后应成功生成无 WHERE 的 UPDATE
-    let query =
-        TableQuery::new(table_config, Arc::from(vec!["user".to_string()]), None).allow_full_table();
-    let (sql, params) = query.build_update_sql(&data).unwrap();
-
-    // 检查 SQL 语句包含 UPDATE 和 SET
-    assert!(sql.contains("UPDATE `users`"));
-    assert!(sql.contains("SET"));
-    assert!(sql.contains("`name` = ?"));
-    assert!(sql.contains("`email` = ?"));
-
-    // 检查参数数量
-    assert_eq!(params.len(), 2);
 }
 
 #[test]
@@ -772,22 +754,11 @@ fn create_test_table_config_without_soft_delete() -> Arc<TableConfig> {
 #[test]
 fn test_build_delete_sql_basic() {
     let table_config = create_test_table_config_without_soft_delete();
-    let query = TableQuery::new(
-        table_config.clone(),
-        Arc::from(vec!["admin".to_string()]),
-        None,
-    );
+    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None);
 
-    // 无 WHERE 条件且未放行全表：应被 WHERE 守卫拒绝
+    // 无 WHERE 条件始终被 WHERE 守卫拒绝；不存在全表删除绕过 API。
     let result = query.build_delete_sql();
     assert!(matches!(result, Err(BaseError::MissingWhereClause(op)) if op == "DELETE"));
-
-    // 显式放行全表后应成功生成无 WHERE 的 DELETE
-    let query = TableQuery::new(table_config, Arc::from(vec!["admin".to_string()]), None)
-        .allow_full_table();
-    let (sql, params) = query.build_delete_sql().unwrap();
-    assert_eq!(sql, "DELETE FROM `logs`");
-    assert_eq!(params.len(), 0);
 }
 
 #[test]

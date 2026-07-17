@@ -135,6 +135,11 @@ impl Field {
         Self::new(name, FieldType::Double)
     }
 
+    /// 创建定点小数字段。
+    pub fn decimal(name: impl Into<String>, precision: u8, scale: u8) -> Self {
+        Self::new(name, FieldType::Decimal { precision, scale })
+    }
+
     /// 创建布尔字段。
     pub fn boolean(name: impl Into<String>) -> Self {
         Self::new(name, FieldType::Boolean)
@@ -408,6 +413,12 @@ impl Field {
         self
     }
 
+    /// 将字段标记为租户隔离键。
+    pub fn tenant_key(mut self) -> Self {
+        self.config.tenant_key = true;
+        self
+    }
+
     /// 设置敏感字段预设。
     ///
     /// 敏感字段不会进入默认 Record 投影或表 JSON Schema，并默认禁止读取、写入、
@@ -595,6 +606,7 @@ impl Table {
         let mut updated_at: Option<String> = None;
         let mut deleted_at: Option<String> = None;
         let mut soft_delete: Option<String> = None;
+        let mut tenant_key: Option<String> = None;
         let mut indexes = self.indexes;
 
         for mut field in self.fields {
@@ -622,6 +634,12 @@ impl Table {
             if field.primary_key && primary_key.replace(field.config.name.clone()).is_some() {
                 return Err(BaseError::ConfigError(format!(
                     "表 {} 只能定义一个主键",
+                    self.name
+                )));
+            }
+            if field.config.tenant_key && tenant_key.replace(field.config.name.clone()).is_some() {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 只能定义一个租户隔离字段",
                     self.name
                 )));
             }
@@ -704,13 +722,25 @@ impl Table {
             } else {
                 None
             };
+        let table_ref = yang_db::TableRef::new(self.name.clone())
+            .map_err(|error| BaseError::ConfigError(error.to_string()))?;
+        let field_refs = field_names
+            .iter()
+            .map(|name| {
+                yang_db::FieldRef::new(name.clone())
+                    .map(|field| (name.clone(), field))
+                    .map_err(|error| BaseError::ConfigError(error.to_string()))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
         Ok(TableDefinition {
             config: Arc::new(TableConfig {
                 table_name: self.name.clone(),
+                table_ref,
                 display_name: self.label.unwrap_or(self.name),
                 primary_key,
                 fields: configs,
+                field_refs,
                 unique_indexes,
                 indexes: normal_indexes,
                 default_order: orders,
@@ -771,6 +801,15 @@ impl TableDefinition {
     /// 返回软删除字段名。
     pub fn soft_delete_field(&self) -> Option<&str> {
         self.config.soft_delete_field.as_deref()
+    }
+
+    /// 返回唯一租户隔离字段；表未声明租户字段时返回 `None`。
+    pub fn tenant_key_field(&self) -> Option<&str> {
+        self.config
+            .fields
+            .values()
+            .find(|field| field.tenant_key)
+            .map(|field| field.name.as_str())
     }
 
     /// 生成供 API catalog 使用的全局写入侧 JSON Schema。
@@ -893,6 +932,11 @@ impl<'a> FieldMetadata<'a> {
         &self.config.display_name
     }
 
+    /// 返回字段是否承担租户隔离键语义。
+    pub fn is_tenant_key(self) -> bool {
+        self.config.tenant_key
+    }
+
     /// 返回字段类型。
     pub fn field_type(self) -> &'a FieldType {
         &self.config.field_type
@@ -991,6 +1035,14 @@ fn validate_field_shape(table: &str, field: &Field) -> Result<(), BaseError> {
                 )));
             }
         }
+        FieldType::Decimal { precision, scale }
+            if *precision == 0 || *precision > 65 || *scale > *precision =>
+        {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的 DECIMAL 字段 {} 必须满足 1 <= precision <= 65 且 scale <= precision",
+                field.config.name
+            )));
+        }
         _ => {}
     }
 
@@ -1088,6 +1140,7 @@ fn validate_validator_configuration(table: &str, field: &FieldConfig) -> Result<
             | FieldType::BigInt
             | FieldType::Float
             | FieldType::Double
+            | FieldType::Decimal { .. }
             | FieldType::Timestamp
     );
     let mut min_length: Option<usize> = None;
@@ -1296,6 +1349,12 @@ fn field_json_schema(field: &FieldConfig) -> Value {
         }
         FieldType::Float | FieldType::Double => {
             schema.insert("type".into(), json!("number"));
+        }
+        FieldType::Decimal { precision, scale } => {
+            schema.insert("type".into(), json!("string"));
+            schema.insert("format".into(), json!("decimal"));
+            schema.insert("x-precision".into(), json!(precision));
+            schema.insert("x-scale".into(), json!(scale));
         }
         FieldType::Boolean => {
             schema.insert("type".into(), json!("boolean"));

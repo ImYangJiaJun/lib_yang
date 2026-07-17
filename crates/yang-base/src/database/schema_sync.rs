@@ -6,7 +6,6 @@
 
 use super::DatabaseInitializer;
 use crate::error::BaseError;
-use crate::router::AppRouter;
 use crate::table::{
     FieldConfig, FieldType, SchemaColumn, SchemaIssueKind, TableConfig, TableDefinition,
 };
@@ -130,18 +129,6 @@ struct DesiredIndex {
 }
 
 impl DatabaseInitializer {
-    /// 根据 `AppRouter` 中各模块声明的表定义同步 MySQL schema。
-    ///
-    /// 该入口适合在监听 HTTP 端口前调用。同步策略固定为 additive：只创建缺失
-    /// 对象；任何已有字段类型、NULL、自增或主键冲突都会失败并中止启动。
-    pub async fn sync_app_schema(
-        &self,
-        app_router: &AppRouter,
-    ) -> Result<SchemaSyncReport, BaseError> {
-        let tables = app_router.table_definitions();
-        self.sync_table_definitions(&tables).await
-    }
-
     /// 同步一组不可变表定义，使用单个数据库级 advisory lock 串行化多实例启动。
     pub async fn sync_table_definitions(
         &self,
@@ -594,6 +581,7 @@ fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
         FieldType::BigInt => "BIGINT".to_string(),
         FieldType::Float => "FLOAT".to_string(),
         FieldType::Double => "DOUBLE".to_string(),
+        FieldType::Decimal { precision, scale } => format!("DECIMAL({precision},{scale})"),
         FieldType::Boolean => "TINYINT(1)".to_string(),
         FieldType::Date => "DATE".to_string(),
         FieldType::DateTime => "DATETIME".to_string(),

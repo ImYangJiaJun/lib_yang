@@ -1,8 +1,12 @@
 use super::schema_sync::{plan_table_sync, ExistingIndex, ExistingTableSchema};
 use super::{DatabaseInitializer, SchemaSyncChangeKind, SchemaSyncReport};
+use crate::definition::{
+    AddonName, AddonSpec, AppBuilder, FieldKind, FieldName, FieldSpec, ModuleName, ModuleSpec,
+    TableName, TableSpec,
+};
 use crate::error::BaseError;
-use crate::router::{AppRouter, ModuleRouter};
 use crate::table::{Field, RelationType, SchemaColumn, Table, TableDefinition};
+use crate::tools::ToolsBuilder;
 
 fn account_table() -> TableDefinition {
     Table::new("accounts")
@@ -14,42 +18,48 @@ fn account_table() -> TableDefinition {
         .expect("accounts 表定义应有效")
 }
 
-fn id_only_table(name: &str) -> TableDefinition {
-    Table::new(name)
-        .fields([Field::id("id")])
-        .build()
-        .expect("仅含主键的表定义应有效")
-}
-
 #[allow(dead_code)]
 async fn public_schema_sync_api_typechecks(
     initializer: &DatabaseInitializer,
-    app: &AppRouter,
+    definitions: &[&TableDefinition],
 ) -> Result<SchemaSyncReport, BaseError> {
-    initializer.sync_app_schema(app).await
+    initializer.sync_table_definitions(definitions).await
 }
 
 #[test]
-fn app_router_exposes_table_definitions_in_module_order() {
-    let accounts = account_table();
-    let sessions = id_only_table("account_sessions");
-    let audit = id_only_table("audit_logs");
-    let app = AppRouter::new()
-        .modules([
-            ModuleRouter::new("z_account", "账号")
-                .table(accounts)
-                .schema(sessions),
-            ModuleRouter::new("a_audit", "审计").table(audit),
-        ])
-        .expect("schema 模块应批量注册成功");
+fn built_app_exposes_compiled_table_definitions_in_module_order() {
+    let table_spec = |name: &str| {
+        TableSpec::new(TableName::new(name).expect("测试表名应有效")).field(FieldSpec::new(
+            FieldName::new("id").expect("测试字段名应有效"),
+            FieldKind::Key,
+        ))
+    };
+    let app = AppBuilder::new()
+        .addon(
+            AddonSpec::new(AddonName::new("account").expect("测试 Addon 名称应有效"))
+                .module(
+                    ModuleSpec::new(
+                        ModuleName::new("account.z_account").expect("测试 Module 名称应有效"),
+                    )
+                    .table(table_spec("accounts")),
+                )
+                .module(
+                    ModuleSpec::new(
+                        ModuleName::new("account.a_audit").expect("测试 Module 名称应有效"),
+                    )
+                    .table(table_spec("audit_logs")),
+                ),
+        )
+        .build(ToolsBuilder::new().build().expect("测试 Tools 应有效"))
+        .expect("应用定义应构建成功");
 
     let names: Vec<&str> = app
         .table_definitions()
-        .into_iter()
+        .iter()
         .map(TableDefinition::name)
         .collect();
 
-    assert_eq!(names, vec!["audit_logs", "account_sessions", "accounts"]);
+    assert_eq!(names, vec!["audit_logs", "accounts"]);
 }
 
 #[test]

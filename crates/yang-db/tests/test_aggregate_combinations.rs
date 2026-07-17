@@ -131,7 +131,7 @@ async fn setup_test_db(db: &Database) -> Result<(), yang_db::DbError> {
     ];
 
     for (name, age, status) in users {
-        db.table("users")
+        db.table(yang_db::table!("users"))
             .insert(&json!({"name": name, "age": age, "status": status}))
             .await?;
     }
@@ -149,7 +149,7 @@ async fn setup_test_db(db: &Database) -> Result<(), yang_db::DbError> {
     ];
 
     for (user_id, amount, status) in orders {
-        db.table("orders")
+        db.table(yang_db::table!("orders"))
             .insert(&json!({"user_id": user_id, "amount": amount, "status": status}))
             .await?;
     }
@@ -170,10 +170,9 @@ async fn test_avg_with_where() {
 
     // 测试：计算 status=1 的用户平均年龄
     let avg_age = db
-        .table("users")
-        .where_and("status", "=", 1)
-        .unwrap()
-        .avg("age")
+        .table(yang_db::table!("users"))
+        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+        .avg(yang_db::field!("age"))
         .await
         .unwrap();
 
@@ -207,10 +206,17 @@ async fn test_min_with_where() {
     }
 
     let result = db
-        .table("orders")
-        .where_and("status", "=", "completed")
-        .unwrap()
-        .field("CAST(MIN(amount) AS DOUBLE) as min_amount")
+        .table(yang_db::table!("orders"))
+        .where_and(
+            yang_db::field!("status"),
+            yang_db::CompareOp::Eq,
+            "completed",
+        )
+        .expr(
+            yang_db::SelectExpr::min(yang_db::field!("amount"))
+                .cast_double()
+                .alias(yang_db::field!("min_amount")),
+        )
         .select::<MinResult>()
         .await
         .unwrap();
@@ -246,10 +252,17 @@ async fn test_max_with_where() {
     }
 
     let result = db
-        .table("orders")
-        .where_and("status", "=", "completed")
-        .unwrap()
-        .field("CAST(MAX(amount) AS DOUBLE) as max_amount")
+        .table(yang_db::table!("orders"))
+        .where_and(
+            yang_db::field!("status"),
+            yang_db::CompareOp::Eq,
+            "completed",
+        )
+        .expr(
+            yang_db::SelectExpr::max(yang_db::field!("amount"))
+                .cast_double()
+                .alias(yang_db::field!("max_amount")),
+        )
         .select::<MaxResult>()
         .await
         .unwrap();
@@ -337,12 +350,27 @@ async fn test_multiple_aggregates() {
     }
 
     let result = db
-        .table("orders")
-        .where_and("status", "=", "completed")
-        .unwrap()
-        .field("CAST(AVG(amount) AS DOUBLE) as avg_amount")
-        .field("CAST(MIN(amount) AS DOUBLE) as min_amount")
-        .field("CAST(MAX(amount) AS DOUBLE) as max_amount")
+        .table(yang_db::table!("orders"))
+        .where_and(
+            yang_db::field!("status"),
+            yang_db::CompareOp::Eq,
+            "completed",
+        )
+        .expr(
+            yang_db::SelectExpr::avg(yang_db::field!("amount"))
+                .cast_double()
+                .alias(yang_db::field!("avg_amount")),
+        )
+        .expr(
+            yang_db::SelectExpr::min(yang_db::field!("amount"))
+                .cast_double()
+                .alias(yang_db::field!("min_amount")),
+        )
+        .expr(
+            yang_db::SelectExpr::max(yang_db::field!("amount"))
+                .cast_double()
+                .alias(yang_db::field!("max_amount")),
+        )
         .select::<AggregateResult>()
         .await
         .unwrap();
@@ -372,12 +400,10 @@ async fn test_sql_order_with_aggregates() {
 
     // 测试：验证 WHERE 在聚合函数之前
     let avg_age = db
-        .table("users")
-        .where_and("status", "=", 1)
-        .unwrap()
-        .where_and("age", ">", 25)
-        .unwrap()
-        .avg("age")
+        .table(yang_db::table!("users"))
+        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 25)
+        .avg(yang_db::field!("age"))
         .await
         .unwrap();
 

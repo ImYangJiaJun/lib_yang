@@ -19,9 +19,9 @@ async fn test_json_field_type_marking() {
     if let Ok(db) = result {
         // 测试 JSON 字段类型标记
         let sql = db
-            .table("test_table")
-            .json("config")
-            .field("config")
+            .table(yang_db::table!("test_table"))
+            .json(yang_db::field!("config"))
+            .field(yang_db::field!("config"))
             .to_sql();
 
         println!("JSON 字段标记 SQL: {}", sql);
@@ -39,7 +39,7 @@ async fn test_json_field_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_json_test";
+        let table_name = yang_db::table!("integration_json_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -71,7 +71,7 @@ async fn test_json_field_insert() {
 
         let insert_result = db
             .table(table_name)
-            .json("config")
+            .json(yang_db::field!("config"))
             .insert(&json!({
                 "name": "JSON 测试",
                 "config": config
@@ -103,9 +103,9 @@ async fn test_text_field_type_marking() {
     if let Ok(db) = result {
         // 测试 TEXT 字段类型标记
         let sql = db
-            .table("test_table")
-            .text("description")
-            .field("description")
+            .table(yang_db::table!("test_table"))
+            .text(yang_db::field!("description"))
+            .field(yang_db::field!("description"))
             .to_sql();
 
         println!("TEXT 字段标记 SQL: {}", sql);
@@ -125,9 +125,9 @@ async fn test_decimal_field_type_marking() {
     if let Ok(db) = result {
         // 测试 DECIMAL 字段类型标记
         let sql = db
-            .table("test_table")
-            .decimal("price")
-            .field("price")
+            .table(yang_db::table!("test_table"))
+            .decimal(yang_db::field!("price"))
+            .field(yang_db::field!("price"))
             .to_sql();
 
         println!("DECIMAL 字段标记 SQL: {}", sql);
@@ -145,7 +145,7 @@ async fn test_decimal_field_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_decimal_test";
+        let table_name = yang_db::table!("integration_decimal_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -168,7 +168,7 @@ async fn test_decimal_field_insert() {
         // 插入 DECIMAL 数据
         let insert_result = db
             .table(table_name)
-            .decimal("price")
+            .decimal(yang_db::field!("price"))
             .insert(&json!({
                 "name": "商品1",
                 "price": 99.99
@@ -200,9 +200,9 @@ async fn test_datetime_field_type_marking() {
     if let Ok(db) = result {
         // 测试 DATETIME 字段类型标记
         let sql = db
-            .table("test_table")
-            .datetime("created_at")
-            .field("created_at")
+            .table(yang_db::table!("test_table"))
+            .datetime(yang_db::field!("created_at"))
+            .field(yang_db::field!("created_at"))
             .to_sql();
 
         println!("DATETIME 字段标记 SQL: {}", sql);
@@ -222,9 +222,9 @@ async fn test_timestamp_field_type_marking() {
     if let Ok(db) = result {
         // 测试 TIMESTAMP 字段类型标记
         let sql = db
-            .table("test_table")
-            .timestamp("updated_at")
-            .field("updated_at")
+            .table(yang_db::table!("test_table"))
+            .timestamp(yang_db::field!("updated_at"))
+            .field(yang_db::field!("updated_at"))
             .to_sql();
 
         println!("TIMESTAMP 字段标记 SQL: {}", sql);
@@ -244,9 +244,9 @@ async fn test_blob_field_type_marking() {
     if let Ok(db) = result {
         // 测试 BLOB 字段类型标记
         let sql = db
-            .table("test_table")
-            .blob("avatar")
-            .field("avatar")
+            .table(yang_db::table!("test_table"))
+            .blob(yang_db::field!("avatar"))
+            .field(yang_db::field!("avatar"))
             .to_sql();
 
         println!("BLOB 字段标记 SQL: {}", sql);
@@ -266,19 +266,19 @@ async fn test_multiple_special_fields() {
     if let Ok(db) = result {
         // 测试同时标记多种特殊字段类型
         let sql = db
-            .table("test_table")
-            .json("config")
-            .text("description")
-            .decimal("price")
-            .datetime("created_at")
-            .timestamp("updated_at")
-            .blob("avatar")
-            .field("config")
-            .field("description")
-            .field("price")
-            .field("created_at")
-            .field("updated_at")
-            .field("avatar")
+            .table(yang_db::table!("test_table"))
+            .json(yang_db::field!("config"))
+            .text(yang_db::field!("description"))
+            .decimal(yang_db::field!("price"))
+            .datetime(yang_db::field!("created_at"))
+            .timestamp(yang_db::field!("updated_at"))
+            .blob(yang_db::field!("avatar"))
+            .field(yang_db::field!("config"))
+            .field(yang_db::field!("description"))
+            .field(yang_db::field!("price"))
+            .field(yang_db::field!("created_at"))
+            .field(yang_db::field!("updated_at"))
+            .field(yang_db::field!("avatar"))
             .to_sql();
 
         println!("多种特殊字段标记 SQL: {}", sql);
@@ -303,7 +303,7 @@ async fn test_special_fields_with_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_special_fields_test";
+        let table_name = yang_db::table!("integration_special_fields_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -332,10 +332,10 @@ async fn test_special_fields_with_insert() {
 
         let insert_result = db
             .table(table_name)
-            .json("config")
-            .text("description")
-            .decimal("price")
-            .datetime("created_at")
+            .json(yang_db::field!("config"))
+            .text(yang_db::field!("description"))
+            .decimal(yang_db::field!("price"))
+            .datetime(yang_db::field!("created_at"))
             .insert(&json!({
                 "name": "综合测试",
                 "config": config,

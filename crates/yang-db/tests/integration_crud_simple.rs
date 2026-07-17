@@ -14,17 +14,16 @@ async fn test_crud_sql_generation() {
 
     if let Ok(db) = result {
         // 测试 INSERT SQL 生成
-        let insert_sql = db.table("test_users").to_sql();
+        let insert_sql = db.table(yang_db::table!("test_users")).to_sql();
         assert!(insert_sql.contains("test_users"), "SQL 应该包含表名");
         println!("✓ INSERT SQL 生成: {}", insert_sql);
 
         // 测试 SELECT SQL 生成
         let select_sql = db
-            .table("test_users")
-            .field("id")
-            .field("name")
-            .where_and("status", "=", "active")
-            .unwrap()
+            .table(yang_db::table!("test_users"))
+            .field(yang_db::field!("id"))
+            .field(yang_db::field!("name"))
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
             .to_sql();
         assert!(select_sql.contains("SELECT"), "应该包含 SELECT");
         assert!(select_sql.contains("WHERE"), "应该包含 WHERE");
@@ -32,15 +31,23 @@ async fn test_crud_sql_generation() {
 
         // 测试 UPDATE SQL 生成（注意：to_sql 不支持 UPDATE，需要实际执行）
         // 这里只测试构建器的链式调用
-        let _update_builder = db.table("test_users").where_and("id", "=", 1);
+        let _update_builder = db.table(yang_db::table!("test_users")).where_and(
+            yang_db::field!("id"),
+            yang_db::CompareOp::Eq,
+            1,
+        );
         println!("✓ UPDATE 构建器创建成功");
 
         // 测试 DELETE SQL 生成
-        let _delete_builder = db.table("test_users").where_and("id", "=", 1);
+        let _delete_builder = db.table(yang_db::table!("test_users")).where_and(
+            yang_db::field!("id"),
+            yang_db::CompareOp::Eq,
+            1,
+        );
         println!("✓ DELETE 构建器创建成功");
 
         // 测试 COUNT SQL 生成
-        let count_sql = db.table("test_users").to_sql();
+        let count_sql = db.table(yang_db::table!("test_users")).to_sql();
         println!("✓ COUNT SQL 基础: {}", count_sql);
 
         println!("\n✓✓✓ CRUD SQL 生成测试通过 ✓✓✓");
@@ -54,7 +61,7 @@ async fn test_crud_with_real_table() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_crud_test";
+        let table_name = yang_db::table!("integration_crud_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -103,8 +110,7 @@ async fn test_crud_with_real_table() {
                 let update_data = json!({"age": 26});
                 let update_result = db
                     .table(table_name)
-                    .where_and("id", "=", id as i64)
-                    .unwrap()
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
                     .update(&update_data)
                     .await;
 
@@ -116,8 +122,7 @@ async fn test_crud_with_real_table() {
                 // 测试 DELETE
                 let delete_result = db
                     .table(table_name)
-                    .where_and("id", "=", id as i64)
-                    .unwrap()
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
                     .delete()
                     .await;
 
@@ -151,7 +156,7 @@ async fn test_batch_insert() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_batch_test";
+        let table_name = yang_db::table!("integration_batch_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;
@@ -210,27 +215,23 @@ async fn test_where_conditions() {
     if let Ok(db) = result {
         // 测试各种 WHERE 条件的 SQL 生成
         let sql1 = db
-            .table("users")
-            .where_and("age", ">", 18)
-            .unwrap()
+            .table(yang_db::table!("users"))
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18)
             .to_sql();
         assert!(sql1.contains("WHERE"), "应该包含 WHERE");
         println!("✓ WHERE > 条件: {}", sql1);
 
         let sql2 = db
-            .table("users")
-            .where_and("status", "=", "active")
-            .unwrap()
-            .where_and("age", ">=", 18)
-            .unwrap()
+            .table(yang_db::table!("users"))
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18)
             .to_sql();
         assert!(sql2.contains("WHERE"), "应该包含 WHERE");
         println!("✓ 多个 WHERE 条件: {}", sql2);
 
         let sql3 = db
-            .table("users")
-            .where_and("name", "like", "%test%")
-            .unwrap()
+            .table(yang_db::table!("users"))
+            .where_and(yang_db::field!("name"), yang_db::CompareOp::Like, "%test%")
             .to_sql();
         println!("✓ WHERE LIKE 条件: {}", sql3);
 
@@ -244,17 +245,24 @@ async fn test_order_and_limit() {
 
     if let Ok(db) = result {
         // 测试 ORDER BY
-        let sql1 = db.table("users").order("created_at", false).to_sql();
+        let sql1 = db
+            .table(yang_db::table!("users"))
+            .order(yang_db::field!("created_at"), yang_db::SortOrder::Desc)
+            .to_sql();
         assert!(sql1.contains("ORDER BY"), "应该包含 ORDER BY");
         println!("✓ ORDER BY 降序: {}", sql1);
 
         // 测试 LIMIT
-        let sql2 = db.table("users").limit(10).to_sql();
+        let sql2 = db.table(yang_db::table!("users")).limit(10).to_sql();
         assert!(sql2.contains("LIMIT"), "应该包含 LIMIT");
         println!("✓ LIMIT: {}", sql2);
 
         // 测试 OFFSET
-        let sql3 = db.table("users").limit(10).offset(20).to_sql();
+        let sql3 = db
+            .table(yang_db::table!("users"))
+            .limit(10)
+            .offset(20)
+            .to_sql();
         assert!(sql3.contains("LIMIT"), "应该包含 LIMIT");
         assert!(sql3.contains("OFFSET"), "应该包含 OFFSET");
         println!("✓ LIMIT + OFFSET: {}", sql3);
@@ -268,7 +276,7 @@ async fn test_error_handling() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        let table_name = "integration_error_test";
+        let table_name = yang_db::table!("integration_error_test");
 
         // 创建测试表
         let _ = db.drop_table(table_name).await;

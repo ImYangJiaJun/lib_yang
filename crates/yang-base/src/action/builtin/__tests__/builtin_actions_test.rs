@@ -7,11 +7,12 @@
 use crate::action::builtin::{
     AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
 };
-use crate::action::{ActionContext, DynAction, GlobalTools, Request, TypedAction, User};
+use crate::action::{ActionContext, DynAction, Request, TypedAction, User};
 use crate::error::BaseError;
 use crate::table::{Field, Table, TableDefinition};
 #[cfg(feature = "token")]
 use crate::token::TokenManager;
+use crate::tools::ToolsBuilder;
 #[cfg(feature = "token")]
 use jsonwebtoken::Algorithm;
 use serde_json::json;
@@ -27,16 +28,21 @@ fn test_definition() -> TableDefinition {
 
 fn make_ctx(body: serde_json::Value) -> ActionContext {
     #[cfg(feature = "token")]
-    let tools = Arc::new(GlobalTools::new(TokenManager::new_symmetric(
-        "test_secret_key",
-        Algorithm::HS256,
-        "test_issuer".to_string(),
-        "test_audience".to_string(),
-        3600,
-        86400,
-    )));
+    let tools = Arc::new(
+        ToolsBuilder::new()
+            .token(TokenManager::new_symmetric(
+                "test_secret_key",
+                Algorithm::HS256,
+                "test_issuer".to_string(),
+                "test_audience".to_string(),
+                3600,
+                86400,
+            ))
+            .build()
+            .expect("测试 Tools 应构建成功"),
+    );
     #[cfg(not(feature = "token"))]
-    let tools = Arc::new(GlobalTools::new());
+    let tools = Arc::new(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"));
 
     ActionContext::new(Request::new(body), tools)
 }

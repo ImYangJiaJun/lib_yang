@@ -48,11 +48,9 @@ async fn mysql_subquery_executes_with_bound_parameters() {
         .where_value("p3_orders.status", "=", "paid")
         .expect("合法参数");
     let rows: Vec<(i64,)> = db
-        .table("p3_users")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_users"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
         .where_exists(paid_order)
         .select()
         .await
@@ -92,11 +90,9 @@ async fn postgres_subquery_executes_with_numbered_bound_parameters() {
         .where_value("p3_orders.status", "=", "paid")
         .expect("合法参数");
     let rows: Vec<(i64,)> = db
-        .table("p3_users")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_users"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
         .where_exists(paid_order)
         .select()
         .await
@@ -130,24 +126,18 @@ async fn mysql_union_all_preserves_branch_and_outer_scope() {
         .expect("写入归档表");
 
     let archive = db
-        .table("p3_archive")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
-        .order_identifier("id", false)
-        .expect("合法排序")
+        .table(yang_db::table!("p3_archive"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
         .limit(1);
     let rows: Vec<(i64,)> = db
-        .table("p3_current")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_current"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
         .union_all(archive)
         .expect("输出一致")
-        .order_identifier("id", true)
-        .expect("合法排序")
+        .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
         .select()
         .await
         .expect("执行 UNION ALL");
@@ -180,24 +170,18 @@ async fn postgres_union_all_preserves_branch_and_outer_scope() {
         .expect("写入归档表");
 
     let archive = db
-        .table("p3_archive")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
-        .order_identifier("id", false)
-        .expect("合法排序")
+        .table(yang_db::table!("p3_archive"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
         .limit(1);
     let rows: Vec<(i64,)> = db
-        .table("p3_current")
-        .field_identifier("id")
-        .expect("合法投影")
-        .where_and("tenant_id", "=", 7)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_current"))
+        .field(yang_db::field!("id"))
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
         .union_all(archive)
         .expect("输出一致")
-        .order_identifier("id", true)
-        .expect("合法排序")
+        .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
         .select()
         .await
         .expect("执行 UNION ALL");
@@ -226,11 +210,9 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let mut owner = db1.transaction().await.expect("开始持锁事务");
     let locked: Vec<(i64,)> = owner
         .select_for_update(
-            db1.table("p3_lock_accounts")
-                .field_identifier("balance")
-                .expect("合法投影")
-                .where_and("id", "=", 1)
-                .expect("合法条件"),
+            db1.table(yang_db::table!("p3_lock_accounts"))
+                .field(yang_db::field!("balance"))
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1),
         )
         .await
         .expect("获取 FOR UPDATE");
@@ -240,8 +222,8 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let blocked = tokio::time::timeout(
         Duration::from_millis(250),
         waiter
-            .table("p3_lock_accounts")
-            .where_and("id", "=", 1)
+            .table(yang_db::table!("p3_lock_accounts"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
             .update(&json!({"balance": 101})),
     )
     .await;
@@ -252,8 +234,8 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let mut retry = db2.transaction().await.expect("开始重试事务");
     assert_eq!(
         retry
-            .table("p3_lock_accounts")
-            .where_and("id", "=", 1)
+            .table(yang_db::table!("p3_lock_accounts"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
             .update(&json!({"balance": 102}))
             .await
             .expect("锁释放后更新"),
@@ -284,11 +266,9 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let mut owner = db1.transaction().await.expect("开始持锁事务");
     let locked: Vec<(i64,)> = owner
         .select_for_update(
-            db1.table("p3_lock_accounts")
-                .field_identifier("balance")
-                .expect("合法投影")
-                .where_and("id", "=", 1)
-                .expect("合法条件"),
+            db1.table(yang_db::table!("p3_lock_accounts"))
+                .field(yang_db::field!("balance"))
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1),
         )
         .await
         .expect("获取 FOR UPDATE");
@@ -298,8 +278,8 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let blocked = tokio::time::timeout(
         Duration::from_millis(250),
         waiter
-            .table("p3_lock_accounts")
-            .where_and("id", "=", 1)
+            .table(yang_db::table!("p3_lock_accounts"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
             .update(&json!({"balance": 101})),
     )
     .await;
@@ -310,8 +290,8 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     let mut retry = db2.transaction().await.expect("开始重试事务");
     assert_eq!(
         retry
-            .table("p3_lock_accounts")
-            .where_and("id", "=", 1)
+            .table(yang_db::table!("p3_lock_accounts"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
             .update(&json!({"balance": 102}))
             .await
             .expect("锁释放后更新"),
@@ -337,48 +317,43 @@ async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
         .expect("写入计数");
 
     assert_eq!(
-        db.table("p3_counters")
-            .where_and("id", "=", 1)
-            .expect("合法条件")
-            .increment("value", -3)
+        db.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .increment(yang_db::field!("value"), -3)
             .await
             .expect("负增量"),
         1
     );
     assert_eq!(
-        db.table("p3_counters")
-            .where_and("id", "=", 1)
-            .expect("合法条件")
-            .decrement("value", 2)
+        db.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .decrement(yang_db::field!("value"), 2)
             .await
             .expect("原子递减"),
         1
     );
     let mut tx = db.transaction().await.expect("开始事务");
     assert_eq!(
-        tx.table("p3_counters")
-            .where_and("id", "=", 1)
-            .increment("value", 5)
+        tx.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .increment(yang_db::field!("value"), 5)
             .await
             .expect("事务内原子增加"),
         1
     );
     tx.commit().await.expect("提交事务");
     let rows: Vec<(i64,)> = db
-        .table("p3_counters")
-        .field_identifier("value")
-        .expect("合法投影")
-        .where_and("id", "=", 1)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_counters"))
+        .field(yang_db::field!("value"))
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
         .select()
         .await
         .expect("读取结果");
     assert_eq!(rows, vec![(10,)]);
     assert!(db
-        .table("p3_counters")
-        .where_and("id", "=", 2)
-        .expect("合法条件")
-        .increment("value", 1)
+        .table(yang_db::table!("p3_counters"))
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2)
+        .increment(yang_db::field!("value"), 1)
         .await
         .is_err());
 }
@@ -400,48 +375,43 @@ async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
         .expect("写入计数");
 
     assert_eq!(
-        db.table("p3_counters")
-            .where_and("id", "=", 1)
-            .expect("合法条件")
-            .increment("value", -3)
+        db.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .increment(yang_db::field!("value"), -3)
             .await
             .expect("负增量"),
         1
     );
     assert_eq!(
-        db.table("p3_counters")
-            .where_and("id", "=", 1)
-            .expect("合法条件")
-            .decrement("value", 2)
+        db.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .decrement(yang_db::field!("value"), 2)
             .await
             .expect("原子递减"),
         1
     );
     let mut tx = db.transaction().await.expect("开始事务");
     assert_eq!(
-        tx.table("p3_counters")
-            .where_and("id", "=", 1)
-            .increment("value", 5)
+        tx.table(yang_db::table!("p3_counters"))
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .increment(yang_db::field!("value"), 5)
             .await
             .expect("事务内原子增加"),
         1
     );
     tx.commit().await.expect("提交事务");
     let rows: Vec<(i64,)> = db
-        .table("p3_counters")
-        .field_identifier("value")
-        .expect("合法投影")
-        .where_and("id", "=", 1)
-        .expect("合法条件")
+        .table(yang_db::table!("p3_counters"))
+        .field(yang_db::field!("value"))
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
         .select()
         .await
         .expect("读取结果");
     assert_eq!(rows, vec![(10,)]);
     assert!(db
-        .table("p3_counters")
-        .where_and("id", "=", 2)
-        .expect("合法条件")
-        .increment("value", 1)
+        .table(yang_db::table!("p3_counters"))
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2)
+        .increment(yang_db::field!("value"), 1)
         .await
         .is_err());
 }

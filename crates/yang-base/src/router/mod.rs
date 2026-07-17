@@ -1,50 +1,10 @@
-//! 路由模块
+//! 传输无关的 Action 中间件。
 //!
-//! 提供模块路由器和应用路由器，负责 Action 的注册和分发。
-//!
-//! # 主要组件
-//!
-//! - `ModuleRouter`：模块路由器，管理单个模块的 Action 路由
-//! - `AppRouter`：应用路由器，聚合多个模块路由器，提供跨模块的统一分发入口
-//! - `ApiCatalog`：合并 ActionMeta 与 RouteDescriptor 的确定性只读快照
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use yang_base::router::{AppRouter, ModuleRouter};
-//! use yang_base::table::{Field, Table};
-//!
-//! let users = Table::new("users")
-//!     .fields(vec![Field::id("id"), Field::string("username", 64).required()])
-//!     .build()?;
-//!
-//! // 创建模块路由器并注册内置 CRUD Actions
-//! let user_router = ModuleRouter::new("user", "用户管理")
-//!     .table(users)
-//!     .crud()?
-//!     .default_permissions(vec!["user:access".to_string()])?;
-//!
-//! // 创建应用路由器并注册模块
-//! let app_router = AppRouter::new()
-//!     .module(user_router)?;
-//! ```
+//! 路由定义、Catalog 与运行时分派均由 [`crate::definition`] 的唯一
+//! `AppBuilder -> BuiltApp` 链路负责；本模块只保留可复用的洋葱中间件抽象。
 
-mod api;
-mod app_router;
-mod catalog;
 pub mod middleware;
-mod module_router;
-#[cfg(feature = "openapi")]
-mod openapi;
-
-pub use api::Api;
-pub use app_router::AppRouter;
-pub use catalog::{ActionDescriptor, ApiCatalog, ModuleDescriptor, RouteDescriptor};
 pub use middleware::{Middleware, MiddlewareScope, Next, RequestIdMiddleware};
-pub use module_router::ModuleRouter;
-pub use module_router::BUILTIN_ACTION_NAMES;
-#[cfg(feature = "openapi")]
-pub use openapi::OpenApiInfo;
 
 #[cfg(test)]
 mod __tests__;

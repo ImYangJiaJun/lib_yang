@@ -1,7 +1,7 @@
 //! 数据库管理集成测试
 //!
 //! 使用 testcontainers 创建隔离的测试环境，测试：
-//! - 全局数据库初始化
+//! - 显式数据库资源初始化
 //! - 数据库初始化流程（事务和非事务模式）
 //! - 迁移记录表创建
 //! - 迁移执行和幂等性
@@ -16,8 +16,9 @@
 #![allow(clippy::expect_used)]
 
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
-use yang_base::database::{DatabaseInitializer, GlobalDatabase};
+use yang_base::database::DatabaseInitializer;
 use yang_base::plugin::{Plugin, PluginManager};
+use yang_base::tools::ToolsBuilder;
 use yang_db::{Database, DatabaseConfig};
 
 /// 测试插件 1
@@ -168,18 +169,17 @@ async fn wait_for_mysql(db_url: &str, max_retries: u32) -> bool {
     false
 }
 
-/// 测试全局数据库初始化
+/// 测试显式数据库资源初始化
 ///
 /// **验证需求**: 6.1, 6.4
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
-async fn test_global_database_initialization() {
+async fn test_explicit_database_initialization() {
     let (_container, db_url) = match setup_mysql().await {
         Some(setup) => setup,
         None => return,
     };
 
-    // 初始化全局数据库
     // DatabaseConfig 为 #[non_exhaustive]：跨 crate 用 default() + 字段赋值构造。
     let mut config = DatabaseConfig::default();
     config.max_connections = 5;
@@ -187,16 +187,26 @@ async fn test_global_database_initialization() {
     config.idle_timeout = 300;
     config.enable_logging = false;
 
-    let result = GlobalDatabase::init(&db_url, config).await;
-    assert!(result.is_ok(), "全局数据库初始化失败: {:?}", result);
+    let database = Database::connect_with_config(&db_url, config)
+        .await
+        .expect("数据库应连接成功");
+    let tools = ToolsBuilder::new()
+        .database(database)
+        .build()
+        .expect("Tools 应构建成功");
 
-    // 验证可以获取全局数据库实例
-    let db = GlobalDatabase::get();
-    assert!(db.is_ok(), "无法获取全局数据库实例");
-
-    // 验证可以使用全局数据库执行查询
-    let result = GlobalDatabase::execute("SELECT 1").await;
-    assert!(result.is_ok(), "全局数据库查询失败: {:?}", result);
+    assert!(tools
+        .db()
+        .expect("数据库应存在")
+        .health_check()
+        .await
+        .is_ok());
+    assert!(tools
+        .db()
+        .expect("数据库应存在")
+        .execute("SELECT 1")
+        .await
+        .is_ok());
 }
 
 /// 测试数据库初始化流程（非事务模式）
@@ -231,19 +241,25 @@ async fn test_database_initialization_without_transaction() {
 
     // 验证表已创建
     assert!(
-        db.table_exists("test_users").await.unwrap(),
+        db.table_exists(yang_db::table!("test_users"))
+            .await
+            .unwrap(),
         "test_users 表未创建"
     );
     assert!(
-        db.table_exists("test_orders").await.unwrap(),
+        db.table_exists(yang_db::table!("test_orders"))
+            .await
+            .unwrap(),
         "test_orders 表未创建"
     );
     assert!(
-        db.table_exists("test_logs").await.unwrap(),
+        db.table_exists(yang_db::table!("test_logs")).await.unwrap(),
         "test_logs 表未创建"
     );
     assert!(
-        db.table_exists("_migrations").await.unwrap(),
+        db.table_exists(yang_db::table!("_migrations"))
+            .await
+            .unwrap(),
         "_migrations 表未创建"
     );
 
@@ -304,19 +320,25 @@ async fn test_database_initialization_with_transaction() {
 
     // 验证表已创建
     assert!(
-        db.table_exists("test_users").await.unwrap(),
+        db.table_exists(yang_db::table!("test_users"))
+            .await
+            .unwrap(),
         "test_users 表未创建"
     );
     assert!(
-        db.table_exists("test_orders").await.unwrap(),
+        db.table_exists(yang_db::table!("test_orders"))
+            .await
+            .unwrap(),
         "test_orders 表未创建"
     );
     assert!(
-        db.table_exists("test_logs").await.unwrap(),
+        db.table_exists(yang_db::table!("test_logs")).await.unwrap(),
         "test_logs 表未创建"
     );
     assert!(
-        db.table_exists("_migrations").await.unwrap(),
+        db.table_exists(yang_db::table!("_migrations"))
+            .await
+            .unwrap(),
         "_migrations 表未创建"
     );
 
@@ -364,7 +386,9 @@ async fn test_migration_table_creation() {
 
     // 验证表已创建
     assert!(
-        db.table_exists("_migrations").await.unwrap(),
+        db.table_exists(yang_db::table!("_migrations"))
+            .await
+            .unwrap(),
         "_migrations 表未创建"
     );
 
@@ -512,7 +536,10 @@ async fn test_transaction_rollback_on_failure() {
     let db = Database::connect(&db_url).await.unwrap();
 
     // 验证事务回滚：test_table1 不应该被创建
-    let table_exists = db.table_exists("test_table1").await.unwrap();
+    let table_exists = db
+        .table_exists(yang_db::table!("test_table1"))
+        .await
+        .unwrap();
     assert!(!table_exists, "事务回滚失败，test_table1 不应该存在");
 }
 
@@ -547,11 +574,15 @@ async fn test_dependency_order_initialization() {
 
     // 验证两个表都已创建
     assert!(
-        db.table_exists("test_users").await.unwrap(),
+        db.table_exists(yang_db::table!("test_users"))
+            .await
+            .unwrap(),
         "test_users 表未创建"
     );
     assert!(
-        db.table_exists("test_orders").await.unwrap(),
+        db.table_exists(yang_db::table!("test_orders"))
+            .await
+            .unwrap(),
         "test_orders 表未创建"
     );
 }

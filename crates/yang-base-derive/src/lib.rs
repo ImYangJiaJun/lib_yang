@@ -7,6 +7,7 @@ use proc_macro_error::proc_macro_error;
 use syn::{parse_macro_input, DeriveInput};
 
 mod action;
+mod params;
 
 /// 为 struct 派生 `TypedAction` 实现，自动生成 `ActionMeta` 静态聚合。
 ///
@@ -25,4 +26,14 @@ mod action;
 pub fn derive_action(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     action::expand(input).into()
+}
+
+/// 一次声明强类型输入结构与其唯一原生 Params 定义。
+#[proc_macro_error]
+#[proc_macro]
+pub fn params(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as params::ParamsInput);
+    params::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

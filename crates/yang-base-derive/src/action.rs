@@ -23,6 +23,15 @@ struct ActionOpts {
     /// 权限匹配模式："all"（AND，默认）或 "any"（OR）
     #[darling(default)]
     permission_mode: Option<String>,
+    /// HTTP method；默认 POST。
+    #[darling(default)]
+    method: Option<String>,
+    /// HTTP path；未提供时由 Action 名生成。
+    #[darling(default)]
+    path: Option<String>,
+    /// 成功状态码；默认 200。
+    #[darling(default)]
+    success_status: Option<u16>,
 }
 
 #[derive(Debug, Default)]
@@ -52,9 +61,44 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     let (impl_g, ty_g, where_clause) = input.generics.split_for_impl();
 
     let name = opts.name.clone();
+    if !is_segment(&name) {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "action name 必须是小写 snake_case ASCII 标识符",
+        )
+        .into_compile_error();
+    }
     let display_name = opts.display_name.unwrap_or_else(|| name.clone());
     let description = opts.description.unwrap_or_default();
     let is_public = opts.public;
+    let method = match opts
+        .method
+        .as_deref()
+        .unwrap_or("POST")
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "GET" => quote!(::yang_base::definition::HttpMethod::Get),
+        "POST" => quote!(::yang_base::definition::HttpMethod::Post),
+        "PUT" => quote!(::yang_base::definition::HttpMethod::Put),
+        "PATCH" => quote!(::yang_base::definition::HttpMethod::Patch),
+        "DELETE" => quote!(::yang_base::definition::HttpMethod::Delete),
+        "OPTIONS" => quote!(::yang_base::definition::HttpMethod::Options),
+        "HEAD" => quote!(::yang_base::definition::HttpMethod::Head),
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "action method 必须是 GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD",
+            )
+            .into_compile_error()
+        }
+    };
+    let path = opts.path.unwrap_or_default();
+    if !path.is_empty() && !path.starts_with('/') {
+        return syn::Error::new_spanned(&input.ident, "action path 必须以 / 开头")
+            .into_compile_error();
+    }
+    let success_status = opts.success_status.unwrap_or(200);
     let perms: Vec<String> = opts.permissions.unwrap_or_default().0;
 
     // 解析 permission_mode：支持 "all" / "any"，默认 "all"
@@ -114,6 +158,9 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             fn name(&self) -> &'static str { #name }
             fn display_name(&self) -> &'static str { #display_name }
             fn description(&self) -> &'static str { #description }
+            fn http_method(&self) -> ::yang_base::definition::HttpMethod { #method }
+            fn path(&self) -> &'static str { #path }
+            fn success_status(&self) -> u16 { #success_status }
             fn is_public(&self) -> bool { #is_public }
             fn permission_mode(&self) -> ::yang_base::action::PermissionMode { #perm_mode }
 
@@ -145,4 +192,10 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             }
         }
     }
+}
+
+fn is_segment(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|value| value.is_ascii_lowercase() || value.is_ascii_digit() || value == '_')
 }

@@ -17,10 +17,14 @@ async fn test_inner_join_sql_generation() {
     if let Ok(db) = result {
         // 测试 INNER JOIN SQL 生成
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .join("orders", "users.id = orders.user_id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
             .to_sql();
 
         println!("生成的 INNER JOIN SQL: {}", sql);
@@ -47,10 +51,14 @@ async fn test_left_join_sql_generation() {
     if let Ok(db) = result {
         // 测试 LEFT JOIN SQL 生成
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .left_join("orders", "users.id = orders.user_id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .left_join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
             .to_sql();
 
         println!("生成的 LEFT JOIN SQL: {}", sql);
@@ -73,10 +81,14 @@ async fn test_right_join_sql_generation() {
     if let Ok(db) = result {
         // 测试 RIGHT JOIN SQL 生成
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .right_join("orders", "users.id = orders.user_id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .right_join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
             .to_sql();
 
         println!("生成的 RIGHT JOIN SQL: {}", sql);
@@ -99,12 +111,20 @@ async fn test_multiple_joins() {
     if let Ok(db) = result {
         // 测试多表连接
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .field("products.price")
-            .join("orders", "users.id = orders.user_id")
-            .join("products", "orders.product_id = products.id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .field(yang_db::field!("products.price"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .join(
+                yang_db::table!("products"),
+                yang_db::field!("orders.product_id"),
+                yang_db::field!("products.id"),
+            )
             .to_sql();
 
         println!("生成的多表 JOIN SQL: {}", sql);
@@ -130,12 +150,19 @@ async fn test_join_with_where() {
     if let Ok(db) = result {
         // 测试 JOIN + WHERE
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .join("orders", "users.id = orders.user_id")
-            .where_and("orders.amount", ">", 100.0)
-            .unwrap()
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .where_and(
+                yang_db::field!("orders.amount"),
+                yang_db::CompareOp::Gt,
+                100.0,
+            )
             .to_sql();
 
         println!("生成的 JOIN + WHERE SQL: {}", sql);
@@ -158,11 +185,18 @@ async fn test_join_with_order() {
     if let Ok(db) = result {
         // 测试 JOIN + ORDER BY
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .join("orders", "users.id = orders.user_id")
-            .order("orders.created_at", false)
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .order(
+                yang_db::field!("orders.created_at"),
+                yang_db::SortOrder::Desc,
+            )
             .to_sql();
 
         println!("生成的 JOIN + ORDER BY SQL: {}", sql);
@@ -179,24 +213,31 @@ async fn test_join_with_order() {
 }
 
 #[tokio::test]
-async fn test_join_with_table_alias() {
+async fn test_join_with_qualified_refs() {
     let result = Database::connect(TEST_DB_URL).await;
 
     if let Ok(db) = result {
-        // 测试表别名
+        // 受控引用使用完整表名限定字段，不接受运行期 `AS` 字符串。
         let sql = db
-            .table("users AS u")
-            .field("u.name")
-            .field("o.product")
-            .join("orders AS o", "u.id = o.user_id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
             .to_sql();
 
         println!("生成的带别名的 JOIN SQL: {}", sql);
 
         // 验证 SQL 包含别名
-        assert!(sql.contains("users AS u"), "应该包含用户表别名");
-        assert!(sql.contains("orders AS o"), "应该包含订单表别名");
-        assert!(sql.contains("u.id = o.user_id"), "应该使用别名连接");
+        assert!(sql.contains("users"), "应该包含用户表");
+        assert!(sql.contains("orders"), "应该包含订单表");
+        assert!(
+            sql.contains("users`.`id` = `orders`.`user_id"),
+            "应该使用限定字段连接"
+        );
 
         println!("✓ 表别名 JOIN SQL 生成正确");
         println!("\n✓✓✓ 表别名测试通过 ✓✓✓");
@@ -212,10 +253,14 @@ async fn test_join_with_limit() {
     if let Ok(db) = result {
         // 测试 JOIN + LIMIT
         let sql = db
-            .table("users")
-            .field("users.name")
-            .field("orders.product")
-            .join("orders", "users.id = orders.user_id")
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
             .limit(10)
             .to_sql();
 
@@ -239,17 +284,34 @@ async fn test_complex_join_query() {
     if let Ok(db) = result {
         // 测试复杂的 JOIN 查询
         let sql = db
-            .table("users AS u")
-            .field("u.name")
-            .field("o.product")
-            .field("p.price")
-            .join("orders AS o", "u.id = o.user_id")
-            .left_join("products AS p", "o.product_id = p.id")
-            .where_and("u.status", "=", "active")
-            .unwrap()
-            .where_and("o.amount", ">", 50.0)
-            .unwrap()
-            .order("o.created_at", false)
+            .table(yang_db::table!("users"))
+            .field(yang_db::field!("users.name"))
+            .field(yang_db::field!("orders.product"))
+            .field(yang_db::field!("products.price"))
+            .join(
+                yang_db::table!("orders"),
+                yang_db::field!("users.id"),
+                yang_db::field!("orders.user_id"),
+            )
+            .left_join(
+                yang_db::table!("products"),
+                yang_db::field!("orders.product_id"),
+                yang_db::field!("products.id"),
+            )
+            .where_and(
+                yang_db::field!("users.status"),
+                yang_db::CompareOp::Eq,
+                "active",
+            )
+            .where_and(
+                yang_db::field!("orders.amount"),
+                yang_db::CompareOp::Gt,
+                50.0,
+            )
+            .order(
+                yang_db::field!("orders.created_at"),
+                yang_db::SortOrder::Desc,
+            )
             .limit(20)
             .to_sql();
 

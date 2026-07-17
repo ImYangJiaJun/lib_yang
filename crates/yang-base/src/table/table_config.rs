@@ -8,9 +8,11 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct TableConfig {
     pub(crate) table_name: String,
+    pub(crate) table_ref: yang_db::TableRef,
     pub(crate) display_name: String,
     pub(crate) primary_key: String,
     pub(crate) fields: HashMap<String, FieldConfig>,
+    pub(crate) field_refs: HashMap<String, yang_db::FieldRef>,
     #[cfg_attr(not(any(feature = "mysql", test)), allow(dead_code))]
     pub(crate) unique_indexes: Vec<IndexConfig>,
     #[cfg_attr(not(any(feature = "mysql", test)), allow(dead_code))]
@@ -24,6 +26,10 @@ pub(crate) struct TableConfig {
 impl TableConfig {
     pub(crate) fn get_field(&self, field_name: &str) -> Option<&FieldConfig> {
         self.fields.get(field_name)
+    }
+
+    pub(crate) fn get_field_ref(&self, field_name: &str) -> Option<&yang_db::FieldRef> {
+        self.field_refs.get(field_name)
     }
 }
 

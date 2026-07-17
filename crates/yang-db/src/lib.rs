@@ -1,3 +1,6 @@
+// 让 crate 内测试与 rustdoc 示例使用与外部调用方一致的稳定宏路径。
+extern crate self as yang_db;
+
 // 后端能力契约
 pub mod capability;
 
@@ -14,6 +17,9 @@ pub mod isolation;
 mod pool;
 
 mod row_lock;
+
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+mod reference;
 
 // MySQL 数据库模块
 #[cfg(feature = "mysql")]
@@ -40,6 +46,30 @@ pub use error::{DbError, DbErrorCategory};
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
 pub use pool::PoolStatus;
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+pub use reference::{CompareOp, FieldRef, Predicate, SelectExpr, SortOrder, TableRef};
+#[doc(hidden)]
+pub use reference::{__validate_field_literal, __validate_table_literal};
+
+/// 创建编译期校验、进程内只初始化一次的表引用。
+#[macro_export]
+macro_rules! table {
+    ($value:literal) => {{
+        const _: () = $crate::__validate_table_literal($value);
+        static VALUE: std::sync::OnceLock<$crate::TableRef> = std::sync::OnceLock::new();
+        VALUE.get_or_init(|| $crate::TableRef::__from_validated_literal($value))
+    }};
+}
+
+/// 创建编译期校验、进程内只初始化一次的字段引用。
+#[macro_export]
+macro_rules! field {
+    ($value:literal) => {{
+        const _: () = $crate::__validate_field_literal($value);
+        static VALUE: std::sync::OnceLock<$crate::FieldRef> = std::sync::OnceLock::new();
+        VALUE.get_or_init(|| $crate::FieldRef::__from_validated_literal($value))
+    }};
+}
 pub use row_lock::RowLock;
 
 // 重新导出 MySQL 核心类型

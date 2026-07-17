@@ -1,19 +1,16 @@
 //! 引擎生命周期：编排式优雅停机（I3）。
 //!
-//! 在 yang-db 的连接池 drain 原语（`Database::close` / `RedisClient::close`）之上，
-//! 提供单一停机入口，按**与启动相反**的顺序收尾：
+//! 在 [`Tools`](crate::tools::Tools) 的统一资源生命周期之上，提供单一停机入口，
+//! 按**与启动相反**的顺序收尾：
 //!
 //! 1. `PluginManager::shutdown`（业务先停接活，拓扑逆序触发各插件 `on_shutdown`）
-//! 2. 关闭 Redis 连接池
-//! 3. drain MySQL 连接池
+//! 2. `Tools::close` 统一关闭 Redis 与 MySQL
 //!
-//! 与 [`DatabaseBundle::init`](crate::database::DatabaseBundle) 的「先 MySQL 后 Redis」
-//! 启动顺序严格逆序。配套一个 tokio 信号助手，使 K8s SIGTERM 触发 drain 而非 RST 在途连接。
-//!
-//! `OnceLock` 单例不重置，停机为原地 drain——**停机后不应再 dispatch**。
+//! 配套一个 tokio 信号助手，使 K8s SIGTERM 触发 drain 而非 RST 在途连接。
 
 use crate::error::BaseError;
 use crate::plugin::PluginManager;
+use crate::tools::Tools;
 
 /// 等待停机信号：`Ctrl+C`（SIGINT）或（Unix 上）`SIGTERM`。
 ///
@@ -51,23 +48,24 @@ pub async fn wait_for_shutdown_signal() {
     }
 }
 
-/// 编排式优雅停机：按启动逆序收尾（插件 → Redis → 可选的 MySQL）。
+/// 编排式优雅停机：按启动逆序收尾（插件 → Tools 资源）。
 ///
-/// 与 `DatabaseBundle::init`（先 MySQL 后 Redis）形成对称的「统一停机入口」。各步骤
-/// 独立执行，插件 `on_shutdown` 失败不阻断后续连接池 drain（停机应尽力收尾全部资源）。
-///
-/// 无需 `mysql` feature 时，本函数仍可处理 Redis + 插件的清理；启用 `mysql` feature
-/// 时才额外 drain MySQL 连接池。
+/// 各步骤独立执行，插件 `on_shutdown` 失败不阻断后续连接池 drain（停机应尽力收尾
+/// 全部资源）。
 ///
 /// # 参数
 ///
 /// - `plugins`: 可选的插件管理器引用；为 `None` 时跳过插件停机阶段。
+/// - `tools`: 当前应用实例显式拥有的资源。
 ///
 /// # 返回
 ///
 /// - `Ok(())`: 全部步骤完成
 /// - `Err(BaseError)`: 插件停机返回的首个错误（连接池仍已 drain，错误仅供上报）
-pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), BaseError> {
+pub async fn graceful_shutdown(
+    plugins: Option<&PluginManager>,
+    tools: &Tools,
+) -> Result<(), BaseError> {
     let mut plugin_err = None;
 
     // 1. 插件先停（业务停止接活）
@@ -78,19 +76,9 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
         }
     }
 
-    // 2. 关闭 Redis（与启动顺序逆序）
-    #[cfg(feature = "redis")]
-    {
-        crate::database::GlobalRedis::close().await;
-        log::info!("Redis 连接池已关闭");
-    }
-
-    // 3. drain MySQL（最后关，等待在途归还）；仅 mysql feature 启用时可用
-    #[cfg(feature = "mysql")]
-    {
-        crate::database::GlobalDatabase::close().await;
-        log::info!("MySQL 连接池已 drain 关闭");
-    }
+    // 2. 当前应用的资源统一关闭；不存在进程全局单例。
+    tools.close().await;
+    log::info!("应用 Tools 资源已关闭");
 
     match plugin_err {
         Some(e) => Err(e),
@@ -102,6 +90,7 @@ pub async fn graceful_shutdown(plugins: Option<&PluginManager>) -> Result<(), Ba
 mod tests {
     use super::*;
     use crate::plugin::Plugin;
+    use crate::tools::ToolsBuilder;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
@@ -180,7 +169,8 @@ mod tests {
     /// 验证需求: TEST-5 — plugins=None 时应直接返回 Ok
     #[tokio::test]
     async fn test_graceful_shutdown_no_plugins() {
-        let result = graceful_shutdown(None).await;
+        let tools = ToolsBuilder::new().build().expect("测试 Tools 应构建成功");
+        let result = graceful_shutdown(None, &tools).await;
         assert!(
             result.is_ok(),
             "plugins=None 时 graceful_shutdown 应返回 Ok"
@@ -193,7 +183,8 @@ mod tests {
         let manager = PluginManager::new();
         manager.register(ShutdownFailer).await.unwrap();
 
-        let result = graceful_shutdown(Some(&manager)).await;
+        let tools = ToolsBuilder::new().build().expect("测试 Tools 应构建成功");
+        let result = graceful_shutdown(Some(&manager), &tools).await;
         assert!(
             result.is_err(),
             "插件 shutdown 失败时 graceful_shutdown 应返回 Err"
@@ -236,7 +227,8 @@ mod tests {
 
         manager.register(PluginC(Arc::clone(&order))).await.unwrap();
 
-        let result = graceful_shutdown(Some(&manager)).await;
+        let tools = ToolsBuilder::new().build().expect("测试 Tools 应构建成功");
+        let result = graceful_shutdown(Some(&manager), &tools).await;
         assert!(result.is_ok(), "全部插件 shutdown 成功时应返回 Ok");
 
         let recorded = order.lock().unwrap().clone();

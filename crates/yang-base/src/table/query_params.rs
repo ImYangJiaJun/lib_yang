@@ -560,6 +560,12 @@ impl QueryParams {
     }
 }
 
+/// 表查询的唯一执行计划模型。
+///
+/// 保留 `QueryParams` 名称作为传输语义；业务层与 [`crate::table::Tables`]
+/// 使用本别名表达筛选、排序和分页已经汇入同一条查询执行链。
+pub type TableQueryPlan = QueryParams;
+
 /// 分页结果结构体
 ///
 /// 包含分页查询的完整结果，包括数据列表和分页元信息。

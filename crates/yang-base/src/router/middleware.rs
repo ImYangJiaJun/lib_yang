@@ -1,8 +1,7 @@
 //! Router 中间件 / 拦截器机制（H-5）
 //!
-//! `ModuleRouter::dispatch` 原本把鉴权逻辑硬编码在派发流程里，跨切面逻辑
-//! （日志、限流、请求追踪、自定义认证）无法优雅注入。本模块提供洋葱模型的
-//! 可插拔中间件：每个中间件拿到 [`ActionContext`] 与代表"调用链剩余部分"的
+//! `Registry::dispatch` 使用本模块的洋葱模型组合日志、限流、请求追踪与认证。
+//! 每个中间件拿到 [`ActionContext`] 与代表"调用链剩余部分"的
 //! [`Next`]，可在调用 `next.run(ctx)` 前后插入逻辑，也可短路直接返回。
 //!
 //! # 注意：ActionContext 不是 Clone
@@ -14,7 +13,7 @@
 //! # 示例
 //!
 //! ```rust,ignore
-//! use yang_base::router::{Middleware, Next, ModuleRouter};
+//! use yang_base::router::{Middleware, Next};
 //! use yang_base::action::{ActionContext, ApiResponse};
 //! use yang_base::error::BaseError;
 //! use async_trait::async_trait;
@@ -33,15 +32,50 @@
 //!     }
 //! }
 //!
-//! let router = ModuleRouter::new("user", "用户管理")
-//!     .middleware(LoggingMiddleware);
+//! // 通过 ModuleSpec::middleware 按顺序注册 LoggingMiddleware。
 //! ```
 
-use crate::action::{ActionContext, ApiResponse, DynAction};
+use crate::action::{ActionContext, ApiResponse, DynAction, PermissionMode};
 use crate::error::BaseError;
-use crate::router::ModuleRouter;
 use async_trait::async_trait;
 use std::sync::Arc;
+
+/// 构建期冻结的 Action 授权策略。
+#[derive(Debug, Clone)]
+pub(crate) struct AuthorizationPolicy {
+    pub(crate) is_public: bool,
+    groups: Arc<[PermissionGroup]>,
+}
+
+impl AuthorizationPolicy {
+    pub(crate) fn new(is_public: bool, groups: impl Into<Arc<[PermissionGroup]>>) -> Self {
+        Self {
+            is_public,
+            groups: groups.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PermissionGroup {
+    label: &'static str,
+    permissions: Arc<[String]>,
+    mode: PermissionMode,
+}
+
+impl PermissionGroup {
+    pub(crate) fn new(
+        label: &'static str,
+        permissions: impl Into<Arc<[String]>>,
+        mode: PermissionMode,
+    ) -> Self {
+        Self {
+            label,
+            permissions: permissions.into(),
+            mode,
+        }
+    }
+}
 
 /// 中间件适用的 Action 范围。
 ///
@@ -83,20 +117,17 @@ pub trait Middleware: Send + Sync + 'static {
 
 /// 调用链中"剩余部分"的句柄。
 ///
-/// 持有尚未执行的中间件切片、对所属 [`ModuleRouter`] 的引用、以及链尾的目标
-/// [`DynAction`]。中间件链是**最外层**：当中间件耗尽时，链尾执行
-/// 「内置鉴权 + Action 派发」（`ModuleRouter::authorize_and_dispatch`）。
+/// 持有尚未执行的中间件切片、构建期授权策略以及链尾的目标 [`DynAction`]。
+/// 中间件链是**最外层**：当中间件耗尽时，链尾执行「授权 + Action 派发」。
 /// [`MiddlewareScope::AllActions`] 中间件可以观察并干预所有请求；
 /// [`MiddlewareScope::ProtectedActions`] 中间件则会在公开 Action 上被跳过。
 pub struct Next<'a> {
     /// 尚未执行的中间件
     pub(crate) remaining: &'a [Arc<dyn Middleware>],
-    /// 所属路由器（用于链尾的鉴权 + 派发）
-    pub(crate) router: &'a ModuleRouter,
     /// 链尾要执行的目标 Action
     pub(crate) action: Arc<dyn DynAction>,
-    /// 目标 Action 是否公开；由 ModuleRouter 在进入中间件链时计算一次。
-    pub(crate) is_public: bool,
+    /// 构建期冻结的授权策略。
+    pub(crate) policy: &'a AuthorizationPolicy,
 }
 
 impl<'a> Next<'a> {
@@ -116,20 +147,79 @@ impl<'a> Next<'a> {
             remaining = rest;
             let applies = match current.scope() {
                 MiddlewareScope::AllActions => true,
-                MiddlewareScope::ProtectedActions => !self.is_public,
+                MiddlewareScope::ProtectedActions => !self.policy.is_public,
             };
             if applies {
                 let next = Next {
                     remaining: rest,
-                    router: self.router,
                     action: self.action,
-                    is_public: self.is_public,
+                    policy: self.policy,
                 };
                 return current.handle(ctx, next).await;
             }
         }
 
-        self.router.authorize_and_dispatch(self.action, ctx).await
+        authorize_and_dispatch(self.action, self.policy, ctx).await
+    }
+}
+
+async fn authorize_and_dispatch(
+    action: Arc<dyn DynAction>,
+    policy: &AuthorizationPolicy,
+    context: ActionContext,
+) -> Result<ApiResponse, BaseError> {
+    let span = tracing::info_span!(
+        "authorize",
+        is_public = policy.is_public,
+        granted = tracing::field::Empty,
+    );
+    let _enter = span.enter();
+
+    authorize(policy, &context).inspect_err(|_| {
+        span.record("granted", false);
+    })?;
+
+    span.record("granted", true);
+    drop(_enter);
+    action.dispatch(context).await
+}
+
+pub(crate) fn authorize(
+    policy: &AuthorizationPolicy,
+    context: &ActionContext,
+) -> Result<(), BaseError> {
+    if policy.is_public {
+        return Ok(());
+    }
+    let user = context
+        .authenticated_user()
+        .ok_or_else(|| BaseError::Unauthorized("需要登录".to_string()))?;
+    for group in policy.groups.iter() {
+        if !permissions_match(user, &group.permissions, group.mode) {
+            return Err(BaseError::PermissionDenied(format!(
+                "缺少 {} 权限: {:?}",
+                group.label, group.permissions
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn permissions_match(
+    user: &crate::action::User,
+    permissions: &[String],
+    mode: PermissionMode,
+) -> bool {
+    if permissions.is_empty() {
+        return true;
+    }
+    match mode {
+        PermissionMode::All => permissions
+            .iter()
+            .all(|permission| user.has_permission(permission)),
+        PermissionMode::Any => permissions
+            .iter()
+            .any(|permission| user.has_permission(permission)),
     }
 }
 
@@ -145,9 +235,10 @@ impl<'a> Next<'a> {
 /// # 示例
 ///
 /// ```rust,ignore
-/// use yang_base::router::{ModuleRouter, RequestIdMiddleware};
+/// use yang_base::definition::{ModuleName, ModuleSpec};
+/// use yang_base::router::RequestIdMiddleware;
 ///
-/// let router = ModuleRouter::new("user", "用户管理")
+/// let module = ModuleSpec::new(ModuleName::new("account.user")?)
 ///     .middleware(RequestIdMiddleware);
 /// ```
 pub struct RequestIdMiddleware;

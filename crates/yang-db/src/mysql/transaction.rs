@@ -1,10 +1,7 @@
 use crate::error::DbError;
-use crate::mysql::condition::{Condition, SqlValue};
-use crate::mysql::field::FieldType;
 use crate::mysql::query_builder::QueryBuilder;
 use log;
 use sqlx::Transaction as SqlxTransaction;
-use std::collections::HashMap;
 
 /// 数据库事务
 pub struct Transaction {
@@ -230,7 +227,7 @@ impl Transaction {
     /// - table_name: 表名
     ///
     /// # 返回
-    /// - TransactionQueryBuilder: 事务查询构建器
+    /// - QueryBuilder: 与连接池路径共享的事务查询构建器
     ///
     /// # 示例
     /// ```no_run
@@ -243,12 +240,12 @@ impl Transaction {
     ///
     /// // 在事务中插入数据
     /// let user_data = json!({"name": "张三", "email": "zhangsan@example.com"});
-    /// let user_id = tx.table("users").insert(&user_data).await?;
+    /// let user_id = tx.table(yang_db::table!("users")).insert(&user_data).await?;
     ///
     /// // 在事务中更新数据
     /// let update_data = json!({"status": 1});
-    /// tx.table("users")
-    ///     .where_and("id", "=", user_id)
+    /// tx.table(yang_db::table!("users"))
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, user_id)
     ///     .update(&update_data)
     ///     .await?;
     ///
@@ -257,8 +254,9 @@ impl Transaction {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn table(&mut self, table_name: &str) -> TransactionQueryBuilder<'_> {
-        TransactionQueryBuilder::new(self, table_name)
+    pub fn table(&mut self, table: &crate::TableRef) -> QueryBuilder<'_> {
+        let enable_logging = self.enable_logging;
+        QueryBuilder::new_transaction(self, table.as_str(), enable_logging)
     }
 
     /// 借出底层 sqlx 连接（受控逃生舱，供同 workspace 上层在事务内执行自构建的参数化语句）
@@ -293,452 +291,47 @@ impl Drop for Transaction {
     }
 }
 
-/// 事务查询构建器
-///
-/// 用于在事务上下文中构建和执行查询
-pub struct TransactionQueryBuilder<'a> {
-    tx: &'a mut Transaction,
-    table: String,
-    conditions: Vec<Condition>,
-    field_types: HashMap<String, FieldType>,
-    /// 延迟错误：链式 setter（如 `where_and`）无法返回 `Result`，
-    /// 故将首个错误暂存于此，在终端方法（insert/update/delete）统一返回。
-    error: Option<DbError>,
-}
-
-impl<'a> TransactionQueryBuilder<'a> {
-    /// 创建新的事务查询构建器
-    fn new(tx: &'a mut Transaction, table_name: &str) -> Self {
-        Self {
-            tx,
-            table: table_name.to_string(),
-            conditions: Vec::new(),
-            field_types: HashMap::new(),
-            error: None,
-        }
-    }
-
-    /// 标记字段为 JSON 类型
-    pub fn json(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Json);
-        self
-    }
-
-    /// 标记字段为 DATETIME 类型
-    pub fn datetime(mut self, field: &str) -> Self {
-        self.field_types
-            .insert(field.to_string(), FieldType::DateTime);
-        self
-    }
-
-    /// 标记字段为 TIMESTAMP 类型
-    pub fn timestamp(mut self, field: &str) -> Self {
-        self.field_types
-            .insert(field.to_string(), FieldType::Timestamp);
-        self
-    }
-
-    /// 标记字段为 DECIMAL 类型
-    pub fn decimal(mut self, field: &str) -> Self {
-        self.field_types
-            .insert(field.to_string(), FieldType::Decimal);
-        self
-    }
-
-    /// 标记字段为 BLOB 类型
-    pub fn blob(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Blob);
-        self
-    }
-
-    /// 标记字段为 TEXT 类型
-    pub fn text(mut self, field: &str) -> Self {
-        self.field_types.insert(field.to_string(), FieldType::Text);
-        self
-    }
-
-    /// 添加 AND 条件
-    ///
-    /// 遇到不支持的操作符时不会 panic，而是将错误暂存，由终端方法
-    /// （insert/update/delete）返回 `Err(DbError::UnsupportedOperator)`。
-    pub fn where_and<V>(mut self, field: &str, op: &str, value: V) -> Self
-    where
-        V: Into<SqlValue>,
-    {
-        let sql_value = value.into();
-        let condition = match op {
-            "=" => Condition::Eq(field.to_string(), sql_value),
-            "!=" => Condition::Ne(field.to_string(), sql_value),
-            ">" => Condition::Gt(field.to_string(), sql_value),
-            "<" => Condition::Lt(field.to_string(), sql_value),
-            ">=" => Condition::Gte(field.to_string(), sql_value),
-            "<=" => Condition::Lte(field.to_string(), sql_value),
-            "like" | "LIKE" => {
-                if let SqlValue::String(s) = sql_value {
-                    Condition::Like(field.to_string(), s)
-                } else {
-                    Condition::Like(field.to_string(), format!("{:?}", sql_value))
-                }
-            }
-            _ => {
-                // 仅记录首个错误，保持链式调用可继续
-                if self.error.is_none() {
-                    self.error = Some(DbError::UnsupportedOperator(op.to_string()));
-                }
-                return self;
-            }
-        };
-
-        self.conditions.push(condition);
-        self
-    }
-
-    /// 插入数据
-    ///
-    /// 在事务中执行 INSERT 操作
-    ///
-    /// # 类型参数
-    /// - T: 数据类型，必须实现 Serialize trait
-    ///
-    /// # 参数
-    /// - data: 要插入的数据
-    ///
-    /// # 返回
-    /// - Ok(u64): 插入成功，返回插入记录的 ID（自增主键）
-    /// - Err(DbError): 插入失败
-    pub async fn insert<T>(self, data: &T) -> Result<u64, DbError>
-    where
-        T: serde::Serialize,
-    {
-        // 先返回链式调用中暂存的错误（如不支持的操作符）
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 insert() 操作，表: {}", self.table);
-        }
-
-        // 将数据序列化为 JSON
-        let json_data = serde_json::to_value(data)
-            .map_err(|e| DbError::SerializationError(format!("数据序列化失败: {}", e)))?;
-
-        // 生成 INSERT 语句
-        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
-        generator.build_insert(&self.table, &json_data, &self.field_types)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 insert() SQL: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询
-        let mut query = sqlx::query(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_execute_param(query, param);
-        }
-
-        // 执行插入
-        if let Some(tx) = &mut self.tx.tx {
-            let result = query.execute(&mut **tx).await?;
-            let last_insert_id = result.last_insert_id();
-
-            if self.tx.enable_logging {
-                log::debug!("事务中 insert() 成功，插入 ID: {}", last_insert_id);
-            }
-
-            Ok(last_insert_id)
-        } else {
-            Err(DbError::TransactionError("事务已提交或回滚".to_string()))
-        }
-    }
-
-    /// 更新数据
-    ///
-    /// 在事务中执行 UPDATE 操作
-    /// 为了防止误操作，必须提供 WHERE 条件，否则会返回错误
-    ///
-    /// # 类型参数
-    /// - T: 数据类型，必须实现 Serialize trait
-    ///
-    /// # 参数
-    /// - data: 要更新的数据
-    ///
-    /// # 返回
-    /// - Ok(u64): 更新成功，返回受影响的行数
-    /// - Err(DbError): 更新失败
-    pub async fn update<T>(self, data: &T) -> Result<u64, DbError>
-    where
-        T: serde::Serialize,
-    {
-        // 先返回链式调用中暂存的错误（如不支持的操作符）
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 update() 操作，表: {}", self.table);
-        }
-
-        // 检查是否有 WHERE 条件
-        if self.conditions.is_empty() {
-            log::warn!("事务中 update() 操作缺少 WHERE 条件，禁止全表更新");
-            return Err(DbError::MissingWhereClause);
-        }
-
-        // 将数据序列化为 JSON
-        let json_data = serde_json::to_value(data)
-            .map_err(|e| DbError::SerializationError(format!("数据序列化失败: {}", e)))?;
-
-        // 生成 UPDATE 语句
-        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
-        generator.build_update(&self.table, &json_data, &self.field_types, &self.conditions)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 update() SQL: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询
-        let mut query = sqlx::query(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_execute_param(query, param);
-        }
-
-        // 执行更新
-        if let Some(tx) = &mut self.tx.tx {
-            let result = query.execute(&mut **tx).await?;
-            let rows_affected = result.rows_affected();
-
-            if self.tx.enable_logging {
-                log::debug!("事务中 update() 成功，影响 {} 行", rows_affected);
-            }
-
-            Ok(rows_affected)
-        } else {
-            Err(DbError::TransactionError("事务已提交或回滚".to_string()))
-        }
-    }
-
-    /// 在当前事务中原子增加字段值。
-    pub async fn increment(self, field: &str, amount: i64) -> Result<u64, DbError> {
-        self.execute_arithmetic_update(
-            field,
-            amount,
-            crate::mysql::query_builder::ArithmeticOperator::Add,
-        )
-        .await
-    }
-
-    /// 在当前事务中原子减少字段值。
-    pub async fn decrement(self, field: &str, amount: i64) -> Result<u64, DbError> {
-        self.execute_arithmetic_update(
-            field,
-            amount,
-            crate::mysql::query_builder::ArithmeticOperator::Subtract,
-        )
-        .await
-    }
-
-    async fn execute_arithmetic_update(
-        self,
-        field: &str,
-        amount: i64,
-        operator: crate::mysql::query_builder::ArithmeticOperator,
-    ) -> Result<u64, DbError> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
-        generator.build_arithmetic_update(
-            &self.table,
-            field,
-            operator,
-            amount,
-            &self.conditions,
-        )?;
-        let mut query = sqlx::query(generator.get_sql());
-        for param in generator.get_params() {
-            query = bind_execute_param(query, param);
-        }
-        let tx = self
-            .tx
-            .tx
-            .as_mut()
-            .ok_or_else(|| DbError::TransactionError("事务已提交或回滚".to_string()))?;
-        Ok(query.execute(&mut **tx).await?.rows_affected())
-    }
-
-    /// 删除数据
-    ///
-    /// 在事务中执行 DELETE 操作
-    /// 为了防止误操作，必须提供 WHERE 条件，否则会返回错误
-    ///
-    /// # 返回
-    /// - Ok(u64): 删除成功，返回受影响的行数
-    /// - Err(DbError): 删除失败
-    pub async fn delete(self) -> Result<u64, DbError> {
-        // 先返回链式调用中暂存的错误（如不支持的操作符）
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 delete() 操作，表: {}", self.table);
-        }
-
-        // 检查是否有 WHERE 条件
-        if self.conditions.is_empty() {
-            log::warn!("事务中 delete() 操作缺少 WHERE 条件，禁止全表删除");
-            return Err(DbError::MissingWhereClause);
-        }
-
-        // 生成 DELETE 语句
-        let mut generator = crate::mysql::query_builder::SqlGenerator::new();
-        generator.build_delete(&self.table, &self.conditions)?;
-
-        let sql = generator.get_sql();
-        let params = generator.get_params();
-
-        // 记录日志
-        if self.tx.enable_logging {
-            log::debug!("事务中执行 delete() SQL: {}", sql);
-            log::debug!("参数: {:?}", params);
-        }
-
-        // 构建查询
-        let mut query = sqlx::query(sql);
-
-        // 绑定参数
-        for param in params {
-            query = bind_execute_param(query, param);
-        }
-
-        // 执行删除
-        if let Some(tx) = &mut self.tx.tx {
-            let result = query.execute(&mut **tx).await?;
-            let rows_affected = result.rows_affected();
-
-            if self.tx.enable_logging {
-                log::debug!("事务中 delete() 成功，影响 {} 行", rows_affected);
-            }
-
-            Ok(rows_affected)
-        } else {
-            Err(DbError::TransactionError("事务已提交或回滚".to_string()))
-        }
-    }
-}
-
-/// 绑定参数到执行查询（用于事务中的 INSERT/UPDATE/DELETE）
-///
-/// # 参数
-/// - query: sqlx 查询对象
-/// - param: SQL 参数值
-///
-/// # 返回
-/// - 绑定参数后的查询对象
-fn bind_execute_param<'q>(
-    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
-    param: &SqlValue,
-) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
-    match param {
-        SqlValue::Null => query.bind(Option::<i32>::None),
-        SqlValue::Bool(b) => query.bind(*b),
-        SqlValue::Int(i) => query.bind(*i),
-        SqlValue::Float(f) => query.bind(*f),
-        SqlValue::String(s) => query.bind(s.clone()),
-        SqlValue::Bytes(b) => query.bind(b.clone()),
-        SqlValue::Json(j) => query.bind(j.to_string()),
-        SqlValue::DateTime(dt) => query.bind(*dt),
-        SqlValue::Timestamp(ts) => query.bind(*ts),
-    }
-}
-
-/// 将 `serde_json::Value` 参数绑定到事务执行查询（用于参数化 INSERT/UPDATE/DELETE）
-///
-/// # 参数
-/// - query: sqlx 执行查询对象
-/// - param: JSON 参数值
-///
-/// # 返回
-/// - 绑定参数后的查询对象
 fn bind_json_param_tx<'q>(
     query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     param: &serde_json::Value,
 ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
     match param {
-        // 字符串类型直接绑定
-        serde_json::Value::String(s) => query.bind(s.clone()),
-        // 数字类型转为 i64 绑定
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                query.bind(i)
-            } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
+        serde_json::Value::String(value) => query.bind(value.clone()),
+        serde_json::Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                query.bind(integer)
+            } else if let Some(float) = value.as_f64() {
+                query.bind(float.to_string())
             } else {
                 query.bind(Option::<String>::None)
             }
         }
-        // 布尔类型绑定
-        serde_json::Value::Bool(b) => query.bind(*b),
-        // NULL 类型绑定为 None
+        serde_json::Value::Bool(value) => query.bind(*value),
         serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
         other => query.bind(other.to_string()),
     }
 }
 
-/// 将 `serde_json::Value` 参数绑定到事务 `query_as` 查询（用于参数化 SELECT）
-///
-/// # 参数
-/// - query: sqlx query_as 查询对象
-/// - param: JSON 参数值
-///
-/// # 返回
-/// - 绑定参数后的查询对象
 fn bind_json_param_as_tx<'q, T>(
     query: sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>,
     param: &serde_json::Value,
 ) -> sqlx::query::QueryAs<'q, sqlx::MySql, T, sqlx::mysql::MySqlArguments>
 where
-    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
+    T: for<'row> sqlx::FromRow<'row, sqlx::mysql::MySqlRow>,
 {
     match param {
-        // 字符串类型直接绑定
-        serde_json::Value::String(s) => query.bind(s.clone()),
-        // 数字类型转为 i64 绑定
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                query.bind(i)
-            } else if let Some(f) = n.as_f64() {
-                // 浮点数转为字符串绑定，避免精度丢失
-                query.bind(f.to_string())
+        serde_json::Value::String(value) => query.bind(value.clone()),
+        serde_json::Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                query.bind(integer)
+            } else if let Some(float) = value.as_f64() {
+                query.bind(float.to_string())
             } else {
                 query.bind(Option::<String>::None)
             }
         }
-        // 布尔类型绑定
-        serde_json::Value::Bool(b) => query.bind(*b),
-        // NULL 类型绑定为 None
+        serde_json::Value::Bool(value) => query.bind(*value),
         serde_json::Value::Null => query.bind(Option::<String>::None),
-        // 数组和对象类型序列化为 JSON 字符串绑定
         other => query.bind(other.to_string()),
     }
 }

@@ -366,8 +366,8 @@ impl<V: CredentialVerifier, A: AuthAuditHook> TypedHandler for LoginAction<V, A>
             }
         };
         let result = ctx
-            .tools
-            .token_manager()
+            .tools()
+            .token()?
             .generate_token_pair(&subject.subject, subject.custom_claims);
         match result {
             Ok((access_token, refresh_token)) => {
@@ -525,7 +525,7 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
         input: RefreshInput,
     ) -> Result<TokenPairResponse, BaseError> {
         let request_id = ctx.request_id.to_string();
-        let manager = ctx.tools.token_manager();
+        let manager = ctx.tools().token()?;
 
         let run = async {
             // 先验证旧 Token 以获取 subject（供业务解析器确定新声明）
@@ -631,7 +631,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
         input: LogoutInput,
     ) -> Result<MessageResponse, BaseError> {
         let request_id = ctx.request_id.to_string();
-        let manager = ctx.tools.token_manager();
+        let manager = ctx.tools().token()?;
 
         let run = async {
             // AUTH-4：解析待撤销 Token 的 claims（仅校验签名/过期，不查黑名单——
@@ -692,7 +692,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 
 /// Token 鉴权中间件：在 Action 派发前完成 JWT 三重校验并注入当前用户。
 ///
-/// 挂到 [`ModuleRouter`](crate::router::ModuleRouter) 后，只对非公开 Action 执行；
+/// 挂到 [`ModuleSpec`](crate::definition::ModuleSpec) 后，只对非公开 Action 执行；
 /// 标记为 `public` 的 Action 会绕过本认证中间件，但仍会经过日志、限流、追踪等
 /// 通用中间件。对受保护 Action：
 ///
@@ -710,7 +710,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 ///
 /// ```rust,ignore
 /// use yang_base::action::{TokenAuthMiddleware, User};
-/// use yang_base::router::ModuleRouter;
+/// use yang_base::definition::{ModuleName, ModuleSpec};
 ///
 /// // 从 JWT sub 取用户 ID，从自定义声明 "roles" 取角色
 /// let auth = TokenAuthMiddleware::new(|claims| {
@@ -723,7 +723,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 ///     user
 /// });
 ///
-/// let router = ModuleRouter::new("user", "用户管理").middleware(auth);
+/// let module = ModuleSpec::new(ModuleName::new("account.user")?).middleware(auth);
 /// ```
 pub struct TokenAuthMiddleware<F> {
     /// 从已验证声明构造业务 [`User`](crate::action::User) 的闭包
@@ -765,11 +765,7 @@ where
         };
 
         // 2. 签名 + 过期 + 黑名单三重校验（失败原样短路）
-        let claims = ctx
-            .tools
-            .token_manager()
-            .verify_token_checked(&token)
-            .await?;
+        let claims = ctx.tools().token()?.verify_token_checked(&token).await?;
 
         // 3. 校验 token_type 必须为 Access
         if claims.token_type != crate::token::TokenType::Access {
@@ -786,7 +782,11 @@ where
 mod tests {
     use super::*;
     use crate::action::{DynAction, TypedAction};
-    use crate::router::{Api, Middleware, ModuleRouter, Next};
+    use crate::definition::{
+        ActionName, ActionRef, ActionSpec, AddonName, AddonSpec, AppBuilder, HttpMethod,
+        ModuleName, ModuleSpec, RouteSpec,
+    };
+    use crate::router::{Middleware, Next};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -848,17 +848,20 @@ mod tests {
         }
     }
 
-    fn test_tools() -> Arc<crate::action::GlobalTools> {
-        Arc::new(crate::action::GlobalTools::new(
-            crate::token::TokenManager::new_symmetric(
-                "mixed-public-protected-actions-test-secret",
-                jsonwebtoken::Algorithm::HS256,
-                "test-issuer".to_string(),
-                "test-audience".to_string(),
-                3600,
-                7200,
-            ),
-        ))
+    fn test_tools() -> Arc<crate::tools::Tools> {
+        Arc::new(
+            crate::tools::ToolsBuilder::new()
+                .token(crate::token::TokenManager::new_symmetric(
+                    "mixed-public-protected-actions-test-secret",
+                    jsonwebtoken::Algorithm::HS256,
+                    "test-issuer".to_string(),
+                    "test-audience".to_string(),
+                    3600,
+                    7200,
+                ))
+                .build()
+                .expect("测试 Tools 应构建成功"),
+        )
     }
 
     #[test]
@@ -879,35 +882,72 @@ mod tests {
     #[tokio::test]
     async fn public_and_protected_actions_share_auth_enabled_module() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let router = ModuleRouter::new("user", "用户")
+        let module_name = ModuleName::new("account.user").expect("测试 Module 名称应有效");
+        let login_ref = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("login").expect("测试 Action 名称应有效"),
+        );
+        let probe_ref = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("protected_probe").expect("测试 Action 名称应有效"),
+        );
+        let module = ModuleSpec::new(module_name)
             .middleware(CountingMiddleware(Arc::clone(&calls)))
             .middleware(TokenAuthMiddleware::new(|claims| {
                 User::new(1, claims.sub.clone())
             }))
-            .apis([
-                Api::post("/api/v1/users/login", LoginAction::new(DummyVerifier)),
-                Api::get("/api/v1/users/me", ProtectedProbe),
-            ])
+            .action(
+                ActionSpec::new(
+                    ActionName::new("login").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Post,
+                        "/api/v1/users/login",
+                        "account.user.login",
+                    ),
+                )
+                .public(true),
+                LoginAction::new(DummyVerifier),
+            )
+            .action(
+                ActionSpec::new(
+                    ActionName::new("protected_probe").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Get,
+                        "/api/v1/users/me",
+                        "account.user.protected_probe",
+                    ),
+                ),
+                ProtectedProbe,
+            );
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("account").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(test_tools())
             .expect("同一模块应能注册公开与受保护 Action");
+        let login_handle = app.registry().resolve(&login_ref).expect("login 应已注册");
+        let probe_handle = app
+            .registry()
+            .resolve(&probe_ref)
+            .expect("protected_probe 应已注册");
 
-        let public_context = ActionContext::new(
-            crate::action::Request::new(serde_json::json!({
-                "username": "alice",
-                "password": "correct-password"
-            })),
-            test_tools(),
-        );
-        let public_response = router.dispatch("login", public_context).await;
+        let public_request = crate::action::Request::new(serde_json::json!({
+            "username": "alice",
+            "password": "correct-password"
+        }));
+        let public_response = app.dispatch(login_handle, public_request).await;
         assert!(
             public_response.is_ok(),
             "公开 Action 不应被 TokenAuthMiddleware 拦截: {public_response:?}"
         );
 
-        let protected_context = ActionContext::new(
-            crate::action::Request::new(serde_json::json!({})),
-            test_tools(),
-        );
-        let protected_response = router.dispatch("protected_probe", protected_context).await;
+        let protected_response = app
+            .dispatch(
+                probe_handle,
+                crate::action::Request::new(serde_json::json!({})),
+            )
+            .await;
         assert!(matches!(
             protected_response,
             Err(BaseError::Unauthorized(message))
