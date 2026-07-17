@@ -63,6 +63,7 @@ pub mod sql_bridge;
 mod tenant;
 pub mod typed;
 mod ui_catalog;
+mod upload;
 
 pub use action_trait::{Permission, PermissionMode};
 #[cfg(feature = "token")]
@@ -80,6 +81,7 @@ pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
 pub use tenant::{TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 pub use ui_catalog::{UiCatalogAction, UiCatalogInput};
+pub use upload::UploadedFile;
 
 #[cfg(test)]
 mod __tests__;
