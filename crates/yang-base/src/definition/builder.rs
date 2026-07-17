@@ -83,6 +83,7 @@ struct RuntimeAction {
     module: String,
     action: String,
     table_definition: Option<TableDefinition>,
+    ui_schema: super::ActionDemoSchema,
 }
 
 impl fmt::Debug for Registry {
@@ -148,10 +149,13 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))
     }
 
-    fn allows(&self, handle: ActionHandle, context: &ActionContext) -> bool {
-        self.handlers
-            .get(handle.slot())
-            .is_some_and(|runtime| runtime.policy.allows(context))
+    pub(crate) fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
+        super::UiCatalog::new(
+            self.handlers
+                .iter()
+                .filter(|runtime| runtime.policy.allows(context))
+                .map(|runtime| runtime.ui_schema.clone()),
+        )
     }
 
     /// 通过构建期 handle 执行唯一预绑定 Handler。
@@ -274,21 +278,7 @@ impl BuiltApp {
     /// module/action `All`/`Any` 权限语义不会分叉。租户级字段和数据过滤由后续
     /// View projector 负责，本目录只决定 Action 是否可见。
     pub fn ui_catalog(&self, context: &ActionContext) -> super::UiCatalog {
-        let actions = self
-            .catalog
-            .addons()
-            .iter()
-            .flat_map(|addon| &addon.modules)
-            .flat_map(|module| {
-                module.actions().iter().filter_map(|action| {
-                    let reference = ActionRef::new(module.name.clone(), action.name.clone());
-                    self.registry
-                        .resolve(&reference)
-                        .filter(|handle| self.registry.allows(*handle, context))
-                        .map(|_| super::ActionDemoSchema::from(action))
-                })
-            });
-        super::UiCatalog::new(actions)
+        self.registry.ui_catalog(context)
     }
 
     /// 为一次请求创建绑定当前应用资源的 ActionContext。
@@ -996,6 +986,7 @@ fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildError> {
             policy: AuthorizationPolicy::new(action.is_public, permission_groups),
             module: module.to_string(),
             action: action.name.to_string(),
+            ui_schema: super::ActionDemoSchema::from(action),
             table_definition: table
                 .map(super::TableSpec::table_definition)
                 .transpose()
