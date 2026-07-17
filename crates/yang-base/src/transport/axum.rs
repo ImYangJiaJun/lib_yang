@@ -73,10 +73,15 @@ impl Default for CorsConfig {
                 .iter()
                 .map(|method| (*method).to_string())
                 .collect(),
-            headers: ["content-type", "authorization", "x-request-id"]
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
+            headers: [
+                "content-type",
+                "authorization",
+                "x-request-id",
+                "x-step-up-proof",
+            ]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
             credentials: false,
             max_age_secs: 86400,
         }
@@ -954,6 +959,8 @@ fn method_filter(method: &str) -> Result<MethodFilter, BaseError> {
 
 fn status_for_error(error: &BaseError) -> StatusCode {
     match error {
+        #[cfg(feature = "token")]
+        BaseError::StepUpRequired(_) => StatusCode::PRECONDITION_REQUIRED,
         BaseError::Unauthorized(_)
         | BaseError::InvalidPassword
         | BaseError::TokenKeyInvalid(_)
@@ -979,6 +986,16 @@ fn status_for_error(error: &BaseError) -> StatusCode {
 
 fn error_response(status: StatusCode, error: BaseError) -> Response {
     // 5xx 对外遮蔽内部细节（只进 tracing），4xx 保留业务 message
+    #[cfg(feature = "token")]
+    if let BaseError::StepUpRequired(challenge) = &error {
+        let mut response = ApiResponse::from_error(&error);
+        response.data = Some(serde_json::json!({
+            "challenge": challenge.challenge,
+            "expires_in": challenge.expires_in,
+        }));
+        return (status, Json(response)).into_response();
+    }
+
     let response = if status.is_server_error() {
         let message = if status == StatusCode::SERVICE_UNAVAILABLE {
             "服务暂时不可用"

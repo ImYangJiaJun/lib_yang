@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower::ServiceExt;
+#[cfg(feature = "token")]
+use yang_base::action::StepUpChallenge;
 use yang_base::action::{
     Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction, UploadedFile,
 };
@@ -139,6 +141,36 @@ impl BusinessAction for CrashAction {
         Err(BaseError::Unknown(
             "数据库连接池耗尽 secret-detail".to_string(),
         ))
+    }
+}
+
+/// 仅用于验证 Axum 的 step-up 结构化错误映射。
+#[cfg(feature = "token")]
+#[derive(Action)]
+#[action(
+    name = "step_up_required",
+    display_name = "需要重认证",
+    method = "POST",
+    path = "/api/test/step-up-required",
+    public
+)]
+struct StepUpRequiredAction;
+
+#[cfg(feature = "token")]
+#[async_trait::async_trait]
+impl BusinessAction for StepUpRequiredAction {
+    type Input = EmptyInput;
+    type Output = serde_json::Value;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Err(BaseError::StepUpRequired(StepUpChallenge {
+            challenge: "signed-test-challenge".to_string(),
+            expires_in: 120,
+        }))
     }
 }
 
@@ -387,6 +419,8 @@ fn build_app() -> Arc<BuiltApp> {
         .native_action(SlowAction)
         .native_action(ProtectedAction)
         .native_action(UiCatalogAction);
+    #[cfg(feature = "token")]
+    let module = module.native_action(StepUpRequiredAction);
     let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
     Arc::new(
         AppBuilder::new()
@@ -660,6 +694,22 @@ async fn server_error_masks_message_and_maps_500() {
     );
 }
 
+#[cfg(feature = "token")]
+#[tokio::test]
+async fn step_up_required_maps_428_with_challenge_data() {
+    let response = oneshot(
+        default_router(),
+        json_request("POST", "/api/test/step-up-required", "{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+    let json = body_json(response).await;
+    assert_eq!(json["code"], 700010);
+    assert_eq!(json["message"], "敏感操作需要重新认证");
+    assert_eq!(json["data"]["challenge"], "signed-test-challenge");
+    assert_eq!(json["data"]["expires_in"], 120);
+}
+
 // ---------------------------------------------------------------------------
 // request_id 透传
 // ---------------------------------------------------------------------------
@@ -804,6 +854,17 @@ fn preflight(origin: &str) -> HttpRequest<Body> {
         .expect("预检请求应构建成功")
 }
 
+fn preflight_with_headers(origin: &str, headers: &str) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method("OPTIONS")
+        .uri("/api/test/echo")
+        .header("origin", origin)
+        .header("access-control-request-method", "POST")
+        .header("access-control-request-headers", headers)
+        .body(Body::empty())
+        .expect("带请求头的预检请求应构建成功")
+}
+
 #[tokio::test]
 async fn cors_preflight_allows_configured_origin() {
     let router = cors_router(CorsConfig {
@@ -818,6 +879,32 @@ async fn cors_preflight_allows_configured_origin() {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     assert_eq!(allow_origin, "https://app.example.com");
+}
+
+#[tokio::test]
+async fn cors_default_headers_allow_step_up_proof() {
+    let router = cors_router(CorsConfig {
+        origins: vec!["https://app.example.com".to_string()],
+        ..CorsConfig::default()
+    })
+    .expect("Router 应构建成功");
+    let response = oneshot(
+        router,
+        preflight_with_headers("https://app.example.com", "x-step-up-proof"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let allow_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        allow_headers
+            .split(',')
+            .any(|value| value.trim().eq_ignore_ascii_case("x-step-up-proof")),
+        "默认 CORS 应允许 step-up proof header: {allow_headers}"
+    );
 }
 
 #[tokio::test]
