@@ -13,7 +13,7 @@ yang-base/
 │   ├── config.rs        # EngineConfig（YANG_* 环境变量）
 │   ├── lifecycle.rs     # 优雅停机（插件 → Tools 逆序）
 │   ├── observability.rs # ObservabilityConfig 纯数据（经 Tools config 槽注册；无全局单例）
-│   ├── tools.rs         # ToolsBuilder/Tools：db/cache/token/http + 类型化 extension/config
+│   ├── tools.rs         # ToolsBuilder/Tools：mysql/cache/token/http + 类型化 extension/config
 │   ├── database/        # DatabaseInitializer（迁移治理 + additive schema 同步）
 │   ├── definition/      # 定义内核：AppBuilder/BuiltApp/Catalog/Registry/Spec/字段与参数定义
 │   ├── plugin/          # 旧代插件生命周期（新链路以 definition Addon 组织业务）

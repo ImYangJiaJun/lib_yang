@@ -191,18 +191,18 @@ async fn test_explicit_database_initialization() {
         .await
         .expect("数据库应连接成功");
     let tools = ToolsBuilder::new()
-        .database(database)
+        .mysql(database)
         .build()
         .expect("Tools 应构建成功");
 
     assert!(tools
-        .db()
+        .mysql()
         .expect("数据库应存在")
         .health_check()
         .await
         .is_ok());
     assert!(tools
-        .db()
+        .mysql()
         .expect("数据库应存在")
         .execute("SELECT 1")
         .await

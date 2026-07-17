@@ -66,7 +66,7 @@ impl ToolsHealth {
 /// 构建完成后冻结的应用资源。
 pub struct Tools {
     #[cfg(feature = "mysql")]
-    database: Option<Database>,
+    mysql: Option<Database>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -108,20 +108,18 @@ impl Tools {
         }
     }
 
-    /// 获取 MySQL 数据库；未配置或生命周期已结束时失败。
+    /// 获取 MySQL 连接池；未配置或生命周期已结束时失败。
     #[cfg(feature = "mysql")]
-    pub fn db(&self) -> Result<&Database, BaseError> {
+    pub fn mysql(&self) -> Result<&Database, BaseError> {
         self.ensure_running()?;
-        self.database
-            .as_ref()
-            .ok_or(BaseError::DatabaseNotInitialized)
+        self.mysql.as_ref().ok_or(BaseError::DatabaseNotInitialized)
     }
 
-    /// 返回可选数据库，供只构建查询计划而不执行 SQL 的内部路径使用。
+    /// 返回可选 MySQL 连接池，供只构建查询计划而不执行 SQL 的内部路径使用。
     #[cfg(feature = "mysql")]
-    pub(crate) fn optional_db(&self) -> Result<Option<&Database>, BaseError> {
+    pub(crate) fn optional_mysql(&self) -> Result<Option<&Database>, BaseError> {
         self.ensure_running()?;
-        Ok(self.database.as_ref())
+        Ok(self.mysql.as_ref())
     }
 
     /// 获取 Redis 客户端；未配置或生命周期已结束时失败。
@@ -191,15 +189,15 @@ impl Tools {
 
         let mut resources = Vec::new();
         #[cfg(feature = "mysql")]
-        if let Some(database) = &self.database {
-            resources.push(match database.health_check().await {
+        if let Some(mysql) = &self.mysql {
+            resources.push(match mysql.health_check().await {
                 Ok(healthy) => ResourceHealth {
-                    resource: "database",
+                    resource: "mysql",
                     healthy,
                     detail: None,
                 },
                 Err(error) => ResourceHealth {
-                    resource: "database",
+                    resource: "mysql",
                     healthy: false,
                     detail: Some(error.to_string()),
                 },
@@ -239,8 +237,8 @@ impl Tools {
             cache.close().await;
         }
         #[cfg(feature = "mysql")]
-        if let Some(database) = &self.database {
-            database.close().await;
+        if let Some(mysql) = &self.mysql {
+            mysql.close().await;
         }
 
         self.state.store(CLOSED, Ordering::Release);
@@ -252,7 +250,7 @@ impl Tools {
 #[must_use = "ToolsBuilder 必须调用 build() 才会冻结并交给应用"]
 pub struct ToolsBuilder {
     #[cfg(feature = "mysql")]
-    database: Option<Database>,
+    mysql: Option<Database>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -281,11 +279,11 @@ impl ToolsBuilder {
         Self::default()
     }
 
-    /// 设置唯一 MySQL 数据库资源。
+    /// 设置唯一 MySQL 资源。
     #[cfg(feature = "mysql")]
-    pub fn database(mut self, database: Database) -> Self {
-        if self.database.replace(database).is_some() {
-            self.record_duplicate("Database");
+    pub fn mysql(mut self, mysql: Database) -> Self {
+        if self.mysql.replace(mysql).is_some() {
+            self.record_duplicate("MySQL");
         }
         self
     }
@@ -370,7 +368,7 @@ impl ToolsBuilder {
 
         Ok(Tools {
             #[cfg(feature = "mysql")]
-            database: self.database,
+            mysql: self.mysql,
             #[cfg(feature = "redis")]
             cache: self.cache,
             #[cfg(feature = "token")]

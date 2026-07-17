@@ -131,7 +131,7 @@ async fn setup() -> Option<(
     );
     let tools = Arc::new(
         ToolsBuilder::new()
-            .database(db)
+            .mysql(db)
             .cache(cache)
             .token(token)
             .build()

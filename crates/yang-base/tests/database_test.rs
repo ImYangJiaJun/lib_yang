@@ -17,19 +17,19 @@ async fn explicit_database_resource_is_available_from_tools() {
     };
 
     let tools = ToolsBuilder::new()
-        .database(database)
+        .mysql(database)
         .build()
         .expect("Tools 应构建成功");
 
     assert!(tools
-        .db()
+        .mysql()
         .expect("数据库应存在")
         .health_check()
         .await
         .is_ok());
     let table = yang_db::table!("test_table");
     assert!(tools
-        .db()
+        .mysql()
         .expect("数据库应存在")
         .table(table)
         .try_to_sql()
@@ -40,7 +40,7 @@ async fn explicit_database_resource_is_available_from_tools() {
 fn missing_database_returns_a_structured_error() {
     let tools = ToolsBuilder::new().build().expect("空 Tools 应可构建");
     assert!(matches!(
-        tools.db(),
+        tools.mysql(),
         Err(yang_base::BaseError::DatabaseNotInitialized)
     ));
 }
