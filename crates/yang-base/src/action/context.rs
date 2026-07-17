@@ -119,6 +119,10 @@ pub struct ActionContext {
     /// 仅用于可观测性标注（metrics `module` 标签、日志）。模块数量有界，作为 metrics
     /// 标签不构成高基数问题。未经路由直接构造的上下文为 `None`。
     pub module: Option<String>,
+    /// 本次派发的 Action 名（由 `Registry::dispatch` 可信注入）。
+    ///
+    /// 与 `module` 共同标识当前实际执行目标；外部构造的上下文不能伪造此字段。
+    action: Option<String>,
     /// PERF-13: 缓存用户角色的 Arc 副本，避免 table_query() 每次重新 Arc 化。
     /// 在 `with_user()` 时一次性构建，后续 `table_query()` 仅需 `Arc::clone`（O(1)）。
     #[allow(dead_code)]
@@ -141,6 +145,7 @@ impl ActionContext {
             table_definition: None,
             request_id: RequestId::generate(),
             module: None,
+            action: None,
             cached_roles: Arc::from(Vec::new()),
             request_context: RequestContext::default(),
             tenant: None,
@@ -263,6 +268,25 @@ impl ActionContext {
     /// 由 `Registry::dispatch` 注入，用于 metrics `module` 标签等可观测性标注。
     pub fn with_module(mut self, module: impl Into<String>) -> Self {
         self.module = Some(module.into());
+        self
+    }
+
+    /// 返回当前实际派发的 `module` 与 `action`。
+    ///
+    /// 该身份由 `Registry` 在进入中间件链前覆盖注入，可供安全中间件绑定目标；
+    /// 未经 Registry 派发而直接构造的上下文返回 `None`。
+    pub fn dispatch_target(&self) -> Option<(&str, &str)> {
+        Some((self.module.as_deref()?, self.action.as_deref()?))
+    }
+
+    /// 覆盖注入当前实际派发目标，防止调用方预置的可观测性字段参与安全判断。
+    pub(crate) fn with_dispatch_target(
+        mut self,
+        module: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        self.module = Some(module.into());
+        self.action = Some(action.into());
         self
     }
 

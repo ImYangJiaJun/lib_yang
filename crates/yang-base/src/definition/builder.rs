@@ -245,9 +245,7 @@ impl Registry {
             .handlers
             .get(handle.slot())
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))?;
-        if context.module.is_none() {
-            context = context.with_module(runtime.module.clone());
-        }
+        context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
         if let Some(table) = &runtime.table_definition {
             context = context.with_table_definition(table.clone());
         }
@@ -282,9 +280,7 @@ impl Registry {
             .get(handle.raw.slot())
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.raw.slot())))?;
         authorize(&runtime.policy, &context)?;
-        if context.module.is_none() {
-            context = context.with_module(runtime.module.clone());
-        }
+        context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
         if let Some(table) = &runtime.table_definition {
             context = context.with_table_definition(table.clone());
         }
@@ -1182,6 +1178,20 @@ fn validate_references(
     views: &BTreeSet<super::ViewRef>,
 ) -> Result<(), BuildError> {
     for module in addons.iter().flat_map(|addon| &addon.modules) {
+        for middleware in module.middlewares() {
+            if let Some(target) = middleware.target_action() {
+                if target.module() != &module.name {
+                    return Err(BuildError::InvalidReference {
+                        kind: "Middleware Action",
+                        reference: target.to_string(),
+                    });
+                }
+                validate_action_ref(target, actions).map_err(|_| BuildError::InvalidReference {
+                    kind: "Middleware Action",
+                    reference: target.to_string(),
+                })?;
+            }
+        }
         if let Some(table) = &module.table {
             for field in &table.fields {
                 if let Some(relation) = &field.relation {

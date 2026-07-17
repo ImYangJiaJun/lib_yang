@@ -355,6 +355,11 @@ pub enum BaseError {
     #[error("表定义未设置")]
     TableDefinitionNotSet,
 
+    /// 敏感 Action 尚未完成短期重认证。
+    #[cfg(feature = "token")]
+    #[error("敏感操作需要重新认证")]
+    StepUpRequired(crate::action::StepUpChallenge),
+
     // ==================== 通用错误 ====================
     /// 配置错误
     #[error("配置错误: {0}")]
@@ -629,6 +634,8 @@ impl BaseError {
             BaseError::UserNotFound(_) => 700007,
             BaseError::InvalidPassword => 700008,
             BaseError::TableDefinitionNotSet => 700009,
+            #[cfg(feature = "token")]
+            BaseError::StepUpRequired(_) => 700010,
 
             // ==================== 通用错误 (9xxxxx) ====================
             BaseError::ConfigError(_) => 900001,
@@ -718,6 +725,8 @@ impl BaseError {
             BaseError::UserNotFound(_) => "700007",
             BaseError::InvalidPassword => "700008",
             BaseError::TableDefinitionNotSet => "700009",
+            #[cfg(feature = "token")]
+            BaseError::StepUpRequired(_) => "700010",
             // 通用错误 (9xxxxx)
             BaseError::ConfigError(_) => "900001",
             BaseError::IoError(_) => "900002",
@@ -812,6 +821,8 @@ impl BaseError {
             BaseError::RecordNotFound(_) | BaseError::UserNotFound(_) => C::NotFound,
             BaseError::InvalidPassword => C::Auth,
             BaseError::ActionNotFound(_) | BaseError::TableDefinitionNotSet => C::NotFound,
+            #[cfg(feature = "token")]
+            BaseError::StepUpRequired(_) => C::Client,
             // 通用错误
             BaseError::ConfigError(_) | BaseError::IoError(_) | BaseError::Unknown(_) => C::Server,
         }
