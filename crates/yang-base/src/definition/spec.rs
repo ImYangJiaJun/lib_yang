@@ -2,7 +2,7 @@
 
 use super::{
     ActionName, ActionPresentationSpec, ActionRef, AddonName, FieldName, FieldRef, FieldSpec,
-    ModuleName, Params, PresentationSpec, TableSpec, ValidationSpec, ViewName,
+    ModuleName, Params, PresentationSpec, TableSortSpec, TableSpec, ValidationSpec, ViewName,
 };
 use crate::action::DynAction;
 use crate::action::PermissionMode;
@@ -388,6 +388,8 @@ pub struct ViewSpec {
     pub action_presentations: BTreeMap<ActionRef, ActionPresentationSpec>,
     /// 可选树拓扑；未声明时按普通表格投影。
     pub tree: Option<TreeViewSpec>,
+    /// 有序默认排序声明。
+    pub default_sort: Vec<TableSortSpec>,
 }
 
 impl ViewSpec {
@@ -399,6 +401,7 @@ impl ViewSpec {
             actions: Vec::new(),
             action_presentations: BTreeMap::new(),
             tree: None,
+            default_sort: Vec::new(),
         }
     }
 
@@ -434,6 +437,13 @@ impl ViewSpec {
     #[must_use]
     pub fn tree(mut self, tree: TreeViewSpec) -> Self {
         self.tree = Some(tree);
+        self
+    }
+
+    /// 增加一个默认排序字段。
+    #[must_use]
+    pub fn default_sort(mut self, sort: TableSortSpec) -> Self {
+        self.default_sort.push(sort);
         self
     }
 }

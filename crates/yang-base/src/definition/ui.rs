@@ -3,13 +3,13 @@
 //! 本模块只定义声明式数据，不包含组件路径、脚本或权限判定。请求级权限过滤由
 //! 上层 projector 在构造 [`UiCatalog`] 前完成，避免把未授权 Action 暴露给前端。
 
-use super::{ActionSpec, ParamSource};
+use super::{ActionSpec, FieldRef, ParamSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.7";
+pub const UI_SCHEMA_VERSION: &str = "1.8";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -326,6 +326,59 @@ pub struct RelationOptionsSchema {
     pub label_fields: Vec<String>,
 }
 
+/// 通用表格排序方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SortDirection {
+    /// 降序。
+    Desc,
+    /// 升序，也是未知值的兼容降级。
+    #[default]
+    #[serde(other)]
+    Asc,
+}
+
+/// View 构建期声明的默认排序。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableSortSpec {
+    /// 必须属于当前 View 且允许排序的字段。
+    pub field: FieldRef,
+    /// 默认排序方向。
+    pub direction: SortDirection,
+}
+
+impl TableSortSpec {
+    /// 创建默认排序声明。
+    pub fn new(field: FieldRef, direction: SortDirection) -> Self {
+        Self { field, direction }
+    }
+}
+
+/// 请求级默认排序。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct TableSortSchema {
+    /// 行数据中的本地字段名。
+    pub field: String,
+    /// 默认排序方向。
+    pub direction: SortDirection,
+}
+
+/// 通用 TableView 的查询能力与服务端分页边界。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct TableQuerySchema {
+    /// 当前用户可见且允许关键词搜索的字段。
+    pub search_fields: Vec<String>,
+    /// 当前用户可见且允许结构化条件筛选的字段。
+    pub filter_fields: Vec<String>,
+    /// 按声明顺序排列的默认排序；不可读字段会从请求级投影中移除。
+    pub default_sort: Vec<TableSortSchema>,
+    /// 默认分页大小。
+    pub default_page_size: usize,
+    /// 服务端强制执行的最大分页大小。
+    pub max_page_size: usize,
+}
+
 /// 通用表格页的单列展示契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TableColumnSchema {
@@ -339,7 +392,9 @@ pub struct TableColumnSchema {
     pub widget: WidgetHint,
     /// 输入时是否必填。
     pub required: bool,
-    /// 是否允许作为筛选字段。
+    /// 是否允许关键词搜索。
+    pub searchable: bool,
+    /// 是否允许作为结构化筛选字段。
     pub filterable: bool,
     /// 是否允许排序。
     pub sortable: bool,
@@ -404,6 +459,8 @@ pub struct TableViewSchema {
     /// 可选树拓扑；所需字段不可读时省略并安全降级为普通表格。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tree: Option<TreeViewSchema>,
+    /// 搜索、筛选、默认排序和分页能力。
+    pub query: TableQuerySchema,
     /// 当前用户可调用的有序 Action operation IDs。
     pub actions: Vec<String>,
     /// 当前用户可调用 Action 的声明式展示语义。
@@ -880,10 +937,13 @@ mod tests {
             serde_json::from_value(json!("execute_script")).expect("未知交互应安全解析");
         let availability: AvailabilityState =
             serde_json::from_value(json!("scheduled")).expect("未知可用状态应安全解析");
+        let sort: SortDirection =
+            serde_json::from_value(json!("randomized")).expect("未知排序方向应安全解析");
 
         assert_eq!(placement, ActionPlacement::Toolbar);
         assert_eq!(interaction, ActionInteraction::Invoke);
         assert_eq!(availability, AvailabilityState::Disabled);
+        assert_eq!(sort, SortDirection::Asc);
     }
 
     #[tokio::test]
@@ -909,6 +969,7 @@ mod tests {
         );
         name.presentation.title = "名称".to_string();
         name.access.searchable = true;
+        name.access.filterable = true;
         name.access.sortable = true;
         let mut manager_id = FieldSpec::new(
             FieldName::new("manager_id").expect("测试字段名应有效"),
@@ -959,7 +1020,8 @@ mod tests {
                 field_ref("id"),
                 field_ref("parent_id"),
                 field_ref("name"),
-            ));
+            ))
+            .default_sort(TableSortSpec::new(field_ref("name"), SortDirection::Asc));
         let module = ModuleSpec::new(module_name.clone())
             .table(
                 TableSpec::new(table_name)
@@ -1041,6 +1103,22 @@ mod tests {
         assert_eq!(name_column.widget, WidgetHint::Text);
         assert!(name_column.filterable);
         assert!(name_column.sortable);
+        assert_eq!(member.table_views[0].query.search_fields, ["name"]);
+        assert_eq!(member.table_views[0].query.filter_fields, ["name"]);
+        assert_eq!(member.table_views[0].query.default_sort.len(), 1);
+        assert_eq!(member.table_views[0].query.default_sort[0].field, "name");
+        assert_eq!(
+            member.table_views[0].query.default_sort[0].direction,
+            SortDirection::Asc
+        );
+        assert_eq!(
+            member.table_views[0].query.default_page_size,
+            crate::table::DEFAULT_QUERY_PAGE_SIZE
+        );
+        assert_eq!(
+            member.table_views[0].query.max_page_size,
+            crate::table::MAX_TABLE_QUERY_PAGE_SIZE
+        );
         let member_relation = member.table_views[0]
             .columns
             .iter()
@@ -1287,6 +1365,39 @@ mod tests {
             ),
             "实际错误: {error:?}"
         );
+    }
+
+    #[test]
+    fn table_view_default_sort_requires_sortable_view_field() {
+        let module_name = ModuleName::new("org.unit").expect("测试 Module 名称应有效");
+        let table_name = TableName::new("org_unit").expect("测试 Table 名称应有效");
+        let id_ref = FieldRef::new(
+            table_name.clone(),
+            FieldName::new("id").expect("测试字段名应有效"),
+        );
+        let view = ViewSpec::new(ViewName::new("list").expect("测试 View 名称应有效"))
+            .field(id_ref.clone())
+            .default_sort(TableSortSpec::new(id_ref, SortDirection::Desc));
+        let module = ModuleSpec::new(module_name)
+            .table(TableSpec::new(table_name).field(FieldSpec::new(
+                FieldName::new("id").expect("测试字段名应有效"),
+                FieldKind::Key,
+            )))
+            .view(view);
+        let error = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect_err("不可排序字段不能成为 View 默认排序");
+        assert!(matches!(
+            error,
+            BuildError::InvalidReference {
+                kind: "View Default Sort",
+                ..
+            }
+        ));
     }
 
     #[test]
