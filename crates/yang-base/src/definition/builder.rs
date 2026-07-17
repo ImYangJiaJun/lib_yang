@@ -101,7 +101,9 @@ struct RuntimeTableView {
 struct RuntimeTableColumn {
     schema: super::TableColumnSchema,
     readable: super::AccessRule,
+    writable: super::AccessRule,
     secret: bool,
+    server_managed: bool,
 }
 
 impl fmt::Debug for Registry {
@@ -187,6 +189,13 @@ impl Registry {
                     .filter(|column| column_readable(column, context))
                     .map(|column| column.schema.clone())
                     .collect(),
+                form: super::FormSchema {
+                    fields: view
+                        .columns
+                        .iter()
+                        .filter_map(|column| form_field(column, context))
+                        .collect(),
+                },
                 actions: view
                     .actions
                     .iter()
@@ -670,15 +679,40 @@ fn runtime_table_column(field: &super::FieldSpec) -> RuntimeTableColumn {
             sortable: field.access.sortable,
         },
         readable: field.access.readable.clone(),
+        writable: field.access.writable.clone(),
         secret: field.access.secret,
+        server_managed: field.kind == FieldKind::Key
+            || (field.kind == FieldKind::Timestamp
+                && field.timestamp_mode != super::TimestampMode::Value),
     }
 }
 
 fn column_readable(column: &RuntimeTableColumn, context: &ActionContext) -> bool {
-    if column.secret {
-        return false;
+    !column.secret && access_rule_allows(&column.readable, context)
+}
+
+fn form_field(
+    column: &RuntimeTableColumn,
+    context: &ActionContext,
+) -> Option<super::FormFieldSchema> {
+    let readable = column_readable(column, context);
+    let writable = !column.server_managed && access_rule_allows(&column.writable, context);
+    if !readable && !writable {
+        return None;
     }
-    match &column.readable {
+    Some(super::FormFieldSchema {
+        field: column.schema.field.clone(),
+        title: column.schema.title.clone(),
+        description: column.schema.description.clone(),
+        widget: column.schema.widget,
+        required: column.schema.required && writable,
+        read_only: !writable,
+        write_only: column.secret || !readable,
+    })
+}
+
+fn access_rule_allows(rule: &super::AccessRule, context: &ActionContext) -> bool {
+    match rule {
         super::AccessRule::Everyone => true,
         super::AccessRule::Nobody => false,
         super::AccessRule::Roles(roles) => context

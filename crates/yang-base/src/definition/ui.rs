@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.1";
+pub const UI_SCHEMA_VERSION: &str = "1.2";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -155,6 +155,32 @@ pub struct TableColumnSchema {
     pub sortable: bool,
 }
 
+/// 通用表单的单字段契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FormFieldSchema {
+    /// 提交数据中的字段名。
+    pub field: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// 字段帮助说明。
+    pub description: String,
+    /// 建议输入控件。
+    pub widget: WidgetHint,
+    /// 当前表单中是否必填。
+    pub required: bool,
+    /// 当前用户只能查看，不能提交修改。
+    pub read_only: bool,
+    /// 字段只允许提交，前端不得从详情数据预填。
+    pub write_only: bool,
+}
+
+/// 请求级通用表单契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FormSchema {
+    /// 按 View 定义顺序排列的字段。
+    pub fields: Vec<FormFieldSchema>,
+}
+
 /// 请求级通用表格 View 契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TableViewSchema {
@@ -166,6 +192,8 @@ pub struct TableViewSchema {
     pub table: String,
     /// 当前用户可读的有序列。
     pub columns: Vec<TableColumnSchema>,
+    /// 当前用户可读或可写的通用表单字段。
+    pub form: FormSchema,
     /// 当前用户可调用的有序 Action operation IDs。
     pub actions: Vec<String>,
 }
@@ -570,11 +598,19 @@ mod tests {
         );
         secret.access.secret = true;
         secret.access.readable = AccessRule::Everyone;
+        secret.storage.required = true;
+        let mut created_at = FieldSpec::new(
+            FieldName::new("created_at").expect("测试字段名应有效"),
+            FieldKind::Timestamp,
+        );
+        created_at.timestamp_mode = crate::definition::TimestampMode::CreatedAt;
 
         let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .field(field_ref("id"))
             .field(field_ref("name"))
             .field(field_ref("admin_note"))
             .field(field_ref("secret"))
+            .field(field_ref("created_at"))
             .action(action_ref("list"))
             .action(action_ref("edit"));
         let module = ModuleSpec::new(module_name)
@@ -587,7 +623,8 @@ mod tests {
                     ))
                     .field(name)
                     .field(admin_note)
-                    .field(secret),
+                    .field(secret)
+                    .field(created_at),
             )
             .default_permissions(["module:view"], PermissionMode::All)
             .action(action("list", "org.member.list"), NoopAction)
@@ -617,12 +654,37 @@ mod tests {
         assert_eq!(member.table_views.len(), 1);
         assert_eq!(member.table_views[0].view_id, "org.member.main");
         assert_eq!(member.table_views[0].table, "org_member");
-        assert_eq!(member.table_views[0].columns.len(), 1);
-        assert_eq!(member.table_views[0].columns[0].field, "name");
-        assert_eq!(member.table_views[0].columns[0].widget, WidgetHint::Text);
-        assert!(member.table_views[0].columns[0].filterable);
-        assert!(member.table_views[0].columns[0].sortable);
+        assert_eq!(
+            member.table_views[0]
+                .columns
+                .iter()
+                .map(|column| column.field.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name", "created_at"]
+        );
+        let name_column = &member.table_views[0].columns[1];
+        assert_eq!(name_column.widget, WidgetHint::Text);
+        assert!(name_column.filterable);
+        assert!(name_column.sortable);
         assert_eq!(member.table_views[0].actions, ["org.member.list"]);
+
+        let form = &member.table_views[0].form.fields;
+        let form_field = |name: &str| {
+            form.iter()
+                .find(|field| field.field == name)
+                .unwrap_or_else(|| panic!("表单应包含字段 {name}"))
+        };
+        assert!(form_field("id").read_only, "主键必须只读");
+        assert!(form_field("created_at").read_only, "自动时间戳必须只读");
+        assert!(
+            form_field("admin_note").write_only,
+            "不可读但可写字段不得预填"
+        );
+        let secret_form = form_field("secret");
+        assert!(secret_form.write_only, "secret 字段必须只写");
+        assert!(!secret_form.read_only);
+        assert!(secret_form.required);
+        assert_eq!(secret_form.widget, WidgetHint::Password);
 
         let admin = app.ui_catalog(
             &app.context(Request::new(json!({}))).with_user(
@@ -637,12 +699,20 @@ mod tests {
                 .iter()
                 .map(|column| column.field.as_str())
                 .collect::<Vec<_>>(),
-            ["name", "admin_note"],
+            ["id", "name", "admin_note", "created_at"],
             "角色字段应出现，但 secret 字段即使 readable 也不得投影"
         );
         assert_eq!(
             admin.table_views[0].actions,
             ["org.member.list", "org.member.edit"]
         );
+        let admin_note = admin.table_views[0]
+            .form
+            .fields
+            .iter()
+            .find(|field| field.field == "admin_note")
+            .expect("管理员表单应包含 admin_note");
+        assert!(!admin_note.read_only);
+        assert!(!admin_note.write_only);
     }
 }
