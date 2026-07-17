@@ -60,6 +60,7 @@ mod request_id;
 mod request_meta;
 mod response;
 pub mod sql_bridge;
+mod tenant;
 pub mod typed;
 mod ui_catalog;
 
@@ -76,6 +77,7 @@ pub use request_context::{ActorContext, ContextKey, RequestContext, TenantContex
 pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
 pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
+pub use tenant::{TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 pub use ui_catalog::{UiCatalogAction, UiCatalogInput};
 
