@@ -728,6 +728,8 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 pub struct TokenAuthMiddleware<F> {
     /// 从已验证声明构造业务 [`User`](crate::action::User) 的闭包
     build_user: F,
+    /// 是否在公开 Action 上执行可选认证。
+    authenticate_public_actions: bool,
 }
 
 impl<F> TokenAuthMiddleware<F>
@@ -736,7 +738,23 @@ where
 {
     /// 用「声明 -> 用户」闭包创建 Token 鉴权中间件。
     pub fn new(build_user: F) -> Self {
-        Self { build_user }
+        Self {
+            build_user,
+            authenticate_public_actions: false,
+        }
+    }
+
+    /// 在公开 Action 上启用可选认证。
+    ///
+    /// 默认情况下，本中间件只处理受保护 Action，以确保登录、刷新等公开端点不会
+    /// 因缺少 Token 被拦截。启用本选项后，公开 Action 在没有 Authorization header
+    /// 时仍按匿名请求继续；携带 Bearer Token 时则完成完整校验并注入用户。该模式
+    /// 适用于请求级 UI 目录等“匿名可用、登录后按身份投影”的公开端点。
+    ///
+    /// 非 Bearer Authorization header、无效 Token 和错误 Token 类型不会降级为匿名。
+    pub fn authenticate_public_actions(mut self) -> Self {
+        self.authenticate_public_actions = true;
+        self
     }
 }
 
@@ -746,7 +764,11 @@ where
     F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
 {
     fn scope(&self) -> MiddlewareScope {
-        MiddlewareScope::ProtectedActions
+        if self.authenticate_public_actions {
+            MiddlewareScope::AllActions
+        } else {
+            MiddlewareScope::ProtectedActions
+        }
     }
 
     async fn handle(
@@ -757,6 +779,12 @@ where
         // 1. 取 Bearer Token（owned，及早结束对 ctx 的借用）
         let token = match ctx.request.token() {
             Some(t) => t.to_string(),
+            None if self.authenticate_public_actions
+                && next.policy.is_public
+                && ctx.request.get_header("authorization").is_none() =>
+            {
+                return next.run(ctx).await;
+            }
             None => {
                 return Err(BaseError::Unauthorized(
                     "缺少 Authorization Bearer Token".to_string(),
@@ -781,9 +809,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{DynAction, TypedAction};
+    use crate::action::{DynAction, TypedAction, UiCatalogAction};
     use crate::definition::{
-        ActionName, ActionRef, ActionSpec, AddonName, AddonSpec, AppBuilder, HttpMethod,
+        ActionName, ActionRef, ActionSpec, AddonName, AddonSpec, AppBuilder, BuiltApp, HttpMethod,
         ModuleName, ModuleSpec, RouteSpec,
     };
     use crate::router::{Middleware, Next};
@@ -791,6 +819,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use testcontainers::{runners::AsyncRunner, GenericImage};
+    use yang_db::{RedisClient, RedisConfig};
 
     struct DummyVerifier;
 
@@ -834,6 +864,26 @@ mod tests {
         }
     }
 
+    #[derive(Action)]
+    #[action(name = "public_probe", display_name = "公开探针", public)]
+    struct PublicProbe;
+
+    #[async_trait]
+    impl TypedHandler for PublicProbe {
+        type Input = EmptyInput;
+        type Output = ProbeOutput;
+
+        async fn handle(
+            &self,
+            ctx: ActionContext,
+            _input: Self::Input,
+        ) -> Result<Self::Output, BaseError> {
+            Ok(ProbeOutput {
+                authenticated: ctx.authenticated_user().is_some(),
+            })
+        }
+    }
+
     struct CountingMiddleware(Arc<AtomicUsize>);
 
     #[async_trait]
@@ -848,20 +898,108 @@ mod tests {
         }
     }
 
+    fn test_token_manager() -> crate::token::TokenManager {
+        crate::token::TokenManager::new_symmetric(
+            "mixed-public-protected-actions-test-secret",
+            jsonwebtoken::Algorithm::HS256,
+            "test-issuer".to_string(),
+            "test-audience".to_string(),
+            3600,
+            7200,
+        )
+    }
+
     fn test_tools() -> Arc<crate::tools::Tools> {
         Arc::new(
             crate::tools::ToolsBuilder::new()
-                .token(crate::token::TokenManager::new_symmetric(
-                    "mixed-public-protected-actions-test-secret",
-                    jsonwebtoken::Algorithm::HS256,
-                    "test-issuer".to_string(),
-                    "test-audience".to_string(),
-                    3600,
-                    7200,
-                ))
+                .token(test_token_manager())
                 .build()
                 .expect("测试 Tools 应构建成功"),
         )
+    }
+
+    fn optional_auth_app(tools: Arc<crate::tools::Tools>) -> BuiltApp {
+        let module = ModuleSpec::new(
+            ModuleName::new("account.optional_auth").expect("测试 Module 名称应有效"),
+        )
+        .middleware(
+            TokenAuthMiddleware::new(|claims| User::new(7, claims.sub.clone()))
+                .authenticate_public_actions(),
+        )
+        .action(
+            ActionSpec::new(
+                ActionName::new("public_probe").expect("测试 Action 名称应有效"),
+                RouteSpec::new(
+                    HttpMethod::Get,
+                    "/api/v1/optional-auth/public",
+                    "account.optional_auth.public_probe",
+                ),
+            )
+            .public(true),
+            PublicProbe,
+        )
+        .action(
+            ActionSpec::new(
+                ActionName::new("protected_probe").expect("测试 Action 名称应有效"),
+                RouteSpec::new(
+                    HttpMethod::Get,
+                    "/api/v1/optional-auth/protected",
+                    "account.optional_auth.protected_probe",
+                ),
+            ),
+            ProtectedProbe,
+        )
+        .native_action(UiCatalogAction);
+
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("account").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(tools)
+            .expect("可选认证测试应用应构建成功")
+    }
+
+    fn optional_auth_ref(name: &str) -> ActionRef {
+        ActionRef::new(
+            ModuleName::new("account.optional_auth").expect("测试 Module 名称应有效"),
+            ActionName::new(name).expect("测试 Action 名称应有效"),
+        )
+    }
+
+    fn test_access_token(app: &BuiltApp) -> String {
+        app.tools()
+            .token()
+            .expect("测试应用应配置 TokenManager")
+            .generate_access_token("user-7", serde_json::json!({}))
+            .expect("测试 Access Token 应生成成功")
+    }
+
+    fn response_authenticated(response: ApiResponse) -> bool {
+        response
+            .data
+            .and_then(|data| {
+                data.get("authenticated")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .expect("探针响应应包含 authenticated 布尔值")
+    }
+
+    fn catalog_operation_ids(response: ApiResponse) -> Vec<String> {
+        response
+            .data
+            .and_then(|data| data.get("actions").cloned())
+            .and_then(|actions| actions.as_array().cloned())
+            .expect("UI 目录响应应包含 actions 数组")
+            .into_iter()
+            .map(|action| {
+                action
+                    .get("operation_id")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("UI 目录 Action 应包含 operation_id")
+                    .to_string()
+            })
+            .collect()
     }
 
     #[test]
@@ -958,6 +1096,137 @@ mod tests {
             2,
             "通用中间件应覆盖公开与受保护 Action"
         );
+    }
+
+    #[tokio::test]
+    async fn optional_public_auth_distinguishes_absent_valid_and_invalid_credentials() {
+        let app = optional_auth_app(test_tools());
+        let public_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("public_probe"))
+            .expect("公开探针应已注册");
+
+        let anonymous = app
+            .dispatch(
+                public_handle,
+                crate::action::Request::new(serde_json::json!({})),
+            )
+            .await
+            .expect("缺少 Authorization header 时公开 Action 应按匿名继续");
+        assert!(!response_authenticated(anonymous));
+
+        let invalid = app
+            .dispatch(
+                public_handle,
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("Authorization", "Bearer invalid-token"),
+            )
+            .await;
+        assert!(matches!(invalid, Err(BaseError::TokenVerifyFailed(_))));
+
+        let wrong_scheme = app
+            .dispatch(
+                public_handle,
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("Authorization", "Basic credentials"),
+            )
+            .await;
+        assert!(matches!(
+            wrong_scheme,
+            Err(BaseError::Unauthorized(message))
+                if message.contains("Authorization Bearer Token")
+        ));
+    }
+
+    #[tokio::test]
+    async fn optional_public_auth_projects_catalog_without_weakening_protected_actions() {
+        let app = optional_auth_app(test_tools());
+        let catalog_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("ui_catalog"))
+            .expect("UI 目录应已注册");
+        let protected_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("protected_probe"))
+            .expect("受保护探针应已注册");
+
+        let anonymous_catalog = app
+            .dispatch(
+                catalog_handle,
+                crate::action::Request::new(serde_json::json!({})),
+            )
+            .await
+            .expect("匿名用户应能读取公开目录");
+        let anonymous_ids = catalog_operation_ids(anonymous_catalog);
+        assert!(anonymous_ids.contains(&"account.optional_auth.public_probe".to_string()));
+        assert!(!anonymous_ids.contains(&"account.optional_auth.protected_probe".to_string()));
+
+        let protected_without_token = app
+            .dispatch(
+                protected_handle,
+                crate::action::Request::new(serde_json::json!({})),
+            )
+            .await;
+        assert!(matches!(
+            protected_without_token,
+            Err(BaseError::Unauthorized(message))
+                if message.contains("Authorization Bearer Token")
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "需要 Docker 启动 Redis 撤销存储"]
+    async fn optional_public_auth_injects_valid_identity_into_catalog_projection() {
+        let redis_image = GenericImage::new("redis", "7-alpine").with_wait_for(
+            testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
+        );
+        let redis_container = redis_image.start().await.expect("Redis 测试容器应启动成功");
+        let redis_port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Redis 测试端口应可获取");
+        let redis_url = format!("redis://127.0.0.1:{redis_port}");
+        let cache = RedisClient::connect_with_config(&redis_url, RedisConfig::default())
+            .await
+            .expect("Redis 测试客户端应连接成功");
+        let tools = Arc::new(
+            crate::tools::ToolsBuilder::new()
+                .cache(cache)
+                .token(test_token_manager())
+                .build()
+                .expect("带撤销存储的测试 Tools 应构建成功"),
+        );
+        let app = optional_auth_app(tools);
+        let token = test_access_token(&app);
+
+        let public_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("public_probe"))
+            .expect("公开探针应已注册");
+        let authenticated = app
+            .dispatch(
+                public_handle,
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("Authorization", format!("Bearer {token}")),
+            )
+            .await
+            .expect("合法 Access Token 应在公开 Action 注入用户");
+        assert!(response_authenticated(authenticated));
+
+        let catalog_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("ui_catalog"))
+            .expect("UI 目录应已注册");
+        let authenticated_catalog = app
+            .dispatch(
+                catalog_handle,
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("Authorization", format!("Bearer {token}")),
+            )
+            .await
+            .expect("认证用户应能读取按身份投影的目录");
+        let authenticated_ids = catalog_operation_ids(authenticated_catalog);
+        assert!(authenticated_ids.contains(&"account.optional_auth.protected_probe".to_string()));
     }
 
     /// token 指纹稳定且不含原文（同输入同指纹，异输入异指纹）。
