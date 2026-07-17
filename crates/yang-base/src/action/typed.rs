@@ -162,6 +162,11 @@ pub trait TypedAction: TypedHandler {
         false
     }
 
+    /// 可选的受限 multipart 请求契约；默认只接受 JSON。
+    fn multipart_spec(&self) -> Option<crate::definition::MultipartSpec> {
+        None
+    }
+
     /// 成功响应的静态类别；默认是普通 JSON。
     fn response_kind(&self) -> crate::definition::ActionResponseKind {
         crate::definition::ActionResponseKind::Json

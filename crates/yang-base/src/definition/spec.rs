@@ -191,6 +191,10 @@ pub struct ActionSpec {
     pub permission_mode: PermissionMode,
     /// 是否允许匿名访问。
     pub is_public: bool,
+    /// 请求媒体类型。
+    pub request_media_type: super::ActionMediaType,
+    /// multipart 资源与类型限制；仅 multipart Action 可用。
+    pub multipart: Option<super::MultipartSpec>,
     /// 成功响应的静态类别，供调用方选择安全的展示方式。
     pub response_kind: super::ActionResponseKind,
     /// 成功响应状态码。
@@ -218,6 +222,8 @@ impl ActionSpec {
             permissions: Vec::new(),
             permission_mode: PermissionMode::All,
             is_public: false,
+            request_media_type: super::ActionMediaType::Json,
+            multipart: None,
             response_kind: super::ActionResponseKind::Json,
             success_status: 200,
             tags: Vec::new(),
@@ -257,6 +263,14 @@ impl ActionSpec {
     #[must_use]
     pub fn public(mut self, is_public: bool) -> Self {
         self.is_public = is_public;
+        self
+    }
+
+    /// 声明 Action 接受受限的 `multipart/form-data` 请求。
+    #[must_use]
+    pub fn multipart(mut self, multipart: super::MultipartSpec) -> Self {
+        self.request_media_type = super::ActionMediaType::Multipart;
+        self.multipart = Some(multipart);
         self
     }
 

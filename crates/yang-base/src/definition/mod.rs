@@ -8,6 +8,7 @@ mod builder;
 mod error;
 mod field;
 mod interface;
+mod media;
 mod name;
 #[cfg(feature = "openapi")]
 mod openapi;
@@ -28,6 +29,11 @@ pub use field::{
     ValidationSpec,
 };
 pub use interface::{Actions, Addon, Module, Modules};
+pub use media::{
+    ActionMediaType, MultipartSpec, UploadLifecycle, DEFAULT_MULTIPART_MAX_FIELDS,
+    DEFAULT_MULTIPART_MAX_FILES, DEFAULT_MULTIPART_MAX_FILE_BYTES,
+    DEFAULT_MULTIPART_MAX_TOTAL_BYTES,
+};
 pub use name::{
     ActionName, ActionRef, AddonName, FieldName, FieldRef, ModuleName, TableName, ViewName, ViewRef,
 };

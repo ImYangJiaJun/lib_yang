@@ -35,10 +35,31 @@ struct ActionOpts {
     /// 成功响应类别：json/download/preview/redirect；默认 json。
     #[darling(default)]
     response_kind: Option<String>,
+    /// 请求媒体类型：json/multipart；默认 json。
+    #[darling(default)]
+    request_media: Option<String>,
+    /// multipart 允许的精确 MIME 类型。
+    #[darling(default)]
+    content_types: Option<ContentTypeList>,
+    /// multipart 非文件字段数量上限。
+    #[darling(default)]
+    max_fields: Option<u16>,
+    /// multipart 文件数量上限。
+    #[darling(default)]
+    max_files: Option<u16>,
+    /// multipart 单文件字节上限。
+    #[darling(default)]
+    max_file_bytes: Option<u64>,
+    /// multipart 整个请求字节上限。
+    #[darling(default)]
+    max_total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Default)]
 struct PermissionList(Vec<String>);
+
+#[derive(Debug, Default)]
+struct ContentTypeList(Vec<String>);
 
 impl FromMeta for PermissionList {
     fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
@@ -51,6 +72,20 @@ impl FromMeta for PermissionList {
             }
         }
         Ok(PermissionList(out))
+    }
+}
+
+impl FromMeta for ContentTypeList {
+    fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
+        let mut out = Vec::new();
+        for item in items {
+            if let NestedMeta::Lit(syn::Lit::Str(value)) = item {
+                out.push(value.value());
+            } else {
+                return Err(darling::Error::custom("content_types 项必须是字符串字面量"));
+            }
+        }
+        Ok(ContentTypeList(out))
     }
 }
 
@@ -74,13 +109,12 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     let display_name = opts.display_name.unwrap_or_else(|| name.clone());
     let description = opts.description.unwrap_or_default();
     let is_public = opts.public;
-    let method = match opts
+    let method_name = opts
         .method
         .as_deref()
         .unwrap_or("POST")
-        .to_ascii_uppercase()
-        .as_str()
-    {
+        .to_ascii_uppercase();
+    let method = match method_name.as_str() {
         "GET" => quote!(::yang_base::definition::HttpMethod::Get),
         "POST" => quote!(::yang_base::definition::HttpMethod::Post),
         "PUT" => quote!(::yang_base::definition::HttpMethod::Put),
@@ -111,6 +145,97 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             return syn::Error::new_spanned(
                 &input.ident,
                 "action response_kind 必须是 json/download/preview/redirect",
+            )
+            .into_compile_error()
+        }
+    };
+    let has_multipart_options = opts.content_types.is_some()
+        || opts.max_fields.is_some()
+        || opts.max_files.is_some()
+        || opts.max_file_bytes.is_some()
+        || opts.max_total_bytes.is_some();
+    let multipart_fn = match opts.request_media.as_deref().unwrap_or("json") {
+        "json" if has_multipart_options => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "multipart 限制只能与 request_media = \"multipart\" 一起使用",
+            )
+            .into_compile_error()
+        }
+        "json" => quote! {},
+        "multipart" => {
+            if !matches!(method_name.as_str(), "POST" | "PUT" | "PATCH") {
+                return syn::Error::new_spanned(
+                    &input.ident,
+                    "multipart action method 必须是 POST/PUT/PATCH",
+                )
+                .into_compile_error();
+            }
+            let content_types = opts.content_types.unwrap_or_default().0;
+            if content_types.is_empty() {
+                return syn::Error::new_spanned(
+                    &input.ident,
+                    "multipart action 必须声明 content_types",
+                )
+                .into_compile_error();
+            }
+            if content_types.iter().any(|value| !is_exact_mime_type(value)) {
+                return syn::Error::new_spanned(
+                    &input.ident,
+                    "content_types 必须是小写精确 MIME 类型",
+                )
+                .into_compile_error();
+            }
+            if opts.max_files == Some(0) {
+                return syn::Error::new_spanned(&input.ident, "max_files 必须大于 0")
+                    .into_compile_error();
+            }
+            if opts.max_file_bytes == Some(0) || opts.max_total_bytes == Some(0) {
+                return syn::Error::new_spanned(&input.ident, "文件与请求字节上限必须大于 0")
+                    .into_compile_error();
+            }
+            if matches!(
+                (opts.max_file_bytes, opts.max_total_bytes),
+                (Some(file), Some(total)) if file > total
+            ) {
+                return syn::Error::new_spanned(
+                    &input.ident,
+                    "max_file_bytes 不能大于 max_total_bytes",
+                )
+                .into_compile_error();
+            }
+            let max_fields = opts
+                .max_fields
+                .map(|value| quote!(.max_fields(#value)))
+                .unwrap_or_default();
+            let max_files = opts
+                .max_files
+                .map(|value| quote!(.max_files(#value)))
+                .unwrap_or_default();
+            let max_file_bytes = opts
+                .max_file_bytes
+                .map(|value| quote!(.max_file_bytes(#value)))
+                .unwrap_or_default();
+            let max_total_bytes = opts
+                .max_total_bytes
+                .map(|value| quote!(.max_total_bytes(#value)))
+                .unwrap_or_default();
+            quote! {
+                fn multipart_spec(&self) -> ::std::option::Option<::yang_base::definition::MultipartSpec> {
+                    ::std::option::Option::Some(
+                        ::yang_base::definition::MultipartSpec::new([#(#content_types),*])
+                            #max_fields
+                            #max_files
+                            #max_file_bytes
+                            #max_total_bytes
+                    )
+                }
+            }
+        }
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "action request_media 必须是 json/multipart",
             )
             .into_compile_error()
         }
@@ -179,6 +304,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
             fn success_status(&self) -> u16 { #success_status }
             fn response_kind(&self) -> ::yang_base::definition::ActionResponseKind { #response_kind }
             fn is_public(&self) -> bool { #is_public }
+            #multipart_fn
             fn permission_mode(&self) -> ::yang_base::action::PermissionMode { #perm_mode }
 
             fn permissions(&self) -> &'static [::yang_base::action::Permission] {
@@ -215,4 +341,36 @@ fn is_segment(value: &str) -> bool {
     let mut chars = value.chars();
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && chars.all(|value| value.is_ascii_lowercase() || value.is_ascii_digit() || value == '_')
+}
+
+fn is_exact_mime_type(value: &str) -> bool {
+    let Some((top, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !top.is_empty()
+        && !subtype.is_empty()
+        && !subtype.contains('/')
+        && top.bytes().all(is_mime_token_byte)
+        && subtype.bytes().all(is_mime_token_byte)
+}
+
+fn is_mime_token_byte(value: u8) -> bool {
+    value.is_ascii_lowercase()
+        || value.is_ascii_digit()
+        || matches!(
+            value,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
