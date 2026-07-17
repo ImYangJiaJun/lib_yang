@@ -1,6 +1,7 @@
 //! 关系选择器的稳定请求/响应 DTO。
 
 use super::MAX_QUERY_PAGE_SIZE;
+use crate::definition::{ParamInput, Params};
 use crate::error::BaseError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,12 @@ impl Default for RelationOptionsRequest {
             page: 1,
             limit: DEFAULT_OPTIONS_LIMIT,
         }
+    }
+}
+
+impl ParamInput for RelationOptionsRequest {
+    fn params() -> Params {
+        Params::new()
     }
 }
 
@@ -131,6 +138,7 @@ pub struct RelationOptionsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::Request;
     use serde_json::json;
 
     #[test]
@@ -209,5 +217,25 @@ mod tests {
 
         let unknown = serde_json::from_value::<RelationOptionsRequest>(json!({"offset": 0}));
         assert!(unknown.is_err(), "未知字段不得被静默忽略");
+    }
+
+    #[test]
+    fn request_is_directly_decodable_as_action_body_input() {
+        let mut request = Request::new(json!({
+            "search": "alice",
+            "selected": [7],
+            "filter": {"status": "active"},
+            "page": 2,
+            "limit": 30
+        }));
+
+        let input = <RelationOptionsRequest as ParamInput>::decode(&mut request)
+            .expect("关系选项 DTO 应可直接作为 Action body 输入");
+        input.validate().expect("合法请求应通过边界校验");
+        assert_eq!(input.search.as_deref(), Some("alice"));
+        assert_eq!(input.selected, vec![json!(7)]);
+        assert_eq!(input.page, 2);
+        assert_eq!(input.limit, 30);
+        assert!(request.body.is_null(), "输入解码后 body 应被一次性消费");
     }
 }
