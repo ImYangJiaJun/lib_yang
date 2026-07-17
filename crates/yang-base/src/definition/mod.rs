@@ -46,7 +46,7 @@ pub use spec::{
 };
 pub use ui::{
     ActionDemoParamSchema, ActionDemoSchema, ActionResponseKind, UiCatalog, UiParamSource,
-    UI_SCHEMA_VERSION,
+    WidgetHint, UI_SCHEMA_VERSION,
 };
 pub use view::CompiledTableView;
 
