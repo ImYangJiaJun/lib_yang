@@ -568,6 +568,11 @@ async fn ui_catalog_endpoint_projects_only_anonymous_accessible_actions() {
     let json = body_json(response).await;
     assert_eq!(json["code"], 0);
     assert_eq!(json["data"]["schema_version"], UI_SCHEMA_VERSION);
+    let revision = json["data"]["revision"]
+        .as_str()
+        .expect("UI 目录应返回 revision");
+    assert_eq!(revision.len(), 64);
+    assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
 
     let operation_ids = json["data"]["actions"]
         .as_array()

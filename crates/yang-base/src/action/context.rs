@@ -245,7 +245,7 @@ impl ActionContext {
         let registry = self.registry.as_ref().ok_or_else(|| {
             BaseError::ConfigError("ActionContext 未绑定应用 Registry".to_string())
         })?;
-        Ok(registry.ui_catalog(self))
+        registry.ui_catalog(self)
     }
 
     /// 设置本次派发的 request_id（链式调用）
