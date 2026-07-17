@@ -187,7 +187,10 @@ impl Tools {
             };
         }
 
+        #[cfg(any(feature = "mysql", feature = "redis"))]
         let mut resources = Vec::new();
+        #[cfg(not(any(feature = "mysql", feature = "redis")))]
+        let resources = Vec::new();
         #[cfg(feature = "mysql")]
         if let Some(mysql) = &self.mysql {
             resources.push(match mysql.health_check().await {
@@ -354,7 +357,7 @@ impl ToolsBuilder {
     }
 
     /// 校验唯一性、连接 Token 撤销存储并冻结资源。
-    pub fn build(mut self) -> Result<Tools, BaseError> {
+    pub fn build(self) -> Result<Tools, BaseError> {
         if let Some(resource) = self.duplicate {
             return Err(BaseError::ConfigError(format!(
                 "Tools 资源重复注册: {resource}"
@@ -362,9 +365,13 @@ impl ToolsBuilder {
         }
 
         #[cfg(feature = "token")]
-        if let (Some(token), Some(cache)) = (&mut self.token, &self.cache) {
-            token.attach_revocation_cache(cache.clone());
-        }
+        let token = {
+            let mut token = self.token;
+            if let (Some(token), Some(cache)) = (&mut token, &self.cache) {
+                token.attach_revocation_cache(cache.clone());
+            }
+            token
+        };
 
         Ok(Tools {
             #[cfg(feature = "mysql")]
@@ -372,7 +379,7 @@ impl ToolsBuilder {
             #[cfg(feature = "redis")]
             cache: self.cache,
             #[cfg(feature = "token")]
-            token: self.token,
+            token,
             #[cfg(feature = "http")]
             http: self.http,
             extensions: self.extensions,

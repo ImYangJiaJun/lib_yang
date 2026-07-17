@@ -310,6 +310,7 @@ impl Request {
         self
     }
 
+    #[cfg(feature = "transport-axum")]
     pub(crate) fn retain_resource<T>(mut self, resource: Arc<T>) -> Self
     where
         T: Any + Send + Sync,
@@ -489,10 +490,13 @@ impl Default for Request {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(feature = "transport-axum")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(feature = "transport-axum")]
     struct DropResource(Arc<AtomicUsize>);
 
+    #[cfg(feature = "transport-axum")]
     impl Drop for DropResource {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -511,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "transport-axum")]
     fn clone_does_not_extend_request_scoped_resource_lifetime() {
         let drops = Arc::new(AtomicUsize::new(0));
         let resource = Arc::new(DropResource(Arc::clone(&drops)));
