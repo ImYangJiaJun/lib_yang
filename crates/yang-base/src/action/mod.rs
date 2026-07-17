@@ -61,6 +61,7 @@ mod request_meta;
 mod response;
 pub mod sql_bridge;
 pub mod typed;
+mod ui_catalog;
 
 pub use action_trait::{Permission, PermissionMode};
 #[cfg(feature = "token")]
@@ -76,6 +77,7 @@ pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
 pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
+pub use ui_catalog::{UiCatalogAction, UiCatalogInput};
 
 #[cfg(test)]
 mod __tests__;

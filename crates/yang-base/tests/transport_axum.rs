@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
-use yang_base::action::{Action as BusinessAction, ActionContext, ResponseBody};
+use yang_base::action::{Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction};
 use yang_base::definition::{
     AddonName, AddonSpec, AppBuilder, BuiltApp, ModuleName, ModuleSpec, ParamInput, Params,
 };
@@ -272,6 +272,30 @@ impl BusinessAction for SlowAction {
     }
 }
 
+/// 未认证时不得出现在 UI 目录中的受保护 Action。
+#[derive(Action)]
+#[action(
+    name = "protected",
+    display_name = "受保护操作",
+    method = "GET",
+    path = "/api/test/protected"
+)]
+struct ProtectedAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for ProtectedAction {
+    type Input = EmptyInput;
+    type Output = serde_json::Value;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(serde_json::json!({"protected": true}))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 测试辅助
 // ---------------------------------------------------------------------------
@@ -287,7 +311,9 @@ fn build_app() -> Arc<BuiltApp> {
         .native_action(PreviewAction { path: preview })
         .native_action(RedirectAction)
         .native_action(MissingFileAction)
-        .native_action(SlowAction);
+        .native_action(SlowAction)
+        .native_action(ProtectedAction)
+        .native_action(UiCatalogAction);
     let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
     Arc::new(
         AppBuilder::new()
@@ -362,6 +388,50 @@ async fn health_ready_returns_200_with_empty_tools() {
     let json = body_json(response).await;
     assert_eq!(json["code"], 0);
     assert_eq!(json["data"]["status"], "ready");
+}
+
+// ---------------------------------------------------------------------------
+// 请求级 UI 目录
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ui_catalog_endpoint_projects_only_anonymous_accessible_actions() {
+    let response = oneshot(
+        default_router(),
+        json_request("GET", "/.well-known/yang/ui-catalog", ""),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["code"], 0);
+    assert_eq!(json["data"]["schema_version"], "1.0");
+
+    let operation_ids = json["data"]["actions"]
+        .as_array()
+        .expect("actions 应为数组")
+        .iter()
+        .filter_map(|action| action["operation_id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(operation_ids.contains(&"test.probe.echo"));
+    assert!(operation_ids.contains(&"test.probe.ui_catalog"));
+    assert!(!operation_ids.contains(&"test.probe.protected"));
+}
+
+#[tokio::test]
+async fn ui_catalog_endpoint_rejects_wrong_method_and_direct_protected_call() {
+    let wrong_method = oneshot(
+        default_router(),
+        json_request("POST", "/.well-known/yang/ui-catalog", "{}"),
+    )
+    .await;
+    assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let protected = oneshot(
+        default_router(),
+        json_request("GET", "/api/test/protected", ""),
+    )
+    .await;
+    assert_eq!(protected.status(), StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------

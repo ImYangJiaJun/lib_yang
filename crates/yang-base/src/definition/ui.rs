@@ -4,6 +4,7 @@
 //! 上层 projector 在构造 [`UiCatalog`] 前完成，避免把未授权 Action 暴露给前端。
 
 use super::{ActionSpec, ParamSource};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// 当前 UI 契约版本。
@@ -12,7 +13,7 @@ pub const UI_SCHEMA_VERSION: &str = "1.0";
 /// Action 成功响应的静态类别。
 ///
 /// 该值决定前端的安全展示通道；它描述 Action 契约，不从某次运行时响应猜测。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ActionResponseKind {
@@ -28,7 +29,7 @@ pub enum ActionResponseKind {
 }
 
 /// Action 参数在 HTTP 请求中的来源。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UiParamSource {
@@ -54,7 +55,7 @@ impl From<ParamSource> for UiParamSource {
 }
 
 /// 默认 Action 演示页需要的单个参数契约。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ActionDemoParamSchema {
     /// 参数名。
     pub name: String,
@@ -69,7 +70,7 @@ pub struct ActionDemoParamSchema {
 }
 
 /// 单个 Action 的默认演示页契约。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ActionDemoSchema {
     /// 全局唯一 operation id。
     pub operation_id: String,
@@ -129,7 +130,7 @@ impl From<&ActionSpec> for ActionDemoSchema {
 }
 
 /// 一次请求返回给前端的 UI 目录契约。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct UiCatalog {
     /// UI schema 版本；前端必须按版本选择解析器。
     pub schema_version: &'static str,

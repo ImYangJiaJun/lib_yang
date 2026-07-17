@@ -233,6 +233,16 @@ impl ActionContext {
         self.user.as_ref()
     }
 
+    /// 按当前请求认证身份返回可访问的版本化 UI 目录。
+    ///
+    /// 目录过滤与真实 Action dispatch 复用同一份构建期授权策略。
+    pub fn ui_catalog(&self) -> Result<crate::definition::UiCatalog, BaseError> {
+        let registry = self.registry.as_ref().ok_or_else(|| {
+            BaseError::ConfigError("ActionContext 未绑定应用 Registry".to_string())
+        })?;
+        Ok(registry.ui_catalog(self))
+    }
+
     /// 设置本次派发的 request_id（链式调用）
     ///
     /// 通常由 `RequestIdMiddleware` 在洋葱链最外层调用以透传上游标识；
@@ -451,5 +461,16 @@ mod tests {
         let context = ActionContext::new(Request::new(serde_json::json!({})), tools);
 
         assert_eq!(context.slow_query_threshold(), Some(threshold));
+    }
+
+    #[test]
+    fn ui_catalog_rejects_context_without_bound_registry() {
+        let context = empty_context();
+
+        assert!(matches!(
+            context.ui_catalog(),
+            Err(BaseError::ConfigError(message))
+                if message == "ActionContext 未绑定应用 Registry"
+        ));
     }
 }
