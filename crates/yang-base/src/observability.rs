@@ -1,23 +1,20 @@
 //! 引擎可观测性配置（C4 收口）
 //!
-//! 把 C4 一揽子的运行期旋钮（慢查询阈值等）收敛到单一可测试入口，与
-//! [`DatabaseBundle::init`](crate::database) 的「统一初始化入口」理念一致。
+//! 把运行期可观测性旋钮（慢查询阈值等）收敛为单一纯数据配置。
+//! 遵循「资源显式所有权」理念：启动期经
+//! [`ToolsBuilder::config`](crate::tools::ToolsBuilder::config) 注册进
+//! [`Tools`](crate::tools::Tools) 的只读配置槽，运行期由
+//! [`ActionContext::table_query`](crate::action::ActionContext::table_query) 经
+//! `tools.config::<ObservabilityConfig>()` 读取。
 //!
-//! 用 `OnceLock` 单例承载；重复 `init` 返回 `Err` 而非 panic（与全局 DB/Redis
-//! 单例语义一致）。未初始化时 [`ObservabilityConfig::get`] 返回默认值（全部关闭），
-//! 使可观测性对未配置的调用方完全无感。
+//! 未注册时慢查询日志整体关闭（阈值解析为 `None`），可观测性对未配置的调用方完全无感。
 
-use crate::error::BaseError;
-use std::sync::OnceLock;
 use std::time::Duration;
-
-/// 全局可观测性配置单例。
-static OBSERVABILITY_CONFIG: OnceLock<ObservabilityConfig> = OnceLock::new();
 
 /// 可观测性运行期配置。
 ///
 /// 当前仅含慢查询阈值，预留后续扩展（如采样率、SQL 文本记录开关等）。
-/// 派生 `Default`（全部关闭），未初始化时即此默认值。
+/// 派生 `Default`（全部关闭），未向 `Tools` 注册时即等价于此默认值。
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ObservabilityConfig {
@@ -38,40 +35,12 @@ impl ObservabilityConfig {
         self.slow_query_threshold = Some(threshold);
         self
     }
-
-    /// 初始化全局可观测性配置单例。
-    ///
-    /// # 返回
-    ///
-    /// - `Ok(())`：初始化成功
-    /// - `Err(BaseError::ConfigError)`：已初始化过，重复调用（不覆盖、不 panic）
-    pub fn init(config: ObservabilityConfig) -> Result<(), BaseError> {
-        OBSERVABILITY_CONFIG
-            .set(config)
-            .map_err(|_| BaseError::ConfigError("ObservabilityConfig 已初始化".to_string()))
-    }
-
-    /// 获取全局配置引用；未初始化时返回静态默认值（全部关闭）。
-    pub fn get() -> &'static ObservabilityConfig {
-        static DEFAULT: ObservabilityConfig = ObservabilityConfig {
-            slow_query_threshold: None,
-        };
-        OBSERVABILITY_CONFIG.get().unwrap_or(&DEFAULT)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn get_returns_default_when_uninitialized() {
-        // 注意：单例进程内只能 init 一次，本测试只验证默认值语义
-        let cfg = ObservabilityConfig::get();
-        // 未 init 时为默认（None）；若其它测试已 init 则可能非 None，
-        // 故此处仅断言访问不 panic 且类型正确
-        let _ = cfg.slow_query_threshold;
-    }
+    use crate::tools::ToolsBuilder;
 
     #[test]
     fn builder_sets_threshold() {
@@ -80,11 +49,22 @@ mod tests {
     }
 
     #[test]
-    fn double_init_returns_err() {
-        // 用独立配置值验证「重复 init 返 Err 不 panic」语义；
-        // 由于单例全局共享，这里通过先 set 再 set 的方式直接验证 OnceLock 行为
-        let local: OnceLock<ObservabilityConfig> = OnceLock::new();
-        assert!(local.set(ObservabilityConfig::default()).is_ok());
-        assert!(local.set(ObservabilityConfig::default()).is_err());
+    fn default_disables_slow_query_log() {
+        let cfg = ObservabilityConfig::new();
+        assert_eq!(cfg.slow_query_threshold, None);
+    }
+
+    #[test]
+    fn config_slot_roundtrip_via_tools() {
+        let threshold = Duration::from_millis(200);
+        let tools = ToolsBuilder::new()
+            .config(ObservabilityConfig::new().with_slow_query_threshold(threshold))
+            .build()
+            .expect("注册可观测性配置后应构建成功");
+
+        let retrieved = tools
+            .config::<ObservabilityConfig>()
+            .expect("已注册的配置应可读回");
+        assert_eq!(retrieved.slow_query_threshold, Some(threshold));
     }
 }
