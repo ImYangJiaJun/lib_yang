@@ -9,6 +9,8 @@ pub const DEFAULT_MULTIPART_MAX_FIELDS: u16 = 64;
 pub const DEFAULT_MULTIPART_MAX_FILES: u16 = 8;
 /// 默认单文件上限：10 MiB。
 pub const DEFAULT_MULTIPART_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+/// 默认单个文本（非文件）表单字段上限：64 KiB。
+pub const DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES: u64 = 64 * 1024;
 /// 默认整个 multipart 请求上限：32 MiB。
 pub const DEFAULT_MULTIPART_MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -53,6 +55,8 @@ pub struct MultipartSpec {
     pub max_files: u16,
     /// 单文件字节上限。
     pub max_file_bytes: u64,
+    /// 单个文本（非文件）表单字段的字节上限；不得超过 `max_total_bytes`。
+    pub max_text_field_bytes: u64,
     /// 整个 multipart body 的字节上限。
     pub max_total_bytes: u64,
     /// 允许的精确 MIME 类型；不允许空集合或通配符。
@@ -72,6 +76,7 @@ impl MultipartSpec {
             max_fields: DEFAULT_MULTIPART_MAX_FIELDS,
             max_files: DEFAULT_MULTIPART_MAX_FILES,
             max_file_bytes: DEFAULT_MULTIPART_MAX_FILE_BYTES,
+            max_text_field_bytes: DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES,
             max_total_bytes: DEFAULT_MULTIPART_MAX_TOTAL_BYTES,
             allowed_content_types: allowed_content_types.into_iter().map(Into::into).collect(),
             lifecycle: UploadLifecycle::RequestScoped,
@@ -96,6 +101,13 @@ impl MultipartSpec {
     #[must_use]
     pub fn max_file_bytes(mut self, max_file_bytes: u64) -> Self {
         self.max_file_bytes = max_file_bytes;
+        self
+    }
+
+    /// 设置单个文本（非文件）表单字段的字节上限。
+    #[must_use]
+    pub fn max_text_field_bytes(mut self, max_text_field_bytes: u64) -> Self {
+        self.max_text_field_bytes = max_text_field_bytes;
         self
     }
 
@@ -128,6 +140,10 @@ mod tests {
         assert_eq!(spec.max_fields, DEFAULT_MULTIPART_MAX_FIELDS);
         assert_eq!(spec.max_files, DEFAULT_MULTIPART_MAX_FILES);
         assert_eq!(spec.max_file_bytes, DEFAULT_MULTIPART_MAX_FILE_BYTES);
+        assert_eq!(
+            spec.max_text_field_bytes,
+            DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES
+        );
         assert_eq!(spec.max_total_bytes, DEFAULT_MULTIPART_MAX_TOTAL_BYTES);
         assert_eq!(spec.lifecycle, UploadLifecycle::RequestScoped);
     }

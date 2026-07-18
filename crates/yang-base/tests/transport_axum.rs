@@ -351,6 +351,7 @@ struct UploadOutput {
     content_type: String,
     size: u64,
     content: String,
+    copied: u64,
 }
 
 #[derive(Action)]
@@ -365,7 +366,7 @@ struct UploadOutput {
     max_fields = 1,
     max_files = 1,
     max_file_bytes = 8,
-    max_total_bytes = 1024
+    max_total_bytes = 131072
 )]
 struct UploadAction {
     observed_path: Arc<Mutex<Option<PathBuf>>>,
@@ -383,6 +384,8 @@ impl BusinessAction for UploadAction {
     ) -> Result<Self::Output, BaseError> {
         let path = input.file.path().to_path_buf();
         let content = tokio::fs::read_to_string(&path).await?;
+        // C-1 端到端：transport 构造的受信实例必须能通过 copy_to 的临时根校验。
+        let copied = input.file.copy_to(path.with_extension("copy")).await?;
         *self.observed_path.lock().expect("上传路径锁不应中毒") = Some(path);
         if input.title == "fail" {
             return Err(BaseError::ParamInvalid(
@@ -397,6 +400,195 @@ impl BusinessAction for UploadAction {
             content_type: input.file.content_type().to_string(),
             size: input.file.size(),
             content,
+            copied,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-1 复审 fixture：文件数组 / 包装结构体数组的 temp_root 走私防护
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MultiUploadInput {
+    files: Vec<UploadedFile>,
+}
+
+impl ParamInput for MultiUploadInput {
+    fn params() -> Params {
+        Params::new()
+    }
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct MultiUploadOutput {
+    count: usize,
+    copied: Vec<u64>,
+}
+
+#[derive(Action)]
+#[action(
+    name = "multi_upload",
+    display_name = "批量上传",
+    method = "POST",
+    path = "/api/upload/multi",
+    public,
+    request_media = "multipart",
+    content_types("text/plain"),
+    max_fields = 1,
+    max_files = 2,
+    max_file_bytes = 8,
+    max_total_bytes = 131072
+)]
+struct MultiUploadAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for MultiUploadAction {
+    type Input = MultiUploadInput;
+    type Output = MultiUploadOutput;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        let mut copied = Vec::new();
+        for file in &input.files {
+            copied.push(file.copy_to(file.path().with_extension("copy")).await?);
+        }
+        Ok(MultiUploadOutput {
+            count: input.files.len(),
+            copied,
+        })
+    }
+}
+
+/// 包装结构体：UploadedFile 经 `$ref` 藏在嵌套定义中，检验扫描器的 $ref 递归解析。
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct UploadBundle {
+    note: String,
+    file: UploadedFile,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NestedUploadInput {
+    bundles: Vec<UploadBundle>,
+}
+
+impl ParamInput for NestedUploadInput {
+    fn params() -> Params {
+        Params::new()
+    }
+}
+
+#[derive(Action)]
+#[action(
+    name = "nested_upload",
+    display_name = "嵌套上传",
+    method = "POST",
+    path = "/api/upload/nested",
+    public,
+    request_media = "multipart",
+    content_types("text/plain"),
+    max_fields = 1,
+    max_files = 2,
+    max_file_bytes = 8,
+    max_total_bytes = 131072
+)]
+struct NestedUploadAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for NestedUploadAction {
+    type Input = NestedUploadInput;
+    type Output = serde_json::Value;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        let mut copied = Vec::new();
+        for bundle in &input.bundles {
+            copied.push(
+                bundle
+                    .file
+                    .copy_to(bundle.file.path().with_extension("copy"))
+                    .await?,
+            );
+        }
+        let notes: Vec<&str> = input
+            .bundles
+            .iter()
+            .map(|bundle| bundle.note.as_str())
+            .collect();
+        Ok(serde_json::json!({
+            "count": input.bundles.len(),
+            "notes": notes,
+            "copied": copied,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I-9 fixture：anyOf 标量解码 + 文本 part 单字段上限
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ScalarUploadInput {
+    title: String,
+    count: Option<i64>,
+    note: Option<String>,
+    file: UploadedFile,
+}
+
+impl ParamInput for ScalarUploadInput {
+    fn params() -> Params {
+        Params::new()
+    }
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+struct ScalarUploadOutput {
+    title: String,
+    count: Option<i64>,
+    note: Option<String>,
+    size: u64,
+}
+
+#[derive(Action)]
+#[action(
+    name = "scalar_upload",
+    display_name = "标量上传",
+    method = "POST",
+    path = "/api/upload/scalar",
+    public,
+    request_media = "multipart",
+    content_types("text/plain"),
+    max_fields = 3,
+    max_files = 1,
+    max_file_bytes = 64,
+    max_total_bytes = 262144
+)]
+struct ScalarUploadAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for ScalarUploadAction {
+    type Input = ScalarUploadInput;
+    type Output = ScalarUploadOutput;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(ScalarUploadOutput {
+            title: input.title,
+            count: input.count,
+            note: input.note,
+            size: input.file.size(),
         })
     }
 }
@@ -491,6 +683,31 @@ fn build_upload_app() -> (Arc<BuiltApp>, Arc<Mutex<Option<PathBuf>>>) {
     (app, observed_path)
 }
 
+fn build_multi_upload_app() -> Arc<BuiltApp> {
+    let module = ModuleSpec::new(ModuleName::new("upload.multi").expect("模块名应有效"))
+        .native_action(MultiUploadAction)
+        .native_action(NestedUploadAction);
+    let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+    Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("upload").expect("Addon 名应有效")).module(module))
+            .build(tools)
+            .expect("批量上传测试应用应构建成功"),
+    )
+}
+
+fn build_scalar_upload_app() -> Arc<BuiltApp> {
+    let module = ModuleSpec::new(ModuleName::new("upload.scalar").expect("模块名应有效"))
+        .native_action(ScalarUploadAction);
+    let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+    Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("upload").expect("Addon 名应有效")).module(module))
+            .build(tools)
+            .expect("标量上传测试应用应构建成功"),
+    )
+}
+
 fn multipart_payload(
     boundary: &str,
     text_parts: &[(&str, &str)],
@@ -520,9 +737,13 @@ fn multipart_payload(
 }
 
 fn multipart_request(boundary: &str, body: Vec<u8>) -> HttpRequest<Body> {
+    multipart_request_to("/api/upload/file", boundary, body)
+}
+
+fn multipart_request_to(uri: &str, boundary: &str, body: Vec<u8>) -> HttpRequest<Body> {
     HttpRequest::builder()
         .method("POST")
-        .uri("/api/upload/file")
+        .uri(uri)
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -913,6 +1134,32 @@ async fn cors_default_headers_allow_step_up_proof() {
 }
 
 #[tokio::test]
+async fn cors_default_headers_allow_tenant_id() {
+    let router = cors_router(CorsConfig {
+        origins: vec!["https://app.example.com".to_string()],
+        ..CorsConfig::default()
+    })
+    .expect("Router 应构建成功");
+    let response = oneshot(
+        router,
+        preflight_with_headers("https://app.example.com", "x-tenant-id"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let allow_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        allow_headers
+            .split(',')
+            .any(|value| value.trim().eq_ignore_ascii_case("x-tenant-id")),
+        "默认 CORS 应允许租户头 x-tenant-id: {allow_headers}"
+    );
+}
+
+#[tokio::test]
 async fn cors_preflight_denies_unlisted_origin() {
     let router = cors_router(CorsConfig {
         origins: vec!["https://app.example.com".to_string()],
@@ -1038,6 +1285,10 @@ async fn multipart_streams_to_generated_temp_file_and_cleans_after_success() {
     assert_eq!(json["data"]["content_type"], "text/plain");
     assert_eq!(json["data"]["size"], 5);
     assert_eq!(json["data"]["content"], "hello");
+    assert_eq!(
+        json["data"]["copied"], 5,
+        "transport 构造的受信实例 copy_to 必须成功"
+    );
 
     let path = observed_path
         .lock()
@@ -1075,7 +1326,8 @@ async fn multipart_cleans_temp_file_when_handler_returns_error() {
 
 #[tokio::test]
 async fn multipart_rejects_wrong_media_oversized_and_excess_parts_before_dispatch() {
-    let oversized_text = "x".repeat(1_200);
+    // 超过 max_total_bytes（128 KiB）的原始 body：Content-Length 预检即 413。
+    let oversized_text = "x".repeat(200_000);
     let cases = [
         (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -1188,5 +1440,173 @@ fn multipart_router_rejects_global_body_limit_below_action_contract() {
     assert!(
         matches!(result, Err(BaseError::ConfigError(message)) if message.contains("max_total_bytes")),
         "传输层不得静默收紧已投影给客户端的 Action 上限"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C-1 复审：multipart 文本 part 不得走私 temp_root
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multipart_text_part_cannot_smuggle_temp_root_into_file_array() {
+    // Vec<UploadedFile> 的 schema 是 type:array，文本 part 会原样透传 JSON；
+    // 伪造数组携带 temp_root 必须在传输层被拒绝（400），含文件字段的子树只能以文件 part 到达。
+    let app = build_multi_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("批量上传 Router 应构建成功");
+    let boundary = "yang-boundary-smuggle-array";
+    let victim = temp_file("multi-smuggle-victim.txt", b"victim");
+    let forged = serde_json::json!([{
+        "field_name": "files",
+        "original_filename": "multi-smuggle-victim.txt",
+        "content_type": "text/plain",
+        "size": 6,
+        "path": victim,
+        "temp_root": victim.parent().expect("受害文件应有父目录"),
+    }])
+    .to_string();
+    let body = multipart_payload(boundary, &[("files", &forged)], &[]);
+
+    let response = oneshot(
+        upload_router,
+        multipart_request_to("/api/upload/multi", boundary, body),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "含文件字段的子树必须拒绝文本 part"
+    );
+}
+
+#[tokio::test]
+async fn multipart_text_part_cannot_smuggle_temp_root_into_nested_wrapper() {
+    // 包装结构体数组（$ref 嵌套 UploadedFile）同样拒绝文本 part，检验 $ref 递归解析。
+    let app = build_multi_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("批量上传 Router 应构建成功");
+    let boundary = "yang-boundary-smuggle-nested";
+    let victim = temp_file("nested-smuggle-victim.txt", b"victim");
+    let forged = serde_json::json!([{
+        "note": "forged",
+        "file": {
+            "field_name": "bundles",
+            "original_filename": "nested-smuggle-victim.txt",
+            "content_type": "text/plain",
+            "size": 6,
+            "path": victim,
+            "temp_root": victim.parent().expect("受害文件应有父目录"),
+        }
+    }])
+    .to_string();
+    let body = multipart_payload(boundary, &[("bundles", &forged)], &[]);
+
+    let response = oneshot(
+        upload_router,
+        multipart_request_to("/api/upload/nested", boundary, body),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "嵌套文件字段的子树必须拒绝文本 part"
+    );
+}
+
+#[tokio::test]
+async fn multipart_file_array_via_file_parts_succeeds() {
+    // 正常路径：同名文件 part 累积为数组，受信实例 copy_to 全部成功。
+    let app = build_multi_upload_app();
+    let upload_router =
+        router(app, AxumTransportConfig::default()).expect("批量上传 Router 应构建成功");
+    let boundary = "yang-boundary-multi-success";
+    let body = multipart_payload(
+        boundary,
+        &[],
+        &[
+            ("files", "one.txt", "text/plain", b"one"),
+            ("files", "two.txt", "text/plain", b"two2"),
+        ],
+    );
+
+    let response = oneshot(
+        upload_router,
+        multipart_request_to("/api/upload/multi", boundary, body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["count"], 2);
+    assert_eq!(json["data"]["copied"], serde_json::json!([3, 4]));
+}
+
+// ---------------------------------------------------------------------------
+// I-9：文本 part 单字段上限 + anyOf 标量解码
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multipart_decodes_option_scalars_via_anyof_schema() {
+    // schemars 为 Option<T> 生成 anyOf（含一个 null 分支）；传输层必须取非 null
+    // 分支的类型解码，否则 Option<i64> 退化为字符串并在输入反序列化期失败。
+    let app = build_scalar_upload_app();
+    let scalar_router =
+        router(app, AxumTransportConfig::default()).expect("标量上传 Router 应构建成功");
+    let boundary = "yang-boundary-anyof-scalar";
+    let body = multipart_payload(
+        boundary,
+        &[("title", "doc"), ("count", "42"), ("note", "hello")],
+        &[("file", "a.txt", "text/plain", b"hi")],
+    );
+
+    let response = oneshot(
+        scalar_router,
+        multipart_request_to("/api/upload/scalar", boundary, body),
+    )
+    .await;
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "响应体: {json}");
+    assert_eq!(json["data"]["title"], "doc");
+    assert_eq!(json["data"]["count"], 42, "Option<i64> 必须解码为整数");
+    assert_eq!(json["data"]["note"], "hello");
+    assert_eq!(json["data"]["size"], 2);
+}
+
+#[tokio::test]
+async fn multipart_text_part_over_field_limit_is_rejected_413() {
+    // 单个文本 part 超过每字段上限（默认 64 KiB）即 413 且不进入 Handler；
+    // 上限以下的同名字段正常放行（区分于 max_total_bytes 总量限制）。
+    let oversized_title = "x".repeat(70_000);
+    let boundary = "yang-boundary-text-field-over";
+    let body = multipart_payload(
+        boundary,
+        &[("title", &oversized_title)],
+        &[("file", "a.txt", "text/plain", b"hi")],
+    );
+    let oversized = oneshot(
+        router(build_scalar_upload_app(), AxumTransportConfig::default())
+            .expect("标量上传 Router 应构建成功"),
+        multipart_request_to("/api/upload/scalar", boundary, body),
+    )
+    .await;
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let within_title = "x".repeat(60_000);
+    let boundary = "yang-boundary-text-field-within";
+    let body = multipart_payload(
+        boundary,
+        &[("title", &within_title)],
+        &[("file", "a.txt", "text/plain", b"hi")],
+    );
+    let within = oneshot(
+        router(build_scalar_upload_app(), AxumTransportConfig::default())
+            .expect("标量上传 Router 应构建成功"),
+        multipart_request_to("/api/upload/scalar", boundary, body),
+    )
+    .await;
+    assert_eq!(
+        within.status(),
+        StatusCode::OK,
+        "字段上限以内、总量上限以内的文本 part 必须放行"
     );
 }

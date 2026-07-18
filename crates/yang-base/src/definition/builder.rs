@@ -1232,8 +1232,18 @@ fn validate_action_media(
         kind: "Action request media",
         reference: format!("{}.{} -> {reason}", module.name, action.name),
     };
+    // C-1 双向强制：二进制文件字段（UploadedFile，schema 形态为 format: binary）
+    // 只能出现在 multipart Action 中，multipart Action 也必须至少声明一个文件字段。
+    let has_binary_input = schema_contains_binary_field(&action.input_schema);
     match (action.request_media_type, action.multipart.as_ref()) {
-        (super::ActionMediaType::Json, None) => return Ok(()),
+        (super::ActionMediaType::Json, None) => {
+            if has_binary_input {
+                return Err(invalid(
+                    "JSON Action 的输入不得包含二进制文件字段（应声明 multipart 请求）",
+                ));
+            }
+            return Ok(());
+        }
         (super::ActionMediaType::Json, Some(_)) => {
             return Err(invalid("JSON Action 不得携带 multipart 配置"));
         }
@@ -1262,6 +1272,12 @@ fn validate_action_media(
     if multipart.max_file_bytes > multipart.max_total_bytes {
         return Err(invalid("max_file_bytes 不能大于 max_total_bytes"));
     }
+    if multipart.max_text_field_bytes == 0 {
+        return Err(invalid("文本字段字节上限必须大于 0"));
+    }
+    if multipart.max_text_field_bytes > multipart.max_total_bytes {
+        return Err(invalid("max_text_field_bytes 不能大于 max_total_bytes"));
+    }
     if multipart.allowed_content_types.is_empty() {
         return Err(invalid("allowed_content_types 不能为空"));
     }
@@ -1274,7 +1290,59 @@ fn validate_action_media(
             return Err(invalid("allowed_content_types 不能重复"));
         }
     }
+    if !has_binary_input {
+        return Err(invalid("multipart Action 的输入必须至少声明一个文件字段"));
+    }
     Ok(())
+}
+
+/// 递归检测 JSON Schema 是否声明二进制文件字段（`format: "binary"`，
+/// 即 `UploadedFile` 经 schemars 生成的形态；`$ref`/`anyOf`/`items` 递归覆盖）。
+pub(crate) fn schema_contains_binary_field(schema: &serde_json::Value) -> bool {
+    schema_subtree_contains_binary(schema, schema)
+}
+
+/// 递归检测 schema 子树是否声明二进制文件字段；本地 `$ref`（`#/definitions/...`）
+/// 按 document 解析后继续深入，带循环保护（自引用类型不会死循环）。
+pub(crate) fn schema_subtree_contains_binary(
+    document: &serde_json::Value,
+    subtree: &serde_json::Value,
+) -> bool {
+    fn inner(
+        document: &serde_json::Value,
+        subtree: &serde_json::Value,
+        visited: &mut BTreeSet<String>,
+    ) -> bool {
+        match subtree {
+            serde_json::Value::Object(map) => {
+                if map.get("format").and_then(serde_json::Value::as_str) == Some("binary") {
+                    return true;
+                }
+                if let Some(name) = map
+                    .get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|reference| reference.strip_prefix("#/definitions/"))
+                {
+                    if visited.insert(name.to_string()) {
+                        if let Some(target) = document
+                            .get("definitions")
+                            .and_then(|definitions| definitions.get(name))
+                        {
+                            if inner(document, target, visited) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                map.values().any(|value| inner(document, value, visited))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().any(|item| inner(document, item, visited))
+            }
+            _ => false,
+        }
+    }
+    inner(document, subtree, &mut BTreeSet::new())
 }
 
 fn is_exact_mime_type(value: &str) -> bool {
