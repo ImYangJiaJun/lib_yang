@@ -2,6 +2,16 @@
 //!
 //! 本模块只定义声明式数据，不包含组件路径、脚本或权限判定。请求级权限过滤由
 //! 上层 projector 在构造 [`UiCatalog`] 前完成，避免把未授权 Action 暴露给前端。
+//!
+//! # 租户维度决策
+//!
+//! 目录投影当前不包含租户维度，这是有意决策：同一身份在不同租户下看到相同的
+//! 契约结构，租户隔离由数据层（`tenant_key` 字段、租户中间件与 TableQuery 数据
+//! 范围）独立强制。如此可避免目录 revision 随租户组合爆炸，也避免租户存在性经
+//! 契约差异泄漏。后续若确需按租户裁剪视图，接入点为请求级投影入口
+//! [`BuiltApp::ui_catalog`](crate::definition::BuiltApp::ui_catalog)（其实现位于
+//! `definition/builder.rs` 的 registry 投影），在那里按请求上下文裁剪即可，
+//! 本模块的契约类型无需变更。
 
 use super::{ActionSpec, FieldRef, ParamSource};
 use schemars::JsonSchema;
@@ -9,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.9";
+pub const UI_SCHEMA_VERSION: &str = "2.0";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -403,6 +413,50 @@ pub struct TableColumnSchema {
     pub relation: Option<RelationOptionsSchema>,
 }
 
+/// 通用表单字段的输入校验提示。
+///
+/// 与存储类型解耦，仅作为前端预校验提示；服务端 Handler 仍必须独立执行权威校验。
+/// 未声明的约束一律省略，不占用线上字节。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct FormFieldValidationSchema {
+    /// 字符最小长度。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// 字符最大长度。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// 数值下限，十进制文本，避免浮点漂移。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<String>,
+    /// 数值上限，十进制文本，避免浮点漂移。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<String>,
+    /// 可选正则表达式。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+}
+
+impl FormFieldValidationSchema {
+    /// 从字段定义投影校验提示；字段未声明任何约束时返回 `None`。
+    pub(crate) fn from_spec(spec: &super::ValidationSpec) -> Option<Self> {
+        if spec.min_length.is_none()
+            && spec.max_length.is_none()
+            && spec.minimum.is_none()
+            && spec.maximum.is_none()
+            && spec.pattern.is_none()
+        {
+            return None;
+        }
+        Some(Self {
+            min_length: spec.min_length,
+            max_length: spec.max_length,
+            minimum: spec.minimum.clone(),
+            maximum: spec.maximum.clone(),
+            pattern: spec.pattern.clone(),
+        })
+    }
+}
+
 /// 通用表单的单字段契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct FormFieldSchema {
@@ -423,6 +477,9 @@ pub struct FormFieldSchema {
     /// 当前请求有权调用的关系 options 契约。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relation: Option<RelationOptionsSchema>,
+    /// 服务端声明的输入校验提示；随字段权限一并过滤，未声明约束时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<FormFieldValidationSchema>,
 }
 
 /// 请求级通用表单契约。
@@ -1498,5 +1555,242 @@ mod tests {
                 .as_deref(),
             Some("dms.task.flow")
         );
+    }
+
+    #[test]
+    fn action_confirmation_rejects_blank_or_overlong_content() {
+        let build = |confirmation: ActionConfirmation| {
+            let module_name = ModuleName::new("dms.task").expect("测试 Module 名称应有效");
+            let action_ref = ActionRef::new(
+                module_name.clone(),
+                ActionName::new("flow").expect("测试 Action 名称应有效"),
+            );
+            let module = ModuleSpec::new(module_name)
+                .table(
+                    TableSpec::new(TableName::new("dms_task").expect("测试 Table 名称应有效"))
+                        .field(FieldSpec::new(
+                            FieldName::new("id").expect("测试字段名应有效"),
+                            FieldKind::Key,
+                        )),
+                )
+                .action(action("flow", "dms.task.flow"), NoopAction)
+                .view(
+                    ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                        .present_action(
+                            action_ref,
+                            ActionPresentationSpec::new(
+                                ActionPlacement::Toolbar,
+                                ActionInteraction::Invoke,
+                            )
+                            .confirmation(confirmation),
+                        ),
+                );
+            AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("dms").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+        };
+        let assert_invalid = |result: Result<crate::definition::BuiltApp, BuildError>,
+                              reason: &str| {
+            assert!(
+                matches!(
+                    result,
+                    Err(BuildError::InvalidReference {
+                        kind: "Action Presentation",
+                        ..
+                    })
+                ),
+                "{reason}"
+            );
+        };
+
+        assert_invalid(
+            build(ActionConfirmation::new("   ", "将执行危险操作")),
+            "空白确认标题必须在启动期失败",
+        );
+        assert_invalid(
+            build(ActionConfirmation::new("确认删除", "")),
+            "空白确认正文必须在启动期失败",
+        );
+        assert_invalid(
+            build(ActionConfirmation::new("题".repeat(501), "将执行危险操作")),
+            "超长确认标题必须在启动期失败",
+        );
+        assert_invalid(
+            build(ActionConfirmation::new("确认删除", "文".repeat(501))),
+            "超长确认正文必须在启动期失败",
+        );
+        build(ActionConfirmation::new(
+            "确认删除",
+            "将删除当前记录，不可恢复",
+        ))
+        .expect("合法确认文案应通过构建期校验");
+    }
+
+    #[test]
+    fn form_field_validation_serializes_only_declared_constraints() {
+        assert_eq!(
+            UI_SCHEMA_VERSION, "2.0",
+            "校验提示是 UI 契约变更，必须递增 schema 主版本"
+        );
+
+        let validation = FormFieldValidationSchema {
+            min_length: Some(2),
+            max_length: Some(64),
+            minimum: None,
+            maximum: None,
+            pattern: Some("^[a-z]+$".to_string()),
+        };
+        let wire = serde_json::to_value(&validation).expect("校验提示应可序列化");
+        assert_eq!(
+            wire,
+            json!({"min_length": 2, "max_length": 64, "pattern": "^[a-z]+$"}),
+            "未声明的约束不得出现在线上契约"
+        );
+
+        let mut field = FormFieldSchema {
+            field: "name".to_string(),
+            title: "名称".to_string(),
+            description: String::new(),
+            widget: WidgetHint::Text,
+            required: true,
+            read_only: false,
+            write_only: false,
+            relation: None,
+            validation: Some(validation),
+        };
+        let wire = serde_json::to_value(&field).expect("表单字段应可序列化");
+        assert_eq!(wire["validation"]["min_length"], 2);
+        assert!(wire["validation"].get("minimum").is_none());
+
+        field.validation = None;
+        let wire = serde_json::to_value(&field).expect("无约束表单字段应可序列化");
+        assert!(
+            wire.get("validation").is_none(),
+            "未声明约束的字段不得携带 validation 键"
+        );
+    }
+
+    #[tokio::test]
+    async fn form_projection_includes_validation_hints_and_filters_by_field_permission() {
+        let module_name = ModuleName::new("org.profile").expect("测试 Module 名称应有效");
+        let table_name = TableName::new("org_profile").expect("测试 Table 名称应有效");
+        let field_ref = |name: &str| {
+            FieldRef::new(
+                table_name.clone(),
+                FieldName::new(name).expect("测试字段名应有效"),
+            )
+        };
+
+        let mut nickname = FieldSpec::new(
+            FieldName::new("nickname").expect("测试字段名应有效"),
+            FieldKind::Str,
+        );
+        nickname.validation.min_length = Some(2);
+        nickname.validation.max_length = Some(64);
+        nickname.validation.pattern = Some("^[a-z]+$".to_string());
+        let mut score = FieldSpec::new(
+            FieldName::new("score").expect("测试字段名应有效"),
+            FieldKind::Decimal,
+        );
+        score.validation.minimum = Some("0".to_string());
+        score.validation.maximum = Some("99.99".to_string());
+        score.access.readable = AccessRule::Roles(vec!["admin".to_string()]);
+        score.access.writable = AccessRule::Roles(vec!["admin".to_string()]);
+
+        let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .field(field_ref("id"))
+            .field(field_ref("nickname"))
+            .field(field_ref("score"))
+            .field(field_ref("bio"))
+            .action(ActionRef::new(
+                module_name.clone(),
+                ActionName::new("list").expect("测试 Action 名称应有效"),
+            ));
+        let module = ModuleSpec::new(module_name)
+            .table(
+                TableSpec::new(table_name)
+                    .field(FieldSpec::new(
+                        FieldName::new("id").expect("测试字段名应有效"),
+                        FieldKind::Key,
+                    ))
+                    .field(nickname)
+                    .field(score)
+                    .field(FieldSpec::new(
+                        FieldName::new("bio").expect("测试字段名应有效"),
+                        FieldKind::Text,
+                    )),
+            )
+            .default_permissions(["module:view"], PermissionMode::All)
+            .action(action("list", "org.profile.list"), NoopAction)
+            .view(view);
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect("校验提示测试应用应构建成功");
+
+        let member = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(7, "member").with_permissions(["module:view"])),
+            )
+            .expect("成员 UI Catalog revision 应可计算");
+        let member_form = &member.table_views[0].form.fields;
+        let member_field = |name: &str| {
+            member_form
+                .iter()
+                .find(|field| field.field == name)
+                .unwrap_or_else(|| panic!("成员表单应包含字段 {name}"))
+        };
+        let nickname = member_field("nickname")
+            .validation
+            .as_ref()
+            .expect("成员表单应投影 nickname 的校验提示");
+        assert_eq!(nickname.min_length, Some(2));
+        assert_eq!(nickname.max_length, Some(64));
+        assert_eq!(nickname.pattern.as_deref(), Some("^[a-z]+$"));
+        assert_eq!(nickname.minimum, None);
+        assert_eq!(nickname.maximum, None);
+        assert!(
+            member_form.iter().all(|field| field.field != "score"),
+            "无字段权限时整个字段（含校验提示）都不得投影"
+        );
+        let member_wire =
+            serde_json::to_value(&member.table_views[0].form).expect("成员表单应可序列化");
+        let bio_wire = member_wire["fields"]
+            .as_array()
+            .expect("表单字段应序列化为数组")
+            .iter()
+            .find(|field| field["field"] == "bio")
+            .expect("成员表单应包含 bio");
+        assert!(
+            bio_wire.get("validation").is_none(),
+            "未声明约束的字段不得携带 validation 键: {bio_wire}"
+        );
+
+        let admin = app
+            .ui_catalog(
+                &app.context(Request::new(json!({}))).with_user(
+                    User::new(8, "admin")
+                        .with_roles(["admin"])
+                        .with_permissions(["module:view"]),
+                ),
+            )
+            .expect("管理员 UI Catalog revision 应可计算");
+        let score = admin.table_views[0]
+            .form
+            .fields
+            .iter()
+            .find(|field| field.field == "score")
+            .and_then(|field| field.validation.as_ref())
+            .expect("管理员表单应投影 score 的校验提示");
+        assert_eq!(score.minimum.as_deref(), Some("0"));
+        assert_eq!(score.maximum.as_deref(), Some("99.99"));
+        assert_eq!(score.min_length, None);
     }
 }

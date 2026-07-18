@@ -131,6 +131,9 @@ fn operation_json(action: &ActionSpec) -> Value {
             super::ActionMediaType::Json => "application/json",
             super::ActionMediaType::Multipart => {
                 if let Some(spec) = &action.multipart {
+                    let lifecycle = match spec.lifecycle {
+                        super::UploadLifecycle::RequestScoped => "request_scoped",
+                    };
                     media_schema["x-yang-multipart"] = json!({
                         "max_fields": spec.max_fields,
                         "max_files": spec.max_files,
@@ -138,7 +141,7 @@ fn operation_json(action: &ActionSpec) -> Value {
                         "max_text_field_bytes": spec.max_text_field_bytes,
                         "max_total_bytes": spec.max_total_bytes,
                         "allowed_content_types": spec.allowed_content_types,
-                        "lifecycle": "request_scoped"
+                        "lifecycle": lifecycle
                     });
                 }
                 "multipart/form-data"
@@ -152,6 +155,63 @@ fn operation_json(action: &ActionSpec) -> Value {
         })
     });
 
+    // 成功响应与 transport 实际行为对齐：附件响应忽略 success_status，
+    // 下载/预览固定 200 二进制流，重定向固定 302 且无响应体。
+    let (response_kind, success_status, success_response) = match action.response_kind {
+        super::ActionResponseKind::Json => (
+            "json",
+            action.success_status.to_string(),
+            json!({
+                "description": "成功",
+                "content": {
+                    "application/json": {
+                        "schema": success_envelope_schema(action.output_schema.clone())
+                    }
+                }
+            }),
+        ),
+        super::ActionResponseKind::Download => (
+            "download",
+            "200".to_string(),
+            json!({
+                "description": "成功",
+                "content": {
+                    "application/octet-stream": {
+                        "schema": { "type": "string", "format": "binary" }
+                    }
+                }
+            }),
+        ),
+        super::ActionResponseKind::Preview => (
+            "preview",
+            "200".to_string(),
+            json!({
+                "description": "成功",
+                "content": {
+                    "application/octet-stream": {
+                        "schema": { "type": "string", "format": "binary" }
+                    }
+                }
+            }),
+        ),
+        super::ActionResponseKind::Redirect => (
+            "redirect",
+            "302".to_string(),
+            json!({
+                "description": "重定向",
+                "headers": {
+                    "Location": { "schema": { "type": "string" } }
+                }
+            }),
+        ),
+    };
+    let mut responses = Map::new();
+    responses.insert(success_status, success_response);
+    responses.insert("400".to_string(), error_response("请求参数错误"));
+    responses.insert("401".to_string(), error_response("未认证"));
+    responses.insert("403".to_string(), error_response("权限不足"));
+    responses.insert("500".to_string(), error_response("服务器内部错误"));
+
     let mut operation = json!({
         "operationId": action.route.operation_id,
         "summary": action.display_name,
@@ -161,21 +221,9 @@ fn operation_json(action: &ActionSpec) -> Value {
         "x-public": action.is_public,
         "x-permissions": action.permissions,
         "x-permission-mode": permission_mode,
+        "x-yang-response-kind": response_kind,
         "parameters": parameters,
-        "responses": {
-            action.success_status.to_string(): {
-                "description": "成功",
-                "content": {
-                    "application/json": {
-                        "schema": success_envelope_schema(action.output_schema.clone())
-                    }
-                }
-            },
-            "400": error_response("请求参数错误"),
-            "401": error_response("未认证"),
-            "403": error_response("权限不足"),
-            "500": error_response("服务器内部错误")
-        }
+        "responses": responses
     });
     if let Some(request_body) = request_body {
         operation["requestBody"] = request_body;
