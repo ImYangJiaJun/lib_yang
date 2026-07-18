@@ -114,6 +114,14 @@ pub struct StepUpVerification {
 /// 实现者可以读取路径参数等客户端候选，但必须结合服务端事实完成规范化与授权相关
 /// 校验，返回例如 `org_user:42` 的稳定标识。不得把客户端自报的“已验证资源”直接
 /// 原样返回。解析失败必须 fail-closed。
+///
+/// # 收窄 proof 重放窗口
+///
+/// proof 在 TTL 内对同一资源标识可重放。资源标识越粗，重放面越大：仅绑定
+/// `transfer:account:42` 意味着重认证一次即可在该账户上重复发起任意金额的转账。
+/// 资源标识应把**操作参数指纹**纳入标识，例如金额、目标账户等关键参数的 hash
+/// （`transfer:account:42:sha256(amount=100,to=account:7)`），使 proof 只覆盖一次
+/// 确定的操作语义，任何参数变化都会使 proof 失效并触发新的 challenge。
 #[async_trait]
 pub trait StepUpResourceResolver: Send + Sync + 'static {
     /// 解析当前请求实际操作的稳定资源标识。
@@ -126,6 +134,14 @@ pub trait StepUpResourceResolver: Send + Sync + 'static {
 /// Action 身份由 `Registry` 在派发边界覆盖注入，不能由客户端声明。缺少 proof 时
 /// 返回携带短期 challenge 的 [`BaseError::StepUpRequired`]；存在但无效的 proof
 /// 直接拒绝，不降级为新 challenge。
+///
+/// # 约束范围（重要）
+///
+/// step-up 仅约束 `Registry::dispatch` 路径（HTTP 传输与显式 dispatch 均经此路径）。
+/// `Registry::call` / `Plugins::api_run` 等内部调用**不经过中间件链**，敏感 Action
+/// 被内部调用时不会触发 step-up（仅保留权限校验）。这是有意的语义划分：内部调用方
+/// 是受信代码，如需重认证必须自行编排 `StepUpManager`。该语义由
+/// `internal_call_bypasses_step_up_middleware_by_design` 测试锁定，改动前请先评审。
 pub struct StepUpMiddleware<R> {
     manager: Arc<StepUpManager>,
     action: ActionRef,
@@ -274,6 +290,18 @@ impl StepUpManager {
     ///
     /// `CredentialVerifier` 返回的 subject 必须与 challenge 完全一致；先解析 challenge，
     /// 再调用业务 verifier，避免用无效 Token 触发昂贵的密码哈希。
+    ///
+    /// # 限流（实现方必须）
+    ///
+    /// 本方法是凭据猜测的在线入口，**实现方必须**为完成 challenge 的端点配置速率
+    /// 限制与失败计数，本管理器自身不做限流。接线要点：
+    ///
+    /// - 在调用方（重认证 Action 或 [`CredentialVerifier`] 实现内）按
+    ///   `subject + 客户端标识`（如来源 IP、设备指纹）计数连续失败；
+    /// - 超过阈值后按指数退避或直接锁定，并返回 `Unauthorized`，不得泄露锁定原因；
+    /// - 计数与锁定状态应经 `ctx.tools()` 中的共享存储（如 Redis）实现，
+    ///   多实例部署下才有一致的限流视图；
+    /// - `CredentialVerifier` 返回的失败与 challenge 解析失败都应计入失败次数。
     pub async fn complete_challenge<V>(
         &self,
         context: &ActionContext,
@@ -293,6 +321,13 @@ impl StepUpManager {
     }
 
     /// 校验 proof 与当前主体、Action 和资源是否完全一致。
+    ///
+    /// 成功与失败都会发出审计事件（均含 subject/action/resource_hash，不记录
+    /// proof Token 原文）。成功事件含 proof_id；失败事件按可解码性分两类：
+    /// 签名可解码、因绑定维度不匹配被拒时，额外记录签名背书的
+    /// `claimed_proof_id`/`claimed_resource_hash`（重放取证的关键字段）；
+    /// 伪造或过期的 Token 无法解码，没有可信 proof_id，失败事件不含
+    /// `claimed_*` 字段。
     pub fn verify_proof(
         &self,
         proof: &str,
@@ -300,24 +335,54 @@ impl StepUpManager {
         action: &ActionRef,
         resource: &str,
     ) -> Result<StepUpVerification, BaseError> {
-        let claims = self.decode_kind(proof, StepUpTokenKind::Proof)?;
         let expected_action = action.to_string();
         let expected_resource = resource_fingerprint(resource);
+        let claims = match self.decode_kind(proof, StepUpTokenKind::Proof) {
+            Ok(claims) => claims,
+            Err(error) => {
+                tracing::warn!(
+                    subject = %subject,
+                    action = %expected_action,
+                    resource_hash = %expected_resource,
+                    reason = %error,
+                    "step-up proof 验证失败"
+                );
+                return Err(error);
+            }
+        };
         if claims.sub != subject
             || claims.action != expected_action
             || claims.resource_hash != expected_resource
             || claims.challenge_jti.is_none()
         {
-            return Err(invalid_step_up("proof 绑定目标不一致"));
+            let error = invalid_step_up("proof 绑定目标不一致");
+            tracing::warn!(
+                claimed_proof_id = %claims.jti,
+                claimed_resource_hash = %claims.resource_hash,
+                subject = %subject,
+                action = %expected_action,
+                resource_hash = %expected_resource,
+                reason = %error,
+                "step-up proof 验证失败"
+            );
+            return Err(error);
         }
-        Ok(StepUpVerification {
+        let verification = StepUpVerification {
             subject: claims.sub,
             action: claims.action,
             resource_hash: claims.resource_hash,
             authenticated_at: claims.iat,
             expires_at: claims.exp,
             proof_id: claims.jti,
-        })
+        };
+        tracing::info!(
+            proof_id = %verification.proof_id,
+            subject = %verification.subject,
+            action = %verification.action,
+            resource_hash = %verification.resource_hash,
+            "step-up proof 验证成功"
+        );
+        Ok(verification)
     }
 
     fn issue_challenge_at(
@@ -346,8 +411,16 @@ impl StepUpManager {
             resource_hash: resource_fingerprint(resource),
             challenge_jti: None,
         };
+        let challenge = self.encode(&claims)?;
+        tracing::info!(
+            challenge_id = %claims.jti,
+            subject = %claims.sub,
+            action = %claims.action,
+            resource_hash = %claims.resource_hash,
+            "step-up challenge 已签发"
+        );
         Ok(StepUpChallenge {
-            challenge: self.encode(&claims)?,
+            challenge,
             expires_in: self.challenge_ttl,
         })
     }
@@ -367,8 +440,17 @@ impl StepUpManager {
             resource_hash: challenge.resource_hash,
             challenge_jti: Some(challenge.jti),
         };
+        let proof = self.encode(&claims)?;
+        tracing::info!(
+            proof_id = %claims.jti,
+            challenge_id = %claims.challenge_jti.as_deref().unwrap_or_default(),
+            subject = %claims.sub,
+            action = %claims.action,
+            resource_hash = %claims.resource_hash,
+            "step-up challenge 已完成"
+        );
         Ok(StepUpProof {
-            proof: self.encode(&claims)?,
+            proof,
             expires_in: self.proof_ttl,
         })
     }
@@ -791,6 +873,42 @@ mod tests {
         assert_eq!(response.data.expect("应返回 data")["operation"], "read");
     }
 
+    /// 锁定语义：step-up 仅约束 dispatch 路径；`Registry::call`/`Plugins::api_run`
+    /// 内部调用不经过中间件链，敏感 Action 无需 proof 即可执行。
+    /// 若日后调整该语义，必须同步修改 `StepUpMiddleware` 与 `Registry::call` 的文档。
+    #[tokio::test]
+    async fn internal_call_bypasses_step_up_middleware_by_design() {
+        let manager = Arc::new(manager());
+        let app = test_app(manager);
+        let handle = app
+            .registry()
+            .resolve_typed::<EmptyInput, ProbeOutput>(&action_ref("delete"))
+            .expect("敏感 Action 应可解析为强类型句柄");
+
+        // Registry::call：无 proof 直接成功（policy 仍要求已认证用户）
+        let context = app
+            .context(Request::new(serde_json::json!({})))
+            .with_user(User::new(7, "member"));
+        let output = app
+            .registry()
+            .call(handle, context, EmptyInput {})
+            .await
+            .expect("内部 call 不经过 step-up 中间件，应无需 proof 直接成功");
+        assert_eq!(output.operation, "delete");
+
+        // Plugins::api_run：同一内部路径，同样不经过 step-up 中间件
+        let context = app
+            .context(Request::new(serde_json::json!({})))
+            .with_user(User::new(7, "member"));
+        let output = context
+            .plugins()
+            .expect("测试上下文应已绑定 Registry")
+            .api_run(handle, EmptyInput {})
+            .await
+            .expect("api_run 不经过 step-up 中间件，应无需 proof 直接成功");
+        assert_eq!(output.operation, "delete");
+    }
+
     #[test]
     fn app_rejects_missing_or_cross_module_step_up_targets() {
         let manager = Arc::new(manager());
@@ -932,6 +1050,143 @@ mod tests {
             manager.verify_proof(&expired_proof, "7", &action, resource),
             Err(BaseError::Unauthorized(_))
         ));
+    }
+
+    /// 审计事件：challenge 签发、challenge 完成、proof 验证成功/失败四处
+    /// 必须发出 tracing 事件，携带 proof_id/subject/action/resource_hash，
+    /// 且不得泄露 challenge/proof Token 与资源原文。
+    #[tokio::test]
+    async fn audit_events_cover_the_full_sensitive_lifecycle() {
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        // 自定义 MakeWriter：将 tracing fmt 输出捕获到内存缓冲区（同 transport_axum 的 warn 捕获模式）
+        struct BufWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buf.lock().expect("缓冲区锁不应中毒").write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.buf.lock().expect("缓冲区锁不应中毒").flush()
+            }
+        }
+        struct BufMakeWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufMakeWriter {
+            type Writer = BufWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufWriter {
+                    buf: self.buf.clone(),
+                }
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(BufMakeWriter { buf: buf.clone() })
+            .with_ansi(false)
+            .finish();
+        // 必须用全局默认订阅器，而非线程局部 `set_default`：
+        // 并行测试会在无订阅器的线程上命中同一 callsite，把兴趣缓存为 never，
+        // 线程局部订阅器无法再重建这些缓存（tracing 的 JustOne 快路径），
+        // 导致事件被静默跳过、断言 flaky。全局默认在注册时重建全部 callsite，
+        // 且作为所有线程的回退默认参与后续 callsite 注册，语义确定。
+        // 代价：进程内其他测试的事件也会进入缓冲区，故断言一律用 contains。
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("step-up 审计测试要求全局默认订阅器未被占用");
+
+        let manager = manager();
+        let action = action_ref("delete");
+        let resource = "org_user:42";
+        let challenge = manager
+            .issue_challenge("7", &action, resource)
+            .expect("challenge 应签发成功");
+        let proof = manager
+            .complete_challenge(
+                &context(),
+                &TestVerifier,
+                &credentials("7", "correct-password"),
+                &challenge.challenge,
+            )
+            .await
+            .expect("proof 应签发成功");
+        let verified = manager
+            .verify_proof(&proof.proof, "7", &action, resource)
+            .expect("proof 应验证成功");
+        let rejected = manager.verify_proof(&proof.proof, "7", &action, "org_user:43");
+        assert!(matches!(rejected, Err(BaseError::Unauthorized(_))));
+        let tampered = tamper_signature(&proof.proof);
+        assert!(matches!(
+            manager.verify_proof(&tampered, "7", &action, resource),
+            Err(BaseError::Unauthorized(_))
+        ));
+
+        let output = String::from_utf8(buf.lock().expect("缓冲区锁不应中毒").clone())
+            .expect("审计输出应为 UTF-8");
+        for event in [
+            "step-up challenge 已签发",
+            "step-up challenge 已完成",
+            "step-up proof 验证成功",
+            "step-up proof 验证失败",
+        ] {
+            assert!(output.contains(event), "缺少审计事件 {event}: {output}");
+        }
+        assert!(
+            output.contains(&verified.proof_id),
+            "审计事件应携带 proof_id: {output}"
+        );
+        assert!(
+            output.contains("subject=7"),
+            "审计事件应携带 subject: {output}"
+        );
+        assert!(
+            output.contains("org.user.delete"),
+            "审计事件应携带 action: {output}"
+        );
+        assert!(
+            output.contains(&verified.resource_hash),
+            "审计事件应携带 resource_hash: {output}"
+        );
+        // 绑定不匹配（重放攻击面）：失败事件必须记录签名背书的真实声明，供取证关联
+        let failure_lines: Vec<&str> = output
+            .lines()
+            .filter(|line| line.contains("step-up proof 验证失败"))
+            .collect();
+        assert!(
+            failure_lines
+                .iter()
+                .any(|line| line.contains(&format!("claimed_proof_id={}", verified.proof_id))),
+            "绑定不匹配失败事件应记录 claimed_proof_id: {output}"
+        );
+        assert!(
+            failure_lines
+                .iter()
+                .any(|line| line
+                    .contains(&format!("claimed_resource_hash={}", verified.resource_hash))),
+            "绑定不匹配失败事件应记录 claimed_resource_hash: {output}"
+        );
+        // 伪造 Token 无法解码：没有可信 proof_id，失败事件不得虚构 claimed_* 字段
+        assert!(
+            failure_lines
+                .iter()
+                .any(|line| line.contains("无效或已过期") && !line.contains("claimed_proof_id")),
+            "不可解码的失败事件不应携带 claimed_proof_id: {output}"
+        );
+        assert!(
+            !output.contains(resource),
+            "审计事件不得携带资源原文: {output}"
+        );
+        assert!(
+            !output.contains(&proof.proof),
+            "审计事件不得携带 proof Token 原文"
+        );
+        assert!(
+            !output.contains(&challenge.challenge),
+            "审计事件不得携带 challenge Token 原文"
+        );
     }
 
     #[test]

@@ -295,4 +295,287 @@ mod tests {
             Err(BaseError::ParamInvalid(field, _)) if field == TENANT_ID_HEADER
         ));
     }
+
+    /// I-6：真实 `TokenAuthMiddleware` → `TenantResolverMiddleware` 链路的组合测试。
+    ///
+    /// 不再用 `with_user` 绕过认证直接注入身份，而是让请求依次经过认证与租户
+    /// 两个中间件，锁定「认证必须先于租户注册」的协作语义与 fail-closed 行为。
+    /// 有效 Token 的成功注入路径依赖 Redis 撤销存储，由 `action::auth` 的
+    /// `#[ignore]` Docker 测试覆盖；本模块锁定无 Docker 环境下的链路行为。
+    #[cfg(feature = "token")]
+    mod token_auth_chain {
+        use super::*;
+        use crate::action::TokenAuthMiddleware;
+
+        /// 无撤销存储（未配置 cache）的测试 Tools。
+        fn chain_tools() -> Arc<crate::tools::Tools> {
+            Arc::new(
+                ToolsBuilder::new()
+                    .token(crate::token::TokenManager::new_symmetric(
+                        "tenant-chain-test-secret",
+                        jsonwebtoken::Algorithm::HS256,
+                        "test-issuer".to_string(),
+                        "test-audience".to_string(),
+                        3600,
+                        7200,
+                    ))
+                    .build()
+                    .expect("测试 Tools 应构建成功"),
+            )
+        }
+
+        fn chain_handle(
+            app: &crate::definition::BuiltApp,
+            module: &str,
+            action: &str,
+        ) -> crate::definition::ActionHandle {
+            app.registry()
+                .resolve(&ActionRef::new(
+                    ModuleName::new(module).expect("测试 Module 名称应有效"),
+                    ActionName::new(action).expect("测试 Action 名称应有效"),
+                ))
+                .expect("探针 Action 应已注册")
+        }
+
+        fn chain_access_token(app: &crate::definition::BuiltApp) -> String {
+            app.tools()
+                .token()
+                .expect("测试应用应配置 TokenManager")
+                .generate_access_token("user-7", serde_json::json!({}))
+                .expect("测试 Access Token 应生成成功")
+        }
+
+        /// 构造「认证 → 租户」链路应用：受保护的租户探针。
+        fn protected_chain_app() -> crate::definition::BuiltApp {
+            let module = ModuleSpec::new(
+                ModuleName::new("org.tenant_chain").expect("测试 Module 名称应有效"),
+            )
+            .middleware(TokenAuthMiddleware::new(|claims| {
+                User::new(7, claims.sub.clone())
+            }))
+            .middleware(TenantResolverMiddleware::new(MembershipResolver))
+            .action(
+                ActionSpec::new(
+                    ActionName::new("tenant_probe").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Get,
+                        "/api/v1/org/tenant-chain/probe",
+                        "org.tenant_chain.tenant_probe",
+                    ),
+                ),
+                TenantProbe,
+            );
+            AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(chain_tools())
+                .expect("链路测试应用应构建成功")
+        }
+
+        /// 真实链路端到端：认证中间件先于租户中间件执行，任一环节失败即短路。
+        #[tokio::test]
+        async fn token_auth_runs_before_tenant_resolver_and_fails_closed() {
+            let app = protected_chain_app();
+            let handle = chain_handle(&app, "org.tenant_chain", "tenant_probe");
+
+            // 无 Authorization 头：认证中间件短路。若顺序相反（租户先执行），
+            // 报错会是 resolver 的「租户解析需要已认证用户」而非缺少 Token。
+            let missing = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({})).header(TENANT_ID_HEADER, "10"),
+                )
+                .await;
+            assert!(matches!(
+                missing,
+                Err(BaseError::Unauthorized(message)) if message.contains("Authorization Bearer Token")
+            ));
+
+            // 无效 Token：签名校验失败即短路，请求不会到达租户 resolver。
+            let invalid = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({}))
+                        .header("Authorization", "Bearer invalid-token")
+                        .header(TENANT_ID_HEADER, "10"),
+                )
+                .await;
+            assert!(matches!(invalid, Err(BaseError::TokenVerifyFailed(_))));
+
+            // 签名有效但未配置撤销存储：verify_token_checked 不降级跳过撤销检查，
+            // 以 RedisNotInitialized fail-closed，请求仍不会到达租户 resolver。
+            let token = chain_access_token(&app);
+            let no_store = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({}))
+                        .header("Authorization", format!("Bearer {token}"))
+                        .header(TENANT_ID_HEADER, "10"),
+                )
+                .await;
+            assert!(
+                matches!(no_store, Err(BaseError::RedisNotInitialized)),
+                "无撤销存储时不得降级放行: {no_store:?}"
+            );
+        }
+
+        /// 同时观察租户上下文与认证状态的公开探针。
+        #[derive(Debug, Serialize, JsonSchema)]
+        struct TenantAuthProbeOutput {
+            tenant_id: Option<i64>,
+            system: bool,
+            authenticated: bool,
+        }
+
+        #[derive(Action)]
+        #[action(name = "tenant_auth_probe", display_name = "租户认证探针", public)]
+        struct TenantAuthProbe;
+
+        #[async_trait]
+        impl TypedHandler for TenantAuthProbe {
+            type Input = EmptyInput;
+            type Output = TenantAuthProbeOutput;
+
+            async fn handle(
+                &self,
+                context: ActionContext,
+                _input: Self::Input,
+            ) -> Result<Self::Output, BaseError> {
+                let tenant = context.tenant()?;
+                Ok(TenantAuthProbeOutput {
+                    tenant_id: tenant.id().map(TenantId::get),
+                    system: tenant.is_system(),
+                    authenticated: context.authenticated_user().is_some(),
+                })
+            }
+        }
+
+        /// 显式允许匿名的 resolver：匿名请求忽略客户端候选，落入服务端选择的
+        /// 访客默认租户；已认证成员沿用 MembershipResolver 的候选校验规则。
+        struct GuestOrMemberResolver;
+
+        #[async_trait]
+        impl TenantResolver for GuestOrMemberResolver {
+            async fn resolve(
+                &self,
+                context: &ActionContext,
+                requested: Option<TenantId>,
+            ) -> Result<TenantContext, BaseError> {
+                let Some(user) = context.authenticated_user() else {
+                    return Ok(TenantContext::new(TenantId::new(1)));
+                };
+                let tenant = requested.unwrap_or_else(|| TenantId::new(10));
+                if user.id == 7 && tenant == TenantId::new(10) {
+                    Ok(TenantContext::new(tenant))
+                } else {
+                    Err(BaseError::PermissionDenied(format!(
+                        "用户无权访问租户 {}",
+                        tenant.get()
+                    )))
+                }
+            }
+        }
+
+        /// 构造三方组合应用：公开 Action + 可选认证 + 租户中间件。
+        fn public_chain_app() -> crate::definition::BuiltApp {
+            let module = ModuleSpec::new(
+                ModuleName::new("org.tenant_public").expect("测试 Module 名称应有效"),
+            )
+            .middleware(
+                TokenAuthMiddleware::new(|claims| User::new(7, claims.sub.clone()))
+                    .authenticate_public_actions(),
+            )
+            .middleware(TenantResolverMiddleware::new(GuestOrMemberResolver))
+            .action(
+                ActionSpec::new(
+                    ActionName::new("tenant_auth_probe").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Get,
+                        "/api/v1/org/tenant-public/probe",
+                        "org.tenant_public.tenant_auth_probe",
+                    ),
+                )
+                .public(true),
+                TenantAuthProbe,
+            );
+            AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(chain_tools())
+                .expect("三方组合测试应用应构建成功")
+        }
+
+        fn probe_observation(response: ApiResponse) -> (Option<i64>, bool, bool) {
+            let data = response.data.expect("探针应返回 JSON data");
+            (
+                data.get("tenant_id").and_then(serde_json::Value::as_i64),
+                data.get("system")
+                    .and_then(serde_json::Value::as_bool)
+                    .expect("探针应返回 system 布尔值"),
+                data.get("authenticated")
+                    .and_then(serde_json::Value::as_bool)
+                    .expect("探针应返回 authenticated 布尔值"),
+            )
+        }
+
+        /// 三方组合：匿名可通行并由租户中间件注入访客上下文；认证信息缺失或
+        /// 无效时一律 fail-closed，绝不降级为匿名。
+        #[tokio::test]
+        async fn public_action_with_optional_auth_and_tenant_middleware_compose() {
+            let app = public_chain_app();
+            let handle = chain_handle(&app, "org.tenant_public", "tenant_auth_probe");
+
+            // 完全匿名（Authorization 头整个缺失）：可选认证放行，租户中间件
+            // 注入 resolver 显式选择的访客默认租户，公开 Action 正常执行。
+            let anonymous = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({})).header(TENANT_ID_HEADER, "10"),
+                )
+                .await
+                .expect("匿名请求应经可选认证放行并获得访客租户上下文");
+            assert_eq!(probe_observation(anonymous), (Some(1), false, false));
+
+            // 非 Bearer 的 Authorization 头：不降级为匿名。
+            let wrong_scheme = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({}))
+                        .header("Authorization", "Basic credentials"),
+                )
+                .await;
+            assert!(matches!(
+                wrong_scheme,
+                Err(BaseError::Unauthorized(message)) if message.contains("Authorization Bearer Token")
+            ));
+
+            // 无效 Bearer Token：不降级为匿名，租户 resolver 不会执行。
+            let invalid = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({}))
+                        .header("Authorization", "Bearer invalid-token"),
+                )
+                .await;
+            assert!(matches!(invalid, Err(BaseError::TokenVerifyFailed(_))));
+
+            // 有效 Token 但无撤销存储：同样 fail-closed，不降级为匿名。
+            let token = chain_access_token(&app);
+            let no_store = app
+                .dispatch(
+                    handle,
+                    Request::new(serde_json::json!({}))
+                        .header("Authorization", format!("Bearer {token}")),
+                )
+                .await;
+            assert!(
+                matches!(no_store, Err(BaseError::RedisNotInitialized)),
+                "无撤销存储时不得降级为匿名: {no_store:?}"
+            );
+        }
+    }
 }

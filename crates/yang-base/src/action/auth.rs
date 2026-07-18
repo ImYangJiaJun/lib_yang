@@ -208,6 +208,14 @@ impl VerifiedSubject {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// 凭证校验 trait，由业务方实现并注入 [`LoginAction`]。
+///
+/// # 限流（实现方必须）
+///
+/// 本 trait 同时服务登录与 step-up 重认证（`StepUpManager::complete_challenge`），
+/// 两者都是凭据猜测的在线入口。实现方**必须**在 `verify` 内（或调用它的端点上）
+/// 做速率限制与失败计数：按 `subject + 客户端标识`（来源 IP、设备指纹等）计数
+/// 连续失败，超阈值后指数退避或锁定并返回 `Unauthorized`；计数状态应经
+/// `ctx.tools()` 的共享存储（如 Redis）实现，保证多实例下一致。
 #[async_trait]
 pub trait CredentialVerifier: Send + Sync + 'static {
     /// 校验登录凭证。
@@ -1174,8 +1182,35 @@ mod tests {
         ));
     }
 
+    /// I-6 调查锁定：`verify_token_checked` 在无撤销存储（`test_tools()` 未配置
+    /// cache）时**不降级**跳过撤销检查，而是以 `RedisNotInitialized` fail-closed。
+    /// 因此「有效 token → 注入身份 → 目录按身份投影」无法改写为非 Docker 单测，
+    /// 仍由下方 `#[ignore]` Docker 测试覆盖；本测试锁定该结论，防止日后有人
+    /// 把无存储行为改成静默放行。
     #[tokio::test]
-    #[ignore = "需要 Docker 启动 Redis 撤销存储"]
+    async fn optional_public_auth_without_revocation_store_fails_closed() {
+        let app = optional_auth_app(test_tools());
+        let token = test_access_token(&app);
+        let public_handle = app
+            .registry()
+            .resolve(&optional_auth_ref("public_probe"))
+            .expect("公开探针应已注册");
+
+        let result = app
+            .dispatch(
+                public_handle,
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("Authorization", format!("Bearer {token}")),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(BaseError::RedisNotInitialized)),
+            "无撤销存储时不得降级放行: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "需要 Docker 启动 Redis 撤销存储（无存储时 fail-closed，见 optional_public_auth_without_revocation_store_fails_closed）"]
     async fn optional_public_auth_injects_valid_identity_into_catalog_projection() {
         let redis_image = GenericImage::new("redis", "7-alpine").with_wait_for(
             testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
