@@ -30,8 +30,11 @@ fn test_table() -> TableSpec {
     TableSpec::new(TableName::new("typed_test_users").expect("测试表名应有效")).fields(
         Fields::new()
             .field(name("id"), Key::new())
-            .field(name("username"), Str::new().require(true).max_length(50))
-            .field(name("age"), Int::new().require(true)),
+            .field(
+                name("username"),
+                Str::new().require(true).max_length(50).filterable(true),
+            )
+            .field(name("age"), Int::new().require(true).filterable(true)),
     )
 }
 

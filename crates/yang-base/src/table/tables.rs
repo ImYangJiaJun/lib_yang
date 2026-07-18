@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 pub const DEFAULT_TREE_MAX_NODES: usize = 10_000;
 
 /// 校验树查询节点数未超过上限；超限返回 `ParamInvalid`，提示调用方先收窄筛选。
+#[cfg(any(feature = "mysql", test))]
 fn ensure_tree_node_cap(count: usize, max_nodes: usize) -> Result<(), BaseError> {
     if count > max_nodes {
         return Err(BaseError::ParamInvalid(

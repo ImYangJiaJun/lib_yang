@@ -1768,6 +1768,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "validator")]
     #[tokio::test]
     async fn form_projection_includes_validation_hints_and_filters_by_field_permission() {
         let module_name = ModuleName::new("org.profile").expect("测试 Module 名称应有效");

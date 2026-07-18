@@ -26,6 +26,7 @@ jobs:
           python scripts/verify_ci_contract.py --self-test
           python scripts/verify_ci_contract.py .github/workflows/ci.yml
           python scripts/verify_feature_isolation.py --self-test
+          python scripts/run_ci.py --self-test
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: yang-db library tests
