@@ -1,5 +1,7 @@
 # lib_yang
 
+开发、提交与本地 CI 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 YANG Rust workspace，包含后端基础库、过程式地图生成库，以及用于联合调试基础库的基础系统应用。
 
 ## Workspace 结构

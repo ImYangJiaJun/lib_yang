@@ -1804,13 +1804,13 @@ impl<'a> QueryBuilder<'a> {
     ///     None => println!("用户不存在"),
     /// }
     ///
-    /// // 查询用户数量
-    /// let count: Option<i64> = db.table(yang_db::table!("users"))
+    /// // 查询用户 ID
+    /// let user_id: Option<i64> = db.table(yang_db::table!("users"))
     ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
-    ///     .value("COUNT(*)")
+    ///     .value(yang_db::field!("id"))
     ///     .await?;
     ///
-    /// println!("活跃用户数: {}", count.unwrap_or(0));
+    /// println!("用户 ID: {:?}", user_id);
     /// # Ok(())
     /// # }
     /// ```
@@ -2830,7 +2830,7 @@ impl<'a> QueryBuilder<'a> {
     ///     json!({"id": 2, "name": "李四", "age": 30}),
     /// ];
     /// let affected = db.table(yang_db::table!("users"))
-    ///     .update_batch(&records, "id")
+    ///     .update_batch(&records, yang_db::field!("id"))
     ///     .await?;
     /// println!("批量更新了 {} 行", affected);
     /// # Ok(())

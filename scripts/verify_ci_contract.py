@@ -21,6 +21,7 @@ REQUIRED_FRAGMENTS = (
     "cargo test --doc -p yang-db --locked",
     "cargo test --doc -p yang-base --locked",
     "python scripts/verify_feature_isolation.py --self-test",
+    "python scripts/run_ci.py --self-test",
     "name: yang-db-none",
     "name: yang-db-mysql",
     "name: yang-db-postgres",

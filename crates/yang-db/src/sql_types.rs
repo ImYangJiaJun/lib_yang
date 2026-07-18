@@ -105,6 +105,7 @@ mod tests {
         assert!(QualifiedIdentifier::parse("users.id").is_ok());
     }
 
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     #[test]
     fn qualified_identifier_renders_both_dialects() {
         let identifier = match QualifiedIdentifier::parse("users.id") {

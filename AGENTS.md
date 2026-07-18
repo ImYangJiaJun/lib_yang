@@ -91,6 +91,10 @@ lib_yang/
 
 ## COMMANDS
 ```bash
+# 提交前快速门禁；推送前使用 full；数据库行为变更再运行 integration
+python scripts/run_ci.py quick
+python scripts/run_ci.py full
+python scripts/run_ci.py integration
 cargo fmt
 cargo check
 cargo clippy --all-targets --all-features -- -D warnings
@@ -106,6 +110,7 @@ python scripts/verify_ci_contract.py .github/workflows/ci.yml
 
 ## NOTES
 - CI 位于 `.github/workflows/ci.yml`（fmt/test/clippy/doc-test 门禁、MSRV 1.80、feature 矩阵、docker 服务）；无 `rust-toolchain.toml`/`rustfmt.toml`/`clippy.toml`/Makefile/Dockerfile。
+- `CONTRIBUTING.md` 是提交规范；`scripts/run_ci.py` 是本地 CI 统一入口。`Cargo.lock` 或 feature 变更必须在推送前运行 `python scripts/run_ci.py full`。
 - LSP rust-analyzer was unavailable in this environment; CodeGraph is indexed and should be preferred for structural lookup.
 - `.gitignore` includes `*/tests/`, which is unusual for Rust; be careful when reasoning about tracked integration tests.
 - Full Docker tests require MySQL 8.0 and Redis via testcontainers or standard containers.

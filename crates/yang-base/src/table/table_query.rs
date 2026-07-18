@@ -1086,6 +1086,7 @@ impl TableQuery {
     /// 内置 get/put/del 的主键定位是 Action 自有寻址机制，不是调用方可选的结构化
     /// 筛选，因此与 [`Self::scope_tenant`] 一样绕过 filterable 业务筛选权限；
     /// 值仍按主键字段类型校验（null 交由渲染器规范化为 IS NULL，匹配不到记录）。
+    #[cfg(feature = "mysql")]
     pub(crate) fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
         let field = self.table_config.primary_key.clone();
         let config = self.table_config.get_field(&field).ok_or_else(|| {
@@ -1482,7 +1483,7 @@ impl TableQuery {
     /// 创建仅有表配置、无数据库连接池的查询构建器（测试用）
     ///
     /// 使用空的用户角色列表，适合访问无权限限制字段的单元测试。
-    #[cfg(test)]
+    #[cfg(all(test, feature = "mysql"))]
     pub(crate) fn new_without_pool(table_config: Arc<TableConfig>) -> Self {
         Self::new(table_config, Arc::from(vec![]), None)
     }

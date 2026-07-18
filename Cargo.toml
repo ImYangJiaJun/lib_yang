@@ -70,14 +70,14 @@ matchit = "0.8.4"
 # Axum HTTP 服务端（可选；yang-base transport-axum feature 使用）
 axum = { version = "0.8.9", features = ["multipart"] }
 
-# HTTP 横切中间件（可选；trace/cors/timeout/compression 由 transport-axum 使用）
-tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compression-full"] }
+# HTTP 横切中间件（可选；明确启用无原生构建依赖的压缩算法，保持 MSRV 1.80）
+tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compression-br", "compression-deflate", "compression-gzip"] }
 
 # tower Service 工具（测试 oneshot）
 tower = { version = "0.5", features = ["util"] }
 
-# 请求作用域上传临时目录（仅 transport-axum 启用）
-tempfile = "3.10"
+# 请求作用域上传临时目录（仅 transport-axum 启用）；3.24+ 的依赖链不兼容 Cargo 1.80
+tempfile = "=3.23.0"
 
 # 派生宏基础设施
 proc-macro2 = "1.0"

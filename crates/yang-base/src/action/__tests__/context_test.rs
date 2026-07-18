@@ -1,7 +1,9 @@
 //! ActionContext 和 User 单元测试
 #![cfg(feature = "token")]
 
-use crate::action::{ActionContext, Request, RequestMeta, TenantContext, TenantId, User};
+use crate::action::{ActionContext, Request, RequestMeta, User};
+#[cfg(feature = "mysql")]
+use crate::action::{TenantContext, TenantId};
 use crate::error::BaseError;
 use crate::token::TokenManager;
 use crate::tools::{Tools, ToolsBuilder};
@@ -10,6 +12,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+#[cfg(feature = "mysql")]
 fn tenant_table() -> crate::table::TableDefinition {
     crate::table::Table::new("tenant_rows")
         .fields([
@@ -170,6 +173,7 @@ fn test_action_context_new() {
     ));
 }
 
+#[cfg(feature = "mysql")]
 #[test]
 fn tenant_table_is_fail_closed_and_system_bypass_is_explicit() {
     let base = ActionContext::new(Request::new(json!({})), create_test_tools())
