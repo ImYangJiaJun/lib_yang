@@ -54,6 +54,12 @@ pub(crate) struct FieldConfig {
     /// 是否从通用记录输出和表 JSON Schema 中隐藏。
     pub(crate) hidden: bool,
 
+    /// 是否可搜索
+    ///
+    /// 如果为 true，则该字段可以参与关键词搜索（OR LIKE）；与结构化筛选
+    /// 的 `filterable` 位相互独立，默认 fail-closed。
+    pub searchable: bool,
+
     /// 是否可筛选
     ///
     /// 如果为 true，则该字段可以用于 WHERE 条件筛选
@@ -96,6 +102,7 @@ impl FieldConfig {
             validators: Vec::new(),
             permissions: FieldPermissions::default(),
             hidden: false,
+            searchable: false,
             filterable: true,
             sortable: true,
             tenant_key: false,

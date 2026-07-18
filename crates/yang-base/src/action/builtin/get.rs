@@ -54,7 +54,8 @@ impl TypedHandler for GetAction {
             return Err(BaseError::Unauthorized("需要登录".to_string()));
         }
         let query = ctx.table_query()?;
-        let query = query.where_eq(&primary_key, pk_value.clone())?;
+        // 主键定位是 Action 自有寻址机制，绕过 filterable 业务筛选权限。
+        let query = query.where_primary_key_eq(pk_value.clone())?;
         query.optional().await?.ok_or_else(|| {
             BaseError::RecordNotFound(format!(
                 "{} 中主键 {}={} 的记录不存在",

@@ -9,6 +9,7 @@ pub struct CompiledTreeView {
     id_field: yang_db::FieldRef,
     parent_field: yang_db::FieldRef,
     label_field: yang_db::FieldRef,
+    max_nodes: usize,
 }
 
 impl CompiledTreeView {
@@ -16,11 +17,13 @@ impl CompiledTreeView {
         id_field: yang_db::FieldRef,
         parent_field: yang_db::FieldRef,
         label_field: yang_db::FieldRef,
+        max_nodes: usize,
     ) -> Self {
         Self {
             id_field,
             parent_field,
             label_field,
+            max_nodes,
         }
     }
 
@@ -52,6 +55,11 @@ impl CompiledTreeView {
     /// 返回节点标签的本地字段名。
     pub fn label_field_name(&self) -> &str {
         local_field_name(&self.label_field)
+    }
+
+    /// 返回启动期解析后的单次树查询节点上限。
+    pub fn max_nodes(&self) -> usize {
+        self.max_nodes
     }
 }
 

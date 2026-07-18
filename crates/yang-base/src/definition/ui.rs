@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "2.0";
+pub const UI_SCHEMA_VERSION: &str = "2.1";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -498,6 +498,8 @@ pub struct TreeViewSchema {
     pub parent_field: String,
     /// 节点用户可见标签字段。
     pub label_field: String,
+    /// 服务端强制执行的单次树查询节点上限。
+    pub max_nodes: usize,
 }
 
 /// 请求级通用表格 View 契约。
@@ -1266,8 +1268,15 @@ mod tests {
                 tree.id_field.as_str(),
                 tree.parent_field.as_str(),
                 tree.label_field.as_str(),
+                tree.max_nodes,
             )),
-            Some(("id", "parent_id", "name"))
+            Some((
+                "id",
+                "parent_id",
+                "name",
+                crate::table::DEFAULT_TREE_MAX_NODES
+            )),
+            "树拓扑契约必须携带服务端强制的节点上限"
         );
         assert_eq!(
             admin.table_views[0].actions,
@@ -1334,6 +1343,68 @@ mod tests {
             .await
             .expect("availability disabled 不能替代服务端授权或阻断真实派发");
         assert_eq!(response.code, 0);
+    }
+
+    /// UI 投影的 search_fields / filter_fields 必须与服务端强制位（TableDefinition
+    /// 的 is_searchable / is_filterable）逐字段点对点对齐，四种开关组合全覆盖。
+    #[test]
+    fn table_view_query_projection_aligns_with_server_searchable_and_filterable_bits() {
+        let module_name = ModuleName::new("org.doc").expect("测试 Module 名称应有效");
+        let table_name = TableName::new("org_doc").expect("测试 Table 名称应有效");
+        let with_access = |name: &str, searchable: bool, filterable: bool| {
+            let mut field = FieldSpec::new(
+                FieldName::new(name).expect("测试字段名应有效"),
+                FieldKind::Str,
+            );
+            field.access.searchable = searchable;
+            field.access.filterable = filterable;
+            field
+        };
+        let module = ModuleSpec::new(module_name)
+            .table(
+                TableSpec::new(table_name)
+                    .field(FieldSpec::new(
+                        FieldName::new("id").expect("测试字段名应有效"),
+                        FieldKind::Key,
+                    ))
+                    .field(with_access("both", true, true))
+                    .field(with_access("search_only", true, false))
+                    .field(with_access("filter_only", false, true))
+                    .field(with_access("neither", false, false)),
+            )
+            .default_permissions(["doc:view"], PermissionMode::All);
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect("查询投影测试应用应构建成功");
+
+        let catalog = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(1, "member").with_permissions(["doc:view"])),
+            )
+            .expect("成员 UI Catalog 应可计算");
+        let query = &catalog.table_views[0].query;
+        assert_eq!(query.search_fields, ["both", "search_only"]);
+        assert_eq!(query.filter_fields, ["both", "filter_only"]);
+
+        let definition = &app.table_definitions()[0];
+        for name in ["both", "search_only", "filter_only", "neither"] {
+            let metadata = definition.field(name).expect("字段应存在");
+            assert_eq!(
+                metadata.is_searchable(),
+                query.search_fields.iter().any(|field| field == name),
+                "{name} 的 searchable 投影与服务端位必须一致"
+            );
+            assert_eq!(
+                metadata.is_filterable(),
+                query.filter_fields.iter().any(|field| field == name),
+                "{name} 的 filterable 投影与服务端位必须一致"
+            );
+        }
     }
 
     #[test]
@@ -1656,8 +1727,8 @@ mod tests {
     #[test]
     fn form_field_validation_serializes_only_declared_constraints() {
         assert_eq!(
-            UI_SCHEMA_VERSION, "2.0",
-            "校验提示是 UI 契约变更，必须递增 schema 主版本"
+            UI_SCHEMA_VERSION, "2.1",
+            "TreeViewSchema.max_nodes 进入线上契约，必须递增 schema 版本"
         );
 
         let validation = FormFieldValidationSchema {

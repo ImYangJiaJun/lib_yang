@@ -644,6 +644,8 @@ fn compile_views(
                             tree.parent_field.field(),
                         )?,
                         checked_runtime_field(tree.label_field.table(), tree.label_field.field())?,
+                        tree.max_nodes
+                            .unwrap_or(crate::table::DEFAULT_TREE_MAX_NODES),
                     ))
                 })
                 .transpose()?;
@@ -765,6 +767,9 @@ fn compile_runtime_table_views(
                             id_field: tree.id_field.field().to_string(),
                             parent_field: tree.parent_field.field().to_string(),
                             label_field: tree.label_field.field().to_string(),
+                            max_nodes: tree
+                                .max_nodes
+                                .unwrap_or(crate::table::DEFAULT_TREE_MAX_NODES),
                         },
                         fields: [
                             column(&tree.id_field)?,
@@ -1191,6 +1196,17 @@ fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), BuildError> {
                         reason: "只有 Table/Tree 字段可以声明 relation".to_string(),
                     });
                 }
+                // I-5：服务端关键词搜索只会命中文本列；允许非文本字段声明
+                // searchable 等于让 UI 投影的 search_fields 说谎，构建期拒绝。
+                if field.access.searchable
+                    && !matches!(field.kind, FieldKind::Str | FieldKind::Text)
+                {
+                    return Err(BuildError::InvalidFieldDefinition {
+                        table: table.name.to_string(),
+                        field: field.name.to_string(),
+                        reason: "只有文本字段（Str/Text）可以声明 searchable".to_string(),
+                    });
+                }
             }
         }
 
@@ -1588,6 +1604,12 @@ fn validate_references(
                     return Err(BuildError::InvalidReference {
                         kind: "Tree View",
                         reference: format!("{view_ref}: id/parent 字段必须不同"),
+                    });
+                }
+                if tree.max_nodes == Some(0) {
+                    return Err(BuildError::InvalidReference {
+                        kind: "Tree View",
+                        reference: format!("{view_ref}: max_nodes 必须大于 0"),
                     });
                 }
                 for field in tree_fields {

@@ -993,8 +993,14 @@ impl TableQuery {
         Ok(self)
     }
 
-    /// 对当前角色可读、可筛选的文本字段应用一次 OR LIKE 搜索。
-    pub fn search(self, keyword: Option<&str>) -> Result<Self, BaseError> {
+    /// 对声明了 searchable 且当前角色可读的文本字段应用一次 OR LIKE 搜索。
+    ///
+    /// 关键词搜索只认独立的 searchable 位（[`crate::table::Field::searchable`]），与
+    /// 结构化 where 的 filterable 校验（`validate_filter_field`）互不开放。搜索字段
+    /// 来自表定义迭代（必然存在）且已逐一验证 `is_text` / `searchable` / 可读 /
+    /// 非 hidden，因此这里自行构造 OR 组、不经过 `where_or` 的 filterable 门槛；
+    /// 但 LIKE pattern 长度上限（QRY-1）仍在本地强制执行。
+    pub fn search(mut self, keyword: Option<&str>) -> Result<Self, BaseError> {
         let Some(keyword) = keyword.map(str::trim).filter(|value| !value.is_empty()) else {
             return Ok(self);
         };
@@ -1004,7 +1010,7 @@ impl TableQuery {
             .iter()
             .filter(|(_, field)| {
                 field.field_type.is_text()
-                    && field.permissions.can_filter(&self.user_roles_set)
+                    && field.searchable
                     && field.permissions.can_read(&self.user_roles_set)
                     && !field.hidden
             })
@@ -1018,15 +1024,27 @@ impl TableQuery {
             )));
         }
         let pattern = format!("%{keyword}%");
-        self.where_or(
-            fields
+        if pattern.len() > Self::MAX_LIKE_PATTERN_LEN {
+            return Err(BaseError::ParamInvalid(
+                "pattern".to_string(),
+                format!(
+                    "LIKE pattern 长度 {} 超过上限 {}",
+                    pattern.len(),
+                    Self::MAX_LIKE_PATTERN_LEN
+                ),
+            ));
+        }
+        let group = WhereCondition::Or {
+            conditions: fields
                 .into_iter()
                 .map(|field| WhereCondition::Like {
                     field,
                     pattern: pattern.clone(),
                 })
                 .collect(),
-        )
+        };
+        self.query_params.where_conditions.push(group);
+        Ok(self)
     }
 
     /// 在读取路径包含软删除记录
@@ -1060,6 +1078,25 @@ impl TableQuery {
             value: value.clone(),
         });
         self.tenant_scope = Some((field.to_string(), value));
+        Ok(self)
+    }
+
+    /// 注入受信的主键等值条件。
+    ///
+    /// 内置 get/put/del 的主键定位是 Action 自有寻址机制，不是调用方可选的结构化
+    /// 筛选，因此与 [`Self::scope_tenant`] 一样绕过 filterable 业务筛选权限；
+    /// 值仍按主键字段类型校验（null 交由渲染器规范化为 IS NULL，匹配不到记录）。
+    pub(crate) fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
+        let field = self.table_config.primary_key.clone();
+        let config = self.table_config.get_field(&field).ok_or_else(|| {
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), field.clone())
+        })?;
+        if !value.is_null() {
+            config.field_type.validate(&field, &value)?;
+        }
+        self.query_params
+            .where_conditions
+            .push(WhereCondition::Eq { field, value });
         Ok(self)
     }
 

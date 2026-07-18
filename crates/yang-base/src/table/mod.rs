@@ -81,5 +81,5 @@ pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaVa
 pub use table_config::SortOrder;
 pub(crate) use table_config::TableConfig;
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
-pub use tables::{TableListResult, TableTreeNode, Tables};
+pub use tables::{TableListResult, TableTreeNode, Tables, DEFAULT_TREE_MAX_NODES};
 pub use validator::{Validator, ValidatorFn};
