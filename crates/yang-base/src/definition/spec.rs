@@ -362,6 +362,9 @@ pub struct TreeViewSpec {
     pub parent_field: FieldRef,
     /// 节点用户可见标签字段。
     pub label_field: FieldRef,
+    /// 单次树查询的节点上限；`None` 回退到服务端默认值
+    /// （[`crate::table::DEFAULT_TREE_MAX_NODES`]）。
+    pub max_nodes: Option<usize>,
 }
 
 impl TreeViewSpec {
@@ -371,7 +374,15 @@ impl TreeViewSpec {
             id_field,
             parent_field,
             label_field,
+            max_nodes: None,
         }
+    }
+
+    /// 设置单次树查询的节点上限；必须大于 0，否则构建期报错。
+    #[must_use]
+    pub fn max_nodes(mut self, max_nodes: usize) -> Self {
+        self.max_nodes = Some(max_nodes);
+        self
     }
 }
 

@@ -11,6 +11,23 @@ use crate::error::BaseError;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// 树查询的默认节点上限（I-7）。
+///
+/// 树查询需要把全部匹配行读入内存组装，无分页保护；该常量限制单次树查询
+/// 可处理的节点数，超出即报错。`TreeViewSpec::max_nodes` 可按 View 覆盖。
+pub const DEFAULT_TREE_MAX_NODES: usize = 10_000;
+
+/// 校验树查询节点数未超过上限；超限返回 `ParamInvalid`，提示调用方先收窄筛选。
+fn ensure_tree_node_cap(count: usize, max_nodes: usize) -> Result<(), BaseError> {
+    if count > max_nodes {
+        return Err(BaseError::ParamInvalid(
+            "tree".to_string(),
+            format!("树节点数 {count} 超过上限 {max_nodes}，请先收窄查询范围"),
+        ));
+    }
+    Ok(())
+}
+
 /// 带批量关系数据的稳定列表响应。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TableListResult {
@@ -109,20 +126,30 @@ impl Tables {
         self.query.paginate_records().await
     }
 
-    /// 执行选择器数据查询；默认受 TableQuery 最大分页保护。
+    /// 执行选择器数据查询。
+    ///
+    /// 底层 `all()` 一次性读取全部匹配行，**不受** TableQuery 最大分页限制保护；
+    /// 调用方必须先通过 where/search 条件把结果规模约束在内存可承载范围内。
     #[cfg(feature = "mysql")]
     pub async fn table_select(self) -> Result<Vec<Record>, BaseError> {
         self.query.all().await
     }
 
     /// 查询全量选择结果并按默认 `id` / `parent_id` 组装树。
+    ///
+    /// 节点数受 [`DEFAULT_TREE_MAX_NODES`] 限制，超出即报错；需要自定义上限的
+    /// 树 View 应使用 [`Tables::table_tree_view`] 并在 `TreeViewSpec` 中配置。
     #[cfg(feature = "mysql")]
     pub async fn table_tree(self) -> Result<Vec<TableTreeNode>, BaseError> {
         let rows = self.query.all().await?;
+        ensure_tree_node_cap(rows.len(), DEFAULT_TREE_MAX_NODES)?;
         Self::build_tree(rows, "id", "parent_id")
     }
 
     /// 按启动期已校验的 View 树拓扑查询并组装节点。
+    ///
+    /// 节点数上限取 `TreeViewSpec::max_nodes`（缺省 [`DEFAULT_TREE_MAX_NODES`]），
+    /// 超出即报错，避免全表无界读入内存。
     #[cfg(feature = "mysql")]
     pub async fn table_tree_view(
         self,
@@ -131,7 +158,9 @@ impl Tables {
         let tree = view
             .tree()
             .ok_or_else(|| BaseError::ConfigError(format!("View {} 未声明树拓扑", view.name())))?;
+        let max_nodes = tree.max_nodes();
         let rows = self.view(view)?.query.all().await?;
+        ensure_tree_node_cap(rows.len(), max_nodes)?;
         Self::build_tree(rows, tree.id_field_name(), tree.parent_field_name())
     }
 
@@ -230,6 +259,25 @@ fn build_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_node_cap_rejects_overflow() {
+        // 边界：恰好等于上限放行。
+        ensure_tree_node_cap(DEFAULT_TREE_MAX_NODES, DEFAULT_TREE_MAX_NODES)
+            .expect("节点数等于上限应放行");
+        ensure_tree_node_cap(3, 10).expect("节点数低于上限应放行");
+
+        let error = ensure_tree_node_cap(DEFAULT_TREE_MAX_NODES + 1, DEFAULT_TREE_MAX_NODES)
+            .expect_err("节点数超过上限必须报错");
+        assert!(
+            matches!(error, BaseError::ParamInvalid(_, _)),
+            "树节点超限应返回 ParamInvalid: {error:?}"
+        );
+
+        // 显式配置的小上限同样生效。
+        let error = ensure_tree_node_cap(11, 10).expect_err("自定义上限超限必须报错");
+        assert!(matches!(error, BaseError::ParamInvalid(_, _)));
+    }
 
     #[test]
     fn tree_builder_keeps_order_and_nests_children() {

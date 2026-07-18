@@ -363,6 +363,16 @@ impl Field {
         self
     }
 
+    /// 允许字段用于关键词搜索（OR LIKE）。
+    ///
+    /// 与结构化筛选的 [`Field::filterable`] 位相互独立；只有文本字段
+    /// （`Field::string` / `Field::text`）会实际参与搜索，定义层在构建期
+    /// 会对非文本字段的 searchable 声明报错。
+    pub fn searchable(mut self) -> Self {
+        self.config.searchable = true;
+        self
+    }
+
     /// 允许字段用于筛选。
     pub fn filterable(mut self) -> Self {
         self.config.filterable = true;
@@ -432,6 +442,7 @@ impl Field {
             filterable: Audience::Nobody,
             sortable: Audience::Nobody,
         };
+        self.config.searchable = false;
         self.config.filterable = false;
         self.config.sortable = false;
         self
@@ -955,6 +966,11 @@ impl<'a> FieldMetadata<'a> {
     /// 返回字段是否由数据库自增生成。
     pub fn is_auto_increment(self) -> bool {
         self.config.auto_increment
+    }
+
+    /// 返回字段是否允许关键词搜索。
+    pub fn is_searchable(self) -> bool {
+        self.config.searchable
     }
 
     /// 返回字段是否允许筛选。

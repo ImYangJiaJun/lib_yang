@@ -1424,6 +1424,129 @@ fn test_where_condition_json_roundtrip() {
     }
 }
 
+/// searchable 与 filterable 是两个独立位：关键词搜索只认 searchable，
+/// 结构化 where 只认 filterable，四种组合逐一验证。
+#[test]
+fn test_search_and_filter_bits_are_independent() {
+    let config = build_config(
+        Table::new("docs").fields([
+            Field::id("id"),
+            Field::string("both", 50).searchable().filterable(),
+            Field::string("search_only", 50)
+                .searchable()
+                .not_filterable(),
+            Field::string("filter_only", 50).filterable(),
+            Field::string("neither", 50).not_filterable(),
+        ]),
+    );
+    let roles = || Arc::from(vec!["user".to_string()]);
+
+    // 关键词搜索只命中 searchable 文本字段（both + search_only），与 filterable 无关。
+    let query = TableQuery::new(config.clone(), roles(), None)
+        .search(Some("alice"))
+        .expect("存在可搜索字段时搜索应成功");
+    let conditions = &query.get_query_params().where_conditions;
+    let [WhereCondition::Or { conditions: leaves }] = conditions.as_slice() else {
+        panic!("搜索应生成单个 OR 组，实际: {conditions:?}");
+    };
+    let mut searched = leaves
+        .iter()
+        .map(|leaf| leaf.field().expect("搜索叶子条件应有字段").to_string())
+        .collect::<Vec<_>>();
+    searched.sort();
+    assert_eq!(searched, ["both", "search_only"]);
+
+    // 结构化 where 只认 filterable 位。
+    let query = TableQuery::new(config.clone(), roles(), None);
+    assert!(query.where_eq("both", json!("x")).is_ok());
+    let query = TableQuery::new(config.clone(), roles(), None);
+    assert!(query.where_eq("filter_only", json!("x")).is_ok());
+    let query = TableQuery::new(config.clone(), roles(), None);
+    assert!(
+        matches!(
+            query.where_eq("search_only", json!("x")),
+            Err(BaseError::FieldPermissionDenied(_, _, _))
+        ),
+        "searchable 不得连带开放结构化筛选"
+    );
+    let query = TableQuery::new(config, roles(), None);
+    assert!(
+        matches!(
+            query.where_eq("neither", json!("x")),
+            Err(BaseError::FieldPermissionDenied(_, _, _))
+        ),
+        "未声明 filterable 的字段不得筛选"
+    );
+}
+
+/// 表内没有当前角色可搜索的 searchable 文本字段时，搜索整体被拒绝。
+#[test]
+fn test_search_rejected_without_searchable_fields() {
+    let config = build_config(Table::new("docs").fields([
+        Field::id("id"),
+        Field::string("filter_only", 50).filterable(),
+    ]));
+    let query = TableQuery::new(config, Arc::from(vec!["user".to_string()]), None);
+    let result = query.search(Some("alice"));
+    assert!(
+        matches!(result, Err(BaseError::PermissionDenied(_))),
+        "filterable 不得连带开放关键词搜索: {:?}",
+        result.err()
+    );
+}
+
+/// searchable 字段对当前角色不可读时不参与关键词搜索。
+#[test]
+fn test_search_skips_unreadable_searchable_fields() {
+    let config = build_config(
+        Table::new("docs").fields([
+            Field::id("id"),
+            Field::string("admin_note", 50)
+                .searchable()
+                .readable_by(["admin"]),
+        ]),
+    );
+    let user_query = TableQuery::new(config.clone(), Arc::from(vec!["user".to_string()]), None);
+    assert!(matches!(
+        user_query.search(Some("alice")),
+        Err(BaseError::PermissionDenied(_))
+    ));
+    let admin_query = TableQuery::new(config, Arc::from(vec!["admin".to_string()]), None);
+    assert!(admin_query.search(Some("alice")).is_ok());
+}
+
+/// 受信主键等值条件绕过业务筛选权限（内置 get/put/del 的自有寻址机制），
+/// 但值仍按主键字段类型校验。
+#[test]
+fn test_where_primary_key_eq_bypasses_filter_permission() {
+    let config = build_config(
+        Table::new("accounts")
+            .fields([Field::id("id").not_filterable(), Field::string("name", 50)]),
+    );
+    let roles = || Arc::from(vec!["user".to_string()]);
+
+    // 普通 where 仍受 filterable 硬约束。
+    let query = TableQuery::new(config.clone(), roles(), None);
+    assert!(matches!(
+        query.where_eq("id", json!(1)),
+        Err(BaseError::FieldPermissionDenied(_, _, _))
+    ));
+
+    // 受信主键条件放行，并追加一个 Eq 叶子。
+    let query = TableQuery::new(config.clone(), roles(), None);
+    let query = query
+        .where_primary_key_eq(json!(1))
+        .expect("主键等值条件应绕过筛选权限");
+    assert_eq!(query.get_query_params().where_conditions.len(), 1);
+
+    // 类型不匹配的值仍被拒绝。
+    let query = TableQuery::new(config, roles(), None);
+    assert!(matches!(
+        query.where_primary_key_eq(json!("not-a-number")),
+        Err(BaseError::InvalidFieldType(_, _))
+    ));
+}
+
 /// 验证慢查询 warn 分支触发时正确输出表名与操作名（TEST-1）。
 ///
 /// `TableQuery::timed` 在超过阈值时发出 `tracing::warn!`，含 `table` /

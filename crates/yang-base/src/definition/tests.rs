@@ -1286,3 +1286,142 @@ fn openapi_projects_response_kind_specific_success_contract() {
         "重定向不得声明 200 JSON 信封: {redirect_op}"
     );
 }
+
+/// searchable / filterable 在声明层是两个独立开关，`into_schema_field` 必须按位
+/// 精确写入 table 层定义，不得折叠成单一 filterable 位，也不得继承 table 层的
+/// 宽松默认值（fail-closed）。
+#[test]
+fn searchable_and_filterable_bits_map_independently_to_table_definition() {
+    let with_access = |name: &str, searchable: bool, filterable: bool| {
+        let mut field = FieldSpec::new(field(name), FieldKind::Str);
+        field.access.searchable = searchable;
+        field.access.filterable = filterable;
+        field
+    };
+    let spec = TableSpec::new(table("org_doc"))
+        .field(FieldSpec::new(field("id"), FieldKind::Key))
+        .field(with_access("both", true, true))
+        .field(with_access("search_only", true, false))
+        .field(with_access("filter_only", false, true))
+        .field(with_access("neither", false, false));
+    let definition = spec.table_definition().expect("字段位映射表定义应有效");
+
+    let both = definition.field("both").expect("both 字段应存在");
+    assert!(both.is_searchable());
+    assert!(both.is_filterable());
+
+    let search_only = definition
+        .field("search_only")
+        .expect("search_only 字段应存在");
+    assert!(search_only.is_searchable());
+    assert!(
+        !search_only.is_filterable(),
+        "searchable 不得连带开放结构化筛选"
+    );
+
+    let filter_only = definition
+        .field("filter_only")
+        .expect("filter_only 字段应存在");
+    assert!(
+        !filter_only.is_searchable(),
+        "filterable 不得连带开放关键词搜索"
+    );
+    assert!(filter_only.is_filterable());
+
+    let neither = definition.field("neither").expect("neither 字段应存在");
+    assert!(!neither.is_searchable());
+    assert!(
+        !neither.is_filterable(),
+        "未声明 filterable 的字段必须 fail-closed"
+    );
+}
+
+/// 非文本字段（Str/Text 以外的 FieldKind）声明 searchable 必须在构建期报错：
+/// 服务端搜索本就会跳过非文本字段，允许声明等于让 UI 契约说谎（fail-closed）。
+#[test]
+fn non_text_searchable_field_is_rejected_at_build_time() {
+    let build_with = |kind: FieldKind| {
+        let mut spec = FieldSpec::new(field("target"), kind);
+        spec.access.searchable = true;
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(addon("org")).module(
+                    ModuleSpec::new(module("org.user")).table(
+                        TableSpec::new(table("org_user"))
+                            .field(FieldSpec::new(field("id"), FieldKind::Key))
+                            .field(spec),
+                    ),
+                ),
+            )
+            .build(test_tools())
+    };
+
+    for kind in [FieldKind::Int, FieldKind::Timestamp, FieldKind::Switch] {
+        assert!(
+            matches!(
+                build_with(kind),
+                Err(BuildError::InvalidFieldDefinition { .. })
+            ),
+            "非文本字段 {kind:?} 声明 searchable 必须构建失败"
+        );
+    }
+    for kind in [FieldKind::Str, FieldKind::Text] {
+        assert!(
+            build_with(kind).is_ok(),
+            "文本字段 {kind:?} 声明 searchable 应构建成功"
+        );
+    }
+}
+
+/// TreeViewSpec 的 max_nodes 在启动期解析进 CompiledTreeView：缺省回退到服务端
+/// 默认常量，显式配置覆盖；配置 0 在构建期拒绝（fail-closed）。
+#[test]
+fn tree_view_max_nodes_defaults_overrides_and_validates() {
+    let field_ref = |name: &str| FieldRef::new(table("org_node"), field(name));
+    let build = |tree: TreeViewSpec| {
+        let module = ModuleSpec::new(module("org.node"))
+            .table(
+                TableSpec::new(table("org_node"))
+                    .field(FieldSpec::new(field("id"), FieldKind::Key))
+                    .field(FieldSpec::new(field("parent_id"), FieldKind::Int))
+                    .field(FieldSpec::new(field("name"), FieldKind::Str)),
+            )
+            .view(
+                ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                    .field(field_ref("id"))
+                    .field(field_ref("parent_id"))
+                    .field(field_ref("name"))
+                    .tree(tree),
+            );
+        AppBuilder::new()
+            .addon(AddonSpec::new(addon("org")).module(module))
+            .build(test_tools())
+    };
+    let tree_spec =
+        || TreeViewSpec::new(field_ref("id"), field_ref("parent_id"), field_ref("name"));
+
+    let app = build(tree_spec()).expect("默认树 View 应构建成功");
+    let tree = app.compiled_views()[0].tree().expect("树拓扑应已编译");
+    assert_eq!(
+        tree.max_nodes(),
+        crate::table::DEFAULT_TREE_MAX_NODES,
+        "缺省 max_nodes 必须回退到服务端默认常量"
+    );
+
+    let app = build(tree_spec().max_nodes(42)).expect("覆盖树节点上限应构建成功");
+    let tree = app.compiled_views()[0].tree().expect("树拓扑应已编译");
+    assert_eq!(tree.max_nodes(), 42);
+
+    let rejected = build(tree_spec().max_nodes(0));
+    assert!(
+        matches!(
+            rejected,
+            Err(BuildError::InvalidReference {
+                kind: "Tree View",
+                ..
+            })
+        ),
+        "max_nodes 为 0 必须构建期拒绝: {:?}",
+        rejected.err()
+    );
+}

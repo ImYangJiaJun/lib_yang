@@ -63,10 +63,10 @@ impl TypedHandler for PutAction {
                 "至少需要一个字段".into(),
             ));
         }
-        let primary_key = ctx.table_definition()?.primary_key().to_string();
+        // 主键定位是 Action 自有寻址机制，绕过 filterable 业务筛选权限。
         let affected = ctx
             .table_query()?
-            .where_eq(&primary_key, input.id)?
+            .where_primary_key_eq(input.id)?
             .update(input.data)
             .await?;
         Ok(AffectedResult { affected })

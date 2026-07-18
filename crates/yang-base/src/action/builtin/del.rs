@@ -50,10 +50,10 @@ impl TypedHandler for DelAction {
         ctx: ActionContext,
         input: GetByPk,
     ) -> Result<AffectedResult, BaseError> {
-        let primary_key = ctx.table_definition()?.primary_key().to_string();
+        // 主键定位是 Action 自有寻址机制，绕过 filterable 业务筛选权限。
         let affected = ctx
             .table_query()?
-            .where_eq(&primary_key, input.id)?
+            .where_primary_key_eq(input.id)?
             .delete()
             .await?;
         Ok(AffectedResult { affected })
