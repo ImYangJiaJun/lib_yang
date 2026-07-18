@@ -31,6 +31,8 @@ feature 调整都必须在提交前通过对应的本地门禁。
 ## 强制约束
 
 - `Cargo.lock` 必须提交，所有门禁使用 `--locked`。
+- 默认开发与 CI toolchain 固定在 `rust-toolchain.toml`；升级时必须同步 CI 契约并完整验证，
+  避免不同 rustfmt 版本产生互相冲突的格式。
 - 项目 MSRV 为 Rust 1.80；任何依赖更新都必须重新运行完整门禁，不得用提高 MSRV
   掩盖依赖漂移。
 - 每个 Cargo feature 必须能独立通过 `check`、library tests 和 doctests，且警告按错误处理。

@@ -10,6 +10,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  CI_RUST_VERSION: "1.97.1"
 
 jobs:
   stable:
@@ -17,8 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Verify CI contract
@@ -117,7 +119,9 @@ jobs:
             args: --all-features
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Check feature combination
         run: cargo check -p ${{ matrix.package }} ${{ matrix.args }} --locked
@@ -131,7 +135,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Pin service images
         run: |
@@ -167,7 +173,9 @@ jobs:
       PG_TEST_URL: postgres://postgres:postgres@localhost:5432/test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: PostgreSQL CRUD integration
         run: cargo test -p yang-db --test integration_pg_crud_simple --locked -- --ignored --test-threads=1
@@ -179,7 +187,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Pin Redis image
         run: docker pull redis:7-alpine

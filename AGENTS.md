@@ -109,7 +109,7 @@ python scripts/verify_ci_contract.py .github/workflows/ci.yml
 ```
 
 ## NOTES
-- CI 位于 `.github/workflows/ci.yml`（fmt/test/clippy/doc-test 门禁、MSRV 1.80、feature 矩阵、docker 服务）；无 `rust-toolchain.toml`/`rustfmt.toml`/`clippy.toml`/Makefile/Dockerfile。
+- CI 位于 `.github/workflows/ci.yml`（fmt/test/clippy/doc-test 门禁、MSRV 1.80、feature 矩阵、docker 服务）；`rust-toolchain.toml` 固定默认开发/CI 工具链，无 `rustfmt.toml`/`clippy.toml`/Makefile/Dockerfile。
 - `CONTRIBUTING.md` 是提交规范；`scripts/run_ci.py` 是本地 CI 统一入口。`Cargo.lock` 或 feature 变更必须在推送前运行 `python scripts/run_ci.py full`。
 - LSP rust-analyzer was unavailable in this environment; CodeGraph is indexed and should be preferred for structural lookup.
 - `.gitignore` includes `*/tests/`, which is unusual for Rust; be careful when reasoning about tracked integration tests.
