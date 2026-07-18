@@ -21,8 +21,13 @@
 //! serve("0.0.0.0:8080".parse()?, app, AxumTransportConfig::default()).await?;
 //! ```
 
-use crate::action::{ApiResponse, Request, RequestId, RequestMeta, ResponseAttachment};
-use crate::definition::{ActionHandle, ActionMediaType, ActionRef, BuiltApp, MultipartSpec};
+use crate::action::{
+    ApiResponse, Request, RequestId, RequestMeta, ResponseAttachment, TENANT_ID_HEADER,
+};
+use crate::definition::{
+    schema_subtree_contains_binary, ActionHandle, ActionMediaType, ActionRef, BuiltApp,
+    MultipartSpec,
+};
 use crate::error::{BaseError, ErrorCategory};
 use axum::body::{to_bytes, Body};
 use axum::extract::{
@@ -78,6 +83,7 @@ impl Default for CorsConfig {
                 "authorization",
                 "x-request-id",
                 "x-step-up-proof",
+                TENANT_ID_HEADER,
             ]
             .iter()
             .map(|name| (*name).to_string())
@@ -652,12 +658,17 @@ async fn decode_multipart(
             })?;
             drop(output);
 
+            // 服务端构造上传文件句柄：注入受信临时根，标记该实例允许 copy_to。
+            // 伪造通道已双向封闭：构建期强制 binary 字段只走 multipart；本通道内
+            // 目标子树含文件字段的文本 part 一律拒绝（见上方文本分支），因此携带
+            // temp_root 的文件字段 JSON 对象只能由本传输层生成。
             let value = json!({
                 "field_name": name,
                 "original_filename": sanitize_filename(&raw_filename),
                 "content_type": content_type,
                 "size": file_bytes,
-                "path": path
+                "path": path,
+                "temp_root": scope.path()
             });
             insert_multipart_value(&mut body, &mut kinds, name, MultipartPartKind::File, value)?;
         } else {
@@ -672,6 +683,7 @@ async fn decode_multipart(
                 ));
             }
             let mut bytes = Vec::new();
+            let mut field_bytes = 0_u64;
             while let Some(chunk) = field.chunk().await.map_err(|error| {
                 let status = error.status();
                 let status = if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -681,6 +693,15 @@ async fn decode_multipart(
                 };
                 multipart_error(status, &name, "表单字段读取失败")
             })? {
+                field_bytes =
+                    checked_payload_size(field_bytes, chunk.len(), spec.max_text_field_bytes)
+                        .map_err(|_| {
+                            multipart_error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                &name,
+                                "表单字段大小超过上限",
+                            )
+                        })?;
                 payload_bytes =
                     checked_payload_size(payload_bytes, chunk.len(), spec.max_total_bytes)
                         .map_err(|_| {
@@ -699,6 +720,15 @@ async fn decode_multipart(
                     "multipart 文本字段必须是 UTF-8",
                 )
             })?;
+            // C-1 复审：含文件字段（format: binary，$ref 递归解析）的子树必须以文件
+            // part 到达；否则文本 part 可原样透传 JSON 走私 temp_root 伪造受信实例。
+            if text_part_targets_binary(input_schema, &name) {
+                return Err(multipart_error(
+                    StatusCode::BAD_REQUEST,
+                    &name,
+                    "包含文件字段的字段必须以文件形式上传",
+                ));
+            }
             let value = decode_text_value(input_schema, &name, text)?;
             insert_multipart_value(&mut body, &mut kinds, name, MultipartPartKind::Text, value)?;
         }
@@ -746,16 +776,35 @@ fn insert_multipart_value(
     Ok(())
 }
 
+/// 判定 multipart 文本 part 的目标字段子树是否声明二进制文件字段（`format: "binary"`，
+/// 本地 `$ref` 递归解析）；字段不在 schema 中时放行（由输入反序列化拒绝未知字段）。
+fn text_part_targets_binary(input_schema: &Value, name: &str) -> bool {
+    input_schema
+        .get("properties")
+        .and_then(|properties| properties.get(name))
+        .is_some_and(|property| schema_subtree_contains_binary(input_schema, property))
+}
+
+/// 按 input_schema 中字段声明的类型把文本 part 解码为 JSON 值。
+///
+/// 类型来源按序回退：字段子 schema 的平铺 `type`（含 schemars nullable 形态
+/// `"type": ["integer", "null"]`），再到 schemars `anyOf`（含 null 分支的
+/// `Option<T>` 形态），取第一个非 null 类型。
+/// 已知限制：本地 `$ref`（如 `Option<UploadedFile>` 的 `#/definitions/...` 分支）
+/// 暂不解析——该分支没有 `type`，字段按字符串处理；指向二进制子树的文本
+/// part 已在 [`text_part_targets_binary`] 处先行拒绝，其余 `$ref` 字段的解码
+/// 精度损失由输入反序列化兜底报错。
 fn decode_text_value(
     input_schema: &Value,
     name: &str,
     text: String,
 ) -> Result<Value, (StatusCode, BaseError)> {
-    let schema_type = input_schema
+    let property = input_schema
         .get("properties")
-        .and_then(|properties| properties.get(name))
-        .and_then(|schema| schema.get("type"))
-        .and_then(Value::as_str);
+        .and_then(|properties| properties.get(name));
+    let schema_type = property
+        .and_then(non_null_type)
+        .or_else(|| property.and_then(any_of_non_null_type));
     match schema_type {
         Some("integer") => text
             .parse::<i64>()
@@ -782,6 +831,29 @@ fn decode_text_value(
             .map_err(|_| multipart_error(StatusCode::BAD_REQUEST, name, "表单字段 JSON 格式无效")),
         _ => Ok(Value::String(text)),
     }
+}
+
+/// 取子 schema 的非 null 类型：兼容平铺字符串（`"type": "integer"`）与 schemars
+/// nullable 形态（`"type": ["integer", "null"]`）。
+fn non_null_type(schema: &Value) -> Option<&str> {
+    match schema.get("type") {
+        Some(Value::String(kind)) if kind != "null" => Some(kind.as_str()),
+        Some(Value::Array(kinds)) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|kind| *kind != "null"),
+        _ => None,
+    }
+}
+
+/// 从 `anyOf` 分支中取第一个带非 null `type` 的分支类型（schemars 为 `Option<T>`
+/// 生成的形态）；`$ref` 分支无 `type` 键，自然跳过。
+fn any_of_non_null_type(schema: &Value) -> Option<&str> {
+    schema
+        .get("anyOf")?
+        .as_array()?
+        .iter()
+        .find_map(non_null_type)
 }
 
 fn sanitize_filename(raw: &str) -> String {

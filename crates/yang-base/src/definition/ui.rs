@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "1.8";
+pub const UI_SCHEMA_VERSION: &str = "1.9";
 
 /// 与存储类型解耦的前端控件提示。
 ///

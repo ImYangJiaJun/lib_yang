@@ -18,6 +18,9 @@ mod spec;
 mod ui;
 mod view;
 
+/// 传输层（transport-axum）复用的二进制字段子树扫描；无该 feature 时不导出以避免未使用告警
+#[cfg(feature = "transport-axum")]
+pub(crate) use builder::schema_subtree_contains_binary;
 pub use builder::{
     ActionHandle, AppBuilder, BuiltApp, DefinitionCatalog, Registry, TypedActionHandle,
 };
@@ -32,7 +35,7 @@ pub use interface::{Actions, Addon, Module, Modules};
 pub use media::{
     ActionMediaType, MultipartSpec, UploadLifecycle, DEFAULT_MULTIPART_MAX_FIELDS,
     DEFAULT_MULTIPART_MAX_FILES, DEFAULT_MULTIPART_MAX_FILE_BYTES,
-    DEFAULT_MULTIPART_MAX_TOTAL_BYTES,
+    DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES, DEFAULT_MULTIPART_MAX_TOTAL_BYTES,
 };
 pub use name::{
     ActionName, ActionRef, AddonName, FieldName, FieldRef, ModuleName, TableName, ViewName, ViewRef,

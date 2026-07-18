@@ -44,6 +44,20 @@ crate::params! {
     }
 }
 
+/// 含二进制文件字段的上传输入；`format: binary` 是构建期媒体类型校验的判据。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MultipartUploadInput {
+    status: i8,
+    file: crate::action::UploadedFile,
+}
+
+impl ParamInput for MultipartUploadInput {
+    fn params() -> Params {
+        Params::new()
+    }
+}
+
 #[derive(crate::Action)]
 #[action(
     name = "create_user",
@@ -110,7 +124,7 @@ struct NoopAction;
     content_types("application/pdf"),
     max_files = 1,
     max_file_bytes = 1024,
-    max_total_bytes = 2048
+    max_total_bytes = 131072
 )]
 struct MultipartNoopAction;
 
@@ -134,7 +148,7 @@ impl TypedHandler for NoopAction {
 
 #[async_trait]
 impl crate::action::Action for MultipartNoopAction {
-    type Input = CreateUserInput;
+    type Input = MultipartUploadInput;
     type Output = EchoOutput;
 
     async fn index(
@@ -143,7 +157,27 @@ impl crate::action::Action for MultipartNoopAction {
         input: Self::Input,
     ) -> Result<Self::Output, BaseError> {
         Ok(EchoOutput {
-            value: i64::from(input.status),
+            value: i64::from(input.status) + i64::try_from(input.file.size()).unwrap_or_default(),
+        })
+    }
+}
+
+#[derive(crate::Action)]
+#[action(name = "json_upload", path = "/native/upload/json")]
+struct JsonUploadAction;
+
+#[async_trait]
+impl crate::action::Action for JsonUploadAction {
+    type Input = MultipartUploadInput;
+    type Output = EchoOutput;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(EchoOutput {
+            value: i64::from(input.status) + i64::try_from(input.file.size()).unwrap_or_default(),
         })
     }
 }
@@ -343,7 +377,11 @@ fn native_multipart_contract_reaches_catalog_and_ui_projection() {
     let multipart = action.multipart.as_ref().expect("Catalog 应保留上传限制");
     assert_eq!(multipart.max_files, 1);
     assert_eq!(multipart.max_file_bytes, 1024);
-    assert_eq!(multipart.max_total_bytes, 2048);
+    assert_eq!(multipart.max_total_bytes, 131072);
+    assert_eq!(
+        multipart.max_text_field_bytes,
+        DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES
+    );
     assert_eq!(multipart.allowed_content_types, ["application/pdf"]);
 
     let catalog = app
@@ -421,6 +459,172 @@ fn app_builder_rejects_unsafe_or_inconsistent_multipart_contracts() {
             "{name} 返回了错误类型: {error}"
         );
     }
+}
+
+#[test]
+fn app_builder_rejects_incoherent_text_field_limits() {
+    // 文本字段上限的构建期校验必须以其自身原因拒绝（而非被后续校验顺带拦截）：
+    // 手工 ActionSpec 的 input_schema 无文件字段，若上限校验缺失，构建会落到
+    // “必须至少声明一个文件字段” 的原因上，断言 reference 可区分两者。
+    let build = |multipart: MultipartSpec| {
+        let spec = ActionSpec::new(
+            action("upload"),
+            RouteSpec::new(HttpMethod::Post, "/upload", "upload.file.upload"),
+        )
+        .multipart(multipart);
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(addon("upload"))
+                    .module(ModuleSpec::new(module("upload.file")).action(spec, NoopAction)),
+            )
+            .build(test_tools())
+    };
+    let cases: [(&str, MultipartSpec); 2] = [
+        (
+            "文本字段字节上限必须大于 0",
+            MultipartSpec::new(["application/pdf"]).max_text_field_bytes(0),
+        ),
+        (
+            "max_text_field_bytes 不能大于 max_total_bytes",
+            MultipartSpec::new(["application/pdf"])
+                .max_file_bytes(1024)
+                .max_text_field_bytes(4096)
+                .max_total_bytes(2048),
+        ),
+    ];
+    for (reason, multipart) in cases {
+        let error = match build(multipart) {
+            Ok(_) => panic!("{reason} 必须在启动期失败"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                &error,
+                BuildError::InvalidReference {
+                    kind: "Action request media",
+                    reference,
+                } if reference.contains(reason)
+            ),
+            "拒绝原因必须是 {reason}: {error}"
+        );
+    }
+}
+
+#[test]
+fn app_builder_rejects_json_action_with_binary_input_field() {
+    // C-1：input_schema 含二进制文件字段（format: binary）的 Action 必须声明 multipart，
+    // 否则客户端可经 JSON 通道伪造 UploadedFile 实例。
+    let result = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("upload"))
+                .module(ModuleSpec::new(module("upload.file")).native_action(JsonUploadAction)),
+        )
+        .build(test_tools());
+    let error = match result {
+        Ok(_) => panic!("JSON Action 声明二进制文件字段必须在构建期失败"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error,
+            BuildError::InvalidReference {
+                kind: "Action request media",
+                ..
+            }
+        ),
+        "返回了错误类型: {error}"
+    );
+}
+
+#[test]
+fn app_builder_rejects_multipart_action_without_binary_input_field() {
+    // C-1 反向：multipart Action 的输入必须至少声明一个文件字段，
+    // 防止"声明了上传通道却没有文件落点"的错误契约进入 Catalog。
+    let spec = ActionSpec::new(
+        action("upload"),
+        RouteSpec::new(HttpMethod::Post, "/upload", "upload.file.upload"),
+    )
+    .multipart(MultipartSpec::new(["application/pdf"]));
+    let result = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("upload"))
+                .module(ModuleSpec::new(module("upload.file")).action(spec, NoopAction)),
+        )
+        .build(test_tools());
+    let error = match result {
+        Ok(_) => panic!("multipart Action 缺少文件字段必须在构建期失败"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error,
+            BuildError::InvalidReference {
+                kind: "Action request media",
+                ..
+            }
+        ),
+        "返回了错误类型: {error}"
+    );
+}
+
+#[test]
+fn binary_schema_scanner_resolves_local_refs_and_plain_fields() {
+    // C-1 复审：传输层文本 part 拦截依赖同一扫描器；$ref/anyOf/items 必须递归解析。
+    #[allow(dead_code)] // 字段仅为 schema 形状存在，不参与运行期读取
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct Bundle {
+        note: String,
+        file: crate::action::UploadedFile,
+    }
+
+    #[allow(dead_code)] // 字段仅为 schema 形状存在，不参与运行期读取
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct ScannerInput {
+        title: String,
+        files: Vec<crate::action::UploadedFile>,
+        bundles: Vec<Bundle>,
+        maybe_file: Option<crate::action::UploadedFile>,
+    }
+
+    let document = serde_json::to_value(schemars::schema_for!(ScannerInput))
+        .expect("扫描器测试 schema 应可序列化");
+    let properties = document.get("properties").expect("schema 应有 properties");
+    let contains = |name: &str| {
+        builder::schema_subtree_contains_binary(
+            &document,
+            properties.get(name).expect("字段应存在于 properties"),
+        )
+    };
+    assert!(
+        contains("files"),
+        "Vec<UploadedFile> 的 items $ref 应解析出 binary"
+    );
+    assert!(
+        contains("bundles"),
+        "嵌套包装结构体的 $ref 链应解析出 binary"
+    );
+    assert!(
+        contains("maybe_file"),
+        "Option<UploadedFile> 的 anyOf $ref 应解析出 binary"
+    );
+    assert!(!contains("title"), "普通字符串字段不得误判为 binary");
+    assert!(
+        super::builder::schema_contains_binary_field(&document),
+        "构建期整文档扫描应检测到 binary"
+    );
+
+    // 自引用类型不得死循环（循环保护）。
+    #[allow(dead_code)] // 字段仅为 schema 形状存在，不参与运行期读取
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct Recursive {
+        next: Option<Box<Recursive>>,
+    }
+    let recursive =
+        serde_json::to_value(schemars::schema_for!(Recursive)).expect("自引用 schema 应可序列化");
+    assert!(!super::builder::schema_contains_binary_field(&recursive));
 }
 
 #[tokio::test]
@@ -849,6 +1053,10 @@ fn openapi_projects_multipart_content_type_and_resource_limits() {
     assert!(media["schema"].is_object());
     assert_eq!(media["x-yang-multipart"]["max_files"], 1);
     assert_eq!(media["x-yang-multipart"]["max_file_bytes"], 1024);
+    assert_eq!(
+        media["x-yang-multipart"]["max_text_field_bytes"],
+        DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES
+    );
     assert_eq!(
         media["x-yang-multipart"]["allowed_content_types"][0],
         "application/pdf"

@@ -135,6 +135,7 @@ fn operation_json(action: &ActionSpec) -> Value {
                         "max_fields": spec.max_fields,
                         "max_files": spec.max_files,
                         "max_file_bytes": spec.max_file_bytes,
+                        "max_text_field_bytes": spec.max_text_field_bytes,
                         "max_total_bytes": spec.max_total_bytes,
                         "allowed_content_types": spec.allowed_content_types,
                         "lifecycle": "request_scoped"
