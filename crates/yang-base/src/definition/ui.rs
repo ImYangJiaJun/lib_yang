@@ -664,6 +664,30 @@ mod tests {
         }
     }
 
+    /// 符合关系选项契约的 options Action 夹具：输入/输出即稳定 DTO 对。
+    #[derive(crate::Action)]
+    #[action(name = "options", public)]
+    struct RelationOptionsAction;
+
+    #[async_trait]
+    impl crate::action::Action for RelationOptionsAction {
+        type Input = crate::table::RelationOptionsRequest;
+        type Output = crate::table::RelationOptionsResponse;
+
+        async fn index(
+            &self,
+            _ctx: ActionContext,
+            input: Self::Input,
+        ) -> Result<Self::Output, BaseError> {
+            Ok(crate::table::RelationOptionsResponse {
+                items: Vec::new(),
+                page: input.page,
+                limit: input.limit,
+                total: Some(0),
+            })
+        }
+    }
+
     fn action(name: &str, operation_id: &str) -> ActionSpec {
         ActionSpec::new(
             ActionName::new(name).expect("测试 Action 名称应有效"),
@@ -1099,7 +1123,7 @@ mod tests {
             .action(
                 action("options", "org.member.options")
                     .permissions(["member:options"], PermissionMode::All),
-                NoopAction,
+                RelationOptionsAction,
             )
             .action(
                 action("edit", "org.member.edit").permissions(["member:edit"], PermissionMode::All),
