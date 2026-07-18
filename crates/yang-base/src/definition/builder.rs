@@ -297,6 +297,14 @@ impl Registry {
     }
 
     /// 使用强类型输入直接调用预解析 Action；不发生 JSON 序列化或名称查找。
+    ///
+    /// # 约束范围（重要）
+    ///
+    /// 内部调用**不经过中间件链**：`StepUpMiddleware`、租户解析等中间件仅在
+    /// [`Registry::dispatch`] 路径执行，本方法（以及 `Plugins::api_run`）只做
+    /// 权限校验后直接调用 Handler。敏感 Action 的 step-up 因此不约束内部调用；
+    /// 调用方是受信代码，如需重认证必须自行编排 `StepUpManager`。该语义由
+    /// `internal_call_bypasses_step_up_middleware_by_design` 测试锁定。
     pub async fn call<I, O>(
         &self,
         handle: TypedActionHandle<I, O>,

@@ -613,6 +613,13 @@ impl ModuleSpec {
     }
 
     /// 增加一个模块级中间件。
+    ///
+    /// 多次调用按**注册顺序**构成洋葱链：先注册的中间件位于更外层，请求阶段
+    /// 先于后注册的中间件执行（响应阶段则相反）。因此依赖上游注入状态的中间件
+    /// 必须后注册——例如认证类中间件（如 `TokenAuthMiddleware`）必须先于
+    /// [`TenantResolverMiddleware`](crate::action::TenantResolverMiddleware)
+    /// 注册，租户 resolver 才能从 [`ActionContext`](crate::action::ActionContext)
+    /// 读到已认证用户。框架当前不在构建期校验该顺序，注册方需自行保证。
     #[must_use]
     pub fn middleware<M>(mut self, middleware: M) -> Self
     where
