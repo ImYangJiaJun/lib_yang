@@ -6,7 +6,7 @@ use super::{
 use crate::action::{ActionContext, ApiResponse, DynAction, Request, ResponseAttachment};
 use crate::error::BaseError;
 use crate::router::middleware::{authorize, AuthorizationPolicy, Next, PermissionGroup};
-use crate::table::TableDefinition;
+use crate::table::{RelationOptionsRequest, RelationOptionsResponse, TableDefinition};
 use crate::tools::Tools;
 use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -962,6 +962,19 @@ fn runtime_table_column(
                     reference: select.to_string(),
                 }
             })?;
+            // I-4：UI 目录向前端承诺 select Action 讲
+            // RelationOptionsRequest/RelationOptionsResponse；构建期按 TypeId 强制
+            // 输入/输出签名，签名不符的 Action 不得接入关系选择器。
+            if runtime.handler.input_type_id() != TypeId::of::<RelationOptionsRequest>()
+                || runtime.handler.output_type_id() != TypeId::of::<RelationOptionsResponse>()
+            {
+                return Err(BuildError::InvalidReference {
+                    kind: "Relation Options Action",
+                    reference: format!(
+                        "{select}: 输入/输出必须是 RelationOptionsRequest/RelationOptionsResponse"
+                    ),
+                });
+            }
             Some(RuntimeRelationOptions {
                 schema: super::RelationOptionsSchema {
                     operation_id: runtime.ui_schema.operation_id.clone(),

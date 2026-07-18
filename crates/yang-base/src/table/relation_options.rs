@@ -48,6 +48,15 @@ impl ParamInput for RelationOptionsRequest {
     fn params() -> Params {
         Params::new()
     }
+
+    /// 反序列化后立即执行边界校验：select Action 经 `Action::Input` 解码时 fail-closed，
+    /// handler 不再依赖显式调用 [`RelationOptionsRequest::validate`] 才能守住传输边界。
+    fn decode(request: &mut crate::action::Request) -> Result<Self, BaseError> {
+        let input: Self = serde_json::from_value(std::mem::take(&mut request.body))
+            .map_err(|error| BaseError::ParamInvalid("input".into(), error.to_string()))?;
+        input.validate()?;
+        Ok(input)
+    }
 }
 
 impl RelationOptionsRequest {
@@ -237,5 +246,26 @@ mod tests {
         assert_eq!(input.page, 2);
         assert_eq!(input.limit, 30);
         assert!(request.body.is_null(), "输入解码后 body 应被一次性消费");
+    }
+
+    #[test]
+    fn decode_rejects_over_limit_body_without_manual_validate() {
+        // I-4：validate 必须在 decode 默认路径上 fail-closed，handler 忘调 validate
+        // 也不能放行超限输入。
+        let mut request = Request::new(json!({"limit": MAX_QUERY_PAGE_SIZE + 1}));
+        let error = <RelationOptionsRequest as ParamInput>::decode(&mut request)
+            .expect_err("超限 body 必须在 decode 阶段直接拒绝");
+        assert!(
+            matches!(&error, BaseError::ParamInvalid(field, _) if field == "limit"),
+            "拒绝原因必须指向 limit 边界: {error}"
+        );
+
+        let mut request = Request::new(json!({"page": 0}));
+        let error = <RelationOptionsRequest as ParamInput>::decode(&mut request)
+            .expect_err("非法页码必须在 decode 阶段直接拒绝");
+        assert!(
+            matches!(&error, BaseError::ParamInvalid(field, _) if field == "page"),
+            "拒绝原因必须指向 page 边界: {error}"
+        );
     }
 }

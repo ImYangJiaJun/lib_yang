@@ -196,6 +196,31 @@ impl TypedHandler for EchoAction {
     }
 }
 
+/// 符合关系选项契约的 select Action 夹具：输入/输出即稳定 DTO 对，
+/// 经 `Action::Input` 解码时自动带上 `RelationOptionsRequest::validate` 边界校验。
+#[derive(crate::Action)]
+#[action(name = "select", public)]
+struct RelationOptionsAction;
+
+#[async_trait]
+impl crate::action::Action for RelationOptionsAction {
+    type Input = crate::table::RelationOptionsRequest;
+    type Output = crate::table::RelationOptionsResponse;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(crate::table::RelationOptionsResponse {
+            items: Vec::new(),
+            page: input.page,
+            limit: input.limit,
+            total: Some(0),
+        })
+    }
+}
+
 fn test_tools() -> Tools {
     ToolsBuilder::new().build().expect("测试 Tools 应构建成功")
 }
@@ -674,7 +699,7 @@ fn org_app() -> AppBuilder {
                 .field(FieldSpec::new(field("id"), FieldKind::Key))
                 .field(FieldSpec::new(field("name"), FieldKind::Str).required(true)),
         )
-        .action(org_select, NoopAction);
+        .action(org_select, RelationOptionsAction);
     let user_module = ModuleSpec::new(module("org.user"))
         .table(
             TableSpec::new(table("org_user"))
@@ -901,6 +926,91 @@ fn invalid_field_and_action_references_fail() {
         invalid_action,
         Err(BuildError::InvalidReference { kind: "Action", .. })
     ));
+}
+
+#[test]
+fn relation_options_action_must_implement_the_contract_dto_pair() {
+    // I-4：UI 目录承诺 select Action 讲 RelationOptionsRequest/RelationOptionsResponse，
+    // 输入/输出签名不符的 Action 接入关系选择器必须在构建期拒绝。
+    let module = ModuleSpec::new(module("org.org"))
+        .table(
+            TableSpec::new(table("org_org"))
+                .field(FieldSpec::new(field("id"), FieldKind::Key))
+                .field(
+                    FieldSpec::new(field("parent_id"), FieldKind::Table)
+                        .relation(field_ref("org_org", "id"))
+                        .select(action_ref("org.org", "select")),
+                ),
+        )
+        .action(
+            get_action("select", "/orgs/select", "org.org.select"),
+            NoopAction,
+        );
+    let error = AppBuilder::new()
+        .addon(AddonSpec::new(addon("org")).module(module))
+        .build(test_tools())
+        .expect_err("签名不符的 select Action 必须在构建期拒绝");
+    assert!(
+        matches!(
+            &error,
+            BuildError::InvalidReference {
+                kind: "Relation Options Action",
+                reference,
+            } if reference.contains("RelationOptionsRequest")
+        ),
+        "拒绝原因必须指向契约类型: {error}"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_select_action_enforces_permission_beyond_catalog_hiding() {
+    // I-4：UI 目录按身份隐藏无权限的 select Action 只是投影层过滤；直接 dispatch
+    // 必须由授权层拦截。已认证但缺少权限的用户必须得到 PermissionDenied，
+    // 而不是未认证场景的 Unauthorized。
+    let module = ModuleSpec::new(module("org.org"))
+        .table(
+            TableSpec::new(table("org_org"))
+                .field(FieldSpec::new(field("id"), FieldKind::Key))
+                .field(
+                    FieldSpec::new(field("parent_id"), FieldKind::Table)
+                        .relation(field_ref("org_org", "id"))
+                        .select(action_ref("org.org", "select")),
+                ),
+        )
+        .action(
+            get_action("select", "/orgs/select", "org.org.select")
+                .public(false)
+                .permissions(["org.select"], crate::action::PermissionMode::All),
+            RelationOptionsAction,
+        );
+    let app = AppBuilder::new()
+        .addon(AddonSpec::new(addon("org")).module(module))
+        .build(test_tools())
+        .expect("契约合规的 select Action 应构建成功");
+    let handle = app
+        .registry()
+        .resolve(&action_ref("org.org", "select"))
+        .expect("select Action 应在构建期解析");
+
+    let context = app
+        .context(crate::action::Request::new(serde_json::json!({})))
+        .with_user(crate::action::User::new(7, "outsider"));
+    let error = app
+        .dispatch_context(handle, context)
+        .await
+        .expect_err("无权限用户直接调用 select Action 必须被拒绝");
+    assert!(
+        matches!(error, BaseError::PermissionDenied(_)),
+        "缺少权限必须返回 PermissionDenied: {error}"
+    );
+
+    // 对照：持有权限的用户通过授权并完成派发（同时走通 decode+validate 默认路径）。
+    let context = app
+        .context(crate::action::Request::new(serde_json::json!({})))
+        .with_user(crate::action::User::new(8, "insider").with_permissions(["org.select"]));
+    app.dispatch_context(handle, context)
+        .await
+        .expect("持有权限的用户应可调用 select Action");
 }
 
 #[test]
