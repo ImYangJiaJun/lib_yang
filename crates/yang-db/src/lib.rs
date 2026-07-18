@@ -44,9 +44,9 @@ pub use error::{DbError, DbErrorCategory};
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
 pub use pool::PoolStatus;
-pub use reference::{CompareOp, FieldRef, Predicate, SelectExpr, SortOrder, TableRef};
 #[doc(hidden)]
 pub use reference::{__validate_field_literal, __validate_table_literal};
+pub use reference::{CompareOp, FieldRef, Predicate, SelectExpr, SortOrder, TableRef};
 
 /// 创建编译期校验、进程内只初始化一次的表引用。
 #[macro_export]

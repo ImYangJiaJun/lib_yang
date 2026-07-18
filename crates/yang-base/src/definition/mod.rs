@@ -37,13 +37,13 @@ pub use media::{
     DEFAULT_MULTIPART_MAX_FILES, DEFAULT_MULTIPART_MAX_FILE_BYTES,
     DEFAULT_MULTIPART_MAX_TEXT_FIELD_BYTES, DEFAULT_MULTIPART_MAX_TOTAL_BYTES,
 };
-pub use name::{
-    ActionName, ActionRef, AddonName, FieldName, FieldRef, ModuleName, TableName, ViewName, ViewRef,
-};
 #[doc(hidden)]
 pub use name::{
     __validate_field_literal, __validate_qualified_literal, __validate_ref_literal,
     __validate_segment_literal,
+};
+pub use name::{
+    ActionName, ActionRef, AddonName, FieldName, FieldRef, ModuleName, TableName, ViewName, ViewRef,
 };
 #[cfg(feature = "openapi")]
 pub use openapi::OpenApiInfo;

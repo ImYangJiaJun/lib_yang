@@ -8,7 +8,9 @@ import os
 import shlex
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,14 @@ def run(command: Command) -> None:
 
 def self_test() -> None:
     """验证本地入口覆盖 CI 的关键组合和锁文件约束。"""
+
+    toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text(encoding="utf-8"))[
+        "toolchain"
+    ]
+    channel = toolchain["channel"]
+    assert {"clippy", "rustfmt"}.issubset(toolchain["components"])
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert f'CI_RUST_VERSION: "{channel}"' in workflow
 
     expected_features = {
         "yang-db-none",

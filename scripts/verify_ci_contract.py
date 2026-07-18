@@ -14,6 +14,8 @@ REQUIRED_FRAGMENTS = (
     "docker-mysql:",
     "docker-postgres:",
     "docker-redis:",
+    'CI_RUST_VERSION: "1.97.1"',
+    "toolchain: ${{ env.CI_RUST_VERSION }}",
     "cargo fmt --all -- --check",
     "cargo test --lib -p yang-db --locked",
     "cargo test --lib -p yang-base --locked",
