@@ -181,6 +181,7 @@ impl BusinessAction for StepUpRequiredAction {
     display_name = "下载",
     method = "GET",
     path = "/api/test/download",
+    response_kind = "download",
     public
 )]
 struct DownloadAction {
@@ -208,6 +209,7 @@ impl BusinessAction for DownloadAction {
     display_name = "预览",
     method = "GET",
     path = "/api/test/preview",
+    response_kind = "preview",
     public
 )]
 struct PreviewAction {
@@ -235,6 +237,7 @@ impl BusinessAction for PreviewAction {
     display_name = "重定向",
     method = "GET",
     path = "/api/test/redirect",
+    response_kind = "redirect",
     public
 )]
 struct RedirectAction;
@@ -260,6 +263,7 @@ impl BusinessAction for RedirectAction {
     display_name = "缺失文件",
     method = "GET",
     path = "/api/test/missing",
+    response_kind = "download",
     public
 )]
 struct MissingFileAction;
@@ -278,6 +282,32 @@ impl BusinessAction for MissingFileAction {
             "/definitely/not/exist/yang-transport-axum-missing.bin",
             "missing.bin",
         ))
+    }
+}
+
+/// 声明 download 却返回重定向的 Action（response_kind 契约缺陷探针）。
+#[derive(Action)]
+#[action(
+    name = "mismatch",
+    display_name = "声明不一致",
+    method = "GET",
+    path = "/api/test/mismatch",
+    response_kind = "download",
+    public
+)]
+struct MismatchedAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for MismatchedAction {
+    type Input = EmptyInput;
+    type Output = ResponseBody;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Ok(ResponseBody::redirect("https://example.com/elsewhere"))
     }
 }
 
@@ -623,7 +653,15 @@ fn build_app() -> Arc<BuiltApp> {
 }
 
 fn temp_file(name: &str, content: &[u8]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("yang_transport_axum_test_{}", std::process::id()));
+    // 并发测试会各自重写 fixture 文件；同名共享路径的 truncate-写入与
+    // 文件响应的读取存在竞态（读到空内容），故每次调用使用独立子目录。
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "yang_transport_axum_test_{}_{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&dir).expect("临时目录应创建成功");
     let path = dir.join(name);
     std::fs::write(&path, content).expect("临时文件应写入成功");
@@ -706,6 +744,23 @@ fn build_scalar_upload_app() -> Arc<BuiltApp> {
             .build(tools)
             .expect("标量上传测试应用应构建成功"),
     )
+}
+
+/// response_kind 声明与运行时响应不一致的独立应用（探针 Action 单独隔离）。
+fn build_mismatch_app() -> Arc<BuiltApp> {
+    let module = ModuleSpec::new(ModuleName::new("test.mismatch").expect("模块名应有效"))
+        .native_action(MismatchedAction);
+    let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+    Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("test").expect("Addon 名应有效")).module(module))
+            .build(tools)
+            .expect("契约缺陷探针应用应构建成功"),
+    )
+}
+
+fn mismatch_router() -> Router {
+    router(build_mismatch_app(), AxumTransportConfig::default()).expect("Router 应构建成功")
 }
 
 fn multipart_payload(
@@ -821,6 +876,42 @@ async fn ui_catalog_endpoint_rejects_wrong_method_and_direct_protected_call() {
     )
     .await;
     assert_eq!(protected.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// 附件类 Action 的 UI 目录投影必须反映其声明的 response_kind，
+/// 否则前端会把下载/预览/重定向误当作普通 JSON 响应处理。
+#[tokio::test]
+async fn ui_catalog_projects_declared_response_kind_for_attachment_actions() {
+    let response = oneshot(
+        default_router(),
+        json_request("GET", "/.well-known/yang/ui-catalog", ""),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let actions = json["data"]["actions"]
+        .as_array()
+        .expect("actions 应为数组");
+    let declared_kind = |operation_id: &str| {
+        actions
+            .iter()
+            .find(|action| action["operation_id"] == operation_id)
+            .unwrap_or_else(|| panic!("UI 目录应包含 {operation_id}"))["response_kind"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        declared_kind("test.probe.download").as_deref(),
+        Some("download")
+    );
+    assert_eq!(
+        declared_kind("test.probe.preview").as_deref(),
+        Some("preview")
+    );
+    assert_eq!(
+        declared_kind("test.probe.redirect").as_deref(),
+        Some("redirect")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,6 +1144,68 @@ async fn missing_file_returns_404_structured_error() {
             .unwrap_or_default()
             .contains("文件不存在"),
         "404 message 应说明文件不存在: {json}"
+    );
+}
+
+/// response_kind 声明与运行时附件类别不一致时只告警：
+/// 响应照常返回、不阻断、不 panic，同时 warn 日志确实发出。
+#[tokio::test]
+async fn response_kind_mismatch_warns_without_altering_response() {
+    use std::io::Write;
+
+    // 自定义 MakeWriter：将 tracing fmt 输出捕获到内存缓冲区（同 table_query_test 慢查询 warn 模式）
+    struct BufWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+    impl Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.buf.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.buf.lock().unwrap().flush()
+        }
+    }
+    struct BufMakeWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufMakeWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            BufWriter {
+                buf: self.buf.clone(),
+            }
+        }
+    }
+
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(BufMakeWriter { buf: buf.clone() })
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let response = oneshot(
+        mismatch_router(),
+        json_request("GET", "/api/test/mismatch", ""),
+    )
+    .await;
+    // 不阻断、不改变响应：仍按实际附件语义返回 302 + Location
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(location, "https://example.com/elsewhere");
+
+    let output = String::from_utf8(buf.lock().unwrap().clone()).expect("warn 输出应为 UTF-8");
+    assert!(
+        output.contains("response_kind"),
+        "应告警 response_kind 声明与运行时响应不一致，输出: {output:?}"
+    );
+    assert!(
+        output.contains("test.mismatch"),
+        "warn 应携带模块名定位问题 Action，输出: {output:?}"
     );
 }
 

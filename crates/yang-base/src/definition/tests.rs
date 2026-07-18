@@ -1061,5 +1061,118 @@ fn openapi_projects_multipart_content_type_and_resource_limits() {
         media["x-yang-multipart"]["allowed_content_types"][0],
         "application/pdf"
     );
-    assert_eq!(media["x-yang-multipart"]["lifecycle"], "request_scoped");
+    assert_eq!(
+        media["x-yang-multipart"]["lifecycle"],
+        serde_json::to_value(UploadLifecycle::RequestScoped).expect("上传生命周期应可序列化"),
+        "OpenAPI 扩展必须序列化 spec.lifecycle 真实值而不是硬编码"
+    );
+}
+
+#[cfg(feature = "openapi")]
+#[test]
+fn openapi_projects_response_kind_specific_success_contract() {
+    let spec = |name: &str, path: &str, operation_id: &str, kind: ActionResponseKind| {
+        ActionSpec::new(
+            action(name),
+            RouteSpec::new(HttpMethod::Get, path, operation_id),
+        )
+        .public(true)
+        .response_kind(kind)
+    };
+    let app = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("res")).module(
+                ModuleSpec::new(module("res.kind"))
+                    .action(
+                        spec(
+                            "json",
+                            "/res/json",
+                            "res.kind.json",
+                            ActionResponseKind::Json,
+                        ),
+                        NoopAction,
+                    )
+                    .action(
+                        spec(
+                            "download",
+                            "/res/download",
+                            "res.kind.download",
+                            ActionResponseKind::Download,
+                        ),
+                        NoopAction,
+                    )
+                    .action(
+                        spec(
+                            "preview",
+                            "/res/preview",
+                            "res.kind.preview",
+                            ActionResponseKind::Preview,
+                        ),
+                        NoopAction,
+                    )
+                    .action(
+                        spec(
+                            "redirect",
+                            "/res/redirect",
+                            "res.kind.redirect",
+                            ActionResponseKind::Redirect,
+                        ),
+                        NoopAction,
+                    ),
+            ),
+        )
+        .build(test_tools())
+        .expect("response_kind OpenAPI 测试应用应构建成功");
+    let document = app
+        .catalog()
+        .to_openapi(OpenApiInfo::new("YANG", "0.3"))
+        .expect("Catalog 应生成 OpenAPI");
+
+    let json_op = &document["paths"]["/res/json"]["get"];
+    assert_eq!(json_op["x-yang-response-kind"], "json");
+    assert!(
+        json_op["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["data"]
+            .is_object(),
+        "JSON Action 保持信封契约: {json_op}"
+    );
+
+    let download_op = &document["paths"]["/res/download"]["get"];
+    assert_eq!(download_op["x-yang-response-kind"], "download");
+    assert_eq!(
+        download_op["responses"]["200"]["content"]["application/octet-stream"]["schema"],
+        serde_json::json!({"type": "string", "format": "binary"}),
+        "下载成功响应必须是二进制流而不是 JSON 信封: {download_op}"
+    );
+    assert!(
+        download_op["responses"]["200"]["content"]
+            .get("application/json")
+            .is_none(),
+        "下载 Action 不得声明 JSON 信封: {download_op}"
+    );
+
+    let preview_op = &document["paths"]["/res/preview"]["get"];
+    assert_eq!(preview_op["x-yang-response-kind"], "preview");
+    assert!(
+        preview_op["responses"]["200"]["content"]["application/octet-stream"].is_object(),
+        "预览成功响应必须是二进制流: {preview_op}"
+    );
+
+    let redirect_op = &document["paths"]["/res/redirect"]["get"];
+    assert_eq!(redirect_op["x-yang-response-kind"], "redirect");
+    assert!(
+        redirect_op["responses"]["302"].is_object(),
+        "重定向必须声明 3xx 成功响应: {redirect_op}"
+    );
+    assert!(
+        redirect_op["responses"]["302"].get("content").is_none(),
+        "重定向成功响应不得携带 content: {redirect_op}"
+    );
+    assert!(
+        redirect_op["responses"]["302"]["headers"]["Location"].is_object(),
+        "重定向必须声明 Location 响应头: {redirect_op}"
+    );
+    assert!(
+        redirect_op["responses"].get("200").is_none(),
+        "重定向不得声明 200 JSON 信封: {redirect_op}"
+    );
 }

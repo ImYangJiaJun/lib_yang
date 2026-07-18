@@ -3,7 +3,7 @@
 use super::{
     ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ModuleName, ParamSource, TableName,
 };
-use crate::action::{ActionContext, ApiResponse, DynAction, Request};
+use crate::action::{ActionContext, ApiResponse, DynAction, Request, ResponseAttachment};
 use crate::error::BaseError;
 use crate::router::middleware::{authorize, AuthorizationPolicy, Next, PermissionGroup};
 use crate::table::TableDefinition;
@@ -121,6 +121,7 @@ struct RuntimeViewAction {
 struct RuntimeTableColumn {
     schema: super::TableColumnSchema,
     relation: Option<RuntimeRelationOptions>,
+    validation: Option<super::FormFieldValidationSchema>,
     readable: super::AccessRule,
     writable: super::AccessRule,
     secret: bool,
@@ -288,7 +289,11 @@ impl Registry {
             request_id = tracing::field::Empty,
         );
         span.record("request_id", tracing::field::display(context.request_id));
-        next.run(context).instrument(span).await
+        let result = next.run(context).instrument(span).await;
+        if let Ok(response) = &result {
+            warn_response_kind_mismatch(runtime, response);
+        }
+        result
     }
 
     /// 使用强类型输入直接调用预解析 Action；不发生 JSON 序列化或名称查找。
@@ -318,6 +323,30 @@ impl Registry {
                 runtime.module, runtime.action
             ))
         })
+    }
+}
+
+/// 比对运行时响应与 Action 声明的 `response_kind`，不一致时仅告警。
+///
+/// `response_kind` 是前端契约（UI 目录/OpenAPI 的投影来源），运行时附件才是真实响应；
+/// 两者脱节属于 Action 实现与声明不符的契约缺陷，但不应升级为可用性故障，
+/// 因此只 `warn`、不阻断、不改变响应。错误响应没有成功响应契约可比，跳过检查。
+fn warn_response_kind_mismatch(runtime: &RuntimeAction, response: &ApiResponse) {
+    let actual = match &response.attachment {
+        Some(ResponseAttachment::Download { .. }) => super::ActionResponseKind::Download,
+        Some(ResponseAttachment::Preview { .. }) => super::ActionResponseKind::Preview,
+        Some(ResponseAttachment::Redirect { .. }) => super::ActionResponseKind::Redirect,
+        None => super::ActionResponseKind::Json,
+    };
+    let declared = runtime.ui_schema.response_kind;
+    if declared != actual {
+        tracing::warn!(
+            module = %runtime.module,
+            action = %runtime.action,
+            declared = ?declared,
+            actual = ?actual,
+            "Action 声明的 response_kind 与运行时实际响应类别不一致"
+        );
     }
 }
 
@@ -868,6 +897,15 @@ fn validate_action_presentation(
         (_, None) => {}
     }
 
+    if let Some(confirmation) = &presentation.confirmation {
+        for text in [&confirmation.title, &confirmation.message] {
+            let trimmed = text.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > 500 {
+                return Err(invalid("confirmation title/message 必须在 1..=500 字符"));
+            }
+        }
+    }
+
     if let Some(availability) = &presentation.availability {
         let reason = availability.reason.trim();
         if reason.is_empty() || reason.chars().count() > 500 {
@@ -963,6 +1001,7 @@ fn runtime_table_column(
             relation: None,
         },
         relation,
+        validation: super::FormFieldValidationSchema::from_spec(&field.validation),
         readable: field.access.readable.clone(),
         writable: field.access.writable.clone(),
         secret: field.access.secret,
@@ -1011,6 +1050,7 @@ fn form_field(
             .as_ref()
             .filter(|relation| relation.policy.allows(context))
             .map(|relation| relation.schema.clone()),
+        validation: column.validation.clone(),
     })
 }
 
