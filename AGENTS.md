@@ -54,6 +54,12 @@ lib_yang/
 | `ApiResponse` / `ResponseBody` | structs | `crates/yang-base/src/action/response.rs` | 统一响应 + 文件/预览/重定向附件 |
 | `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/mod.rs` | build-time registration, dependency checks, runtime registry |
 | `ActionContext` | struct | `crates/yang-base/src/action/context.rs` | request/user/tools/table context passed to actions |
+| `UiCatalog` / `UiCatalogAction` | structs | `crates/yang-base/src/definition/ui.rs`、`crates/yang-base/src/action/ui_catalog.rs` | 请求级 UI 目录投影（ActionDemo/TableView/Form/Tree schema，schema_version + revision） |
+| `WidgetHint` / `ActionPresentation` / `AvailabilityHint` | enums/structs | `crates/yang-base/src/definition/ui.rs` | 字段控件提示（可降级）、Action 位置×交互展示语义、非安全性可用提示 |
+| `RelationOptionsRequest` / `RelationOptionsResponse` | structs | `crates/yang-base/src/table/relation_options.rs` | 关系选择器统一 options 契约（search/selected/filter/page/limit → {value,label}） |
+| `TenantResolver` / `TenantResolverMiddleware` | trait/struct | `crates/yang-base/src/action/tenant.rs` | 可信租户解析（header 仅为声明，resolver 服务端校验，fail-closed） |
+| `StepUpManager` / `StepUpMiddleware` | structs | `crates/yang-base/src/action/step_up.rs` | 敏感操作请求级重认证（challenge/proof 绑定用户+Action+资源+短过期） |
+| `MultipartSpec` / `UploadedFile` | structs | `crates/yang-base/src/definition/media.rs`、`crates/yang-base/src/action/upload.rs` | 受限 multipart 契约与上传文件句柄（临时根受信、copy_to 越界拒绝） |
 | `router` / `serve` | functions | `crates/yang-base/src/transport/axum.rs` | Axum 0.8 传输适配器入口 |
 | `TableQuery` | struct | `crates/yang-base/src/table/table_query.rs` | table-aware query builder with permissions |
 | `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL field validation and type mapping |

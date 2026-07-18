@@ -8,6 +8,31 @@
 > 状态：✅ 已完成 / 🟨 部分完成 / ⏳ 待处理
 > 最近更新：2026-06-27，对 yang-base/yang-db 进行生产就绪度再审（综合评分 71/100，判定 CONDITIONAL），新增 NEW-35~NEW-44 共 10 项发现，含 clippy 门禁修复回归（高优先）等；yang-pcg 不在本轮范围。
 
+## 2026-07-17 前端契约修复系列延后事项
+
+来源：`docs/superpowers/plans/2026-07-17-frontend-contract-fixes.md`（FRONTEND_FIRST_PRINCIPLES 审查发现 2 Critical + 9 Important 已全部修复并经全分支复审），以下为明确推迟项，按优先级分组。
+
+🟠 High
+- 内置关系 options 执行器：基于 `TableQuery`（已 fail-closed）提供默认实现，复用 `RelationLoader` 批量 IN 处理 `selected` 回填；执行器级不变量（filter 键 ⊆ searchable/filterable 白名单 + 租户键强制注入）需配契约测试。当前 DTO 安全语义依赖应用层自觉。
+- 树查询真正读前上限：当前 `ensure_tree_node_cap` 为先读后拦（全表读入后报错）；需 yang-db 支持 `LIMIT max_nodes+1` 预取截断后改为读前上限。
+- 中间件顺序机制化：认证先于 `TenantResolverMiddleware` 目前仅靠文档约定（`ModuleSpec::middleware`），待增加 phase/排序键或构建期校验。
+
+🟡 Medium
+- 内置 step-up re-auth Action（对称于 `LoginAction`）+ 示例 verifier 演示限流/失败计数；当前 `complete_challenge` 原语要求应用层自行接线。
+- step-up proof 一次性消费（jti 消费缓存，复用 redis）：当前 proof 在 TTL 内可重放，高价值可重复操作依赖 resolver 绑定操作参数指纹收窄窗口。
+- derive 宏支持自定义 `max_text_field_bytes`：目前仅 builder 可设，宏声明的 multipart Action 只能使用 64 KiB 默认文本上限（需改 yang-base-derive）。
+- UI 投影性能：`ui_catalog` 每请求全量深克隆重建，可按（identity, generation）缓存；revision 可升级为 HTTP ETag/304 协商；`UiCatalog` 字段私有化防 revision 失效。
+
+🟢 Low
+- `response_kind` 不一致 warn：移入 dispatch span（补 request_id 关联）并考虑按 Action 节流。
+- `verify_token_checked` rustdoc 补列 `RedisNotInitialized`（已有锁定测试）；`secret+searchable` 矛盾声明构建期拒绝（运行时无泄漏）；relation select Action 的 TypeId 精确相等对包装输出类型的限制补文档。
+- 有效 token 注入公开 Action 的正路径目前仅 Docker 测试覆盖；需进程内 revocation 存储或 cache 降级策略后才能改写为非 Docker 单测。
+
+⚠️ 本次修复对下游的三处有意收紧（升级注意）
+- 结构化 where 现在强制字段声明 `filterable`（此前未声明即隐式放行）；关键词搜索同理要求显式 `searchable`。
+- multipart Action 的 `max_total_bytes` 不得小于文本字段上限（默认 64 KiB），否则构建期报错。
+- 普通 JSON Action 的输入不得包含文件上传字段（`format: binary`），构建期强制走 multipart 契约。
+
 ## 2026-07-15 完成度对账
 
 本节只对账，不重写下方历史审计。判定来源为 `docs/YANG_BASE_DB_COMPLETENESS_PLAN.md` 与对应实现/测试提交，日期均为 2026-07-15。

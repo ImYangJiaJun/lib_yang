@@ -161,20 +161,20 @@ scs-web 的 `ws.js` 已注册 `$wss/$wss_subscribe`，但连接初始化被注�
 
 | 目标能力 | yang 现状 | 判定 |
 |---|---|---|
-| 每个 Action 自动生成默认演示 | `ActionSpec` 已有 method/path/operation_id/params/input_schema/output_schema/权限，Catalog 可生成 OpenAPI | ⚠️ 原料具备，缺请求级目录端点与前端 ActionDemo |
-| 菜单/应用 schema | `DefinitionCatalog` 有 Addon/Module/Action 元数据 | ⚠️ 缺用户/租户过滤后的菜单投影 |
+| 每个 Action 自动生成默认演示 | `ActionSpec` 已有 method/path/operation_id/params/input_schema/output_schema/权限，Catalog 可生成 OpenAPI；请求级 UI 目录端点 + 版本化 `ActionDemoSchema` 已上线 | ✅ 后端契约已补齐（2026-07-17），前端 ActionDemo 待新前端实现 |
+| 菜单/应用 schema | `DefinitionCatalog` 有 Addon/Module/Action 元数据；按当前用户/权限的请求级菜单投影已上线 | ✅ 已补齐（2026-07-17）；租户维度有意不纳入投影，决策与接入点见 ui.rs 模块文档 |
 | 基础数据 schema | CRUD 已注册 `/schema`，`TableAction` 返回按角色过滤的 input/output JSON Schema | ✅ 已有，不等于完整 UI schema |
-| Table/Form/Tree UI schema | 字段展示元数据 + `CompiledTableView` 提供表、字段、Action 引用 | ⚠️ 缺列、筛选、布局和控件映射投影 |
-| Action 展示行为 | `ViewSpec::action(ActionRef)` 只有引用 | ❌ 缺展示位置、交互方式、确认和自定义 view 引用 |
-| 字段到控件映射 | yang `FieldKind` 约 10 类，br_fields `FieldMode` 约 36 类 | ⚠️ 不能一一映射，需要独立 WidgetHint 和降级规则 |
-| 关联 `{value,label}` 选择器 | `RelationLoader`、`table_select()`、字段 `display/select` 提供查询基础 | ⚠️ 缺统一 options 请求/响应 DTO |
+| Table/Form/Tree UI schema | 字段展示元数据 + `CompiledTableView`；列、筛选、分页边界、WidgetHint、校验提示、显式树拓扑投影已上线 | ✅ 已补齐（2026-07-17） |
+| Action 展示行为 | `ViewSpec::action(ActionRef)` + `ActionPresentation`（位置×交互×确认×自定义 view_id）已投影 | ✅ 已补齐（2026-07-17） |
+| 字段到控件映射 | `WidgetHint` 独立于 `FieldKind`，未知值安全降级为 JSON 输入 | ✅ 已补齐（2026-07-17） |
+| 关联 `{value,label}` 选择器 | 统一 `RelationOptionsRequest/Response` DTO（search/selected/filter/page/limit），decode 默认强制边界校验，select Action 构建期类型校验 + 权限投影 | ✅ 契约已补齐（2026-07-17）；内置执行器在 BACKLOG |
 | 下载/预览/重定向 | `ResponseBody::download/preview/redirect` | ✅ 已对齐 |
-| multipart 上传 | transport-axum 把 body 强制解析为 JSON，`Request.body` 是 `serde_json::Value` | ❌ 需设计 Action media type 与文件生命周期，不只是加 extractor |
-| 认证与权限 | `Authorization`、`TokenAuthMiddleware`、Action/Module permission 已有 | ✅ 认证授权基础成立 |
-| 请求租户上下文 | `TenantContext` 和 table fail-closed 已有，但 transport/auth 不负责注入 | ⚠️ 缺可信 tenant resolver middleware |
+| multipart 上传 | Action media type 契约 + 流式接收 + 大小/数量/类型/文本字段限制 + 临时文件 RAII 生命周期 + 伪造路径封堵 | ✅ 已补齐（2026-07-17） |
+| 认证与权限 | `Authorization`、`TokenAuthMiddleware`、Action/Module permission 已有；公开 Action 可选认证 fail-closed | ✅ 认证授权基础成立 |
+| 请求租户上下文 | `TenantResolverMiddleware` 可信解析（header 仅为声明，resolver 服务端校验），全链路 fail-closed | ✅ 已补齐（2026-07-17）；顺序机制化校验在 BACKLOG |
 | 错误处理 | 真实 HTTP 状态码 + 结构化 code | ✅ 已升级 |
-| step-up authentication | 无绑定目标 Action/资源的短期证明 | ❌ 敏感操作真实缺口 |
-| 自定义页面 | 无稳定 view registry 契约 | ❌ 需前端白名单注册与安全降级 |
+| step-up authentication | 服务端 challenge/proof，HS256 绑定用户+Action+资源+短过期，审计事件齐全 | ✅ 已补齐（2026-07-17）；内置 re-auth Action 与 proof 一次性消费在 BACKLOG |
+| 自定义页面 | 后端稳定 `view_id` 白名单契约（拒绝物理路径/动态加载），前端静态注册表属新前端工作 | ✅ 后端契约已补齐（2026-07-17） |
 | WS 实时通道 | 无 | ➖ 当前范围外 |
 | 字段事实源 | `fields!` → TableDefinition/JSON Schema/additive schema sync | ✅ 方向成立，但 UI 控件语义仍需补充 |
 
