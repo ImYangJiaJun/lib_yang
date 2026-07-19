@@ -1042,6 +1042,7 @@ fn status_for_error(error: &BaseError) -> StatusCode {
     match error {
         #[cfg(feature = "token")]
         BaseError::StepUpRequired(_) => StatusCode::PRECONDITION_REQUIRED,
+        BaseError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         BaseError::Unauthorized(_)
         | BaseError::InvalidPassword
         | BaseError::TokenKeyInvalid(_)
@@ -1091,6 +1092,17 @@ fn error_response(status: StatusCode, error: BaseError) -> Response {
             "expires_in": challenge.expires_in,
         }));
         return (status, Json(response)).into_response();
+    }
+
+    if let BaseError::RateLimitExceeded {
+        retry_after_seconds,
+    } = &error
+    {
+        let mut response = (status, Json(ApiResponse::from_error(&error))).into_response();
+        if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
     }
 
     let response = if status.is_server_error() {

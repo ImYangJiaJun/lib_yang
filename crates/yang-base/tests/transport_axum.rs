@@ -117,6 +117,33 @@ impl BusinessAction for FailAction {
     }
 }
 
+/// 返回标准限流错误（429，并携带 Retry-After）。
+#[derive(Action)]
+#[action(
+    name = "rate_limited",
+    display_name = "限流",
+    method = "POST",
+    path = "/api/test/rate-limited",
+    public
+)]
+struct RateLimitedAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for RateLimitedAction {
+    type Input = EmptyInput;
+    type Output = serde_json::Value;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        Err(BaseError::RateLimitExceeded {
+            retry_after_seconds: 30,
+        })
+    }
+}
+
 /// 返回服务端错误的 Action（500，message 对外遮蔽）。
 #[derive(Action)]
 #[action(
@@ -633,6 +660,7 @@ fn build_app() -> Arc<BuiltApp> {
     let module = ModuleSpec::new(ModuleName::new("test.probe").expect("模块名应有效"))
         .native_action(EchoAction)
         .native_action(FailAction)
+        .native_action(RateLimitedAction)
         .native_action(CrashAction)
         .native_action(DownloadAction { path: download })
         .native_action(PreviewAction { path: preview })
@@ -992,6 +1020,25 @@ async fn client_error_keeps_message_and_maps_400() {
             .contains("标题不能为空"),
         "客户端错误 message 应对外可见: {json}"
     );
+}
+
+#[tokio::test]
+async fn rate_limit_error_maps_429_and_retry_after() {
+    let response = oneshot(
+        default_router(),
+        json_request("POST", "/api/test/rate-limited", "{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("30")
+    );
+    let json = body_json(response).await;
+    assert_eq!(json["code"], 700011);
 }
 
 #[tokio::test]

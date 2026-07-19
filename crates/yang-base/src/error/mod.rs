@@ -339,6 +339,13 @@ pub enum BaseError {
     #[error("参数无效 [{0}]: {1}")]
     ParamInvalid(String, String),
 
+    /// 请求超过速率限制。
+    #[error("请求过于频繁，请在 {retry_after_seconds} 秒后重试")]
+    RateLimitExceeded {
+        /// 建议客户端等待的秒数。
+        retry_after_seconds: u64,
+    },
+
     /// 记录未找到
     #[error("记录未找到: {0}")]
     RecordNotFound(String),
@@ -636,6 +643,7 @@ impl BaseError {
             BaseError::TableDefinitionNotSet => 700009,
             #[cfg(feature = "token")]
             BaseError::StepUpRequired(_) => 700010,
+            BaseError::RateLimitExceeded { .. } => 700011,
 
             // ==================== 通用错误 (9xxxxx) ====================
             BaseError::ConfigError(_) => 900001,
@@ -727,6 +735,7 @@ impl BaseError {
             BaseError::TableDefinitionNotSet => "700009",
             #[cfg(feature = "token")]
             BaseError::StepUpRequired(_) => "700010",
+            BaseError::RateLimitExceeded { .. } => "700011",
             // 通用错误 (9xxxxx)
             BaseError::ConfigError(_) => "900001",
             BaseError::IoError(_) => "900002",
@@ -817,7 +826,9 @@ impl BaseError {
             BaseError::FieldNotFound(_, _) => C::NotFound,
             // Action 系统错误
             BaseError::Unauthorized(_) | BaseError::PermissionDenied(_) => C::Auth,
-            BaseError::ParamMissing(_) | BaseError::ParamInvalid(_, _) => C::Client,
+            BaseError::ParamMissing(_)
+            | BaseError::ParamInvalid(_, _)
+            | BaseError::RateLimitExceeded { .. } => C::Client,
             BaseError::RecordNotFound(_) | BaseError::UserNotFound(_) => C::NotFound,
             BaseError::InvalidPassword => C::Auth,
             BaseError::ActionNotFound(_) | BaseError::TableDefinitionNotSet => C::NotFound,
@@ -1072,6 +1083,13 @@ mod tests {
         );
         assert_eq!(BaseError::InvalidPassword.code(), 700008);
         assert_eq!(BaseError::TableDefinitionNotSet.code(), 700009);
+        assert_eq!(
+            BaseError::RateLimitExceeded {
+                retry_after_seconds: 30
+            }
+            .code(),
+            700011
+        );
     }
 
     #[test]
@@ -1099,6 +1117,9 @@ mod tests {
             BaseError::UserNotFound("test".to_string()),
             BaseError::InvalidPassword,
             BaseError::TableDefinitionNotSet,
+            BaseError::RateLimitExceeded {
+                retry_after_seconds: 30,
+            },
             BaseError::Unknown("test".to_string()),
         ];
 
@@ -1217,6 +1238,9 @@ mod tests {
             BaseError::FieldNotFound("t".into(), "f".into()),
             BaseError::ParamInvalid("k".into(), "r".into()),
             BaseError::TableDefinitionNotSet,
+            BaseError::RateLimitExceeded {
+                retry_after_seconds: 30,
+            },
             BaseError::ConfigError("c".into()),
             BaseError::Unknown("u".into()),
         ];
