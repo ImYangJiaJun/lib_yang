@@ -74,7 +74,7 @@ axum = { version = "0.8.9", features = ["multipart"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compression-br", "compression-deflate", "compression-gzip"] }
 
 # tower Service 工具（测试 oneshot）
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 
 # 请求作用域上传临时目录（仅 transport-axum 启用）；3.24+ 的依赖链不兼容 Cargo 1.80
 tempfile = "=3.23.0"
