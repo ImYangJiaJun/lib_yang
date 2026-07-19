@@ -720,15 +720,11 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 /// use yang_base::action::{TokenAuthMiddleware, User};
 /// use yang_base::definition::{ModuleName, ModuleSpec};
 ///
-/// // 从 JWT sub 取用户 ID，从自定义声明 "roles" 取角色
+/// // 从 JWT sub 取用户 ID；业务标识解析失败时必须拒绝认证
 /// let auth = TokenAuthMiddleware::new(|claims| {
-///     let roles = claims.custom.get("roles")
-///         .and_then(|v| v.as_array())
-///         .map(|a| a.iter().filter_map(|r| r.as_str().map(String::from)).collect())
-///         .unwrap_or_default();
-///     let mut user = User::new(claims.sub.parse().unwrap_or(0), claims.sub.clone());
-///     user.roles = roles;
-///     user
+///     let id = claims.sub.parse::<i64>()
+///         .map_err(|_| yang_base::BaseError::Unauthorized("Token subject 无效".into()))?;
+///     Ok(User::new(id, claims.sub.clone()))
 /// });
 ///
 /// let module = ModuleSpec::new(ModuleName::new("account.user")?).middleware(auth);
@@ -740,11 +736,36 @@ pub struct TokenAuthMiddleware<F> {
     authenticate_public_actions: bool,
 }
 
-impl<F> TokenAuthMiddleware<F>
+/// 将不可失败的旧式用户投影和可失败的安全投影统一成认证结果。
+///
+/// 该适配 trait 公开仅用于满足 [`TokenAuthMiddleware`] 的泛型边界；业务代码通常
+/// 只需让闭包返回 [`User`] 或 `Result<User, BaseError>`。
+#[doc(hidden)]
+pub trait IntoUserProjection {
+    fn into_user_projection(self) -> Result<User, BaseError>;
+}
+
+impl IntoUserProjection for User {
+    fn into_user_projection(self) -> Result<User, BaseError> {
+        Ok(self)
+    }
+}
+
+impl IntoUserProjection for Result<User, BaseError> {
+    fn into_user_projection(self) -> Result<User, BaseError> {
+        self
+    }
+}
+
+impl<F, R> TokenAuthMiddleware<F>
 where
-    F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
+    F: Fn(&TokenClaims) -> R + Send + Sync + 'static,
+    R: IntoUserProjection,
 {
     /// 用「声明 -> 用户」闭包创建 Token 鉴权中间件。
+    ///
+    /// 闭包可返回 `User` 保持简单场景兼容，也可返回 `Result<User, BaseError>`，在
+    /// subject、角色或权限声明格式非法时 fail-closed。
     pub fn new(build_user: F) -> Self {
         Self {
             build_user,
@@ -767,9 +788,10 @@ where
 }
 
 #[async_trait]
-impl<F> Middleware for TokenAuthMiddleware<F>
+impl<F, R> Middleware for TokenAuthMiddleware<F>
 where
-    F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
+    F: Fn(&TokenClaims) -> R + Send + Sync + 'static,
+    R: IntoUserProjection + Send + Sync + 'static,
 {
     fn role(&self) -> MiddlewareRole {
         MiddlewareRole::Authentication
@@ -813,7 +835,7 @@ where
         }
 
         // 4. 注入当前用户后继续调用链
-        ctx.user = Some((self.build_user)(&claims));
+        ctx.user = Some((self.build_user)(&claims).into_user_projection()?);
         next.run(ctx).await
     }
 }
@@ -1027,6 +1049,18 @@ mod tests {
         let logout = LogoutAction::new();
         assert_eq!(logout.name(), "logout");
         assert!(logout.is_public());
+    }
+
+    #[test]
+    fn token_auth_middleware_accepts_fallible_user_projection() {
+        fn assert_middleware(_: &impl Middleware) {}
+
+        let middleware = TokenAuthMiddleware::new(|_claims: &TokenClaims| {
+            Err::<User, BaseError>(BaseError::Unauthorized("Token subject 无效".to_string()))
+        });
+
+        assert_middleware(&middleware);
+        assert_eq!(middleware.scope(), MiddlewareScope::ProtectedActions);
     }
 
     #[tokio::test]
