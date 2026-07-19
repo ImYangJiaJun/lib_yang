@@ -1039,6 +1039,14 @@ async fn request_id_is_forwarded_from_header() {
         .insert("x-request-id", "c0ffee".parse().unwrap());
     let response = oneshot(default_router(), request).await;
     assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("00000000000000000000000000c0ffee"),
+        "HTTP 响应头必须回传规范化 request_id"
+    );
     let json = body_json(response).await;
     assert_eq!(
         json["data"]["request_id"], "00000000000000000000000000c0ffee",
@@ -1053,11 +1061,38 @@ async fn request_id_is_generated_when_header_absent() {
         json_request("POST", "/api/test/echo", r#"{"value": 1}"#),
     )
     .await;
+    let response_request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let json = body_json(response).await;
     let id = json["data"]["request_id"].as_str().unwrap_or_default();
     assert_eq!(id.len(), 32, "request_id 应为 32 位十六进制: {id}");
     assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     assert_ne!(id, "00000000000000000000000000000000");
+    assert_eq!(
+        response_request_id, id,
+        "响应头与 ActionContext 必须使用同一 request_id"
+    );
+}
+
+#[tokio::test]
+async fn request_id_is_returned_when_body_decode_fails() {
+    let response = oneshot(
+        default_router(),
+        json_request("POST", "/api/test/echo", "{"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(id.len(), 32, "解码失败响应也必须携带 request_id: {id}");
+    assert!(id.chars().all(|character| character.is_ascii_hexdigit()));
 }
 
 // ---------------------------------------------------------------------------

@@ -82,9 +82,10 @@ pub use request_meta::RequestMeta;
 pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
 #[cfg(feature = "token")]
 pub use step_up::{
-    StepUpChallenge, StepUpManager, StepUpMiddleware, StepUpProof, StepUpResourceResolver,
-    StepUpVerification, DEFAULT_STEP_UP_CHALLENGE_TTL, DEFAULT_STEP_UP_PROOF_TTL,
-    STEP_UP_PROOF_HEADER,
+    InMemoryStepUpProofStore, RedisStepUpProofStore, StepUpChallenge, StepUpCompleteAction,
+    StepUpCompleteInput, StepUpManager, StepUpMiddleware, StepUpProof, StepUpProofStore,
+    StepUpResourceResolver, StepUpVerification, DEFAULT_STEP_UP_CHALLENGE_TTL,
+    DEFAULT_STEP_UP_PROOF_TTL, STEP_UP_PROOF_HEADER,
 };
 pub use tenant::{TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};

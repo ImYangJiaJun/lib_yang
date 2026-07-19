@@ -993,6 +993,24 @@ impl TableQuery {
         Ok(self)
     }
 
+    /// 为服务端有界预取设置从首行开始的硬上限。
+    ///
+    /// 该入口只供 crate 内已经持有可信上限的算法使用（例如树查询的
+    /// `max_nodes + 1` 截断检测），不接受终端用户分页参数，因此不套用公开分页的
+    /// 100 行产品限制。
+    #[cfg(feature = "mysql")]
+    pub(crate) fn prefetch_limit(mut self, limit: usize) -> Result<Self, BaseError> {
+        if limit == 0 {
+            return Err(BaseError::ParamInvalid(
+                "limit".to_string(),
+                "预取上限必须大于 0".to_string(),
+            ));
+        }
+        self.query_params.page = Some(1);
+        self.query_params.page_size = Some(limit);
+        Ok(self)
+    }
+
     /// 对声明了 searchable 且当前角色可读的文本字段应用一次 OR LIKE 搜索。
     ///
     /// 关键词搜索只认独立的 searchable 位（[`crate::table::Field::searchable`]），与
@@ -3050,6 +3068,16 @@ mod tests {
             .expect_err("page_size 超过 100 应被拒绝");
 
         assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "page_size"));
+    }
+
+    #[test]
+    fn trusted_prefetch_limit_reaches_sql_without_public_page_cap() {
+        let query = test_query()
+            .prefetch_limit(10_001)
+            .expect("可信树上限应允许 max_nodes + 1 探针");
+        let (sql, _) = query.build_select_sql(None).expect("有界预取 SQL 应可构建");
+
+        assert!(sql.ends_with("LIMIT 10001 OFFSET 0"), "实际 SQL: {sql}");
     }
 
     #[test]

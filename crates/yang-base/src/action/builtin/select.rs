@@ -1,7 +1,7 @@
 //! SelectAction - 分页查询带 where 条件 + 排序
 #![cfg(feature = "mysql")]
 
-use crate::action::sql_bridge::count_with_tree;
+use crate::action::sql_bridge::count_query;
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
 use crate::table::{Record, SortOrder, WhereCondition};
@@ -40,6 +40,9 @@ pub struct SelectQuery {
     /// 每页条数，缺省 10，必须 1..=100
     #[serde(default = "default_page_size")]
     pub page_size: u32,
+    /// 在表定义声明的 searchable 字段中执行关键词搜索。
+    #[serde(default)]
+    pub search: Option<String>,
     /// where 布尔过滤树（叶子 + And/Or 嵌套），JSON key 为 `"where"`，缺省无条件
     #[serde(rename = "where", default)]
     pub where_clause: Option<WhereCondition>,
@@ -100,6 +103,7 @@ impl TypedHandler for SelectAction {
         let SelectQuery {
             page,
             page_size,
+            search,
             where_clause,
             order_by,
             count_total,
@@ -118,19 +122,16 @@ impl TypedHandler for SelectAction {
         }
         let mut q = ctx.table_query()?;
         q.ensure_readable_projection()?;
-
-        let total = if count_total {
-            match &where_clause {
-                Some(tree) => Some(count_with_tree(&ctx, tree.clone()).await?),
-                None => Some(ctx.table_query()?.count().await?),
-            }
-        } else {
-            None
-        };
+        q = q.search(search.as_deref())?;
         // 整棵 where 树一次性递归校验 + 并入（含字段存在性/筛选权限/嵌套深度）
         if let Some(tree) = where_clause {
             q = q.where_tree(tree)?;
         }
+        let total = if count_total {
+            Some(count_query(q.clone()).await?)
+        } else {
+            None
+        };
         for OrderByItem { field, direction } in order_by {
             q = q.order_by(&field, direction)?;
         }
@@ -143,5 +144,20 @@ impl TypedHandler for SelectAction {
             page_size,
             total,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SelectQuery;
+
+    #[test]
+    fn select_query_accepts_generic_table_search() {
+        let query: SelectQuery = serde_json::from_value(serde_json::json!({
+            "search": "alice"
+        }))
+        .expect("通用 TableView 搜索词应属于标准 select 输入");
+
+        assert_eq!(query.search.as_deref(), Some("alice"));
     }
 }

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "2.1";
+pub const UI_SCHEMA_VERSION: &str = "2.2";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -511,6 +511,8 @@ pub struct TableViewSchema {
     pub title: String,
     /// 服务端表定义名。
     pub table: String,
+    /// 返回标准分页行数据的 Action operation ID。
+    pub data_action: String,
     /// 当前用户可读的有序列。
     pub columns: Vec<TableColumnSchema>,
     /// 当前用户可读或可写的通用表单字段。
@@ -1085,6 +1087,7 @@ mod tests {
         created_at.timestamp_mode = crate::definition::TimestampMode::CreatedAt;
 
         let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .data_action(action_ref("list"))
             .field(field_ref("id"))
             .field(field_ref("parent_id"))
             .field(field_ref("name"))
@@ -1164,6 +1167,7 @@ mod tests {
         assert_eq!(member.table_views.len(), 1);
         assert_eq!(member.table_views[0].view_id, "org.member.main");
         assert_eq!(member.table_views[0].table, "org_member");
+        assert_eq!(member.table_views[0].data_action, "org.member.list");
         assert!(
             member.table_views[0].tree.is_none(),
             "任一拓扑字段不可读时必须安全降级为普通表格"
@@ -1351,6 +1355,16 @@ mod tests {
     fn table_view_query_projection_aligns_with_server_searchable_and_filterable_bits() {
         let module_name = ModuleName::new("org.doc").expect("测试 Module 名称应有效");
         let table_name = TableName::new("org_doc").expect("测试 Table 名称应有效");
+        let field_ref = |name: &str| {
+            FieldRef::new(
+                table_name.clone(),
+                FieldName::new(name).expect("测试字段名应有效"),
+            )
+        };
+        let data_action = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("list").expect("测试 Action 名称应有效"),
+        );
         let with_access = |name: &str, searchable: bool, filterable: bool| {
             let mut field = FieldSpec::new(
                 FieldName::new(name).expect("测试字段名应有效"),
@@ -1360,6 +1374,13 @@ mod tests {
             field.access.filterable = filterable;
             field
         };
+        let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .data_action(data_action)
+            .field(field_ref("id"))
+            .field(field_ref("both"))
+            .field(field_ref("search_only"))
+            .field(field_ref("filter_only"))
+            .field(field_ref("neither"));
         let module = ModuleSpec::new(module_name)
             .table(
                 TableSpec::new(table_name)
@@ -1372,7 +1393,9 @@ mod tests {
                     .field(with_access("filter_only", false, true))
                     .field(with_access("neither", false, false)),
             )
-            .default_permissions(["doc:view"], PermissionMode::All);
+            .default_permissions(["doc:view"], PermissionMode::All)
+            .action(action("list", "org.doc.list"), NoopAction)
+            .view(view);
         let app = AppBuilder::new()
             .addon(
                 AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
@@ -1571,6 +1594,7 @@ mod tests {
                 .action(action("flow", "dms.task.flow"), NoopAction)
                 .view(
                     ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                        .data_action(action_ref.clone())
                         .present_action(action_ref, presentation),
                 );
             AppBuilder::new()
@@ -1727,7 +1751,7 @@ mod tests {
     #[test]
     fn form_field_validation_serializes_only_declared_constraints() {
         assert_eq!(
-            UI_SCHEMA_VERSION, "2.1",
+            UI_SCHEMA_VERSION, "2.2",
             "TreeViewSchema.max_nodes 进入线上契约，必须递增 schema 版本"
         );
 
@@ -1796,15 +1820,17 @@ mod tests {
         score.access.readable = AccessRule::Roles(vec!["admin".to_string()]);
         score.access.writable = AccessRule::Roles(vec!["admin".to_string()]);
 
+        let list_action = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("list").expect("测试 Action 名称应有效"),
+        );
         let view = ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+            .data_action(list_action.clone())
             .field(field_ref("id"))
             .field(field_ref("nickname"))
             .field(field_ref("score"))
             .field(field_ref("bio"))
-            .action(ActionRef::new(
-                module_name.clone(),
-                ActionName::new("list").expect("测试 Action 名称应有效"),
-            ));
+            .action(list_action);
         let module = ModuleSpec::new(module_name)
             .table(
                 TableSpec::new(table_name)

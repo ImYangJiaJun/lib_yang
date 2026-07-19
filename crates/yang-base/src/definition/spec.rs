@@ -391,10 +391,14 @@ impl TreeViewSpec {
 pub struct ViewSpec {
     /// View 局部名称。
     pub name: ViewName,
+    /// 用户可见标题；默认使用 View 局部名称。
+    pub title: String,
     /// 有序字段引用。
     pub fields: Vec<FieldRef>,
     /// 有序按钮/操作引用。
     pub actions: Vec<ActionRef>,
+    /// 为通用表格返回标准分页行数据的 Action。
+    pub data_action: Option<ActionRef>,
     /// 显式 Action 展示声明；未声明的 Action 在构建期按静态契约安全推导。
     pub action_presentations: BTreeMap<ActionRef, ActionPresentationSpec>,
     /// 可选树拓扑；未声明时按普通表格投影。
@@ -406,10 +410,13 @@ pub struct ViewSpec {
 impl ViewSpec {
     /// 创建空 View。
     pub fn new(name: ViewName) -> Self {
+        let title = name.to_string();
         Self {
             name,
+            title,
             fields: Vec::new(),
             actions: Vec::new(),
+            data_action: None,
             action_presentations: BTreeMap::new(),
             tree: None,
             default_sort: Vec::new(),
@@ -427,6 +434,23 @@ impl ViewSpec {
     #[must_use]
     pub fn action(mut self, action: ActionRef) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    /// 设置用户可见标题。
+    #[must_use]
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// 设置通用表格的数据查询 Action。
+    ///
+    /// 该 Action 必须返回 JSON，且业务数据应符合 `items/page/page_size/total`
+    /// 分页结构。它不会自动成为工具栏或行按钮。
+    #[must_use]
+    pub fn data_action(mut self, action: ActionRef) -> Self {
+        self.data_action = Some(action);
         self
     }
 
@@ -619,7 +643,8 @@ impl ModuleSpec {
     /// 必须后注册——例如认证类中间件（如 `TokenAuthMiddleware`）必须先于
     /// [`TenantResolverMiddleware`](crate::action::TenantResolverMiddleware)
     /// 注册，租户 resolver 才能从 [`ActionContext`](crate::action::ActionContext)
-    /// 读到已认证用户。框架当前不在构建期校验该顺序，注册方需自行保证。
+    /// 读到已认证用户。框架会在构建期拒绝这两个内置中间件的反向顺序；自定义
+    /// 中间件仍应通过 [`Middleware::role`](crate::router::Middleware::role) 声明已知角色。
     #[must_use]
     pub fn middleware<M>(mut self, middleware: M) -> Self
     where

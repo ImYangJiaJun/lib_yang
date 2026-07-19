@@ -5,7 +5,7 @@
 
 use super::{ActionContext, ApiResponse, TenantContext, TenantId};
 use crate::error::BaseError;
-use crate::router::{Middleware, Next};
+use crate::router::{Middleware, MiddlewareRole, Next};
 use async_trait::async_trait;
 
 /// 默认租户候选请求头。
@@ -55,6 +55,10 @@ impl<R> Middleware for TenantResolverMiddleware<R>
 where
     R: TenantResolver,
 {
+    fn role(&self) -> MiddlewareRole {
+        MiddlewareRole::TenantResolution
+    }
+
     async fn handle(
         &self,
         context: ActionContext,
@@ -372,6 +376,42 @@ mod tests {
                 )
                 .build(chain_tools())
                 .expect("链路测试应用应构建成功")
+        }
+
+        #[test]
+        fn build_rejects_tenant_before_token_authentication() {
+            let module = ModuleSpec::new(
+                ModuleName::new("org.tenant_bad_order").expect("测试 Module 名称应有效"),
+            )
+            .middleware(TenantResolverMiddleware::new(MembershipResolver))
+            .middleware(TokenAuthMiddleware::new(|claims| {
+                User::new(7, claims.sub.clone())
+            }))
+            .action(
+                ActionSpec::new(
+                    ActionName::new("tenant_probe").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Get,
+                        "/api/v1/org/tenant-bad-order/probe",
+                        "org.tenant_bad_order.tenant_probe",
+                    ),
+                ),
+                TenantProbe,
+            );
+            let error = AppBuilder::new()
+                .addon(
+                    AddonSpec::new(AddonName::new("org").expect("测试 Addon 名称应有效"))
+                        .module(module),
+                )
+                .build(chain_tools())
+                .expect_err("租户解析先于认证必须在构建期失败");
+            assert!(matches!(
+                error,
+                crate::definition::BuildError::InvalidReference {
+                    kind: "Middleware order",
+                    ..
+                }
+            ));
         }
 
         /// 真实链路端到端：认证中间件先于租户中间件执行，任一环节失败即短路。

@@ -4,7 +4,7 @@
 //! `AppBuilder -> BuiltApp` 链路负责；本模块只保留可复用的洋葱中间件抽象。
 
 pub mod middleware;
-pub use middleware::{Middleware, MiddlewareScope, Next, RequestIdMiddleware};
+pub use middleware::{Middleware, MiddlewareRole, MiddlewareScope, Next, RequestIdMiddleware};
 
 #[cfg(test)]
 mod __tests__;

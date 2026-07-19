@@ -1,18 +1,12 @@
 //! 把类型化 where 条件桥接到 TableQuery
 #![cfg(feature = "mysql")]
 
-use crate::action::ActionContext;
 use crate::error::BaseError;
-use crate::table::WhereCondition;
+use crate::table::TableQuery;
 
-/// 给定一棵 WHERE 条件树（叶子或 And/Or 组），跑一次 SELECT COUNT(*) 计算总数。
+/// 对已经完成搜索、筛选与租户注入的查询执行 COUNT。
 ///
-/// 整棵树经 `TableQuery::where_tree` 递归校验（字段存在性/筛选权限/嵌套深度）后并入
-/// 查询再 COUNT。C2a 布尔树的统一计数入口。
-pub(crate) async fn count_with_tree(
-    ctx: &ActionContext,
-    condition: WhereCondition,
-) -> Result<u64, BaseError> {
-    let q = ctx.table_query()?.where_tree(condition)?;
-    q.count().await
+/// 调用方传入同一数据查询的克隆，保证分页总数不会遗漏任一已生效条件。
+pub(crate) async fn count_query(query: TableQuery) -> Result<u64, BaseError> {
+    query.count().await
 }
