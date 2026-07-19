@@ -132,6 +132,11 @@ pub trait Module: Sized {
         Fields::new()
     }
 
+    /// 在统一字段投影后补充表标题、复合索引等表级约束。
+    fn configure_table(&self, table: TableSpec) -> TableSpec {
+        table
+    }
+
     /// 返回 Module Actions。
     fn actions(&self) -> Actions {
         Actions::new()
@@ -147,7 +152,8 @@ pub trait Module: Sized {
         let module_name = self.name();
         let mut spec = ModuleSpec::new(module_name.clone());
         if let Some(table) = self.table() {
-            spec = spec.table(TableSpec::new(table).fields(self.fields()));
+            let table = TableSpec::new(table).fields(self.fields());
+            spec = spec.table(self.configure_table(table));
         }
         for (mut action, handler) in self.actions().into_vec() {
             if action.route.operation_id == action.name.as_str() {
