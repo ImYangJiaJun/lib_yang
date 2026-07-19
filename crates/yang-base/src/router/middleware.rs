@@ -115,12 +115,33 @@ pub enum MiddlewareScope {
     ProtectedActions,
 }
 
+/// 框架内置中间件的依赖角色。
+///
+/// 该角色只用于构建期检查已知的安全依赖，不会重排洋葱链，也不会对自定义
+/// 中间件臆测顺序。未声明角色的中间件保持原有注册语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiddlewareRole {
+    /// 没有框架可推断的安全顺序依赖。
+    Unspecified,
+    /// 向 [`ActionContext`](crate::action::ActionContext) 注入可信身份。
+    Authentication,
+    /// 依赖可信身份解析租户上下文。
+    TenantResolution,
+    /// 依赖可信身份执行敏感操作重认证。
+    StepUpProtection,
+}
+
 /// 中间件 trait。
 ///
 /// 实现者在 `handle` 中拦截一次 Action 派发：可在调用 `next.run(ctx)` 前后
 /// 注入逻辑，或不调用 `next` 直接短路返回。
 #[async_trait]
 pub trait Middleware: Send + Sync + 'static {
+    /// 返回构建期可验证的安全依赖角色。
+    fn role(&self) -> MiddlewareRole {
+        MiddlewareRole::Unspecified
+    }
+
     /// 返回只应执行此中间件的确定 Action。
     ///
     /// 默认 `None` 表示不限定 Action。返回目标时，App 构建期会验证引用存在且属于

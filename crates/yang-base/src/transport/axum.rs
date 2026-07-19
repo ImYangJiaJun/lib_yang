@@ -377,27 +377,37 @@ async fn dispatch_request(
                 .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect();
+    // 每个进入 Action 传输边界的请求都只有一个确定 request_id：合法上游值规范化
+    // 后沿用，否则在读取请求体前生成。这样即使 query/body 解码失败，调用方仍能用
+    // 响应头关联服务端日志。
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|raw| RequestId::parse_hex(raw))
+        .unwrap_or_default();
     let query = match uri.query() {
         Some(raw) => match serde_urlencoded::from_str::<HashMap<String, String>>(raw) {
             Ok(query) => query,
             Err(_) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    BaseError::ParamInvalid("query".to_string(), "查询参数编码无效".to_string()),
-                )
+                return with_request_id_header(
+                    error_response(
+                        StatusCode::BAD_REQUEST,
+                        BaseError::ParamInvalid(
+                            "query".to_string(),
+                            "查询参数编码无效".to_string(),
+                        ),
+                    ),
+                    request_id,
+                );
             }
         },
         None => HashMap::new(),
     };
     let decoded = match decode_request_body(&state, request, decoder).await {
         Ok(decoded) => decoded,
-        Err((status, error)) => return error_response(status, error),
+        Err((status, error)) => {
+            return with_request_id_header(error_response(status, error), request_id);
+        }
     };
-
-    // 上游 request_id 透传：解析失败（非十六进制/超长）时降级为新生成。
-    let upstream_request_id = headers
-        .get("x-request-id")
-        .and_then(|raw| RequestId::parse_hex(raw));
 
     let mut action_request = Request::new(decoded.value)
         .headers(headers)
@@ -415,15 +425,13 @@ async fn dispatch_request(
         Some(addr) => request_meta.with_local_addr(addr),
         None => request_meta,
     };
-    let mut context = state
+    let context = state
         .app
         .context(action_request)
-        .with_request_meta(request_meta);
-    if let Some(request_id) = upstream_request_id {
-        context = context.with_request_id(request_id);
-    }
+        .with_request_meta(request_meta)
+        .with_request_id(request_id);
 
-    match state.app.dispatch_context(handle, context).await {
+    let response = match state.app.dispatch_context(handle, context).await {
         Ok(response) => match response.attachment.clone() {
             Some(attachment) => attachment_response(attachment).await,
             None => {
@@ -438,7 +446,8 @@ async fn dispatch_request(
             }
             error_response(status, error)
         }
-    }
+    };
+    with_request_id_header(response, request_id)
 }
 
 async fn decode_request_body(
@@ -1054,6 +1063,22 @@ fn status_for_error(error: &BaseError) -> StatusCode {
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         },
     }
+}
+
+fn with_request_id_header(mut response: Response, request_id: RequestId) -> Response {
+    // RequestId::Display 固定输出 32 位 ASCII hex；仍通过 HeaderValue 校验守住
+    // HTTP 边界，避免未来展示格式演进时把非法字节写入响应头。
+    match HeaderValue::from_str(&request_id.to_string()) {
+        Ok(value) => {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static("x-request-id"), value);
+        }
+        Err(error) => {
+            tracing::error!(%request_id, %error, "request_id 无法写入 HTTP 响应头");
+        }
+    }
+    response
 }
 
 fn error_response(status: StatusCode, error: BaseError) -> Response {

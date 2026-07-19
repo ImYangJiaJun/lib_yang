@@ -37,7 +37,7 @@
 
 use crate::action::{ActionContext, ApiResponse, TypedHandler, User};
 use crate::error::BaseError;
-use crate::router::middleware::{Middleware, MiddlewareScope, Next};
+use crate::router::middleware::{Middleware, MiddlewareRole, MiddlewareScope, Next};
 use crate::token::TokenClaims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -771,6 +771,10 @@ impl<F> Middleware for TokenAuthMiddleware<F>
 where
     F: Fn(&TokenClaims) -> User + Send + Sync + 'static,
 {
+    fn role(&self) -> MiddlewareRole {
+        MiddlewareRole::Authentication
+    }
+
     fn scope(&self) -> MiddlewareScope {
         if self.authenticate_public_actions {
             MiddlewareScope::AllActions

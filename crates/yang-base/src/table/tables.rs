@@ -142,7 +142,10 @@ impl Tables {
     /// 树 View 应使用 [`Tables::table_tree_view`] 并在 `TreeViewSpec` 中配置。
     #[cfg(feature = "mysql")]
     pub async fn table_tree(self) -> Result<Vec<TableTreeNode>, BaseError> {
-        let rows = self.query.all().await?;
+        let read_limit = DEFAULT_TREE_MAX_NODES
+            .checked_add(1)
+            .ok_or_else(|| BaseError::ConfigError("默认树节点上限无法计算截断探针".to_string()))?;
+        let rows = self.query.prefetch_limit(read_limit)?.all().await?;
         ensure_tree_node_cap(rows.len(), DEFAULT_TREE_MAX_NODES)?;
         Self::build_tree(rows, "id", "parent_id")
     }
@@ -160,7 +163,15 @@ impl Tables {
             .tree()
             .ok_or_else(|| BaseError::ConfigError(format!("View {} 未声明树拓扑", view.name())))?;
         let max_nodes = tree.max_nodes();
-        let rows = self.view(view)?.query.all().await?;
+        let read_limit = max_nodes.checked_add(1).ok_or_else(|| {
+            BaseError::ConfigError(format!("View {} 的树节点上限过大", view.name()))
+        })?;
+        let rows = self
+            .view(view)?
+            .query
+            .prefetch_limit(read_limit)?
+            .all()
+            .await?;
         ensure_tree_node_cap(rows.len(), max_nodes)?;
         Self::build_tree(rows, tree.id_field_name(), tree.parent_field_name())
     }

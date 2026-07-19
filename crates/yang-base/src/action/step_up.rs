@@ -8,16 +8,17 @@ use super::auth::{CredentialVerifier, LoginInput};
 use super::{ActionContext, ApiResponse};
 use crate::definition::ActionRef;
 use crate::error::BaseError;
-use crate::router::{Middleware, Next};
+use crate::router::{Middleware, MiddlewareRole, Next};
 use async_trait::async_trait;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use yang_base_derive::Action;
 
 /// 默认 challenge 有效期：2 分钟。
 pub const DEFAULT_STEP_UP_CHALLENGE_TTL: Duration = Duration::from_secs(120);
@@ -109,6 +110,140 @@ pub struct StepUpVerification {
     pub proof_id: String,
 }
 
+/// 完成 step-up challenge 的输入。
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StepUpCompleteInput {
+    /// 敏感 Action 返回的签名 challenge。
+    pub challenge: String,
+    /// 要重新校验的业务凭据。
+    pub credentials: LoginInput,
+}
+
+/// 内置 step-up 重认证 Action。
+///
+/// Action 只负责编排签名 challenge 与业务 [`CredentialVerifier`]；限流、失败计数和
+/// 锁定仍必须由 verifier 使用共享存储实现，避免框架猜测账号体系。
+#[derive(Action)]
+#[action(
+    name = "step_up_complete",
+    display_name = "完成敏感操作重认证",
+    description = "重新校验凭据并把 step-up challenge 升级为一次性 proof",
+    method = "POST",
+    path = "/step-up/complete",
+    public
+)]
+pub struct StepUpCompleteAction<V: CredentialVerifier> {
+    manager: Arc<StepUpManager>,
+    verifier: V,
+}
+
+impl<V: CredentialVerifier> StepUpCompleteAction<V> {
+    /// 使用共享 step-up 管理器和业务凭据校验器创建 Action。
+    pub fn new(manager: Arc<StepUpManager>, verifier: V) -> Self {
+        Self { manager, verifier }
+    }
+}
+
+#[async_trait]
+impl<V: CredentialVerifier> super::TypedHandler for StepUpCompleteAction<V> {
+    type Input = StepUpCompleteInput;
+    type Output = StepUpProof;
+
+    async fn handle(
+        &self,
+        context: ActionContext,
+        input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        self.manager
+            .complete_challenge(
+                &context,
+                &self.verifier,
+                &input.credentials,
+                &input.challenge,
+            )
+            .await
+    }
+}
+
+/// step-up proof 的一次性消费存储。
+///
+/// 实现必须以 proof ID 为键执行原子“首次写入成功”语义，并至少保留到 proof
+/// 过期。返回 `false` 表示该 proof 已被消费。
+#[async_trait]
+pub trait StepUpProofStore: Send + Sync + 'static {
+    /// 尝试消费一个已完成签名与绑定校验的 proof。
+    async fn consume(&self, proof: &StepUpVerification) -> Result<bool, BaseError>;
+}
+
+/// 单进程一次性 proof 存储。
+///
+/// 适用于单实例服务和测试；多实例部署必须改用 [`RedisStepUpProofStore`]，否则
+/// 不同进程无法共享已消费状态。
+#[derive(Debug, Default)]
+pub struct InMemoryStepUpProofStore {
+    consumed: Mutex<HashMap<String, u64>>,
+}
+
+#[async_trait]
+impl StepUpProofStore for InMemoryStepUpProofStore {
+    async fn consume(&self, proof: &StepUpVerification) -> Result<bool, BaseError> {
+        let now = unix_timestamp()?;
+        let mut consumed = self.consumed.lock().map_err(|_| {
+            BaseError::ConfigError("step-up proof 内存消费存储锁已损坏".to_string())
+        })?;
+        consumed.retain(|_, expires_at| *expires_at > now);
+        if consumed.contains_key(&proof.proof_id) {
+            return Ok(false);
+        }
+        consumed.insert(proof.proof_id.clone(), proof.expires_at);
+        Ok(true)
+    }
+}
+
+/// 基于 Redis `SET NX EX` 的多实例一次性 proof 存储。
+#[derive(Clone)]
+pub struct RedisStepUpProofStore {
+    cache: yang_db::RedisClient,
+    key_prefix: String,
+}
+
+impl RedisStepUpProofStore {
+    /// 创建 Redis proof 存储。
+    pub fn new(cache: yang_db::RedisClient) -> Self {
+        Self {
+            cache,
+            key_prefix: "yang:step-up:proof-used:".to_string(),
+        }
+    }
+
+    /// 覆盖 Redis key 前缀，便于应用隔离命名空间。
+    pub fn with_key_prefix(mut self, key_prefix: impl Into<String>) -> Result<Self, BaseError> {
+        let key_prefix = key_prefix.into();
+        if key_prefix.trim().is_empty() {
+            return Err(BaseError::ConfigError(
+                "step-up proof Redis key 前缀不能为空".to_string(),
+            ));
+        }
+        self.key_prefix = key_prefix;
+        Ok(self)
+    }
+}
+
+#[async_trait]
+impl StepUpProofStore for RedisStepUpProofStore {
+    async fn consume(&self, proof: &StepUpVerification) -> Result<bool, BaseError> {
+        let now = unix_timestamp()?;
+        let ttl = proof.expires_at.saturating_sub(now).max(1);
+        let ttl = i64::try_from(ttl)
+            .map_err(|_| BaseError::ConfigError("step-up proof Redis TTL 超出范围".to_string()))?;
+        self.cache
+            .set_nx_ex(format!("{}{}", self.key_prefix, proof.proof_id), "1", ttl)
+            .await
+            .map_err(BaseError::from)
+    }
+}
+
 /// 从当前可信请求状态解析 proof 必须绑定的稳定资源标识。
 ///
 /// 实现者可以读取路径参数等客户端候选，但必须结合服务端事实完成规范化与授权相关
@@ -146,6 +281,7 @@ pub struct StepUpMiddleware<R> {
     manager: Arc<StepUpManager>,
     action: ActionRef,
     resolver: R,
+    proof_store: Arc<dyn StepUpProofStore>,
 }
 
 impl<R> StepUpMiddleware<R>
@@ -158,7 +294,20 @@ where
             manager,
             action,
             resolver,
+            proof_store: Arc::new(InMemoryStepUpProofStore::default()),
         }
+    }
+
+    /// 覆盖一次性 proof 存储。
+    ///
+    /// 多实例部署应传入 [`RedisStepUpProofStore`]，保证所有实例共享消费状态。
+    #[must_use]
+    pub fn with_proof_store<S>(mut self, proof_store: S) -> Self
+    where
+        S: StepUpProofStore,
+    {
+        self.proof_store = Arc::new(proof_store);
+        self
     }
 }
 
@@ -167,6 +316,10 @@ impl<R> Middleware for StepUpMiddleware<R>
 where
     R: StepUpResourceResolver,
 {
+    fn role(&self) -> MiddlewareRole {
+        MiddlewareRole::StepUpProtection
+    }
+
     fn target_action(&self) -> Option<&ActionRef> {
         Some(&self.action)
     }
@@ -197,8 +350,19 @@ where
 
         match context.request.get_header(STEP_UP_PROOF_HEADER) {
             Some(proof) => {
-                self.manager
-                    .verify_proof(proof, &subject, &self.action, &resource)?;
+                let verification =
+                    self.manager
+                        .verify_proof(proof, &subject, &self.action, &resource)?;
+                if !self.proof_store.consume(&verification).await? {
+                    tracing::warn!(
+                        proof_id = %verification.proof_id,
+                        subject = %verification.subject,
+                        action = %verification.action,
+                        resource_hash = %verification.resource_hash,
+                        "step-up proof 重放被拒绝"
+                    );
+                    return Err(invalid_step_up("proof 已被消费"));
+                }
                 next.run(context).await
             }
             None => Err(BaseError::StepUpRequired(self.manager.issue_challenge(
@@ -534,7 +698,6 @@ mod tests {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
-    use yang_base_derive::Action;
 
     const SECRET: &str = "step-up-test-secret-must-be-at-least-32-bytes";
 
@@ -787,15 +950,17 @@ mod tests {
             )
             .await
             .expect("正确凭据应换取 proof");
-        let response = dispatch_as(
-            &app,
-            "delete",
-            request().header(STEP_UP_PROOF_HEADER, &proof.proof),
-            Some(user),
-        )
-        .await
-        .expect("完全绑定的 proof 应允许敏感 Action");
+        let proof_request = || request().header(STEP_UP_PROOF_HEADER, &proof.proof);
+        let response = dispatch_as(&app, "delete", proof_request(), Some(user.clone()))
+            .await
+            .expect("完全绑定的 proof 应允许敏感 Action");
         assert_eq!(response.data.expect("应返回 data")["operation"], "delete");
+
+        let replay = dispatch_as(&app, "delete", proof_request(), Some(user)).await;
+        assert!(
+            matches!(replay, Err(BaseError::Unauthorized(ref message)) if message.contains("已被消费")),
+            "同一 proof 第二次提交必须被原子消费边界拒绝: {replay:?}"
+        );
     }
 
     #[tokio::test]

@@ -77,6 +77,7 @@ pub struct CompiledTableView {
     name: ViewName,
     table: yang_db::TableRef,
     fields: Arc<[yang_db::FieldRef]>,
+    data_action: Option<ActionHandle>,
     actions: Arc<[ActionHandle]>,
     tree: Option<CompiledTreeView>,
 }
@@ -87,6 +88,7 @@ impl CompiledTableView {
         name: ViewName,
         table: yang_db::TableRef,
         fields: Vec<yang_db::FieldRef>,
+        data_action: Option<ActionHandle>,
         actions: Vec<ActionHandle>,
         tree: Option<CompiledTreeView>,
     ) -> Self {
@@ -95,6 +97,7 @@ impl CompiledTableView {
             name,
             table,
             fields: fields.into(),
+            data_action,
             actions: actions.into(),
             tree,
         }
@@ -118,6 +121,11 @@ impl CompiledTableView {
     /// 返回预校验字段引用。
     pub fn fields(&self) -> &[yang_db::FieldRef] {
         &self.fields
+    }
+
+    /// 返回可选的表格数据查询 Action slot。
+    pub fn data_action(&self) -> Option<&ActionHandle> {
+        self.data_action.as_ref()
     }
 
     /// 返回预解析按钮 Action slot。

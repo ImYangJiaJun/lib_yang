@@ -5,7 +5,9 @@ use super::{
 };
 use crate::action::{ActionContext, ApiResponse, DynAction, Request, ResponseAttachment};
 use crate::error::BaseError;
-use crate::router::middleware::{authorize, AuthorizationPolicy, Next, PermissionGroup};
+use crate::router::middleware::{
+    authorize, AuthorizationPolicy, MiddlewareRole, Next, PermissionGroup,
+};
 use crate::table::{RelationOptionsRequest, RelationOptionsResponse, TableDefinition};
 use crate::tools::Tools;
 use std::any::TypeId;
@@ -93,6 +95,7 @@ struct RuntimeTableView {
     title: String,
     table: String,
     columns: Arc<[RuntimeTableColumn]>,
+    data_action: Option<ActionHandle>,
     actions: Arc<[RuntimeViewAction]>,
     tree: Option<RuntimeTreeView>,
     default_sort: Arc<[RuntimeTableSort]>,
@@ -210,7 +213,11 @@ impl Registry {
             .table_views
             .iter()
             .filter(|view| view.policy.allows(context))
-            .map(|view| {
+            .filter_map(|view| {
+                let data_runtime = view
+                    .data_action
+                    .and_then(|handle| self.handlers.get(handle.slot()))
+                    .filter(|runtime| runtime.policy.allows(context))?;
                 let allowed_actions = view
                     .actions
                     .iter()
@@ -221,10 +228,11 @@ impl Registry {
                             .map(|runtime| (runtime, &action.presentation))
                     })
                     .collect::<Vec<_>>();
-                super::TableViewSchema {
+                Some(super::TableViewSchema {
                     view_id: view.view_id.clone(),
                     title: view.title.clone(),
                     table: view.table.clone(),
+                    data_action: data_runtime.ui_schema.operation_id.clone(),
                     columns: view
                         .columns
                         .iter()
@@ -256,7 +264,7 @@ impl Registry {
                             view_id: presentation.view_id.clone(),
                         })
                         .collect(),
-                }
+                })
             });
         super::UiCatalog::new(actions)?.with_table_views(table_views)
     }
@@ -467,6 +475,7 @@ impl AppBuilder {
         validate_module_ownership(&self.addons)?;
         validate_unique_modules(&self.addons)?;
         validate_module_contents(&self.addons)?;
+        validate_middleware_order(&self.addons)?;
         resolve_param_fields(&mut self.addons)?;
 
         let fields = collect_fields(&self.addons)?;
@@ -617,6 +626,7 @@ fn compile_views(
                 name,
                 table_ref,
                 fields,
+                None,
                 Vec::new(),
                 None,
             ));
@@ -641,6 +651,18 @@ fn compile_views(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let data_action = view
+                .data_action
+                .as_ref()
+                .map(|action| {
+                    registry
+                        .resolve(action)
+                        .ok_or_else(|| BuildError::InvalidReference {
+                            kind: "View Data Action",
+                            reference: action.to_string(),
+                        })
+                })
+                .transpose()?;
             let tree = view
                 .tree
                 .as_ref()
@@ -662,6 +684,7 @@ fn compile_views(
                 view.name.clone(),
                 table_ref.clone(),
                 fields,
+                data_action,
                 actions,
                 tree,
             ));
@@ -707,6 +730,7 @@ fn compile_runtime_table_views(
                 },
                 table: table.name.to_string(),
                 columns: columns.into(),
+                data_action: None,
                 actions: Arc::from(Vec::new()),
                 tree: None,
                 default_sort: Arc::from(Vec::new()),
@@ -757,6 +781,31 @@ fn compile_runtime_table_views(
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let data_action = view
+                .data_action
+                .as_ref()
+                .map(|reference| {
+                    let handle = registry.resolve(reference).ok_or_else(|| {
+                        BuildError::InvalidReference {
+                            kind: "View Data Action",
+                            reference: reference.to_string(),
+                        }
+                    })?;
+                    let runtime = registry.handlers.get(handle.slot()).ok_or_else(|| {
+                        BuildError::InvalidReference {
+                            kind: "View Data Action",
+                            reference: reference.to_string(),
+                        }
+                    })?;
+                    if runtime.ui_schema.response_kind != super::ActionResponseKind::Json {
+                        return Err(BuildError::InvalidReference {
+                            kind: "View Data Action",
+                            reference: format!("{reference}: 数据 Action 必须返回 JSON"),
+                        });
+                    }
+                    Ok(handle)
+                })
+                .transpose()?;
             let tree = view
                 .tree
                 .as_ref()
@@ -821,9 +870,10 @@ fn compile_runtime_table_views(
                 .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
                 view_id: format!("{}.{}", module.name, view.name),
-                title: view.name.to_string(),
+                title: view.title.clone(),
                 table: table.name.to_string(),
                 columns: columns.into(),
+                data_action,
                 actions: actions.into(),
                 tree,
                 default_sort: default_sort.into(),
@@ -944,7 +994,8 @@ fn validate_action_presentation(
 }
 
 fn module_view_policy(module: &super::ModuleSpec) -> AuthorizationPolicy {
-    let groups = if module.default_permissions.is_empty() {
+    let has_module_permissions = !module.default_permissions.is_empty();
+    let groups = if !has_module_permissions {
         Vec::new()
     } else {
         vec![PermissionGroup::new(
@@ -953,7 +1004,9 @@ fn module_view_policy(module: &super::ModuleSpec) -> AuthorizationPolicy {
             module.default_permission_mode,
         )]
     };
-    AuthorizationPolicy::new(false, groups)
+    // 模块未声明额外权限时，View 是否可见由其 data_action 的策略决定；否则
+    // 这里若仍强制登录，会错误隐藏显式 public 的数据页。
+    AuthorizationPolicy::new(!has_module_permissions, groups)
 }
 
 fn runtime_table_column(
@@ -1296,6 +1349,34 @@ fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), BuildError> {
         let mut views = BTreeSet::new();
         for view in &module.views {
             insert_unique(&mut views, &view.name, "View")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_middleware_order(addons: &[AddonSpec]) -> Result<(), BuildError> {
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let mut authentication_dependent_seen = None;
+        for middleware in module.middlewares() {
+            match middleware.role() {
+                MiddlewareRole::TenantResolution => {
+                    authentication_dependent_seen = Some("TenantResolverMiddleware")
+                }
+                MiddlewareRole::StepUpProtection => {
+                    authentication_dependent_seen = Some("StepUpMiddleware")
+                }
+                MiddlewareRole::Authentication if authentication_dependent_seen.is_some() => {
+                    return Err(BuildError::InvalidReference {
+                        kind: "Middleware order",
+                        reference: format!(
+                            "{}: TokenAuthMiddleware 必须先于 {} 注册",
+                            module.name,
+                            authentication_dependent_seen.unwrap_or("身份依赖中间件")
+                        ),
+                    });
+                }
+                MiddlewareRole::Unspecified | MiddlewareRole::Authentication => {}
+            }
         }
     }
     Ok(())
