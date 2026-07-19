@@ -13,13 +13,13 @@
 来源：`docs/superpowers/plans/2026-07-17-frontend-contract-fixes.md`（FRONTEND_FIRST_PRINCIPLES 审查发现 2 Critical + 9 Important 已全部修复并经全分支复审），以下为明确推迟项，按优先级分组。
 
 🟠 High
-- 内置关系 options 执行器：基于 `TableQuery`（已 fail-closed）提供默认实现，复用 `RelationLoader` 批量 IN 处理 `selected` 回填；执行器级不变量（filter 键 ⊆ searchable/filterable 白名单 + 租户键强制注入）需配契约测试。当前 DTO 安全语义依赖应用层自觉。
-- 树查询真正读前上限：当前 `ensure_tree_node_cap` 为先读后拦（全表读入后报错）；需 yang-db 支持 `LIMIT max_nodes+1` 预取截断后改为读前上限。
-- 中间件顺序机制化：认证先于 `TenantResolverMiddleware` 目前仅靠文档约定（`ModuleSpec::middleware`），待增加 phase/排序键或构建期校验。
+- [已完成 2026-07-19] 内置关系 options 执行器：`RelationOptionsAction` 基于 `TableQuery` 统一执行字段读取/筛选白名单、搜索、分页、selected 批量回填和租户范围；`RelationOptionsRequest` 继续在 decode 边界强制输入上限。业务若有额外数据范围（例如只能看当前企业自身）仍应在 Action/中间件层显式收窄，不能把它误当作字段租户键。
+- [已完成 2026-07-19] 树查询真正读前上限：`TableQuery::prefetch_limit` 只向 crate 内可信算法开放，`table_tree` / `table_tree_view` 均以 `LIMIT max_nodes+1` 读取并用第 `max_nodes+1` 条检测截断，避免先全表读入再拒绝。
+- [已完成 2026-07-19] 中间件顺序机制化：内置 middleware 通过 `MiddlewareRole` 声明安全依赖，`AppBuilder::build` 拒绝 `TenantResolverMiddleware` / `StepUpMiddleware` 先于后续 `TokenAuthMiddleware` 的危险反序；自定义中间件保持显式注册顺序，不做有损自动重排。
 
 🟡 Medium
-- 内置 step-up re-auth Action（对称于 `LoginAction`）+ 示例 verifier 演示限流/失败计数；当前 `complete_challenge` 原语要求应用层自行接线。
-- step-up proof 一次性消费（jti 消费缓存，复用 redis）：当前 proof 在 TTL 内可重放，高价值可重复操作依赖 resolver 绑定操作参数指纹收窄窗口。
+- [已完成 2026-07-19] 内置 `StepUpCompleteAction<V>`（对称于 `LoginAction`）负责 challenge + `CredentialVerifier` 编排；失败计数与限流仍由业务 verifier 经共享存储实现，因为账号标识、客户端指纹与锁定策略不应由框架臆测。
+- [已完成 2026-07-19] step-up proof 一次性消费：`StepUpMiddleware` 在进入敏感 Action 前原子消费 proof ID；单实例默认 `InMemoryStepUpProofStore`，多实例使用 Redis `SET NX EX` 的 `RedisStepUpProofStore`，重放 fail-closed。
 - derive 宏支持自定义 `max_text_field_bytes`：目前仅 builder 可设，宏声明的 multipart Action 只能使用 64 KiB 默认文本上限（需改 yang-base-derive）。
 - UI 投影性能：`ui_catalog` 每请求全量深克隆重建，可按（identity, generation）缓存；revision 可升级为 HTTP ETag/304 协商；`UiCatalog` 字段私有化防 revision 失效。
 
