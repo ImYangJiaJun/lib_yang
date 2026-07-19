@@ -129,6 +129,31 @@ struct DesiredIndex {
 }
 
 impl DatabaseInitializer {
+    /// 只读取当前数据库 schema 并计算待执行变更，不获取同步锁、不执行 DDL。
+    ///
+    /// 适用于生产启动门禁：返回非空 `changes` 表示数据库尚未与定义对齐；不兼容
+    /// 变更仍返回错误。调用方若要实际应用变更，应使用 [`Self::sync_table_definitions`]。
+    pub async fn plan_table_definitions(
+        &self,
+        definitions: &[&TableDefinition],
+    ) -> Result<SchemaSyncReport, BaseError> {
+        let definitions = normalize_definitions(definitions)?;
+        if definitions.is_empty() {
+            return Ok(SchemaSyncReport::default());
+        }
+        let mut connection = self
+            .db()
+            .pool()
+            .acquire()
+            .await
+            .map_err(|error| BaseError::DatabaseConnectionDbError(error.into()))?;
+        let plans = plan_locked(&mut connection, &definitions).await?;
+        Ok(SchemaSyncReport {
+            tables: report_tables(&definitions),
+            changes: plans.into_iter().flat_map(|plan| plan.changes).collect(),
+        })
+    }
+
     /// 同步一组不可变表定义，使用单个数据库级 advisory lock 串行化多实例启动。
     pub async fn sync_table_definitions(
         &self,
@@ -188,26 +213,11 @@ async fn sync_locked(
     definitions: &[&TableDefinition],
 ) -> Result<SchemaSyncReport, BaseError> {
     let mut report = SchemaSyncReport {
-        tables: definitions
-            .iter()
-            .map(|definition| definition.name().to_string())
-            .collect(),
+        tables: report_tables(definitions),
         changes: Vec::new(),
     };
 
-    let mut plans = Vec::with_capacity(definitions.len());
-    for definition in definitions {
-        let existing = load_existing_schema(connection, definition).await?;
-        let plan = plan_table_sync(definition, &existing)?;
-        if plan.statements.len() != plan.changes.len() {
-            return Err(BaseError::DatabaseInitFailed(format!(
-                "表 {} 的 schema 计划内部不一致",
-                definition.name()
-            )));
-        }
-        plans.push(plan);
-    }
-
+    let plans = plan_locked(connection, definitions).await?;
     for plan in plans {
         for (statement, change) in plan.statements.into_iter().zip(plan.changes) {
             connection
@@ -225,6 +235,32 @@ async fn sync_locked(
     }
 
     Ok(report)
+}
+
+async fn plan_locked(
+    connection: &mut MySqlConnection,
+    definitions: &[&TableDefinition],
+) -> Result<Vec<TableSyncPlan>, BaseError> {
+    let mut plans = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let existing = load_existing_schema(connection, definition).await?;
+        let plan = plan_table_sync(definition, &existing)?;
+        if plan.statements.len() != plan.changes.len() {
+            return Err(BaseError::DatabaseInitFailed(format!(
+                "表 {} 的 schema 计划内部不一致",
+                definition.name()
+            )));
+        }
+        plans.push(plan);
+    }
+    Ok(plans)
+}
+
+fn report_tables(definitions: &[&TableDefinition]) -> Vec<String> {
+    definitions
+        .iter()
+        .map(|definition| definition.name().to_string())
+        .collect()
 }
 
 async fn load_existing_schema(

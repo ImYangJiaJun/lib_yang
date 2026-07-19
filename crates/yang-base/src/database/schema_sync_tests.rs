@@ -26,6 +26,14 @@ async fn public_schema_sync_api_typechecks(
     initializer.sync_table_definitions(definitions).await
 }
 
+#[allow(dead_code)]
+async fn public_schema_plan_api_typechecks(
+    initializer: &DatabaseInitializer,
+    definitions: &[&TableDefinition],
+) -> Result<SchemaSyncReport, BaseError> {
+    initializer.plan_table_definitions(definitions).await
+}
+
 #[test]
 fn built_app_exposes_compiled_table_definitions_in_module_order() {
     let table_spec = |name: &str| {
