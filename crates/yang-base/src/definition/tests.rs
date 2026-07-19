@@ -1336,6 +1336,34 @@ fn searchable_and_filterable_bits_map_independently_to_table_definition() {
     );
 }
 
+#[test]
+fn table_spec_projects_validated_composite_indexes() {
+    let spec = TableSpec::new(table("org_user"))
+        .field(FieldSpec::new(field("id"), FieldKind::Key))
+        .field(FieldSpec::new(field("org_org"), FieldKind::Int))
+        .field(FieldSpec::new(field("user_user"), FieldKind::Int))
+        .unique_named(
+            "uk_org_user_membership",
+            [
+                field_ref("org_user", "org_org"),
+                field_ref("org_user", "user_user"),
+            ],
+        );
+    let definition = spec.table_definition().expect("复合索引应编译成功");
+    let index = &definition.shared_config().unique_indexes[0];
+
+    assert_eq!(index.fields, ["org_org", "user_user"]);
+    assert_eq!(index.name.as_deref(), Some("uk_org_user_membership"));
+
+    let cross_table = TableSpec::new(table("org_user"))
+        .field(FieldSpec::new(field("org_org"), FieldKind::Int))
+        .unique([field_ref("org_org", "id")]);
+    assert!(matches!(
+        cross_table.table_definition(),
+        Err(BaseError::ConfigError(message)) if message.contains("其他表字段")
+    ));
+}
+
 /// 非文本字段（Str/Text 以外的 FieldKind）声明 searchable 必须在构建期报错：
 /// 服务端搜索本就会跳过非文本字段，允许声明等于让 UI 契约说谎（fail-closed）。
 #[test]

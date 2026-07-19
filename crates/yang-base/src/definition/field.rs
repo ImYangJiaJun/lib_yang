@@ -4,6 +4,7 @@ use super::{ActionRef, FieldKind, FieldName, FieldRef, TableName, WidgetHint};
 use crate::error::BaseError;
 use crate::table::{Field, RelationType, Table as SchemaTable, TableDefinition};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
 /// 字段的数据库存储语义。
@@ -741,6 +742,17 @@ impl<T> IntoFieldSpec for Radio<T> {
     }
 }
 
+/// 表级复合索引声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableIndexSpec {
+    /// 可选的显式索引名。
+    pub name: Option<String>,
+    /// 当前表中的受控字段引用。
+    pub fields: Vec<FieldRef>,
+    /// 是否为唯一索引。
+    pub unique: bool,
+}
+
 /// 表及其唯一字段定义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableSpec {
@@ -750,6 +762,8 @@ pub struct TableSpec {
     pub title: String,
     /// 字段集合。
     pub fields: Vec<FieldSpec>,
+    /// 表级复合索引。
+    pub indexes: Vec<TableIndexSpec>,
 }
 
 impl TableSpec {
@@ -759,6 +773,7 @@ impl TableSpec {
             name,
             title: String::new(),
             fields: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 
@@ -781,11 +796,68 @@ impl TableSpec {
         self
     }
 
+    /// 添加复合唯一索引。
+    pub fn unique(mut self, fields: impl IntoIterator<Item = FieldRef>) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: None,
+            fields: fields.into_iter().collect(),
+            unique: true,
+        });
+        self
+    }
+
+    /// 添加指定名称的复合唯一索引。
+    pub fn unique_named(
+        mut self,
+        name: impl Into<String>,
+        fields: impl IntoIterator<Item = FieldRef>,
+    ) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: Some(name.into()),
+            fields: fields.into_iter().collect(),
+            unique: true,
+        });
+        self
+    }
+
+    /// 添加复合普通索引。
+    pub fn index(mut self, fields: impl IntoIterator<Item = FieldRef>) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: None,
+            fields: fields.into_iter().collect(),
+            unique: false,
+        });
+        self
+    }
+
+    /// 添加指定名称的复合普通索引。
+    pub fn index_named(
+        mut self,
+        name: impl Into<String>,
+        fields: impl IntoIterator<Item = FieldRef>,
+    ) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: Some(name.into()),
+            fields: fields.into_iter().collect(),
+            unique: false,
+        });
+        self
+    }
+
     /// 生成 schema 同步和 TableQuery 使用的不可变执行产物。
     pub fn table_definition(&self) -> Result<TableDefinition, BaseError> {
         let mut table = SchemaTable::new(self.name.to_string());
         if !self.title.is_empty() {
             table = table.label(self.title.clone());
+        }
+        for index in &self.indexes {
+            let fields = self.validate_index(index)?;
+            table = match (&index.name, index.unique) {
+                (Some(name), true) => table.unique_named(name.clone(), fields),
+                (None, true) => table.unique(fields),
+                (Some(name), false) => table.index_named(name.clone(), fields),
+                (None, false) => table.index(fields),
+            };
         }
         let fields = self
             .fields
@@ -794,5 +866,44 @@ impl TableSpec {
             .map(FieldSpec::into_schema_field)
             .collect::<Result<Vec<_>, _>>()?;
         table.fields(fields).build()
+    }
+
+    fn validate_index(&self, index: &TableIndexSpec) -> Result<Vec<String>, BaseError> {
+        if index.fields.is_empty() {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 的复合索引至少需要一个字段",
+                self.name
+            )));
+        }
+        let declared = self
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        let mut fields = Vec::with_capacity(index.fields.len());
+        for reference in &index.fields {
+            if reference.table() != &self.name {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的索引不能引用其他表字段 {}",
+                    self.name, reference
+                )));
+            }
+            let field = reference.field().as_str();
+            if !declared.contains(field) {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的索引引用了未声明字段 {}",
+                    self.name, field
+                )));
+            }
+            if !seen.insert(field) {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的索引重复引用字段 {}",
+                    self.name, field
+                )));
+            }
+            fields.push(field.to_string());
+        }
+        Ok(fields)
     }
 }
