@@ -1336,6 +1336,33 @@ fn searchable_and_filterable_bits_map_independently_to_table_definition() {
     );
 }
 
+#[cfg(feature = "mysql")]
+#[test]
+fn module_crud_at_uses_explicit_versioned_path_and_stable_operation_ids() {
+    let spec = ModuleSpec::new(module("org.user"))
+        .table(TableSpec::new(table("org_user")).field(FieldSpec::new(field("id"), FieldKind::Key)))
+        .crud_at("/api/v1/org/users")
+        .expect("版本化 CRUD 路径应有效");
+
+    let action = |name: &str| {
+        spec.actions()
+            .iter()
+            .find(|action| action.name.as_str() == name)
+            .unwrap_or_else(|| panic!("应存在 org.user.{name}"))
+    };
+    assert_eq!(action("add").route.path, "/api/v1/org/users");
+    assert_eq!(action("select").route.path, "/api/v1/org/users/query");
+    assert_eq!(action("table").route.path, "/api/v1/org/users/schema");
+    for name in ["add", "put", "del", "get", "select", "table"] {
+        assert_eq!(action(name).route.operation_id, format!("org.user.{name}"));
+    }
+
+    let invalid = ModuleSpec::new(module("org.user"))
+        .table(TableSpec::new(table("org_user")).field(FieldSpec::new(field("id"), FieldKind::Key)))
+        .crud_at("api/v1/org/users");
+    assert!(matches!(invalid, Err(BaseError::ConfigError(_))));
+}
+
 #[test]
 fn table_spec_projects_validated_composite_indexes() {
     let spec = TableSpec::new(table("org_user"))

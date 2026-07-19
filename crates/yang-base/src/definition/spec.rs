@@ -529,9 +529,31 @@ impl ModuleSpec {
     /// 为模块主表注册标准 add/put/del/get/select/table Actions。
     #[cfg(feature = "mysql")]
     pub fn crud(self) -> Result<Self, crate::error::BaseError> {
+        let prefix = format!("/api/{}", self.name.as_str().replace('.', "/"));
+        self.crud_at(prefix)
+    }
+
+    /// 在显式资源路径下注册标准 add/put/del/get/select/table Actions。
+    ///
+    /// 用于版本化或资源复数化路由；`operation_id` 仍始终使用
+    /// `<module>.<action>`，不与 HTTP 路径耦合。
+    #[cfg(feature = "mysql")]
+    pub fn crud_at(self, prefix: impl Into<String>) -> Result<Self, crate::error::BaseError> {
         use crate::action::builtin::{
             crud_contracts, AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
         };
+
+        let prefix = prefix.into();
+        if prefix.len() < 2
+            || !prefix.starts_with('/')
+            || prefix.ends_with('/')
+            || prefix.contains("//")
+            || prefix.contains(['?', '#'])
+        {
+            return Err(crate::error::BaseError::ConfigError(format!(
+                "CRUD 资源路径无效: {prefix}"
+            )));
+        }
 
         let table = self
             .table
@@ -542,7 +564,6 @@ impl ModuleSpec {
             crud_contracts(&table, self.name.as_str())?
                 .into_iter()
                 .collect();
-        let prefix = format!("/api/{}", self.name.as_str().replace('.', "/"));
         let module_name = self.name.to_string();
         let read_permission = format!("{}:read", self.name);
         let write_permission = format!("{}:write", self.name);
