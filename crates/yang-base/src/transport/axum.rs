@@ -158,7 +158,7 @@ pub fn router(app: Arc<BuiltApp>, config: AxumTransportConfig) -> Result<Router,
     router_with_addr(app, config, None)
 }
 
-/// 绑定地址并启动 HTTP 服务，直至收到关闭信号（Ctrl-C）后优雅停机。
+/// 绑定地址并启动 HTTP 服务，直至收到关闭信号（Ctrl+C 或 Unix SIGTERM）后优雅停机。
 pub async fn serve(
     bind: SocketAddr,
     app: Arc<BuiltApp>,
@@ -176,7 +176,7 @@ pub async fn serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(crate::lifecycle::wait_for_shutdown_signal())
     .await
     .map_err(|error| BaseError::ConfigError(format!("HTTP 服务运行失败: {error}")))
 }
@@ -1130,11 +1130,4 @@ fn error_response(status: StatusCode, error: BaseError) -> Response {
         ApiResponse::from_error(&error)
     };
     (status, Json(response)).into_response()
-}
-
-async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %error, "监听关闭信号失败");
-    }
-    tracing::info!("收到关闭信号");
 }
