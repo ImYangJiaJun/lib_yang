@@ -734,6 +734,18 @@ impl<T> Radio<T> {
         self.inner.storage.default = Some(Value::String(value.to_string()));
         self
     }
+
+    /// 设置是否允许结构化条件筛选。
+    pub fn filterable(mut self, value: bool) -> Self {
+        self.inner.access.filterable = value;
+        self
+    }
+
+    /// 设置是否允许排序。
+    pub fn sortable(mut self, value: bool) -> Self {
+        self.inner.access.sortable = value;
+        self
+    }
 }
 
 impl<T> IntoFieldSpec for Radio<T> {

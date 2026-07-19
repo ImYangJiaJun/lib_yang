@@ -237,6 +237,19 @@ fn action(value: &str) -> ActionName {
     ActionName::new(value).expect("测试 Action 名称应有效")
 }
 
+#[test]
+fn radio_builder_declares_filter_and_sort_access() {
+    let fields = crate::fields! {
+        status => Radio::<String>::new()
+            .options([("active", "启用")])
+            .filterable(true)
+            .sortable(true),
+    };
+    let status = &fields.as_slice()[0];
+    assert!(status.access.filterable);
+    assert!(status.access.sortable);
+}
+
 fn table(value: &str) -> TableName {
     TableName::new(value).expect("测试 Table 名称应有效")
 }
