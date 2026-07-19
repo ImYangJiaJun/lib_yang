@@ -986,6 +986,18 @@ async fn oversized_body_returns_413() {
     assert_eq!(json["code"], 700005);
 }
 
+#[test]
+fn zero_http_concurrency_is_rejected() {
+    let config = AxumTransportConfig {
+        max_concurrency: Some(0),
+        ..AxumTransportConfig::default()
+    };
+    let result = router(build_app(), config);
+    assert!(
+        matches!(result, Err(BaseError::ConfigError(message)) if message.contains("max_concurrency"))
+    );
+}
+
 #[tokio::test]
 async fn invalid_query_encoding_returns_400() {
     // %FF 百分号解码后不是合法 UTF-8，serde_urlencoded 应拒绝

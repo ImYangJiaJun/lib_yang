@@ -52,7 +52,7 @@ openapi = []
 admin-metadata = []
 
 # Axum 0.8 HTTP 传输适配器（默认关闭；只拉入 axum/tower-http，不涉及 sqlx/reqwest）
-transport-axum = ["dep:axum", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile"]
+transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile"]
 
 [dependencies]
 # 内部依赖
@@ -117,6 +117,9 @@ matchit = { workspace = true }
 # Axum HTTP 服务端（可选，通过 "transport-axum" feature 启用）
 axum = { workspace = true, optional = true }
 
+# Axum 请求并发上限（可选，通过 "transport-axum" feature 启用）
+tower = { workspace = true, optional = true }
+
 # HTTP 横切中间件（可选，通过 "transport-axum" feature 启用）
 tower-http = { workspace = true, optional = true }
 
@@ -128,8 +131,6 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 testcontainers = "=0.22.0"
 env_logger = "0.11.10"
 insta = { workspace = true }
-# tower oneshot：transport-axum 集成测试不开真实端口
-tower = { workspace = true }
 
 # 测试 tracing 输出（Test-1：慢查询 warn 分支断言）
 tracing-subscriber = "0.3"

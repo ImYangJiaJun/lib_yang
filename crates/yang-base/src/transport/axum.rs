@@ -44,6 +44,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
@@ -103,6 +104,10 @@ pub struct AxumTransportConfig {
     pub cors: CorsConfig,
     /// 单请求总超时；`None`（默认）关闭超时层。
     pub request_timeout: Option<Duration>,
+    /// 同时进入应用的最大请求数；`None`（默认）不额外限制。
+    ///
+    /// 超出部分在 Tower 层等待，并由 `request_timeout` 限制最长等待时间。
+    pub max_concurrency: Option<usize>,
     /// 是否按 `Accept-Encoding` 协商压缩响应。默认开启。
     pub compression: bool,
 }
@@ -113,6 +118,7 @@ impl Default for AxumTransportConfig {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             cors: CorsConfig::default(),
             request_timeout: None,
+            max_concurrency: None,
             compression: true,
         }
     }
@@ -260,6 +266,14 @@ fn router_with_addr(
     // 横切层：后调用者先生效，TraceLayer 置于最外层以覆盖全部处理耗时。
     if config.compression {
         router = router.layer(CompressionLayer::new());
+    }
+    if let Some(max_concurrency) = config.max_concurrency {
+        if max_concurrency == 0 {
+            return Err(BaseError::ConfigError(
+                "HTTP max_concurrency 必须大于 0".to_string(),
+            ));
+        }
+        router = router.layer(ConcurrencyLimitLayer::new(max_concurrency));
     }
     if let Some(timeout) = config.request_timeout {
         router = router.layer(TimeoutLayer::with_status_code(
