@@ -1,8 +1,9 @@
 # 前端契约调研与 yang 架构第一性原理再审
 
-**日期:** 2026-07-17  
-**状态:** 已复核，产品目标已确认，作为新前端与后端 UI 投影设计输入  
+**日期:** 2026-07-19  
+**状态:** 已完成实现验收；本文同时作为架构事实、实现说明与后续演进边界  
 **调研对象:** `br/scs-web/`（Quasar 2.16 + Vue 3.4 + Vite，JS，Options API）；对照 `br/scs-api/` 与 yang 生态（`crates/yang-base` + `project/yang-system`）
+**实现位置:** `project/yang-system/frontend/`；真实联调服务为 `project/yang-system/src/bin/frontend_demo.rs`
 
 ---
 
@@ -27,7 +28,7 @@
 - OpenAPI/Action schema 描述“如何调用”，UI schema 描述“建议如何展示”；两者都只携带声明式数据，不下发可执行代码或任意组件文件路径；
 - UI 中的隐藏、禁用和二次确认不能替代服务端鉴权、业务校验或 step-up authentication。
 
-审计结论：**yang 的定义内核方向成立，不需要推倒重来，但缺口不只是一层序列化投影。** `ActionSpec`、字段定义、`ViewSpec`、`DefinitionCatalog`、OpenAPI 和 `CompiledTableView` 是正确地基；仍需补齐请求级 UI 投影、字段到控件的映射、关系选择器契约、租户注入、Action 展示语义、自定义页注册和非 JSON 输入模型。
+审计结论：**yang 的定义内核方向成立，不需要推倒重来。** 2026-07-19 的实现验收已补齐请求级 UI 投影、默认 Action 演示、通用 Table/Form/Tree、关系选择器、自定义页静态注册、multipart 调用和版本化运行时校验。后端仍是权限、租户和业务规则的唯一事实源；前端投影不能替代服务端校验。
 
 当前产品明确**不需要 WebSocket 能力**。这是新系统的范围决策，不从 scs-web 的 WS 使用状态反推；本阶段不设计、不实现 WS 投影或实时传输。
 
@@ -161,24 +162,24 @@ scs-web 的 `ws.js` 已注册 `$wss/$wss_subscribe`，但连接初始化被注�
 
 | 目标能力 | yang 现状 | 判定 |
 |---|---|---|
-| 每个 Action 自动生成默认演示 | `ActionSpec` 已有 method/path/operation_id/params/input_schema/output_schema/权限，Catalog 可生成 OpenAPI；请求级 UI 目录端点 + 版本化 `ActionDemoSchema` 已上线 | ✅ 后端契约已补齐（2026-07-17），前端 ActionDemo 待新前端实现 |
-| 菜单/应用 schema | `DefinitionCatalog` 有 Addon/Module/Action 元数据；按当前用户/权限的请求级菜单投影已上线 | ✅ 已补齐（2026-07-17）；租户维度有意不纳入投影，决策与接入点见 ui.rs 模块文档 |
+| 每个 Action 自动生成默认演示 | `ActionSpec` 投影 method/path/operation_id/params/input/output/响应类型；前端 `ActionDemo` 自动生成输入并真实处理 JSON、download、preview、redirect 与 multipart | ✅ 已完成浏览器验收（2026-07-19） |
+| 菜单/应用 schema | `DefinitionCatalog` 按当前用户/权限生成请求级目录；前端身份或租户变化后清缓存并重新获取 | ✅ 已完成；目录结构按身份/权限投影，租户数据边界仍由每次 Action 调用强制执行 |
 | 基础数据 schema | CRUD 已注册 `/schema`，`TableAction` 返回按角色过滤的 input/output JSON Schema | ✅ 已有，不等于完整 UI schema |
-| Table/Form/Tree UI schema | 字段展示元数据 + `CompiledTableView`；列、筛选、分页边界、WidgetHint、校验提示、显式树拓扑投影已上线 | ✅ 已补齐（2026-07-17） |
-| Action 展示行为 | `ViewSpec::action(ActionRef)` + `ActionPresentation`（位置×交互×确认×自定义 view_id）已投影 | ✅ 已补齐（2026-07-17） |
-| 字段到控件映射 | `WidgetHint` 独立于 `FieldKind`，未知值安全降级为 JSON 输入 | ✅ 已补齐（2026-07-17） |
-| 关联 `{value,label}` 选择器 | 统一 `RelationOptionsRequest/Response` DTO（search/selected/filter/page/limit），decode 默认强制边界校验，select Action 构建期类型校验 + 权限投影 | ✅ 契约已补齐（2026-07-17）；内置执行器在 BACKLOG |
+| Table/Form/Tree UI schema | schema 2.2 的 View 显式声明 `data_action`；前端实现列、表单、搜索、筛选、排序、分页与树拓扑，数据响应固定为 `{items,page,page_size,total?}` | ✅ 已完成浏览器验收（2026-07-19） |
+| Action 展示行为 | `ActionPresentation` 的位置、交互、确认、可用提示和 `view_id` 均由同一通用渲染器解释 | ✅ 已完成浏览器验收 |
+| 字段到控件映射 | `WidgetHint` 独立于 `FieldKind`；前端支持业务字段和 binary，未知提示安全降级为通用输入 | ✅ 已完成运行时与单元验收 |
+| 关联 `{value,label}` 选择器 | `RelationOptionsRequest/Response` + `RelationOptionsAction` 默认执行器；前端支持远程搜索、过滤、分页和已选回填 | ✅ 已完成；额外业务数据域仍由应用自定义 Action 收窄 |
 | 下载/预览/重定向 | `ResponseBody::download/preview/redirect` | ✅ 已对齐 |
-| multipart 上传 | Action media type 契约 + 流式接收 + 大小/数量/类型/文本字段限制 + 临时文件 RAII 生命周期 + 伪造路径封堵 | ✅ 已补齐（2026-07-17） |
+| multipart 上传 | 后端流式边界和临时文件 RAII；前端按声明生成文件输入、执行早期数量/类型/大小检查并发起真实 FormData 请求 | ✅ 已完成真实浏览器验收 |
 | 认证与权限 | `Authorization`、`TokenAuthMiddleware`、Action/Module permission 已有；公开 Action 可选认证 fail-closed | ✅ 认证授权基础成立 |
-| 请求租户上下文 | `TenantResolverMiddleware` 可信解析（header 仅为声明，resolver 服务端校验），全链路 fail-closed | ✅ 已补齐（2026-07-17）；顺序机制化校验在 BACKLOG |
+| 请求租户上下文 | `TenantResolverMiddleware` 可信解析（header 仅为声明，resolver 服务端校验）；内置认证/租户/step-up 的危险反序由构建期拒绝 | ✅ 已补齐并机制化（2026-07-19） |
 | 错误处理 | 真实 HTTP 状态码 + 结构化 code | ✅ 已升级 |
-| step-up authentication | 服务端 challenge/proof，HS256 绑定用户+Action+资源+短过期，审计事件齐全 | ✅ 已补齐（2026-07-17）；内置 re-auth Action 与 proof 一次性消费在 BACKLOG |
-| 自定义页面 | 后端稳定 `view_id` 白名单契约（拒绝物理路径/动态加载），前端静态注册表属新前端工作 | ✅ 后端契约已补齐（2026-07-17） |
+| step-up authentication | `StepUpCompleteAction<V>` 完成凭据重认证；proof 绑定用户+Action+资源并在 Action 前一次性消费，多实例使用 Redis `SET NX EX` | ✅ 已完成安全闭环（2026-07-19） |
+| 自定义页面 | 后端只返回稳定 `view_id`；前端唯一静态注册表使用字面量动态 import，未知或加载失败回退通用页 | ✅ 已完成覆盖与回退验收 |
 | WS 实时通道 | 无 | ➖ 当前范围外 |
-| 字段事实源 | `fields!` → TableDefinition/JSON Schema/additive schema sync | ✅ 方向成立，但 UI 控件语义仍需补充 |
+| 字段事实源 | `fields!` → TableDefinition/JSON Schema/additive schema sync，展示语义由独立 `WidgetHint` 补充 | ✅ 已形成清晰分层 |
 
-`admin-metadata` 当前是独立的轻量展示注册表，没有接入 `AppBuilder` 或 Catalog。它可以作为 UI 投影的输入之一，但不应直接承担请求级投影端点、权限过滤和完整 Table/Form schema。建议在应用层新增 UI projector，组合 Catalog、CompiledView、TableDefinition 与可选 AdminMetadata。
+`admin-metadata` 仍是独立的轻量展示注册表，不承担请求级权限投影。当前 UI projector 已由 `UiCatalogAction` 组合 Catalog、CompiledView 与 TableDefinition；未来若接入 AdminMetadata，只应把它作为可选展示输入，不能旁路现有权限与契约校验。
 
 ---
 
@@ -191,9 +192,9 @@ scs-web 的 `ws.js` 已注册 `$wss/$wss_subscribe`，但连接初始化被注�
 - **API contract**：由 `ActionSpec`/OpenAPI 提供 method、path、参数来源、输入输出 JSON Schema、响应类型、权限说明；
 - **UI contract**：由请求级 UI projector 提供菜单、View、字段控件提示、Action 展示方式、自定义 `view_id` 和安全要求。
 
-UI projector 必须按当前用户、权限、租户和应用配置生成结果。前端过滤只改善体验，服务端 Action 派发仍独立执行同样的授权与业务校验。
+UI projector 按当前用户与权限生成可见结构；租户切换会触发目录重新获取，但租户数据范围由服务端 resolver 和每次 Action 查询强制执行。前端过滤只改善体验，服务端 Action 派发仍独立执行授权与业务校验。
 
-所有契约都带稳定 `schema_version`，未知枚举值必须有安全降级；可使用 ETag/版本号缓存，但切换身份或租户后必须重新获取。
+当前 UI 契约版本是 `2.2`。前端使用严格运行时 schema 校验，拒绝不支持版本和畸形 payload；可安全降级的展示枚举单独降级。缓存按“身份 + 租户”隔离并复用相同 revision，任一上下文变化都清理并重新获取。HTTP ETag/304 只是后续可选的网络优化，当前实现不依赖它。
 
 ### 5.2 默认 Action 演示层
 
@@ -220,7 +221,7 @@ UI projector 必须按当前用户、权限、租户和应用配置生成结果�
 
 当 Action 属于 Table/View 时，UI projector 追加：
 
-- `TableViewSchema`：列、默认排序、搜索字段、过滤字段、分页、关系展示；
+- `TableViewSchema`：显式 `data_action`、列、默认排序、搜索字段、过滤字段、分页、关系展示；列表 Action 的响应固定为 `{items,page,page_size,total?}`，不得靠命名规则猜测数据源；
 - `FormSchema`：字段顺序、WidgetHint、校验提示、只读/隐藏规则；
 - `ActionPresentation`：工具栏/批量/行操作位置，`form/invoke/download/preview/navigate/custom` 展示方式；
 - `RelationOptionsSchema`：稳定的 `search/selected/filter/page/limit` 输入与 `{value,label}` 输出；
@@ -246,7 +247,7 @@ const customViews = {
 - 菜单、字段和 Action 投影按当前用户与租户过滤；
 - 未显示的 Action 仍必须在服务端拒绝未授权调用；
 - `AvailabilityHint` 只控制界面，不是业务校验；
-- 敏感操作使用服务端 step-up challenge/proof，并绑定用户、Action、资源和短过期时间；
+- 敏感操作使用服务端 step-up challenge/proof，绑定用户、Action、资源和短过期时间，并在执行前一次性消费；多实例必须使用共享 Redis proof store；
 - 自定义 view 只能从前端静态注册表加载；
 - 文件上传必须限制大小、数量、类型、临时文件生命周期和流式处理策略。
 
@@ -266,39 +267,41 @@ const customViews = {
 
 ---
 
-## 7. 行动顺序与验收标准
+## 7. 实施结果与验收标准
 
 ### 阶段 1：默认 Action 演示闭环
 
-1. 定义并版本化请求级 `ActionDemoSchema/UiCatalog`；
-2. 从 Catalog/OpenAPI 投影当前用户可访问的 Action；
-3. 前端实现 Action 列表、自动参数表单、统一调用和响应查看；
-4. JSON、download、preview、redirect 均有安全降级展示。
+1. [x] 定义并版本化请求级 `ActionDemoSchema/UiCatalog`；
+2. [x] 从 Catalog/OpenAPI 投影当前用户可访问的 Action；
+3. [x] 前端实现 Action 列表、自动参数表单、统一调用和响应查看；
+4. [x] JSON、download、preview、redirect 均有安全降级展示。
 
-验收：新增一个普通 JSON Action 后，不写前端页面即可在目录中发现、填写参数、真实调用并查看结果。
+验收结果：真实 YANG 服务与 Chromium E2E 已证明新增普通 JSON Action 后，不写前端页面即可发现、填写参数、调用并查看结果。
 
 ### 阶段 2：org 模块通用业务页
 
-1. 实现可信 tenant resolver middleware；
-2. 投影 TableView/FormSchema/ActionPresentation；
-3. 固化关系 options DTO；
-4. 用 org 模块验证列表、新增、编辑、删除、筛选、关联选择和权限过滤。
+1. [x] 使用可信 tenant resolver middleware；
+2. [x] 投影并渲染 TableView/FormSchema/ActionPresentation；
+3. [x] 固化关系 options DTO，并提供库级默认执行器；
+4. [x] 以真实 demo 业务模块验证列表、新增、编辑、删除、搜索、树和关联选择；org 模块契约由 Rust 测试覆盖。
 
-验收：标准 Table/View 自动升级为业务页面；切换用户或租户后菜单、字段、数据和操作一致变化，直接越权调用仍被服务端拒绝。
+验收结果：标准 View 通过显式 `data_action` 自动升级为业务页面；身份/租户变化会隔离缓存并重新获取目录，服务端 Action 继续独立执行授权和租户边界。
 
 ### 阶段 3：自定义页面覆盖
 
-1. 建立前端 `view_id` 白名单注册表；
-2. 支持自定义页覆盖与通用页/ActionDemo fallback；
-3. 选择一个可视化或多步骤页面验证边界。
+1. [x] 建立前端 `view_id` 白名单注册表；
+2. [x] 支持自定义页覆盖与通用页/ActionDemo fallback；
+3. [x] 以 demo insight 可视化页面验证边界。
 
-验收：自定义页面不要求 API 名与文件路径一致；删除注册项后仍能安全降级，不出现任意动态代码加载。
+验收结果：注册表只包含静态字面量 import；未知 ID、物理路径和加载失败均不产生任意动态代码加载，并保留通用页。
 
 ### 阶段 4：非 JSON 输入与工程完善
 
-1. 以真实上传 Action 为输入设计 multipart/file contract；
-2. 补 schema 版本兼容、缓存、运行时校验和契约测试；
-3. 按业务优先级迁移复杂页面，不以历史页面数量比例作为目标。
+1. [x] 以真实上传 Action 验证 multipart/file contract；
+2. [x] 补 schema 版本拒绝策略、身份/租户隔离缓存、运行时校验和契约测试；
+3. [x] 建立 format、lint、typecheck、unit、build 与 Chromium E2E 门禁。
+
+复杂历史页面仍按实际业务优先级迁移，不以 scs-web 页面数量或比例作为完成标准。
 
 本阶段明确不包含 WebSocket。
 
