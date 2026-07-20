@@ -76,7 +76,7 @@ MySQL 初始化 SQL 独立存放在
 3. `project/yang-system` 下 `cargo check --all-targets --locked`；
 4. `project/yang-system` 下 `python scripts/run_ci.py quick`；
 5. 使用 Docker 依赖运行被忽略的真实集成测试；
-6. 启动后端并请求 `/health`；
+6. 启动后端并请求 `/health/ready`；
 7. 前端执行 `pnpm check`，再启动开发服务器并验证首页可访问。
 
 如果完整门禁暴露与本次环境配置无关的既有失败，保留失败证据并将其与环境配置结果分开报告。

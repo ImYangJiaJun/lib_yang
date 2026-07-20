@@ -47,7 +47,7 @@ services:
       MYSQL_ROOT_PASSWORD: yang-local
       MYSQL_DATABASE: yang_system
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
@@ -62,7 +62,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     command: ["redis-server", "--appendonly", "yes"]
@@ -338,7 +338,7 @@ Expected: 集成测试退出码为 0。
 - [ ] **Step 4: 启动后端并验证健康检查**
 
 在隐藏后台进程中从 `project/yang-system` 启动 `cargo run --locked`，轮询
-`http://127.0.0.1:8080/health`，期望 HTTP 200；验证后终止本次启动的进程。
+`http://127.0.0.1:8080/health/ready`，期望 HTTP 200；验证后终止本次启动的进程。
 
 - [ ] **Step 5: 启动前端并验证页面**
 
