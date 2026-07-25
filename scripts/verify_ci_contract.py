@@ -9,6 +9,7 @@ from pathlib import Path
 
 REQUIRED_FRAGMENTS = (
     "stable:",
+    "supply-chain:",
     "msrv:",
     "feature-matrix:",
     "docker-mysql:",
@@ -25,6 +26,11 @@ REQUIRED_FRAGMENTS = (
     "cargo test --doc -p yang-base --locked",
     "python scripts/verify_feature_isolation.py --self-test",
     "python scripts/run_ci.py --self-test",
+    "python scripts/verify_dependency_policy.py --self-test",
+    "python scripts/verify_dependency_policy.py",
+    "EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25",
+    "command: check advisories licenses sources",
+    "arguments: --all-features --locked",
     "name: yang-db-none",
     "name: yang-db-mysql",
     "name: yang-db-postgres",
@@ -67,7 +73,7 @@ def run_self_test() -> None:
     assert not missing_contract_fragments(valid_fixture)
 
     for fragment in REQUIRED_FRAGMENTS:
-        adversarial_fixture = valid_fixture.replace(fragment, "", 1)
+        adversarial_fixture = valid_fixture.replace(fragment, "")
         missing = missing_contract_fragments(adversarial_fixture)
         assert fragment in missing, f"未检测到被删除的 CI 契约: {fragment}"
 

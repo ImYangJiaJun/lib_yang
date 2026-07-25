@@ -82,6 +82,27 @@ STABLE_COMMANDS = (
     ),
 )
 
+SUPPLY_CHAIN_COMMANDS = (
+    Command(
+        "Dependency policy self-test",
+        ("python", "scripts/verify_dependency_policy.py", "--self-test"),
+    ),
+    Command("Dependency policy", ("python", "scripts/verify_dependency_policy.py")),
+    Command(
+        "Rust dependency audit",
+        (
+            "cargo",
+            "deny",
+            "--all-features",
+            "--locked",
+            "check",
+            "advisories",
+            "licenses",
+            "sources",
+        ),
+    ),
+)
+
 MSRV_COMMAND = Command(
     "MSRV 1.80",
     (
@@ -333,7 +354,23 @@ def self_test() -> None:
             )
     assert tested_packages == workspace_packages
     assert clippy_packages == workspace_packages
-    for command in (*STABLE_COMMANDS[4:], MSRV_COMMAND, *feature_commands(), *INTEGRATION_COMMANDS):
+    assert SUPPLY_CHAIN_COMMANDS[-1].argv == (
+        "cargo",
+        "deny",
+        "--all-features",
+        "--locked",
+        "check",
+        "advisories",
+        "licenses",
+        "sources",
+    )
+    for command in (
+        *STABLE_COMMANDS[4:],
+        *SUPPLY_CHAIN_COMMANDS,
+        MSRV_COMMAND,
+        *feature_commands(),
+        *INTEGRATION_COMMANDS,
+    ):
         if command.argv[0] == "cargo":
             assert "--locked" in command.argv, f"命令缺少 --locked: {command.name}"
     print("local CI runner self-test passed")
@@ -352,7 +389,7 @@ def main() -> int:
     if args.profile == "integration":
         commands = INTEGRATION_COMMANDS
     elif args.profile == "full":
-        commands = (*STABLE_COMMANDS, MSRV_COMMAND, *feature_commands())
+        commands = (*STABLE_COMMANDS, *SUPPLY_CHAIN_COMMANDS, MSRV_COMMAND, *feature_commands())
     else:
         commands = STABLE_COMMANDS
 

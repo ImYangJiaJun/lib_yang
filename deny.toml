@@ -1,0 +1,37 @@
+# Rust 依赖策略：所有 feature、所有目标平台统一检查。
+# 临时豁免必须附原因、到期条件并单独评审。
+
+[advisories]
+unused-ignored-advisory = "deny"
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "scope=sqlx-mysql only calls RsaPublicKey::encrypt for MySQL password exchange and the workspace has no RSA private-key operation; review-by=2026-10-31; exit=rsa or sqlx publishes a fix, the dependency path changes, or private-key use is introduced" },
+    { id = "RUSTSEC-2025-0134", reason = "scope=reqwest 0.12.16 removed the production edge and only testcontainers 0.22.0 via bollard 0.17.1 remains as a dev dependency under MSRV 1.80; review-by=2026-10-31; exit=testcontainers offers an MSRV-compatible removal or the workspace MSRV reaches 1.88" },
+    { id = "RUSTSEC-2026-0009", reason = "scope=time is only reached through simple_asn1 fixed ASN.1 time formats and no Rfc2822 parser is used; review-by=2026-10-31; exit=the dependency path changes or the workspace MSRV reaches 1.88 and time can be upgraded to 0.3.47 or later" },
+]
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+ignore = false
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
