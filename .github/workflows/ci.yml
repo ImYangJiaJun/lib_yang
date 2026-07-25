@@ -239,5 +239,7 @@ jobs:
         run: docker pull redis:7-alpine
       - name: Redis pipeline integration
         run: cargo test -p yang-db --test integration_redis_pipeline --locked -- --test-threads=1
+      - name: Token revocation integration
+        run: cargo test -p yang-base --test token_revocation_integration --locked -- --ignored --test-threads=1
       - name: Redis script integration
         run: cargo test -p yang-db --test integration_redis_script --locked -- --test-threads=1

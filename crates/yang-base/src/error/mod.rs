@@ -272,6 +272,10 @@ pub enum BaseError {
     #[error("Token 已被撤销")]
     TokenRevoked,
 
+    /// Token 撤销状态损坏或返回结构不符合协议。
+    #[error("Token 撤销状态无效: {0}")]
+    TokenRevocationStateInvalid(String),
+
     /// Token 类型无效
     #[error("Token 类型无效: {0}")]
     TokenTypeInvalid(String),
@@ -616,6 +620,7 @@ impl BaseError {
             BaseError::TokenExpired => 400005,
             BaseError::TokenTypeInvalid(_) => 400006,
             BaseError::TokenRevoked => 400007,
+            BaseError::TokenRevocationStateInvalid(_) => 400008,
 
             // ==================== 序列化错误 (5xxxxx) ====================
             BaseError::JsonSerializeFailed(_) => 500001,
@@ -711,6 +716,7 @@ impl BaseError {
             BaseError::TokenExpired => "400005",
             BaseError::TokenTypeInvalid(_) => "400006",
             BaseError::TokenRevoked => "400007",
+            BaseError::TokenRevocationStateInvalid(_) => "400008",
             // 序列化错误 (5xxxxx)
             BaseError::JsonSerializeFailed(_) => "500001",
             BaseError::JsonDeserializeFailed(_) => "500002",
@@ -813,6 +819,7 @@ impl BaseError {
             BaseError::TokenExpired | BaseError::TokenRevoked | BaseError::TokenVerifyFailed(_) => {
                 C::Auth
             }
+            BaseError::TokenRevocationStateInvalid(_) => C::Server,
             // 序列化错误
             BaseError::JsonSerializeFailed(_) | BaseError::JsonDeserializeFailed(_) => C::Client,
             // 字段验证错误
@@ -1234,6 +1241,7 @@ mod tests {
             BaseError::HttpTimeout,
             BaseError::TokenExpired,
             BaseError::TokenRevoked,
+            BaseError::TokenRevocationStateInvalid("invalid".into()),
             BaseError::JsonSerializeFailed("s".into()),
             BaseError::FieldNotFound("t".into(), "f".into()),
             BaseError::ParamInvalid("k".into(), "r".into()),

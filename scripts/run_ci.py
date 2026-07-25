@@ -254,6 +254,21 @@ INTEGRATION_COMMANDS = (
         ),
     ),
     Command(
+        "Token revocation integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-base",
+            "--test",
+            "token_revocation_integration",
+            "--locked",
+            "--",
+            "--ignored",
+            "--test-threads=1",
+        ),
+    ),
+    Command(
         "Redis script integration",
         (
             "cargo",
