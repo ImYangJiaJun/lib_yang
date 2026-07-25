@@ -1,0 +1,73 @@
+schema_version = 1
+suite = "yang-base/runtime_baseline"
+package = "yang-base"
+bench = "runtime_baseline"
+measurement = "wall_time_ns"
+cargo_features = "default"
+
+# Shadow 阶段只采集并校准噪声，不依据结果阻断提交。
+blocking = false
+repetitions = 3
+sample_size = 50
+warm_up_seconds = 1.0
+measurement_seconds = 3.0
+
+[[metrics]]
+id = "action/typed_dispatch"
+class = "hot_path"
+description = "HTTP/JSON Action 动态派发"
+
+[[metrics]]
+id = "params/body_extract"
+class = "hot_path"
+description = "params! body 解码"
+
+[[metrics]]
+id = "tools/direct_arc_access"
+class = "hot_path"
+description = "Tools 直接 Arc 访问"
+
+[[metrics]]
+id = "tools/typed_extension_access"
+class = "hot_path"
+description = "Tools 类型扩展访问"
+
+[[metrics]]
+id = "request_context/typed_access"
+class = "hot_path"
+description = "请求上下文类型化访问"
+
+[[metrics]]
+id = "tables/query_plan_build"
+class = "hot_path"
+description = "ActionContext 创建、TableDefinition 克隆与 TableQuery 过滤排序分页组合构建"
+
+[[metrics]]
+id = "db/table_where_order_select_sql"
+class = "hot_path"
+description = "受控数据库查询 SQL 构建"
+
+[[metrics]]
+id = "definition/registry_resolve"
+class = "hot_path"
+description = "ActionRef 到 Registry slot 解析"
+
+[[metrics]]
+id = "action/internal_typed_call"
+class = "hot_path"
+description = "强类型内部 Action 调用"
+
+[[metrics]]
+id = "action/json_value_round_trip"
+class = "control"
+description = "Serde JSON 输入解码与输出编码对照"
+
+[[metrics]]
+id = "definition/ui_catalog_projection"
+class = "request_path"
+description = "已绑定 Registry 的请求上下文投影 UI Catalog"
+
+[[metrics]]
+id = "definition/app_build"
+class = "startup"
+description = "启动期 App 定义构建与交叉校验"
