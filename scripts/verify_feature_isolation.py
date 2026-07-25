@@ -27,7 +27,7 @@ CASES = (
     Case("yang-db-redis", "yang-db", ("--no-default-features", "--features", "redis"), frozenset({"redis", "deadpool-redis"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres"})),
     Case("yang-base-none", "yang-base", ("--no-default-features",), frozenset(), frozenset({"sqlx", "redis", "deadpool-redis", "reqwest", "jsonwebtoken", "axum", "tower-http"})),
     Case("yang-base-token", "yang-base", ("--no-default-features", "--features", "token"), frozenset({"jsonwebtoken", "redis", "deadpool-redis"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres", "reqwest", "axum", "tower-http"})),
-    Case("yang-base-http", "yang-base", ("--no-default-features", "--features", "http"), frozenset({"reqwest"}), frozenset({"sqlx", "redis", "deadpool-redis", "jsonwebtoken", "axum", "tower-http"})),
+    Case("yang-base-http", "yang-base", ("--no-default-features", "--features", "http"), frozenset({"reqwest", "tower-http"}), frozenset({"sqlx", "redis", "deadpool-redis", "jsonwebtoken", "axum"})),
     Case("yang-base-mysql", "yang-base", ("--no-default-features", "--features", "mysql"), frozenset({"sqlx", "sqlx-mysql"}), frozenset({"sqlx-postgres", "redis", "deadpool-redis", "reqwest", "jsonwebtoken", "axum", "tower-http"})),
     Case("yang-base-redis", "yang-base", ("--no-default-features", "--features", "redis"), frozenset({"redis", "deadpool-redis"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres", "reqwest", "jsonwebtoken", "axum", "tower-http"})),
     Case("yang-base-transport-axum", "yang-base", ("--no-default-features", "--features", "transport-axum"), frozenset({"axum", "tower-http"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres", "redis", "deadpool-redis", "reqwest", "jsonwebtoken"})),
