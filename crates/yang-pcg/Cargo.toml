@@ -1,6 +1,6 @@
 [package]
 name = "yang-pcg"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 
 description = "个人使用地图生成"
