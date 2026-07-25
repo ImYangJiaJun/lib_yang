@@ -7,7 +7,7 @@
 - 编译根 workspace 中全部 `yang-*` crate；
 - 编译、启动并验证 `project/yang-system` 后端；
 - 安装、构建并启动 `project/yang-system/frontend`；
-- 使用与 CI 主版本一致的 MySQL 8、Redis 7 运行系统和真实依赖集成测试；
+- 使用与 CI 主版本一致的 MySQL 8、Rgitedis 7 运行系统和真实依赖集成测试；
 - 从 README 准确获知所有必需工具、配置、命令和端口。
 
 ## 方案
