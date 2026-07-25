@@ -1,6 +1,6 @@
 [package]
 name = "yang-base-derive"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 description = "yang-base 类型化 Action 派生宏"
 license.workspace = true
