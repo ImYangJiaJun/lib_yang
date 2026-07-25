@@ -3,7 +3,6 @@
 #![warn(missing_docs)]
 
 use proc_macro::TokenStream;
-use proc_macro_error::proc_macro_error;
 use syn::{parse_macro_input, DeriveInput};
 
 mod action;
@@ -21,7 +20,6 @@ mod params;
 /// - `#[action(description = "...")]`：简介（默认空字符串）。
 /// - `#[action(public)]`：标记为公开 Action（默认 `false`）。
 /// - `#[action(permissions("perm:a", "perm:b"))]`：所需权限列表。
-#[proc_macro_error]
 #[proc_macro_derive(Action, attributes(action))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -29,7 +27,6 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 }
 
 /// 一次声明强类型输入结构与其唯一原生 Params 定义。
-#[proc_macro_error]
 #[proc_macro]
 pub fn params(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as params::ParamsInput);
