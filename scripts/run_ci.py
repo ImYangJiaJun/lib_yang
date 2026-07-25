@@ -22,6 +22,15 @@ class Command:
     deny_warnings: bool = False
 
 
+AUXILIARY_PACKAGE_FLAGS = (
+    "-p",
+    "yang-base-derive",
+    "-p",
+    "yang-migrate",
+    "-p",
+    "yang-pcg",
+)
+
 STABLE_COMMANDS = (
     Command("CI contract self-test", ("python", "scripts/verify_ci_contract.py", "--self-test")),
     Command(
@@ -39,6 +48,16 @@ STABLE_COMMANDS = (
         ("cargo", "test", "--lib", "-p", "yang-base", "--locked"),
     ),
     Command(
+        "Auxiliary workspace all-target tests",
+        (
+            "cargo",
+            "test",
+            "--all-targets",
+            *AUXILIARY_PACKAGE_FLAGS,
+            "--locked",
+        ),
+    ),
+    Command(
         "Clippy all targets and features",
         (
             "cargo",
@@ -47,6 +66,7 @@ STABLE_COMMANDS = (
             "yang-db",
             "-p",
             "yang-base",
+            *AUXILIARY_PACKAGE_FLAGS,
             "--all-targets",
             "--all-features",
             "--locked",
@@ -292,6 +312,27 @@ def self_test() -> None:
     assert actual_features == expected_features
     assert len(feature_commands()) == len(FEATURE_CASES) * 3
     assert "+1.80.0" in MSRV_COMMAND.argv
+    workspace_packages = {
+        tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["name"]
+        for manifest in Path("crates").glob("*/Cargo.toml")
+    }
+    tested_packages = set()
+    clippy_packages = set()
+    for command in STABLE_COMMANDS:
+        if command.argv[:2] == ("cargo", "test"):
+            tested_packages.update(
+                command.argv[index + 1]
+                for index, argument in enumerate(command.argv[:-1])
+                if argument == "-p"
+            )
+        if command.argv[:2] == ("cargo", "clippy"):
+            clippy_packages.update(
+                command.argv[index + 1]
+                for index, argument in enumerate(command.argv[:-1])
+                if argument == "-p"
+            )
+    assert tested_packages == workspace_packages
+    assert clippy_packages == workspace_packages
     for command in (*STABLE_COMMANDS[4:], MSRV_COMMAND, *feature_commands(), *INTEGRATION_COMMANDS):
         if command.argv[0] == "cargo":
             assert "--locked" in command.argv, f"命令缺少 --locked: {command.name}"
