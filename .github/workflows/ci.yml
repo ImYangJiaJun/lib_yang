@@ -13,6 +13,23 @@ env:
   CI_RUST_VERSION: "1.97.1"
 
 jobs:
+  supply-chain:
+    name: Rust dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
+      - name: Verify dependency exception boundaries
+        run: |
+          python scripts/verify_dependency_policy.py --self-test
+          python scripts/verify_dependency_policy.py
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories licenses sources
+          arguments: --all-features --locked
+
   stable:
     name: Stable quality gates
     runs-on: ubuntu-latest
