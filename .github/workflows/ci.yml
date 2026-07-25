@@ -35,8 +35,10 @@ jobs:
         run: cargo test --lib -p yang-db --locked
       - name: yang-base library tests
         run: cargo test --lib -p yang-base --locked
+      - name: Auxiliary workspace all-target tests
+        run: cargo test --all-targets -p yang-base-derive -p yang-migrate -p yang-pcg --locked
       - name: Clippy all targets and features
-        run: cargo clippy -p yang-db -p yang-base --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy -p yang-db -p yang-base -p yang-base-derive -p yang-migrate -p yang-pcg --all-targets --all-features --locked -- -D warnings
       - name: yang-db documentation tests
         run: cargo test --doc -p yang-db --locked
       - name: yang-base documentation tests
