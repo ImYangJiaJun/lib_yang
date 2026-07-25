@@ -109,10 +109,8 @@ MSRV_COMMAND = Command(
         "cargo",
         "+1.80.0",
         "check",
-        "-p",
-        "yang-db",
-        "-p",
-        "yang-base",
+        "--workspace",
+        "--all-targets",
         "--all-features",
         "--locked",
     ),
@@ -332,11 +330,26 @@ def self_test() -> None:
     actual_features = {name for name, _, _ in FEATURE_CASES}
     assert actual_features == expected_features
     assert len(feature_commands()) == len(FEATURE_CASES) * 3
-    assert "+1.80.0" in MSRV_COMMAND.argv
-    workspace_packages = {
-        tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["name"]
-        for manifest in Path("crates").glob("*/Cargo.toml")
-    }
+    workspace_manifest = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+    workspace_msrv = workspace_manifest["workspace"]["package"]["rust-version"]
+    assert MSRV_COMMAND.argv == (
+        "cargo",
+        f"+{workspace_msrv}.0",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+    )
+    member_manifests = tuple(Path("crates").glob("*/Cargo.toml"))
+    member_packages = [
+        tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]
+        for manifest in member_manifests
+    ]
+    assert all(
+        package.get("rust-version") == {"workspace": True} for package in member_packages
+    ), "所有工作区成员都必须显式继承 workspace.package.rust-version"
+    workspace_packages = {package["name"] for package in member_packages}
     tested_packages = set()
     clippy_packages = set()
     for command in STABLE_COMMANDS:

@@ -1,11 +1,8 @@
 // 确定性随机数生成模块
 // 提供稳定的、可派生子流的随机接口
 
-use rand::RngExt;
-use rand::TryRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_pcg::Pcg64;
-use std::convert::Infallible;
 
 // ============================================================================
 // RNG 派生标签契约（确定性种子复现的基础）
@@ -521,20 +518,17 @@ impl StableRng {
     }
 }
 
-impl TryRng for StableRng {
-    type Error = Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-        Ok(self.inner.next_u32())
+impl RngCore for StableRng {
+    fn next_u32(&mut self) -> u32 {
+        self.inner.next_u32()
     }
 
-    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-        Ok(self.inner.next_u64())
+    fn next_u64(&mut self) -> u64 {
+        self.inner.next_u64()
     }
 
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Infallible> {
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
         self.inner.fill_bytes(dest);
-        Ok(())
     }
 }
 

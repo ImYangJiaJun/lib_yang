@@ -51,7 +51,7 @@ REQUIRED_FRAGMENTS = (
     "cargo check -p ${{ matrix.package }} ${{ matrix.args }} --locked",
     "cargo test --lib -p ${{ matrix.package }} ${{ matrix.args }} --locked",
     "cargo test --doc -p ${{ matrix.package }} ${{ matrix.args }} --locked",
-    "cargo check -p yang-db -p yang-base --all-features --locked",
+    "cargo check --workspace --all-targets --all-features --locked",
     'toolchain: "1.80"',
     "mysql:8.0",
     "postgres:16-alpine",

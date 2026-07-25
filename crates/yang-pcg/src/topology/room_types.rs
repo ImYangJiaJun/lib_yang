@@ -22,7 +22,7 @@ pub fn assign_critical_room_type(index: usize, critical_path_len: usize) -> Room
         RoomType::Boss
     } else if index + 2 == critical_path_len {
         RoomType::Elite
-    } else if index.is_multiple_of(3) {
+    } else if index % 3 == 0 {
         RoomType::Puzzle
     } else {
         RoomType::Combat
