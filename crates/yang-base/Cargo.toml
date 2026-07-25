@@ -1,6 +1,6 @@
 [package]
 name = "yang-base"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 
 description = "个人使用构建后端服务器"
@@ -56,8 +56,8 @@ transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencod
 
 [dependencies]
 # 内部依赖
-yang-db = { path = "../yang-db", version = "0.1.4", default-features = false }
-yang-base-derive = { path = "../yang-base-derive", version = "0.2.0" }
+yang-db = { path = "../yang-db", version = "0.1.5", default-features = false }
+yang-base-derive = { path = "../yang-base-derive", version = "0.2.1" }
 
 # 异步运行时
 tokio = { workspace = true }
