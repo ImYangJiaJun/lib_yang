@@ -45,6 +45,7 @@ jobs:
           python scripts/verify_ci_contract.py --self-test
           python scripts/verify_ci_contract.py .github/workflows/ci.yml
           python scripts/verify_feature_isolation.py --self-test
+          python scripts/run_performance_shadow.py --self-test
           python scripts/run_ci.py --self-test
       - name: Formatting
         run: cargo fmt --all -- --check
@@ -74,6 +75,30 @@ jobs:
           key: msrv-1.80
       - name: Check workspace on MSRV
         run: cargo check --workspace --all-targets --all-features --locked
+
+  performance-shadow:
+    name: Performance shadow (non-blocking)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify performance collector contract
+        run: python scripts/run_performance_shadow.py --self-test
+      - name: Collect repeated runtime measurements
+        run: python scripts/run_performance_shadow.py --output target/performance-shadow
+      - name: Upload raw performance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-shadow-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/performance-shadow
+          if-no-files-found: error
+          retention-days: 30
 
   feature-matrix:
     name: Feature matrix (${{ matrix.name }})

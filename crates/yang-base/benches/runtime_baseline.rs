@@ -216,6 +216,17 @@ fn runtime_baseline(criterion: &mut Criterion) {
         });
     });
 
+    let catalog_context = built.context(Request::new(json!({})));
+    criterion.bench_function("definition/ui_catalog_projection", |bencher| {
+        bencher.iter(|| {
+            black_box(
+                catalog_context
+                    .ui_catalog()
+                    .expect("固定 UI Catalog 应投影成功"),
+            )
+        });
+    });
+
     let typed = built
         .registry()
         .resolve_typed::<EchoInput, EchoOutput>(&reference)
@@ -236,13 +247,15 @@ fn runtime_baseline(criterion: &mut Criterion) {
         });
     });
 
+    let json_input = json!({ "message": "hello" });
     criterion.bench_function("action/json_value_round_trip", |bencher| {
         bencher.iter(|| {
-            black_box(
-                runtime
-                    .block_on(action.dispatch(context(&tools)))
-                    .expect("JSON 边界调用应成功"),
-            )
+            let input: EchoInput =
+                serde_json::from_value(black_box(json_input.clone())).expect("固定 JSON 应解码");
+            let output = EchoOutput {
+                message: input.message,
+            };
+            black_box(serde_json::to_value(output).expect("固定输出应编码为 JSON"))
         });
     });
 

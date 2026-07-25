@@ -42,6 +42,10 @@ STABLE_COMMANDS = (
         ("python", "scripts/verify_feature_isolation.py", "--self-test"),
     ),
     Command("Formatting", ("cargo", "fmt", "--all", "--", "--check")),
+    Command(
+        "Performance shadow self-test",
+        ("python", "scripts/run_performance_shadow.py", "--self-test"),
+    ),
     Command("yang-db library tests", ("cargo", "test", "--lib", "-p", "yang-db", "--locked")),
     Command(
         "yang-base library tests",
