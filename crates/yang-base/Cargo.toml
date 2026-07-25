@@ -2,6 +2,7 @@
 name = "yang-base"
 version = "0.2.1"
 edition.workspace = true
+rust-version.workspace = true
 
 description = "个人使用构建后端服务器"
 license.workspace = true
@@ -135,7 +136,8 @@ insta = { workspace = true }
 # 测试 tracing 输出（Test-1：慢查询 warn 分支断言）
 tracing-subscriber = "0.3"
 criterion = { version = "=0.6.0", default-features = false, features = ["cargo_bench_support"] }
-trybuild = "1.0"
+# trybuild 1.0.106+ 通过 toml 0.9 拉入 Cargo 1.80 无法解析的 Edition 2024 清单。
+trybuild = "=1.0.105"
 
 [[bench]]
 name = "runtime_baseline"

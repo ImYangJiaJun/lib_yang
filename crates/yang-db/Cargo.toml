@@ -2,6 +2,7 @@
 name = "yang-db"
 version = "0.1.5"
 edition.workspace = true
+rust-version.workspace = true
 
 description = "个人使用数据库操作"
 license.workspace = true
@@ -59,7 +60,7 @@ log = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
-proptest = "1.11.0"
+proptest.workspace = true
 testcontainers = "=0.22.0"
 
 [package.metadata.docs.rs]

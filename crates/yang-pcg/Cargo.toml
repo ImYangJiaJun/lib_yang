@@ -2,6 +2,7 @@
 name = "yang-pcg"
 version = "0.1.1"
 edition.workspace = true
+rust-version.workspace = true
 
 description = "个人使用地图生成"
 license.workspace = true
@@ -40,9 +41,10 @@ crc32fast = "1.4"  # CRC32 校验和计算
 thiserror = { workspace = true }
 
 # 随机数生成
-rand = "0.10.1"
-rand_pcg = "0.10.2"
+# rand/rand_pcg 0.10 的 MSRV 为 1.85；0.9 保留当前使用的 API 和 PCG 算法。
+rand = "=0.9.3"
+rand_pcg = "=0.9.0"
 
 [dev-dependencies]
 # 属性测试框架
-proptest = "1.6"
+proptest.workspace = true

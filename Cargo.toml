@@ -92,6 +92,8 @@ darling = "0.20"
 
 # 测试基础设施
 insta = { version = "=1.42.2", features = ["json"] }
+# proptest 1.9+ 的 MSRV 高于工作区 Rust 1.80。
+proptest = "=1.8.0"
 
 # Workspace 统一 lint 配置
 [workspace.lints.rust]
