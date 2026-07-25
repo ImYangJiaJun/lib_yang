@@ -9,7 +9,7 @@
 //! 2. **按用户批量撤销（subject 时间水位线）**：用于改密、强制下线。撤销时把
 //!    "当前时间戳"写入 `token:user:{hex(sub)}:min_iat`（sub 经 hex 编码，避免特殊
 //!    字符导致 Redis key 歧义），TTL 取 Refresh Token 有效期。
-//!    校验时若该用户存在水位线且 Token 的 `iat` 早于水位线，则视为已撤销——
+//!    校验时若该用户存在水位线且 Token 的 `iat` 早于或等于水位线，则视为已撤销——
 //!    一次写入即可让该用户在此之前签发的所有 Token 全部失效。
 //!
 //! 设计约束：**不修改** [`TokenManager::verify_token`] 的现有签名与行为，
@@ -18,6 +18,7 @@
 use crate::error::BaseError;
 use crate::token::manager::current_unix_timestamp;
 use crate::token::{TokenClaims, TokenManager};
+use yang_db::RedisValue;
 
 /// Redis 黑名单 key 前缀。最终 key 形如 `token:blacklist:{jti}`。
 const BLACKLIST_PREFIX: &str = "token:blacklist:";
@@ -57,6 +58,60 @@ fn subject_min_iat_key(sub: &str) -> String {
 /// 撤销（用户至多需在该秒后重新登录一次），杜绝旁路。
 fn iat_revoked_by_watermark(iat: u64, min_iat: u64) -> bool {
     iat <= min_iat
+}
+
+fn invalid_revocation_state(message: &str) -> BaseError {
+    BaseError::TokenRevocationStateInvalid(message.to_string())
+}
+
+/// 解析撤销水位线的唯一入口。损坏原值不进入错误文本，避免日志注入和敏感数据回显。
+fn parse_subject_min_iat(raw: &str) -> Result<u64, BaseError> {
+    raw.parse::<u64>()
+        .map_err(|_| invalid_revocation_state("用户撤销水位线不是有效的 u64 时间戳"))
+}
+
+/// 解析 Redis GET 水位线结果；只有 Nil 和 UTF-8 String 属于合法协议形态。
+fn parse_subject_min_iat_value(value: &RedisValue) -> Result<Option<u64>, BaseError> {
+    match value {
+        RedisValue::Nil => Ok(None),
+        RedisValue::String(raw) => parse_subject_min_iat(raw).map(Some),
+        _ => Err(invalid_revocation_state(
+            "用户撤销水位线的 Redis 类型不是 nil/string",
+        )),
+    }
+}
+
+/// 解析单条 GET pipeline 结果，避免高层字符串 API 将非 UTF-8 值折叠为 None。
+fn parse_subject_min_iat_pipeline_results(
+    results: &[RedisValue],
+) -> Result<Option<u64>, BaseError> {
+    let [value] = results else {
+        return Err(invalid_revocation_state(
+            "用户撤销水位线 GET pipeline 返回数量不是 1",
+        ));
+    };
+    parse_subject_min_iat_value(value)
+}
+
+/// 解析固定的 EXISTS + GET pipeline 结果，任何形态歧义均失败关闭。
+fn parse_revocation_pipeline_results(
+    results: &[RedisValue],
+) -> Result<(bool, Option<u64>), BaseError> {
+    let [blacklist_result, watermark_result] = results else {
+        return Err(invalid_revocation_state(
+            "Token 撤销查询 pipeline 返回数量不是 2",
+        ));
+    };
+    let blacklisted = match blacklist_result {
+        RedisValue::Int(0) => false,
+        RedisValue::Int(1) => true,
+        _ => {
+            return Err(invalid_revocation_state(
+                "Token 黑名单 EXISTS 结果不是 0/1 整数",
+            ))
+        }
+    };
+    Ok((blacklisted, parse_subject_min_iat_value(watermark_result)?))
 }
 
 impl TokenManager {
@@ -126,7 +181,7 @@ impl TokenManager {
     ///
     /// 在 Redis 中将 `token:user:{hex(sub)}:min_iat` 写为当前时间戳，作为该用户的
     /// "最小有效签发时间"水位线。此后 [`TokenManager::verify_token_checked`]
-    /// 会拒绝任何 `iat` 早于该水位线的 Token，从而让此前签发的全部 Token 一次性失效。
+    /// 会拒绝任何 `iat` 早于或等于该水位线的 Token，从而让此前签发的全部 Token 一次性失效。
     ///
     /// 适用于**改密、强制下线**等需要让某用户全部会话立即失效的场景。
     /// 水位线 TTL 取 Refresh Token 有效期（`TokenManager::refresh_token_expiry`），
@@ -165,24 +220,15 @@ impl TokenManager {
     /// - `Ok(Some(ts))`: 该用户已被批量撤销，水位线时间戳为 `ts`
     /// - `Ok(None)`: 该用户无批量撤销记录
     /// - `Err(BaseError::RedisOperationFailed)`: Redis 查询失败
+    /// - `Err(BaseError::TokenRevocationStateInvalid)`: 水位线值损坏
     pub async fn subject_min_iat(&self, sub: &str) -> Result<Option<u64>, BaseError> {
-        match self
-            .revocation_cache()?
-            .get(subject_min_iat_key(sub))
+        let mut pipeline = self.revocation_cache()?.pipeline();
+        pipeline.get(subject_min_iat_key(sub));
+        let results = pipeline
+            .execute()
             .await
-            .map_err(BaseError::RedisOperationFailed)?
-        {
-            // 解析失败视为无水位线，避免因脏数据误杀合法 Token
-            Some(raw) => {
-                if let Ok(ts) = raw.parse::<u64>() {
-                    Ok(Some(ts))
-                } else {
-                    tracing::warn!(sub, raw, "水位线解析失败，视为无水位线");
-                    Ok(None)
-                }
-            }
-            None => Ok(None),
-        }
+            .map_err(BaseError::RedisOperationFailed)?;
+        parse_subject_min_iat_pipeline_results(&results)
     }
 
     /// 尝试原子撤销一次（SET key val NX EX ttl）。
@@ -216,7 +262,7 @@ impl TokenManager {
     /// 在 [`TokenManager::verify_token`] 的全部校验之上，再做两层撤销检查：
     /// 1. 查 `jti` 黑名单（单 Token 撤销 / 登出）；
     /// 2. 查该用户的 `min_iat` 水位线（按用户批量撤销 / 改密、强制下线）：
-    ///    若存在水位线且 Token 的 `iat` 早于它，则视为已撤销。
+    ///    若存在水位线且 Token 的 `iat` 早于或等于它，则视为已撤销。
     ///
     /// 鉴权路径若需支持登出/撤销，应使用本方法替代 `verify_token`。
     ///
@@ -228,8 +274,9 @@ impl TokenManager {
     ///
     /// - `Ok(TokenClaims)`: 验证通过且未被撤销
     /// - `Err(BaseError::TokenVerifyFailed)`: 签名/过期/声明校验失败
-    /// - `Err(BaseError::TokenRevoked)`: Token 已被撤销（命中黑名单或早于用户水位线）
+    /// - `Err(BaseError::TokenRevoked)`: Token 已被撤销（命中黑名单或不晚于用户水位线）
     /// - `Err(BaseError::RedisOperationFailed)`: 黑名单查询失败
+    /// - `Err(BaseError::TokenRevocationStateInvalid)`: 撤销查询结果或水位线损坏
     pub async fn verify_token_checked(&self, token: &str) -> Result<TokenClaims, BaseError> {
         let claims = self.verify_token(token)?;
 
@@ -244,21 +291,13 @@ impl TokenManager {
             .await
             .map_err(BaseError::RedisOperationFailed)?;
 
-        // results[0]: EXISTS → Int(0) 或 Int(1)
-        let revoked_count = results[0].as_i64().unwrap_or(0);
-        if revoked_count > 0 {
+        let (blacklisted, min_iat) = parse_revocation_pipeline_results(&results)?;
+        if blacklisted {
             return Err(BaseError::TokenRevoked);
         }
 
-        // results[1]: GET → Nil（无水位线）或 String（水位线时间戳）
-        if let Some(raw) = results[1].as_str() {
-            if let Ok(min_iat) = raw.parse::<u64>() {
-                if iat_revoked_by_watermark(claims.iat, min_iat) {
-                    return Err(BaseError::TokenRevoked);
-                }
-            } else {
-                tracing::warn!(sub = %claims.sub, raw, "水位线解析失败，视为无水位线");
-            }
+        if min_iat.is_some_and(|watermark| iat_revoked_by_watermark(claims.iat, watermark)) {
+            return Err(BaseError::TokenRevoked);
         }
 
         Ok(claims)
@@ -305,5 +344,125 @@ mod tests {
         assert!(iat_revoked_by_watermark(200, 200));
         // 晚于水位线：放行
         assert!(!iat_revoked_by_watermark(201, 200));
+    }
+
+    #[test]
+    fn watermark_parser_accepts_only_absent_or_valid_u64_string() {
+        assert_eq!(
+            parse_subject_min_iat_value(&yang_db::RedisValue::Nil).expect("缺少水位线是合法状态"),
+            None
+        );
+        assert_eq!(
+            parse_subject_min_iat_value(&yang_db::RedisValue::String("0".to_string()))
+                .expect("u64 下界应有效"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_subject_min_iat_value(&yang_db::RedisValue::String(u64::MAX.to_string()))
+                .expect("u64 上界应有效"),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn watermark_parser_rejects_corrupt_strings_and_wrong_redis_types() {
+        let invalid_values = [
+            yang_db::RedisValue::String(String::new()),
+            yang_db::RedisValue::String("-1".to_string()),
+            yang_db::RedisValue::String("18446744073709551616".to_string()),
+            yang_db::RedisValue::String("secret-corrupt-watermark".to_string()),
+            yang_db::RedisValue::Bytes(vec![0xff]),
+            yang_db::RedisValue::Int(42),
+            yang_db::RedisValue::Bool(false),
+            yang_db::RedisValue::Array(Vec::new()),
+        ];
+
+        for value in invalid_values {
+            let error = parse_subject_min_iat_value(&value)
+                .expect_err("损坏或错误类型的水位线必须失败关闭");
+            assert!(
+                matches!(&error, BaseError::TokenRevocationStateInvalid(_)),
+                "损坏水位线必须返回结构化错误，实际为: {error:?}"
+            );
+            assert_eq!(error.code(), 400008);
+            assert!(error.is_server_error());
+            assert!(
+                !error.to_string().contains("secret-corrupt-watermark"),
+                "错误不得回显 Redis 中的损坏原值"
+            );
+        }
+    }
+
+    #[test]
+    fn subject_watermark_pipeline_parser_requires_exactly_one_result() {
+        for values in [
+            vec![],
+            vec![yang_db::RedisValue::Nil, yang_db::RedisValue::Nil],
+        ] {
+            assert!(
+                matches!(
+                    parse_subject_min_iat_pipeline_results(&values),
+                    Err(BaseError::TokenRevocationStateInvalid(_))
+                ),
+                "水位线 GET 必须恰好返回一个结果: {values:?}"
+            );
+        }
+
+        assert_eq!(
+            parse_subject_min_iat_pipeline_results(&[yang_db::RedisValue::Nil])
+                .expect("缺少水位线是合法状态"),
+            None
+        );
+        assert_eq!(
+            parse_subject_min_iat_pipeline_results(&[yang_db::RedisValue::String(
+                "42".to_string()
+            )])
+            .expect("合法水位线应通过"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn revocation_pipeline_parser_rejects_ambiguous_results() {
+        for values in [
+            vec![],
+            vec![yang_db::RedisValue::Int(0)],
+            vec![
+                yang_db::RedisValue::Int(0),
+                yang_db::RedisValue::Nil,
+                yang_db::RedisValue::Nil,
+            ],
+            vec![
+                yang_db::RedisValue::String("0".to_string()),
+                yang_db::RedisValue::Nil,
+            ],
+            vec![yang_db::RedisValue::Int(-1), yang_db::RedisValue::Nil],
+            vec![yang_db::RedisValue::Int(2), yang_db::RedisValue::Nil],
+        ] {
+            assert!(
+                matches!(
+                    parse_revocation_pipeline_results(&values),
+                    Err(BaseError::TokenRevocationStateInvalid(_))
+                ),
+                "不明确的撤销查询结果必须失败关闭: {values:?}"
+            );
+        }
+
+        assert_eq!(
+            parse_revocation_pipeline_results(&[
+                yang_db::RedisValue::Int(0),
+                yang_db::RedisValue::String("42".to_string()),
+            ])
+            .expect("固定合法结果应通过"),
+            (false, Some(42))
+        );
+        assert_eq!(
+            parse_revocation_pipeline_results(&[
+                yang_db::RedisValue::Int(1),
+                yang_db::RedisValue::Nil,
+            ])
+            .expect("黑名单命中且无水位线是合法状态"),
+            (true, None)
+        );
     }
 }

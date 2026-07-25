@@ -54,6 +54,7 @@ REQUIRED_FRAGMENTS = (
     "cargo test --doc -p ${{ matrix.package }} ${{ matrix.args }} --locked",
     "cargo check --workspace --all-targets --all-features --locked",
     'toolchain: "1.80"',
+    "cargo test -p yang-base --test token_revocation_integration --locked -- --ignored --test-threads=1",
     "performance-shadow:",
     "runs-on: ubuntu-24.04",
     "continue-on-error: true",

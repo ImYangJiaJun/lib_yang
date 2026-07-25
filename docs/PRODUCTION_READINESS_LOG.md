@@ -2,6 +2,14 @@
 
 本文档记录基础库生产级审计中已经完成的修复点。每个完成点对应一次本地 git 提交；未完成的 RED 测试、探索结论或临时状态不作为完成点记录。
 
+## 2026-07-26 - B-02 Token 撤销水位线损坏失败关闭
+
+- 范围：`subject_min_iat()` 与 `verify_token_checked()` 复用唯一撤销状态解析器；新增结构化 `TokenRevocationStateInvalid`（400008，Server 类），Redis 原值不进入错误文本。
+- RED：先加入水位线与 pipeline 对抗测试，产生 9 个预期编译错误，证明严格解析函数和结构化错误均不存在。
+- 安全语义：只有 `Nil` 或可解析为 `u64` 的 UTF-8 String 是合法水位线；非法/溢出数字、非 UTF-8、错误 Redis 类型、pipeline 缺项/多项和非 0/1 的 EXISTS 结果全部返回错误，不再记录 warning 后放行 Token。
+- 真实 Redis：Redis 7 容器中经公开 API 写入水位线，再分别注入损坏 UTF-8 字符串与 `0xff` 非 UTF-8 字节；公开查询与 Token 鉴权路径均返回 400008，恢复合法水位线后同一 Token 正常通过。该回归已加入 CI 与本地 integration profile。
+- 门禁：`yang-base` lib 544 passed/4 ignored，error contract 38 passed，真实 Redis 1 passed；all-target/all-feature Clippy 和 Rust 1.80 all-target/all-feature check 通过。
+
 ## 2026-07-15 - P6-01 模块表启动期 additive schema 同步
 
 - 范围：yang-base 0.1.3 / yang-base-derive 0.1.1；`TableEntity` 增加整数主键 `auto_increment` 元数据，`ModuleRouter` 支持一个 CRUD 主表与多张 schema 附属表，`AppRouter` 提供确定性表配置汇总，`DatabaseInitializer::sync_app_schema` 在 HTTP 监听前同步 MySQL。
