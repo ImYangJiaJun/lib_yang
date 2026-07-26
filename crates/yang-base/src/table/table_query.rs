@@ -1105,7 +1105,7 @@ impl TableQuery {
     /// 筛选，因此与 [`Self::scope_tenant`] 一样绕过 filterable 业务筛选权限；
     /// 值仍按主键字段类型校验（null 交由渲染器规范化为 IS NULL，匹配不到记录）。
     #[cfg(feature = "mysql")]
-    pub(crate) fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
+    pub fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
         let field = self.table_config.primary_key.clone();
         let config = self.table_config.get_field(&field).ok_or_else(|| {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field.clone())
