@@ -366,7 +366,9 @@ impl Database {
     pub async fn read_only_transaction(&self) -> Result<Transaction, DbError> {
         let tx = self
             .pool
-            .begin_with("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+            .begin_with(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
+            )
             .await?;
         Ok(Transaction::new(tx, self.config.enable_logging))
     }
