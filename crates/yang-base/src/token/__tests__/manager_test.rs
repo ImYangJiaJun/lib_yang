@@ -135,6 +135,54 @@ fn test_token_pair_generation() {
         .expect("验证 Refresh Token 失败");
     assert_eq!(refresh_claims.token_type, crate::token::TokenType::Refresh);
     assert_eq!(refresh_claims.sub, "user_789");
+    assert!(
+        refresh_claims.custom.is_null()
+            || refresh_claims
+                .custom
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty),
+        "旧入口必须保持 Refresh Token 无自定义声明的兼容语义"
+    );
+}
+
+/// 测试 Access/Refresh Token 分别携带由同一快照派生的声明
+#[test]
+fn test_token_pair_with_distinct_claims() {
+    let manager = TokenManager::new_symmetric(
+        "test_secret",
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    );
+
+    let (access_token, refresh_token) = manager
+        .generate_token_pair_with_refresh_claims(
+            "user_790",
+            json!({
+                "authz_version": 7,
+                "roles": ["admin"],
+                "permissions": ["users:write"]
+            }),
+            json!({"authz_version": 7}),
+        )
+        .expect("生成带独立声明的 Token 对失败");
+
+    let access_claims = manager
+        .verify_token(&access_token)
+        .expect("验证 Access Token 失败");
+    let refresh_claims = manager
+        .verify_token(&refresh_token)
+        .expect("验证 Refresh Token 失败");
+
+    assert_eq!(access_claims.custom["authz_version"], 7);
+    assert_eq!(access_claims.custom["roles"], json!(["admin"]));
+    assert_eq!(refresh_claims.custom["authz_version"], 7);
+    assert!(
+        refresh_claims.custom.get("roles").is_none(),
+        "Refresh Token 不应复制角色等完整授权声明"
+    );
 }
 
 /// 测试 Token 验证失败（错误的密钥）

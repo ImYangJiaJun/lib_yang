@@ -178,6 +178,34 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+/// 同一授权快照派生出的 Access/Refresh Token 自定义声明。
+///
+/// Access Token 可携带角色、权限等完整授权信息；Refresh Token 应只保留刷新流程
+/// 所需的最小稳定声明。默认不为 Refresh Token 附加声明，保持既有行为。
+#[derive(Debug, Clone)]
+pub struct TokenPairClaims {
+    /// 写入 Access Token 的自定义声明。
+    pub access: serde_json::Value,
+    /// 写入 Refresh Token 的自定义声明。
+    pub refresh: serde_json::Value,
+}
+
+impl TokenPairClaims {
+    /// 创建仅含 Access Token 自定义声明的声明对。
+    pub fn new(access: serde_json::Value) -> Self {
+        Self {
+            access,
+            refresh: serde_json::Value::Null,
+        }
+    }
+
+    /// 设置 Refresh Token 的最小自定义声明（链式）。
+    pub fn with_refresh(mut self, refresh: serde_json::Value) -> Self {
+        self.refresh = refresh;
+        self
+    }
+}
+
 /// 校验通过后的主体信息，由 [`CredentialVerifier`] 返回。
 #[derive(Debug, Clone)]
 pub struct VerifiedSubject {
@@ -185,6 +213,8 @@ pub struct VerifiedSubject {
     pub subject: String,
     /// 写入 Access Token 的自定义声明（如角色、权限）
     pub custom_claims: serde_json::Value,
+    /// 写入 Refresh Token 的最小自定义声明
+    pub refresh_claims: serde_json::Value,
 }
 
 impl VerifiedSubject {
@@ -193,12 +223,26 @@ impl VerifiedSubject {
         Self {
             subject: subject.into(),
             custom_claims: serde_json::Value::Null,
+            refresh_claims: serde_json::Value::Null,
         }
     }
 
     /// 设置自定义声明（链式）。
     pub fn with_claims(mut self, claims: serde_json::Value) -> Self {
         self.custom_claims = claims;
+        self
+    }
+
+    /// 设置 Refresh Token 的最小自定义声明（链式）。
+    pub fn with_refresh_claims(mut self, claims: serde_json::Value) -> Self {
+        self.refresh_claims = claims;
+        self
+    }
+
+    /// 设置同一授权快照派生出的 Access/Refresh Token 声明（链式）。
+    pub fn with_token_pair_claims(mut self, claims: TokenPairClaims) -> Self {
+        self.custom_claims = claims.access;
+        self.refresh_claims = claims.refresh;
         self
     }
 }
@@ -376,7 +420,11 @@ impl<V: CredentialVerifier, A: AuthAuditHook> TypedHandler for LoginAction<V, A>
         let result = ctx
             .tools()
             .token()?
-            .generate_token_pair(&subject.subject, subject.custom_claims);
+            .generate_token_pair_with_refresh_claims(
+                &subject.subject,
+                subject.custom_claims,
+                subject.refresh_claims,
+            );
         match result {
             Ok((access_token, refresh_token)) => {
                 self.audit
@@ -431,6 +479,19 @@ pub trait RefreshClaimsResolver: Send + Sync + 'static {
     /// - `Err(BaseError)`: 解析失败（如用户已禁用）
     async fn resolve(&self, ctx: &ActionContext, sub: &str)
         -> Result<serde_json::Value, BaseError>;
+
+    /// 从同一次业务快照解析新 Access/Refresh Token 的声明。
+    ///
+    /// 默认只复用 [`RefreshClaimsResolver::resolve`] 生成 Access 声明，Refresh
+    /// 声明保持为空，因此既有实现无需修改。需要成对版本声明的实现可覆盖本方法，
+    /// 保证只执行一次数据库快照查询。
+    async fn resolve_pair(
+        &self,
+        ctx: &ActionContext,
+        sub: &str,
+    ) -> Result<TokenPairClaims, BaseError> {
+        Ok(TokenPairClaims::new(self.resolve(ctx, sub).await?))
+    }
 }
 
 /// 默认刷新声明解析器：不附加任何自定义声明（零配置可用）。
@@ -544,10 +605,14 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
                 ));
             }
             // 按业务解析器决定新 Token 的自定义声明
-            let custom_claims = self.resolver.resolve(&ctx, &claims.sub).await?;
+            let custom_claims = self.resolver.resolve_pair(&ctx, &claims.sub).await?;
             // 使用已验证的 claims 直接轮换，跳过 rotate_refresh_token 内部二次验证
             let (access_token, refresh_token) = manager
-                .rotate_refresh_token_from_claims(&claims, custom_claims)
+                .rotate_refresh_token_from_claims_with_refresh_claims(
+                    &claims,
+                    custom_claims.access,
+                    custom_claims.refresh,
+                )
                 .await?;
             Ok::<_, BaseError>((access_token, refresh_token, claims.sub))
         };

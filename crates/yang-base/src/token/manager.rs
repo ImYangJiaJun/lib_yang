@@ -319,7 +319,20 @@ impl TokenManager {
     /// ```
     pub fn generate_refresh_token(&self, subject: &str) -> Result<String, BaseError> {
         let now = current_unix_timestamp()?;
-        self.generate_refresh_token_at(subject, now)
+        self.generate_refresh_token_at(subject, serde_json::Value::Null, now)
+    }
+
+    /// 生成携带自定义声明的 Refresh Token。
+    ///
+    /// Refresh Token 通常只应携带版本号等刷新流程必需的最小声明，不应复制
+    /// Access Token 中的角色、权限等高频变化信息。
+    pub fn generate_refresh_token_with_claims(
+        &self,
+        subject: &str,
+        custom_claims: serde_json::Value,
+    ) -> Result<String, BaseError> {
+        let now = current_unix_timestamp()?;
+        self.generate_refresh_token_at(subject, custom_claims, now)
     }
 
     /// 生成 Token 对（Access Token + Refresh Token）
@@ -347,8 +360,25 @@ impl TokenManager {
         subject: &str,
         custom_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
+        self.generate_token_pair_with_refresh_claims(
+            subject,
+            custom_claims,
+            serde_json::Value::Null,
+        )
+    }
+
+    /// 生成分别携带自定义声明的 Token 对。
+    ///
+    /// `access_claims` 与 `refresh_claims` 必须由同一次业务授权快照派生，避免
+    /// 同一 Token 对内部出现版本撕裂。调用方应保持 Refresh 声明最小化。
+    pub fn generate_token_pair_with_refresh_claims(
+        &self,
+        subject: &str,
+        access_claims: serde_json::Value,
+        refresh_claims: serde_json::Value,
+    ) -> Result<(String, String), BaseError> {
         let now = current_unix_timestamp()?;
-        self.generate_token_pair_at(subject, custom_claims, now)
+        self.generate_token_pair_at(subject, access_claims, refresh_claims, now)
     }
 
     /// 使用预取时间戳生成 Token 对（内部方法，PERF-10 优化）。
@@ -360,11 +390,12 @@ impl TokenManager {
     pub(crate) fn generate_token_pair_at(
         &self,
         subject: &str,
-        custom_claims: serde_json::Value,
+        access_claims: serde_json::Value,
+        refresh_claims: serde_json::Value,
         now: u64,
     ) -> Result<(String, String), BaseError> {
-        let access_token = self.generate_access_token_at(subject, custom_claims, now)?;
-        let refresh_token = self.generate_refresh_token_at(subject, now)?;
+        let access_token = self.generate_access_token_at(subject, access_claims, now)?;
+        let refresh_token = self.generate_refresh_token_at(subject, refresh_claims, now)?;
 
         Ok((access_token, refresh_token))
     }
@@ -397,7 +428,12 @@ impl TokenManager {
     /// 使用预取时间戳生成 Refresh Token（内部方法，PERF-10 优化）。
     ///
     /// 与 [`generate_refresh_token`] 功能相同，但接受外部传入的 `now` 时间戳。
-    fn generate_refresh_token_at(&self, subject: &str, now: u64) -> Result<String, BaseError> {
+    fn generate_refresh_token_at(
+        &self,
+        subject: &str,
+        custom_claims: serde_json::Value,
+        now: u64,
+    ) -> Result<String, BaseError> {
         let claims = TokenClaims {
             iss: self.issuer.clone(),
             sub: subject.to_string(),
@@ -407,7 +443,7 @@ impl TokenManager {
             iat: now,
             jti: uuid::Uuid::new_v4().to_string(),
             token_type: crate::token::TokenType::Refresh,
-            custom: serde_json::Value::Null,
+            custom: custom_claims,
         };
 
         encode(&self.jwt_header, &claims, &self.encoding_key)
@@ -636,12 +672,31 @@ impl TokenManager {
         old_refresh: &str,
         custom_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
+        self.rotate_refresh_token_with_refresh_claims(
+            old_refresh,
+            custom_claims,
+            serde_json::Value::Null,
+        )
+        .await
+    }
+
+    /// 轮换 Refresh Token，并分别设置新 Access/Refresh Token 的自定义声明。
+    pub async fn rotate_refresh_token_with_refresh_claims(
+        &self,
+        old_refresh: &str,
+        access_claims: serde_json::Value,
+        refresh_claims: serde_json::Value,
+    ) -> Result<(String, String), BaseError> {
         // 1. 验证旧 Refresh Token 且确认未被撤销
         let old_claims = self.verify_token_checked(old_refresh).await?;
 
         // 2~4：委托已验证 claims 的版本，避免重复逻辑
-        self.rotate_refresh_token_from_claims(&old_claims, custom_claims)
-            .await
+        self.rotate_refresh_token_from_claims_with_refresh_claims(
+            &old_claims,
+            access_claims,
+            refresh_claims,
+        )
+        .await
     }
 
     /// 基于已验证 claims 轮换 Refresh Token（跳过内部二次验证）。
@@ -670,6 +725,21 @@ impl TokenManager {
         old_claims: &TokenClaims,
         custom_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
+        self.rotate_refresh_token_from_claims_with_refresh_claims(
+            old_claims,
+            custom_claims,
+            serde_json::Value::Null,
+        )
+        .await
+    }
+
+    /// 基于已验证 claims 轮换 Refresh Token，并分别设置新 Token 对的自定义声明。
+    pub async fn rotate_refresh_token_from_claims_with_refresh_claims(
+        &self,
+        old_claims: &TokenClaims,
+        access_claims: serde_json::Value,
+        refresh_claims: serde_json::Value,
+    ) -> Result<(String, String), BaseError> {
         // 1. 校验 Token 类型必须为 refresh（防御性检查）
         if old_claims.token_type != crate::token::TokenType::Refresh {
             return Err(BaseError::TokenTypeInvalid(
@@ -686,7 +756,7 @@ impl TokenManager {
 
         // 3. 以原 subject 与新的自定义声明签发新的 Token 对
         //    复用已有的 now 时间戳，避免重复系统调用（PERF-10）
-        self.generate_token_pair_at(&old_claims.sub, custom_claims, now)
+        self.generate_token_pair_at(&old_claims.sub, access_claims, refresh_claims, now)
     }
 }
 
