@@ -1,7 +1,9 @@
 #![cfg(feature = "mysql")]
 #![allow(clippy::expect_used)]
 
-use yang_base::database::{DatabaseInitializer, Migration, MigrationManifest, MigrationPlanStatus};
+use yang_base::database::{
+    DatabaseInitializer, Migration, MigrationColumnCheck, MigrationManifest, MigrationPlanStatus,
+};
 use yang_base::error::BaseError;
 use yang_base::plugin::Plugin;
 use yang_base::table::{Field, SchemaIssueKind, Table};
@@ -335,6 +337,92 @@ async fn explicit_manifest_serializes_concurrency_and_recovers_interrupted_reser
         .await
         .expect("统计中断重跑结果");
     assert_eq!(rows[0].count, 1, "幂等 SQL 在中断重跑后仍只能产生一份结果");
+}
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn column_completion_check_recovers_atomic_ddl_without_rerunning_alter() {
+    let verify_db = Database::connect(&mysql_url()).await.expect("连接验证库");
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("DROP TABLE IF EXISTS p4_manifest_column_probe")
+            .await
+            .expect("清理列探针测试表");
+        verify_db
+            .execute("DROP TABLE IF EXISTS _migrations")
+            .await
+            .expect("清理迁移表");
+        verify_db
+            .execute("CREATE TABLE p4_manifest_column_probe (id BIGINT NOT NULL PRIMARY KEY)")
+            .await
+            .expect("创建列探针测试表");
+    }
+    let manifest = MigrationManifest::new(
+        "manifest-column-probe",
+        [Migration::new(
+            "202607260020",
+            "ALTER TABLE p4_manifest_column_probe ADD COLUMN authz_version BIGINT NOT NULL DEFAULT 1",
+        )
+        .with_completion_check(MigrationColumnCheck::new(
+            "p4_manifest_column_probe",
+            "authz_version",
+            "bigint",
+            false,
+            Some("1"),
+        ))],
+    )
+    .expect("列探针迁移清单应有效");
+    let initializer = DatabaseInitializer::new(
+        Database::connect(&mysql_url())
+            .await
+            .expect("连接列探针迁移库"),
+        false,
+    );
+
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("首次 ALTER 应成功");
+    #[allow(deprecated)]
+    verify_db
+        .execute("UPDATE _migrations SET status = 'running' WHERE module_name = 'manifest-column-probe' AND version = '202607260020'")
+        .await
+        .expect("模拟原子 DDL 已提交但迁移状态未落盘");
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("精确完成探针应恢复状态且不重复 ALTER");
+
+    #[derive(sqlx::FromRow)]
+    struct ColumnRow {
+        column_type: String,
+        is_nullable: String,
+        column_default: Option<String>,
+    }
+    let rows: Vec<ColumnRow> = verify_db
+        .query_with_params(
+            "SELECT CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(COLUMN_DEFAULT AS CHAR) AS column_default FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            vec![
+                serde_json::Value::String("p4_manifest_column_probe".to_string()),
+                serde_json::Value::String("authz_version".to_string()),
+            ],
+        )
+        .await
+        .expect("读取列结构");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].column_type, "bigint");
+    assert_eq!(rows[0].is_nullable, "NO");
+    assert_eq!(rows[0].column_default.as_deref(), Some("1"));
+    assert_eq!(
+        initializer
+            .plan_manifest(&manifest)
+            .await
+            .expect("恢复后计划")
+            .entries[0]
+            .status,
+        MigrationPlanStatus::Applied
+    );
 }
 
 #[tokio::test]
