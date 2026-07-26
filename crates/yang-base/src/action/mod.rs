@@ -71,7 +71,8 @@ pub use action_trait::{Permission, PermissionMode};
 #[cfg(feature = "token")]
 pub use auth::{
     AuthAuditEvent, AuthAuditHook, CredentialVerifier, DefaultRefreshClaims, LoginAction,
-    LogoutAction, RefreshAction, RefreshClaimsResolver, TokenAuthMiddleware, TracingAuditHook,
+    LogoutAction, NoopTokenClaimsValidator, RefreshAction, RefreshClaimsResolver,
+    TokenAuthMiddleware, TokenClaimsValidator, TracingAuditHook,
 };
 pub use context::{ActionContext, User};
 pub use meta::ActionMeta;
