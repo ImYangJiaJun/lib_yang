@@ -1300,28 +1300,31 @@ fn openapi_projects_response_kind_specific_success_contract() {
     );
 }
 
-/// searchable / filterable 在声明层是两个独立开关，`into_schema_field` 必须按位
+/// searchable / filterable / sortable 在声明层是三个独立开关，`into_schema_field` 必须按位
 /// 精确写入 table 层定义，不得折叠成单一 filterable 位，也不得继承 table 层的
 /// 宽松默认值（fail-closed）。
 #[test]
-fn searchable_and_filterable_bits_map_independently_to_table_definition() {
-    let with_access = |name: &str, searchable: bool, filterable: bool| {
+fn query_capability_bits_map_independently_to_table_definition() {
+    let with_access = |name: &str, searchable: bool, filterable: bool, sortable: bool| {
         let mut field = FieldSpec::new(field(name), FieldKind::Str);
         field.access.searchable = searchable;
         field.access.filterable = filterable;
+        field.access.sortable = sortable;
         field
     };
     let spec = TableSpec::new(table("org_doc"))
         .field(FieldSpec::new(field("id"), FieldKind::Key))
-        .field(with_access("both", true, true))
-        .field(with_access("search_only", true, false))
-        .field(with_access("filter_only", false, true))
-        .field(with_access("neither", false, false));
+        .field(with_access("all", true, true, true))
+        .field(with_access("search_only", true, false, false))
+        .field(with_access("filter_only", false, true, false))
+        .field(with_access("sort_only", false, false, true))
+        .field(with_access("neither", false, false, false));
     let definition = spec.table_definition().expect("字段位映射表定义应有效");
 
-    let both = definition.field("both").expect("both 字段应存在");
-    assert!(both.is_searchable());
-    assert!(both.is_filterable());
+    let all = definition.field("all").expect("all 字段应存在");
+    assert!(all.is_searchable());
+    assert!(all.is_filterable());
+    assert!(all.is_sortable());
 
     let search_only = definition
         .field("search_only")
@@ -1331,6 +1334,7 @@ fn searchable_and_filterable_bits_map_independently_to_table_definition() {
         !search_only.is_filterable(),
         "searchable 不得连带开放结构化筛选"
     );
+    assert!(!search_only.is_sortable());
 
     let filter_only = definition
         .field("filter_only")
@@ -1340,12 +1344,22 @@ fn searchable_and_filterable_bits_map_independently_to_table_definition() {
         "filterable 不得连带开放关键词搜索"
     );
     assert!(filter_only.is_filterable());
+    assert!(!filter_only.is_sortable());
+
+    let sort_only = definition.field("sort_only").expect("sort_only 字段应存在");
+    assert!(!sort_only.is_searchable());
+    assert!(!sort_only.is_filterable());
+    assert!(sort_only.is_sortable());
 
     let neither = definition.field("neither").expect("neither 字段应存在");
     assert!(!neither.is_searchable());
     assert!(
         !neither.is_filterable(),
         "未声明 filterable 的字段必须 fail-closed"
+    );
+    assert!(
+        !neither.is_sortable(),
+        "未声明 sortable 的字段必须 fail-closed"
     );
 }
 
