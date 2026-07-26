@@ -345,12 +345,29 @@ impl Database {
         &self,
         isolation: crate::isolation::IsolationLevel,
     ) -> Result<Transaction, DbError> {
-        let mut tx = self.pool.begin().await?;
-        let sql = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation.as_sql());
+        // MySQL 要求 SET TRANSACTION 位于 START TRANSACTION 之前；先 begin 再设置会返回
+        // ERROR 1568。sqlx 的 begin_with 在同一池连接上执行这段固定语句并接管事务。
+        let sql = format!(
+            "SET TRANSACTION ISOLATION LEVEL {}; START TRANSACTION",
+            isolation.as_sql()
+        );
         if self.config.enable_logging {
             log::debug!("设置 MySQL 事务隔离级别: {}", sql);
         }
-        sqlx::query(&sql).execute(&mut *tx).await?;
+        let tx = self.pool.begin_with(sql).await?;
+        Ok(Transaction::new(tx, self.config.enable_logging))
+    }
+
+    /// 开始一致性快照只读事务。
+    ///
+    /// MySQL 默认隔离级别为 `REPEATABLE READ`；`WITH CONSISTENT SNAPSHOT` 在事务开始时
+    /// 建立同一读视图，`READ ONLY` 由数据库强制禁止业务表写入。适用于授权快照等要求
+    /// 多条查询观察同一事实版本的读取流程。
+    pub async fn read_only_transaction(&self) -> Result<Transaction, DbError> {
+        let tx = self
+            .pool
+            .begin_with("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+            .await?;
         Ok(Transaction::new(tx, self.config.enable_logging))
     }
 
