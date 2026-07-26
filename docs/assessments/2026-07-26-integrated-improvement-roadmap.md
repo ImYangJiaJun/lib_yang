@@ -123,7 +123,7 @@ frontend 状态、页面与部署
 | C1 bootstrap 信任根 | **3/3 完成** | 高熵 secret 摘要、请求校验、并发/重放矩阵闭环 |
 | C2 租户隔离 | **当前范围完成** | 清单、CRUD/旁路负例、证据门禁与 scoped/system capability 闭环；新路径继续增量治理 |
 | C3 授权新鲜度 | **8/8 完成** | 数据库事实、事务 writer、outbox、Redis 加速、共享请求校验与故障矩阵闭环 |
-| P 生产共同基线 | **待执行** | 当前优先处理受信代理、配置/密钥、shutdown budget、审计和可观测性 |
+| P 生产共同基线 | **4/10 完成** | 受信代理、配置优先级、JWT keyring 和进程级 shutdown 总预算已完成；下一步进入审计与可观测性 |
 | U/FE 显式契约与前端重构 | **待执行** | 框架不变；先完成后端稳定语义，再删除前端启发式并按行为拆分 |
 
 三份复评文档再次确认：基础库与系统已进入 L4 入口，但前端仍处于 L3 后段；因此不能跳过 P 队列直接用一次大型前端重写制造“整体已经成熟”的假象。
@@ -298,7 +298,7 @@ frontend 状态、页面与部署
 | P-07 | 待执行 | S-09 | metrics/trace exporter 与低基数标签 | 先固定标签基数预算 |
 | P-08 | 待执行 | S-09 | readiness 总预算与 SLO/告警 | 依赖 P-07 的观测出口 |
 | P-09 | 待执行 | S-10 | raw SQL 边界与 sqlx offline 检查 | 枚举并收窄所有 raw SQL |
-| P-10 | 待执行 | S-06 复评 | 进程级 shutdown 总预算与超时诊断 | 为各生命周期任务分配总预算 |
+| P-10 | ✅ | S-06 复评 | 进程级 shutdown 总预算与超时诊断 | 根 `178d8c8`；嵌套 `6c1e682`；HTTP drain、Worker 与 Tools 关闭共享唯一截止时间，固定阶段诊断与超时强制取消已验证 |
 
 这些点不能合成一个“production hardening”大提交。每个点独立设计、验证和回滚。
 
@@ -404,15 +404,14 @@ frontend 状态、页面与部署
 
 ## 十、立即执行顺序
 
-截至本次复评，原立即执行序列、C1/C2/C3 和 P-01—P-03 已完成。下一批固定顺序更新为：
+截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-03 和 P-10 已完成。下一批固定顺序更新为：
 
-1. P-10：进程级 shutdown 总预算与超时诊断；
-2. P-04：高权限业务 audit 表；
-3. P-05：事务内 audit/outbox 原子写；
-4. P-06：JSON 结构化日志与统一字段；
-5. P-07：metrics/trace exporter 与低基数标签；
-6. P-08：readiness 总预算与 SLO/告警；
-7. P-09：raw SQL 边界与 sqlx offline 检查。
+1. P-04：高权限业务 audit 表；
+2. P-05：事务内 audit/outbox 原子写；
+3. P-06：JSON 结构化日志与统一字段；
+4. P-07：metrics/trace exporter 与低基数标签；
+5. P-08：readiness 总预算与 SLO/告警；
+6. P-09：raw SQL 边界与 sqlx offline 检查。
 
 生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
 
