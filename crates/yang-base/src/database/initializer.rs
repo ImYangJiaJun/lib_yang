@@ -76,6 +76,7 @@ pub struct MigrationPlan {
 pub struct Migration {
     version: String,
     sql: String,
+    completion_check: Option<MigrationCompletionCheck>,
 }
 
 impl Migration {
@@ -84,7 +85,20 @@ impl Migration {
         Self {
             version: version.into(),
             sql: sql.into(),
+            completion_check: None,
         }
+    }
+
+    /// 为无法由数据库原子事务包裹的 DDL 声明完成状态探针。
+    ///
+    /// 探针必须完整代表 SQL 的最终效果；执行器只会在探针精确匹配时跳过 SQL 或恢复
+    /// `running` 记录。普通幂等 SQL 无需声明探针。
+    pub fn with_completion_check(
+        mut self,
+        completion_check: impl Into<MigrationCompletionCheck>,
+    ) -> Self {
+        self.completion_check = Some(completion_check.into());
+        self
     }
 
     /// 返回稳定迁移版本。
@@ -95,6 +109,82 @@ impl Migration {
     /// 返回冻结的迁移 SQL。
     pub fn sql(&self) -> &str {
         &self.sql
+    }
+
+    /// 返回可选的完成状态探针。
+    pub fn completion_check(&self) -> Option<&MigrationCompletionCheck> {
+        self.completion_check.as_ref()
+    }
+}
+
+/// `ADD COLUMN` 类 DDL 的精确完成状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationColumnCheck {
+    table: String,
+    column: String,
+    column_type: String,
+    nullable: bool,
+    default: Option<String>,
+}
+
+impl MigrationColumnCheck {
+    /// 声明目标列的完整稳定形状。
+    ///
+    /// `column_type` 对应 MySQL `information_schema.columns.column_type`，例如
+    /// `bigint`、`varchar(64)`；`default` 对应 `column_default`。
+    pub fn new(
+        table: impl Into<String>,
+        column: impl Into<String>,
+        column_type: impl Into<String>,
+        nullable: bool,
+        default: Option<&str>,
+    ) -> Self {
+        Self {
+            table: table.into(),
+            column: column.into(),
+            column_type: column_type.into(),
+            nullable,
+            default: default.map(ToOwned::to_owned),
+        }
+    }
+
+    /// 返回目标表名。
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+
+    /// 返回目标列名。
+    pub fn column(&self) -> &str {
+        &self.column
+    }
+
+    /// 返回预期 MySQL 列类型。
+    pub fn column_type(&self) -> &str {
+        &self.column_type
+    }
+
+    /// 返回预期可空性。
+    pub fn nullable(&self) -> bool {
+        self.nullable
+    }
+
+    /// 返回预期默认值；`None` 表示 SQL `NULL`。
+    pub fn default(&self) -> Option<&str> {
+        self.default.as_deref()
+    }
+}
+
+/// 数据库迁移的类型化完成状态探针。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MigrationCompletionCheck {
+    /// 精确匹配一个 MySQL 列的类型、可空性和默认值。
+    Column(MigrationColumnCheck),
+}
+
+impl From<MigrationColumnCheck> for MigrationCompletionCheck {
+    fn from(value: MigrationColumnCheck) -> Self {
+        Self::Column(value)
     }
 }
 
@@ -126,6 +216,9 @@ impl MigrationManifest {
                     migration.version()
                 )));
             }
+            if let Some(check) = migration.completion_check() {
+                validate_migration_completion_check(migration.version(), check)?;
+            }
             if previous.is_some_and(|version| version >= migration.version()) {
                 return Err(BaseError::ConfigError(format!(
                     "迁移版本必须严格递增且唯一: {}",
@@ -146,6 +239,46 @@ impl MigrationManifest {
     pub fn migrations(&self) -> &[Migration] {
         &self.migrations
     }
+}
+
+fn validate_migration_completion_check(
+    version: &str,
+    check: &MigrationCompletionCheck,
+) -> Result<(), BaseError> {
+    match check {
+        MigrationCompletionCheck::Column(check) => {
+            validate_mysql_identifier("table", check.table()).map_err(|reason| {
+                BaseError::ConfigError(format!("迁移 {version} 的列完成探针非法: {reason}"))
+            })?;
+            validate_mysql_identifier("column", check.column()).map_err(|reason| {
+                BaseError::ConfigError(format!("迁移 {version} 的列完成探针非法: {reason}"))
+            })?;
+            if check.column_type().trim().is_empty()
+                || check.column_type().trim() != check.column_type()
+                || check.column_type().chars().count() > 255
+            {
+                return Err(BaseError::ConfigError(format!(
+                    "迁移 {version} 的列完成探针类型不能为空、包含首尾空白或超过 255 个字符"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_mysql_identifier(kind: &str, value: &str) -> Result<(), String> {
+    let mut chars = value.chars();
+    if value.chars().count() > 64
+        || !chars
+            .next()
+            .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        || !chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    {
+        return Err(format!(
+            "{kind} 必须是 1-64 位 ASCII 字母、数字或下划线，且不能以数字开头"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_migration_identity(kind: &str, value: &str) -> Result<(), BaseError> {
@@ -182,12 +315,40 @@ fn classify_migration_record(
     }
 }
 
-/// 计算迁移 SQL 的稳定 FNV-1a 64 位校验和。
-fn migration_checksum(sql: &str) -> String {
+fn update_migration_hash(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+}
+
+/// 计算原始迁移 SQL 的稳定 FNV-1a 64 位校验和。
+fn migration_sql_checksum(sql: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in sql.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    update_migration_hash(&mut hash, sql.as_bytes());
+    format!("{hash:016x}")
+}
+
+/// 计算 SQL 与完成状态契约的稳定校验和。
+///
+/// 无探针迁移只哈希 SQL，保持历史 `_migrations` 校验和兼容。
+fn migration_checksum(migration: &Migration) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    update_migration_hash(&mut hash, migration.sql().as_bytes());
+    if let Some(MigrationCompletionCheck::Column(check)) = migration.completion_check() {
+        update_migration_hash(&mut hash, b"\0column");
+        for value in [check.table(), check.column(), check.column_type()] {
+            update_migration_hash(&mut hash, b"\0");
+            update_migration_hash(&mut hash, value.as_bytes());
+        }
+        update_migration_hash(&mut hash, &[u8::from(check.nullable())]);
+        match check.default() {
+            Some(default) => {
+                update_migration_hash(&mut hash, b"\x01");
+                update_migration_hash(&mut hash, default.as_bytes());
+            }
+            None => update_migration_hash(&mut hash, b"\x00"),
+        }
     }
     format!("{hash:016x}")
 }
@@ -204,13 +365,13 @@ fn migration_lock_name(database_name: &str) -> String {
 fn migration_execution_error(
     module: &str,
     version: &str,
-    sql: &str,
+    checksum: &str,
     source: yang_db::DbError,
 ) -> BaseError {
     BaseError::MigrationExecutionFailed {
         module: module.to_string(),
         version: version.to_string(),
-        checksum: migration_checksum(sql),
+        checksum: checksum.to_string(),
         source,
     }
 }
@@ -314,7 +475,7 @@ impl DatabaseInitializer {
             .map_err(BaseError::DatabaseQueryFailed)?;
         let mut entries = Vec::new();
         for migration in migrations {
-            let checksum = migration_checksum(migration.sql());
+            let checksum = migration_checksum(migration);
             let record = if table_exists {
                 self.load_migration_record(module, migration.version())
                     .await?
@@ -810,7 +971,7 @@ impl DatabaseInitializer {
         manifest: &MigrationManifest,
     ) -> Result<(), BaseError> {
         for migration in manifest.migrations() {
-            let checksum = migration_checksum(migration.sql());
+            let checksum = migration_checksum(migration);
             let Some(record) = self
                 .load_migration_record(manifest.module(), migration.version())
                 .await?
@@ -827,6 +988,20 @@ impl DatabaseInitializer {
                     expected: checksum,
                     actual: record.checksum,
                 });
+            }
+            if self.migration_completion_check_matches(migration).await? {
+                self.mark_migration_applied(
+                    manifest.module(),
+                    migration.version(),
+                    checksum.as_str(),
+                )
+                .await?;
+                log::warn!(
+                    "完成探针确认中断迁移已生效: {} v{}",
+                    manifest.module(),
+                    migration.version()
+                );
+                continue;
             }
             let affected = self
                 .delete_migration_reservation(
@@ -853,6 +1028,41 @@ impl DatabaseInitializer {
         Ok(())
     }
 
+    async fn migration_completion_check_matches(
+        &self,
+        migration: &Migration,
+    ) -> Result<bool, BaseError> {
+        let Some(check) = migration.completion_check() else {
+            return Ok(false);
+        };
+        match check {
+            MigrationCompletionCheck::Column(check) => {
+                #[derive(sqlx::FromRow)]
+                struct ColumnMetadata {
+                    column_type: String,
+                    is_nullable: String,
+                    column_default: Option<String>,
+                }
+
+                let metadata = sqlx::query_as::<_, ColumnMetadata>(
+                    "SELECT CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(COLUMN_DEFAULT AS CHAR) AS column_default FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+                )
+                .bind(check.table())
+                .bind(check.column())
+                .fetch_optional(self.db().pool())
+                .await
+                .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+                Ok(metadata.is_some_and(|metadata| {
+                    metadata
+                        .column_type
+                        .eq_ignore_ascii_case(check.column_type())
+                        && (metadata.is_nullable == "YES") == check.nullable()
+                        && metadata.column_default.as_deref() == check.default()
+                }))
+            }
+        }
+    }
+
     #[allow(deprecated)]
     async fn run_declared_migrations(
         &self,
@@ -860,7 +1070,7 @@ impl DatabaseInitializer {
         migrations: &[Migration],
     ) -> Result<(), BaseError> {
         for migration in migrations {
-            let checksum = migration_checksum(migration.sql());
+            let checksum = migration_checksum(migration);
             if self.validate_migration_record(
                 module,
                 migration.version(),
@@ -884,6 +1094,17 @@ impl DatabaseInitializer {
                 return Err(reservation_error);
             }
 
+            if self.migration_completion_check_matches(migration).await? {
+                self.mark_migration_applied(module, migration.version(), &checksum)
+                    .await?;
+                log::info!(
+                    "完成探针确认迁移已存在，跳过 SQL: {} v{}",
+                    module,
+                    migration.version()
+                );
+                continue;
+            }
+
             log::info!("执行迁移: {} v{}", module, migration.version());
 
             if let Err(source) = self.db().execute(migration.sql()).await {
@@ -893,8 +1114,19 @@ impl DatabaseInitializer {
                 return Err(migration_execution_error(
                     module,
                     migration.version(),
-                    migration.sql(),
+                    &checksum,
                     source,
+                ));
+            }
+            if migration.completion_check().is_some()
+                && !self.migration_completion_check_matches(migration).await?
+            {
+                let _ = self
+                    .delete_migration_reservation(module, migration.version(), &checksum)
+                    .await;
+                return Err(BaseError::DatabaseMigrationFailed(
+                    module.to_string(),
+                    format!("迁移 v{} 执行后未满足声明的完成状态", migration.version()),
                 ));
             }
             self.mark_migration_applied(module, migration.version(), &checksum)
@@ -928,7 +1160,7 @@ impl DatabaseInitializer {
         let module_name = plugin.name();
 
         for (version, sql) in plugin.migration_sql() {
-            let checksum = migration_checksum(&sql);
+            let checksum = migration_sql_checksum(&sql);
             let record_sql = "SELECT checksum, status FROM _migrations WHERE module_name = ? AND version = ? LIMIT 1";
             let record_params = vec![
                 serde_json::Value::String(module_name.to_string()),
@@ -970,7 +1202,7 @@ impl DatabaseInitializer {
                 return Err(migration_execution_error(
                     module_name,
                     &version,
-                    &sql,
+                    &checksum,
                     source,
                 ));
             }
@@ -1142,7 +1374,7 @@ mod tests {
         let error = migration_execution_error(
             "accounts",
             "202607150001",
-            sql,
+            &migration_sql_checksum(sql),
             yang_db::DbError::SqlSyntaxError("bad ddl".into()),
         );
 
@@ -1155,8 +1387,8 @@ mod tests {
             } => {
                 assert_eq!(module, "accounts");
                 assert_eq!(version, "202607150001");
-                assert_eq!(checksum, &migration_checksum(sql));
-                assert_ne!(checksum, &migration_checksum("ALTER TABLE users"));
+                assert_eq!(checksum, &migration_sql_checksum(sql));
+                assert_ne!(checksum, &migration_sql_checksum("ALTER TABLE users"));
             }
             other => panic!("期望 MigrationExecutionFailed，得到: {other:?}"),
         }
@@ -1214,6 +1446,7 @@ mod tests {
             manifest.migrations()[0].sql(),
             "CREATE TABLE first_table (id BIGINT)"
         );
+        assert!(manifest.migrations()[0].completion_check().is_none());
     }
 
     #[test]
@@ -1241,5 +1474,31 @@ mod tests {
         for result in cases {
             assert!(result.is_err(), "非法迁移清单必须在执行前被拒绝");
         }
+    }
+
+    #[test]
+    fn migration_completion_check_is_validated_and_changes_only_opt_in_checksum() {
+        let sql = "ALTER TABLE users ADD COLUMN authz_version BIGINT NOT NULL DEFAULT 1";
+        let plain = Migration::new("202607260003", sql);
+        let checked = Migration::new("202607260003", sql).with_completion_check(
+            MigrationColumnCheck::new("users", "authz_version", "bigint", false, Some("1")),
+        );
+        assert_eq!(migration_checksum(&plain), migration_sql_checksum(sql));
+        assert_ne!(migration_checksum(&checked), migration_checksum(&plain));
+
+        let invalid =
+            MigrationManifest::new(
+                "yang-system",
+                [Migration::new("202607260003", sql).with_completion_check(
+                    MigrationColumnCheck::new(
+                        "users;DROP",
+                        "authz_version",
+                        "bigint",
+                        false,
+                        Some("1"),
+                    ),
+                )],
+            );
+        assert!(invalid.is_err(), "非法标识符必须在数据库连接前失败");
     }
 }
