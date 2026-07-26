@@ -10,7 +10,7 @@ pub mod relation_options;
 pub mod select;
 pub mod table;
 
-pub use add::{AddAction, AffectedResult};
+pub use add::{AddAction, AffectedResult, InsertResult};
 pub use del::DelAction;
 pub use get::{GetAction, GetByPk};
 pub use put::{PutAction, PutInput};

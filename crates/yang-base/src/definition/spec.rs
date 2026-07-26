@@ -539,9 +539,32 @@ impl ModuleSpec {
     /// `<module>.<action>`，不与 HTTP 路径耦合。
     #[cfg(feature = "mysql")]
     pub fn crud_at(self, prefix: impl Into<String>) -> Result<Self, crate::error::BaseError> {
-        use crate::action::builtin::{
-            crud_contracts, AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
-        };
+        use crate::action::builtin::{AddAction, DelAction, PutAction};
+
+        self.crud_at_with_mutations(prefix, AddAction::new(), PutAction::new(), DelAction::new())
+    }
+
+    /// 在显式资源路径下注册标准 CRUD 契约，并替换三个写 Action 的运行时 Handler。
+    ///
+    /// 路由、权限以及与表定义绑定的动态 JSON Schema 仍由框架统一生成；业务只负责
+    /// add/put/del 的事务语义。自定义 Handler 必须分别接受与内置 Action 相同的
+    /// [`Record`](crate::table::Record)、
+    /// [`PutInput`](crate::action::builtin::PutInput) 与
+    /// [`GetByPk`](crate::action::builtin::GetByPk) 输入，并返回对应的标准结果。
+    #[cfg(feature = "mysql")]
+    pub fn crud_at_with_mutations<A, P, D>(
+        self,
+        prefix: impl Into<String>,
+        add: A,
+        put: P,
+        del: D,
+    ) -> Result<Self, crate::error::BaseError>
+    where
+        A: DynAction,
+        P: DynAction,
+        D: DynAction,
+    {
+        use crate::action::builtin::{crud_contracts, GetAction, SelectAction, TableAction};
 
         let prefix = prefix.into();
         if prefix.len() < 2
@@ -590,21 +613,21 @@ impl ModuleSpec {
                     .permissions([write_permission.clone()], PermissionMode::All)
                     .success_status(201)
                     .bind_builtin_contract(contract("add")?)?,
-                AddAction::new(),
+                add,
             )
             .action(
                 action(action_name("put")?, HttpMethod::Put, prefix.clone())
                     .display_name("修改")
                     .permissions([write_permission.clone()], PermissionMode::All)
                     .bind_builtin_contract(contract("put")?)?,
-                PutAction::new(),
+                put,
             )
             .action(
                 action(action_name("del")?, HttpMethod::Delete, prefix.clone())
                     .display_name("删除")
                     .permissions([write_permission], PermissionMode::All)
                     .bind_builtin_contract(contract("del")?)?,
-                DelAction::new(),
+                del,
             )
             .action(
                 action(action_name("get")?, HttpMethod::Get, prefix.clone())
