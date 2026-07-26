@@ -6,7 +6,7 @@
 //! - 错误情况处理
 
 use crate::error::BaseError;
-use crate::table::{col, Field, SortOrder, Table, TableConfig, TableQuery};
+use crate::table::{col, Field, SortOrder, Table, TableConfig, TableQuery, Tables};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -56,6 +56,20 @@ fn test_table_query_new() {
     assert!(query.get_query_params().fields.is_none());
     assert!(query.get_query_params().where_conditions.is_empty());
     assert!(query.get_query_params().order_by.is_empty());
+}
+
+#[test]
+fn tables_where_from_treats_empty_filters_as_noop() {
+    let query = TableQuery::new(
+        create_test_table_config(),
+        Arc::from(vec!["user".to_string()]),
+        None,
+    );
+
+    assert!(
+        Tables::new(query).where_from(&[]).is_ok(),
+        "空筛选集合应保留原查询，而不是构造非法空 AND 组"
+    );
 }
 
 #[test]

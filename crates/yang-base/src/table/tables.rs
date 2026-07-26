@@ -86,8 +86,11 @@ impl Tables {
         self
     }
 
-    /// 应用通用筛选条件。
+    /// 应用通用筛选条件；空集合是恒真条件，不改变现有查询范围。
     pub fn where_from(mut self, conditions: &[WhereCondition]) -> Result<Self, BaseError> {
+        if conditions.is_empty() {
+            return Ok(self);
+        }
         self.query = self.query.where_and(conditions.to_vec())?;
         Ok(self)
     }
