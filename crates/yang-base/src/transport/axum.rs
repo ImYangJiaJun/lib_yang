@@ -40,6 +40,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use serde_json::{map::Entry, Map, Value};
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -164,6 +165,28 @@ pub async fn serve(
     app: Arc<BuiltApp>,
     config: AxumTransportConfig,
 ) -> Result<(), BaseError> {
+    serve_with_shutdown(
+        bind,
+        app,
+        config,
+        crate::lifecycle::wait_for_shutdown_signal(),
+    )
+    .await
+}
+
+/// 使用调用方提供的关闭触发器启动 HTTP 服务。
+///
+/// 与 [`serve`] 的唯一区别是信号所有权交给调用方，使上层可以从同一个关闭
+/// 事件开始，为 HTTP drain、后台任务和资源释放共享一个进程级总预算。
+pub async fn serve_with_shutdown<S>(
+    bind: SocketAddr,
+    app: Arc<BuiltApp>,
+    config: AxumTransportConfig,
+    shutdown: S,
+) -> Result<(), BaseError>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| BaseError::ConfigError(format!("绑定 HTTP 地址失败 {bind}: {error}")))?;
@@ -176,7 +199,7 @@ pub async fn serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(crate::lifecycle::wait_for_shutdown_signal())
+    .with_graceful_shutdown(shutdown)
     .await
     .map_err(|error| BaseError::ConfigError(format!("HTTP 服务运行失败: {error}")))
 }
