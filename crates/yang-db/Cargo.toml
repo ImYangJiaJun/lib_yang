@@ -56,6 +56,8 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 # 日志
 log = { workspace = true }
+# 结构化数据库边界；只记录后端、操作与受控表名，不记录 SQL/参数/Redis key。
+tracing = { workspace = true }
 # Base64 编解码
 base64 = { workspace = true }
 

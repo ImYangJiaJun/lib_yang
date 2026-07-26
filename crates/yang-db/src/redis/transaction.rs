@@ -304,6 +304,11 @@ impl RedisTransaction {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "transaction", otel.kind = "client")
+    )]
     pub async fn exec<T: FromRedisValue>(self) -> Result<T> {
         let mut conn = self
             .client
@@ -406,6 +411,11 @@ impl RedisTransaction {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "transaction", otel.kind = "client")
+    )]
     pub async fn execute(self) -> Result<Vec<RedisValue>> {
         let results: Vec<redis::Value> = self.exec().await?;
         Ok(results.into_iter().map(RedisValue::from).collect())

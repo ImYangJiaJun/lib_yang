@@ -249,6 +249,11 @@ impl RedisClient {
     ///     Ok(())
     /// }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "command", otel.kind = "client")
+    )]
     pub async fn execute(&self, cmd: &redis::Cmd) -> Result<RedisValue> {
         let mut conn = self
             .pool
@@ -1926,6 +1931,11 @@ impl RedisClient {
     /// - 首次执行时，脚本会被发送到 Redis 服务器并缓存
     /// - 后续执行使用 EVALSHA 命令，只传输脚本的 SHA1 哈希值
     /// - 如果脚本不在缓存中，自动回退到 EVAL 命令
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "eval", otel.kind = "client")
+    )]
     pub async fn eval_script<T>(
         &self,
         script: &redis::Script,
