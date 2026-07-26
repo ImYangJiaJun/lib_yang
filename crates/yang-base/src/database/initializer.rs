@@ -64,8 +64,99 @@ pub struct MigrationPlanEntry {
 /// dry-run 迁移计划；生成过程只读数据库，不创建表或写记录。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MigrationPlan {
-    /// 按插件依赖顺序及插件声明顺序排列的迁移项。
+    /// 按显式清单或插件依赖/声明顺序排列的迁移项。
     pub entries: Vec<MigrationPlanEntry>,
+}
+
+/// 一条不可变、前向执行的数据库迁移。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Migration {
+    version: String,
+    sql: String,
+}
+
+impl Migration {
+    /// 声明迁移版本与单条 SQL；完整合法性由 [`MigrationManifest::new`] 统一校验。
+    pub fn new(version: impl Into<String>, sql: impl Into<String>) -> Self {
+        Self {
+            version: version.into(),
+            sql: sql.into(),
+        }
+    }
+
+    /// 返回稳定迁移版本。
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// 返回冻结的迁移 SQL。
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+}
+
+/// 一个数据库演进单元的有序、不可变迁移清单。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationManifest {
+    module: String,
+    migrations: Vec<Migration>,
+}
+
+impl MigrationManifest {
+    /// 构建并校验迁移清单。
+    ///
+    /// module/version 必须无首尾空白且不超过迁移表列宽，SQL 不能为空；版本必须按
+    /// 字典序严格递增，因此重复版本和声明乱序都会在连接数据库前失败。
+    pub fn new<I>(module: impl Into<String>, migrations: I) -> Result<Self, BaseError>
+    where
+        I: IntoIterator<Item = Migration>,
+    {
+        let module = module.into();
+        validate_migration_identity("module", &module)?;
+        let migrations = migrations.into_iter().collect::<Vec<_>>();
+        let mut previous = None;
+        for migration in &migrations {
+            validate_migration_identity("version", migration.version())?;
+            if migration.sql().trim().is_empty() {
+                return Err(BaseError::ConfigError(format!(
+                    "迁移 {} 的 SQL 不能为空",
+                    migration.version()
+                )));
+            }
+            if previous.is_some_and(|version| version >= migration.version()) {
+                return Err(BaseError::ConfigError(format!(
+                    "迁移版本必须严格递增且唯一: {}",
+                    migration.version()
+                )));
+            }
+            previous = Some(migration.version());
+        }
+        Ok(Self { module, migrations })
+    }
+
+    /// 返回迁移命名空间；写入 `_migrations.module_name`。
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// 按冻结声明顺序返回迁移。
+    pub fn migrations(&self) -> &[Migration] {
+        &self.migrations
+    }
+}
+
+fn validate_migration_identity(kind: &str, value: &str) -> Result<(), BaseError> {
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(BaseError::ConfigError(format!(
+            "迁移 {kind} 不能为空或包含首尾空白"
+        )));
+    }
+    if value.chars().count() > 255 {
+        return Err(BaseError::ConfigError(format!(
+            "迁移 {kind} 不能超过 255 个字符"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -181,16 +272,40 @@ impl DatabaseInitializer {
 
     /// 只读生成单个插件的迁移计划，不创建迁移表、不执行 SQL、不写迁移记录。
     pub async fn plan_migrations(&self, plugin: &dyn Plugin) -> Result<MigrationPlan, BaseError> {
+        let migrations = plugin
+            .migration_sql()
+            .into_iter()
+            .map(|(version, sql)| Migration::new(version, sql))
+            .collect::<Vec<_>>();
+        self.plan_declared_migrations(plugin.name(), &migrations)
+            .await
+    }
+
+    /// 只读生成显式清单的迁移计划，不创建迁移表、不执行 SQL、不写迁移记录。
+    pub async fn plan_manifest(
+        &self,
+        manifest: &MigrationManifest,
+    ) -> Result<MigrationPlan, BaseError> {
+        self.plan_declared_migrations(manifest.module(), manifest.migrations())
+            .await
+    }
+
+    async fn plan_declared_migrations(
+        &self,
+        module: &str,
+        migrations: &[Migration],
+    ) -> Result<MigrationPlan, BaseError> {
         let table_exists = self
             .db()
             .table_exists(yang_db::table!("_migrations"))
             .await
             .map_err(BaseError::DatabaseQueryFailed)?;
         let mut entries = Vec::new();
-        for (version, sql) in plugin.migration_sql() {
-            let checksum = migration_checksum(&sql);
+        for migration in migrations {
+            let checksum = migration_checksum(migration.sql());
             let record = if table_exists {
-                self.load_migration_record(plugin.name(), &version).await?
+                self.load_migration_record(module, migration.version())
+                    .await?
             } else {
                 None
             };
@@ -201,8 +316,8 @@ impl DatabaseInitializer {
                 &checksum,
             );
             entries.push(MigrationPlanEntry {
-                module: plugin.name().to_string(),
-                version,
+                module: module.to_string(),
+                version: migration.version().to_string(),
                 checksum,
                 status,
             });
@@ -573,44 +688,69 @@ impl DatabaseInitializer {
     /// 使用 yang-db::Database::execute 执行 SQL。
     #[allow(deprecated)]
     pub async fn run_migrations(&self, plugin: &dyn Plugin) -> Result<(), BaseError> {
-        let module_name = plugin.name();
+        let migrations = plugin
+            .migration_sql()
+            .into_iter()
+            .map(|(version, sql)| Migration::new(version, sql))
+            .collect::<Vec<_>>();
+        self.run_declared_migrations(plugin.name(), &migrations)
+            .await
+    }
 
-        for (version, sql) in plugin.migration_sql() {
-            let checksum = migration_checksum(&sql);
+    /// 创建迁移记录表并执行显式迁移清单。
+    ///
+    /// 该入口面向独立部署作业；MySQL DDL 仍遵循前向迁移语义，不承诺事务回滚。
+    pub async fn apply_manifest(&self, manifest: &MigrationManifest) -> Result<(), BaseError> {
+        self.create_migration_table().await?;
+        self.run_declared_migrations(manifest.module(), manifest.migrations())
+            .await
+    }
+
+    #[allow(deprecated)]
+    async fn run_declared_migrations(
+        &self,
+        module: &str,
+        migrations: &[Migration],
+    ) -> Result<(), BaseError> {
+        for migration in migrations {
+            let checksum = migration_checksum(migration.sql());
             if self.validate_migration_record(
-                module_name,
-                &version,
+                module,
+                migration.version(),
                 &checksum,
-                self.load_migration_record(module_name, &version).await?,
+                self.load_migration_record(module, migration.version())
+                    .await?,
             )? {
                 continue;
             }
 
             if let Err(reservation_error) = self
-                .record_migration_with_checksum(module_name, &version, &checksum, "running")
+                .record_migration_with_checksum(module, migration.version(), &checksum, "running")
                 .await
             {
-                let record = self.load_migration_record(module_name, &version).await?;
-                if self.validate_migration_record(module_name, &version, &checksum, record)? {
+                let record = self
+                    .load_migration_record(module, migration.version())
+                    .await?;
+                if self.validate_migration_record(module, migration.version(), &checksum, record)? {
                     continue;
                 }
                 return Err(reservation_error);
             }
 
-            log::info!("执行迁移: {} v{}", module_name, version);
+            log::info!("执行迁移: {} v{}", module, migration.version());
 
-            if let Err(source) = self.db().execute(&sql).await {
+            if let Err(source) = self.db().execute(migration.sql()).await {
                 let _ = self
-                    .delete_migration_reservation(module_name, &version, &checksum)
+                    .delete_migration_reservation(module, migration.version(), &checksum)
                     .await;
                 return Err(migration_execution_error(
-                    module_name,
-                    &version,
-                    &sql,
+                    module,
+                    migration.version(),
+                    migration.sql(),
                     source,
                 ));
             }
-            self.mark_migration_applied(module_name, &version, &checksum)
+            self.mark_migration_applied(module, migration.version(), &checksum)
                 .await?;
         }
 
@@ -899,5 +1039,61 @@ mod tests {
             classify_migration_record(Some((Some("same"), "running")), "same"),
             MigrationPlanStatus::InProgress
         );
+    }
+
+    #[test]
+    fn migration_manifest_preserves_order_and_exposes_immutable_entries() {
+        let manifest = MigrationManifest::new(
+            "yang-system",
+            [
+                Migration::new("202607260001", "CREATE TABLE first_table (id BIGINT)"),
+                Migration::new(
+                    "202607260002",
+                    "ALTER TABLE first_table ADD COLUMN name VARCHAR(64)",
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("有序迁移清单应有效: {error}"));
+
+        assert_eq!(manifest.module(), "yang-system");
+        assert_eq!(
+            manifest
+                .migrations()
+                .iter()
+                .map(Migration::version)
+                .collect::<Vec<_>>(),
+            ["202607260001", "202607260002"]
+        );
+        assert_eq!(
+            manifest.migrations()[0].sql(),
+            "CREATE TABLE first_table (id BIGINT)"
+        );
+    }
+
+    #[test]
+    fn migration_manifest_rejects_invalid_identity_sql_duplicates_and_order() {
+        let cases = [
+            MigrationManifest::new(" ", [Migration::new("202607260001", "SELECT 1")]),
+            MigrationManifest::new("yang-system", [Migration::new(" ", "SELECT 1")]),
+            MigrationManifest::new("yang-system", [Migration::new("202607260001", " ")]),
+            MigrationManifest::new(
+                "yang-system",
+                [
+                    Migration::new("202607260001", "SELECT 1"),
+                    Migration::new("202607260001", "SELECT 2"),
+                ],
+            ),
+            MigrationManifest::new(
+                "yang-system",
+                [
+                    Migration::new("202607260002", "SELECT 2"),
+                    Migration::new("202607260001", "SELECT 1"),
+                ],
+            ),
+        ];
+
+        for result in cases {
+            assert!(result.is_err(), "非法迁移清单必须在执行前被拒绝");
+        }
     }
 }

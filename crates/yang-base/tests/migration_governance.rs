@@ -1,7 +1,7 @@
 #![cfg(feature = "mysql")]
 #![allow(clippy::expect_used)]
 
-use yang_base::database::{DatabaseInitializer, MigrationPlanStatus};
+use yang_base::database::{DatabaseInitializer, Migration, MigrationManifest, MigrationPlanStatus};
 use yang_base::error::BaseError;
 use yang_base::plugin::Plugin;
 use yang_base::table::{Field, SchemaIssueKind, Table};
@@ -145,6 +145,119 @@ async fn dry_run_drift_and_concurrent_reservation_are_verifiable() {
         .await
         .expect("统计并发执行");
     assert_eq!(rows[0].count, 1, "唯一预留必须阻止重复执行");
+}
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn explicit_manifest_supports_dry_run_apply_drift_and_idempotent_retry() {
+    let verify_db = Database::connect(&mysql_url()).await.expect("连接验证库");
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("DROP TABLE IF EXISTS p4_manifest_audit")
+            .await
+            .expect("清理显式清单审计表");
+        verify_db
+            .execute("DROP TABLE IF EXISTS _migrations")
+            .await
+            .expect("清理迁移表");
+        verify_db
+            .execute("CREATE TABLE p4_manifest_audit (marker VARCHAR(64) PRIMARY KEY)")
+            .await
+            .expect("创建显式清单审计表");
+    }
+    let initializer = DatabaseInitializer::new(
+        Database::connect(&mysql_url())
+            .await
+            .expect("连接显式迁移库"),
+        false,
+    );
+    let manifest = MigrationManifest::new(
+        "explicit-manifest",
+        [
+            Migration::new(
+                "202607260001",
+                "INSERT INTO p4_manifest_audit(marker) VALUES ('first')",
+            ),
+            Migration::new(
+                "202607260002",
+                "INSERT INTO p4_manifest_audit(marker) VALUES ('second')",
+            ),
+        ],
+    )
+    .expect("显式清单应有效");
+
+    let dry_run = initializer
+        .plan_manifest(&manifest)
+        .await
+        .expect("生成显式清单 dry-run");
+    assert!(dry_run
+        .entries
+        .iter()
+        .all(|entry| entry.status == MigrationPlanStatus::Pending));
+    assert!(
+        !verify_db
+            .table_exists(yang_db::table!("_migrations"))
+            .await
+            .expect("检查迁移表"),
+        "dry-run 不得创建迁移表"
+    );
+
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("首次执行显式清单");
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("相同清单重跑必须幂等");
+    let applied = initializer
+        .plan_manifest(&manifest)
+        .await
+        .expect("应用后计划");
+    assert!(applied
+        .entries
+        .iter()
+        .all(|entry| entry.status == MigrationPlanStatus::Applied));
+
+    let changed = MigrationManifest::new(
+        "explicit-manifest",
+        [
+            Migration::new(
+                "202607260001",
+                "INSERT INTO p4_manifest_audit(marker) VALUES ('changed')",
+            ),
+            Migration::new(
+                "202607260002",
+                "INSERT INTO p4_manifest_audit(marker) VALUES ('second')",
+            ),
+        ],
+    )
+    .expect("漂移夹具清单本身应有效");
+    assert_eq!(
+        initializer
+            .plan_manifest(&changed)
+            .await
+            .expect("生成漂移计划")
+            .entries[0]
+            .status,
+        MigrationPlanStatus::ChecksumMismatch
+    );
+    assert!(matches!(
+        initializer.apply_manifest(&changed).await,
+        Err(BaseError::MigrationChecksumMismatch { .. })
+    ));
+
+    #[derive(sqlx::FromRow)]
+    struct CountRow {
+        count: i64,
+    }
+    #[allow(deprecated)]
+    let rows: Vec<CountRow> = verify_db
+        .query("SELECT COUNT(*) AS count FROM p4_manifest_audit")
+        .await
+        .expect("统计显式迁移执行次数");
+    assert_eq!(rows[0].count, 2, "幂等重跑不得重复执行 SQL");
 }
 
 #[tokio::test]
