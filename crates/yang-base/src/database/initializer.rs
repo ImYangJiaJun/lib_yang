@@ -31,8 +31,11 @@
 use crate::error::BaseError;
 use crate::plugin::{Plugin, PluginLifecycleStage, PluginManager};
 use crate::table::{SchemaColumn, SchemaValidationReport, TableDefinition};
+use sqlx::{pool::PoolConnection, MySql};
 use std::sync::Arc;
 use yang_db::Database;
+
+const MIGRATION_LOCK_TIMEOUT_SECONDS: i64 = 30;
 
 /// 迁移 dry-run 中单项的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +190,15 @@ fn migration_checksum(sql: &str) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+fn migration_lock_name(database_name: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in database_name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("yang_base_migration_{hash:016x}")
 }
 
 fn migration_execution_error(
@@ -697,13 +709,148 @@ impl DatabaseInitializer {
             .await
     }
 
-    /// 创建迁移记录表并执行显式迁移清单。
+    /// 在数据库级 advisory lock 内创建迁移记录表并执行显式迁移清单。
     ///
-    /// 该入口面向独立部署作业；MySQL DDL 仍遵循前向迁移语义，不承诺事务回滚。
+    /// 该入口面向独立部署作业；同一数据库的显式清单会串行执行。取得锁后，校验和
+    /// 一致的 `running` 记录必然来自已经失去数据库连接的中断作业，因此会删除预留并
+    /// 重跑迁移。迁移 SQL 必须自行保证幂等；MySQL DDL 仍遵循前向语义，不承诺事务回滚。
+    ///
+    /// advisory lock 会独占一个池连接，清单执行使用另一个连接，因此连接池上限至少为 2。
     pub async fn apply_manifest(&self, manifest: &MigrationManifest) -> Result<(), BaseError> {
-        self.create_migration_table().await?;
-        self.run_declared_migrations(manifest.module(), manifest.migrations())
+        let (mut lock_connection, lock_name) =
+            self.acquire_migration_lock(manifest.module()).await?;
+        let operation = async {
+            self.create_migration_table().await?;
+            self.recover_interrupted_manifest_reservations(manifest)
+                .await?;
+            self.run_declared_migrations(manifest.module(), manifest.migrations())
+                .await
+        }
+        .await;
+        let release =
+            Self::release_migration_lock(&mut lock_connection, &lock_name, manifest.module()).await;
+        match (operation, release) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(release_error)) => {
+                log::error!(
+                    "迁移失败后释放数据库锁也失败: module={}, lock={}, error={}",
+                    manifest.module(),
+                    lock_name,
+                    release_error
+                );
+                Err(error)
+            }
+        }
+    }
+
+    async fn acquire_migration_lock(
+        &self,
+        module: &str,
+    ) -> Result<(PoolConnection<MySql>, String), BaseError> {
+        if self.db().pool_status().max_size < 2 {
+            return Err(BaseError::DatabaseMigrationFailed(
+                module.to_string(),
+                "显式迁移需要至少 2 个 MySQL 池连接以持有数据库 advisory lock".to_string(),
+            ));
+        }
+        let mut connection = self
+            .db()
+            .pool()
+            .acquire()
             .await
+            .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+        let database_name: Option<String> = sqlx::query_scalar("SELECT DATABASE()")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+        let database_name = database_name.ok_or_else(|| {
+            BaseError::DatabaseMigrationFailed(
+                module.to_string(),
+                "迁移连接没有选择数据库".to_string(),
+            )
+        })?;
+        let lock_name = migration_lock_name(&database_name);
+        let acquired: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, ?)")
+            .bind(&lock_name)
+            .bind(MIGRATION_LOCK_TIMEOUT_SECONDS)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+        if acquired != Some(1) {
+            return Err(BaseError::DatabaseMigrationFailed(
+                module.to_string(),
+                format!("等待数据库迁移锁 {lock_name} 超过 {MIGRATION_LOCK_TIMEOUT_SECONDS} 秒"),
+            ));
+        }
+        Ok((connection, lock_name))
+    }
+
+    async fn release_migration_lock(
+        connection: &mut PoolConnection<MySql>,
+        lock_name: &str,
+        module: &str,
+    ) -> Result<(), BaseError> {
+        let released: Option<i64> = sqlx::query_scalar("SELECT RELEASE_LOCK(?)")
+            .bind(lock_name)
+            .fetch_one(&mut **connection)
+            .await
+            .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+        if released != Some(1) {
+            return Err(BaseError::DatabaseMigrationFailed(
+                module.to_string(),
+                format!("数据库迁移锁 {lock_name} 未被当前连接持有"),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn recover_interrupted_manifest_reservations(
+        &self,
+        manifest: &MigrationManifest,
+    ) -> Result<(), BaseError> {
+        for migration in manifest.migrations() {
+            let checksum = migration_checksum(migration.sql());
+            let Some(record) = self
+                .load_migration_record(manifest.module(), migration.version())
+                .await?
+            else {
+                continue;
+            };
+            if record.status != "running" {
+                continue;
+            }
+            if record.checksum.as_deref() != Some(checksum.as_str()) {
+                return Err(BaseError::MigrationChecksumMismatch {
+                    module: manifest.module().to_string(),
+                    version: migration.version().to_string(),
+                    expected: checksum,
+                    actual: record.checksum,
+                });
+            }
+            let affected = self
+                .delete_migration_reservation(
+                    manifest.module(),
+                    migration.version(),
+                    checksum.as_str(),
+                )
+                .await?;
+            if affected != 1 {
+                return Err(BaseError::DatabaseMigrationFailed(
+                    manifest.module().to_string(),
+                    format!(
+                        "迁移 v{} 的中断预留在数据库锁内发生变化",
+                        migration.version()
+                    ),
+                ));
+            }
+            log::warn!(
+                "恢复中断迁移预留并重跑幂等 SQL: {} v{}",
+                manifest.module(),
+                migration.version()
+            );
+        }
+        Ok(())
     }
 
     #[allow(deprecated)]
@@ -969,7 +1116,7 @@ impl DatabaseInitializer {
         module: &str,
         version: &str,
         checksum: &str,
-    ) -> Result<(), BaseError> {
+    ) -> Result<u64, BaseError> {
         self.db()
             .execute_with_params(
                 "DELETE FROM _migrations WHERE module_name = ? AND version = ? AND checksum = ? AND status = 'running'",
@@ -980,8 +1127,7 @@ impl DatabaseInitializer {
                 ],
             )
             .await
-            .map_err(BaseError::DatabaseExecuteFailed)?;
-        Ok(())
+            .map_err(BaseError::DatabaseExecuteFailed)
     }
 }
 

@@ -30,15 +30,22 @@ initializer.apply_manifest(&manifest).await?; // 独立 migration job
 
 ## 执行与并发
 
-- `apply_manifest(manifest)` 先确保迁移记录表存在，再以 `(module_name, version)` 唯一键
-  写入 `running` 预留、执行 SQL，成功后改为 `applied`。并发作业只能有一个执行器
-  获得预留，因此同一迁移不会重复执行。
-- 看到 `running` 的其他启动实例返回 `MigrationInProgress`，由部署编排重试；不绕过、不重复执行。
-- 执行失败会尽力删除本实例持有的 `running` 预留。进程崩溃留下的 `running` 必须由操作者核对数据库实际状态后处理。
+- `apply_manifest(manifest)` 先取得数据库级 MySQL advisory lock，再确保迁移记录表
+  存在，以 `(module_name, version)` 唯一键写入 `running` 预留、执行 SQL，成功后改为
+  `applied`。并发显式清单作业在锁上串行等待，后到者会观察到最新 applied 状态。
+- advisory lock 独占一个池连接，迁移执行使用另一个连接；调用方必须把 MySQL 连接池
+  上限设置为至少 2，否则在执行 SQL 前明确失败。
+- 执行错误会尽力删除本实例持有的 `running` 预留。进程中断会释放连接级 advisory
+  lock；下一作业取得锁后，仅清理 checksum 一致的遗留 `running` 预留并重跑。显式
+  清单 SQL 因此必须可重入；checksum 不一致仍 fail-closed，禁止自动恢复。
+- 旧 `run_migrations(plugin)` 兼容入口不具备上述锁内恢复语义，看到 `running` 仍返回
+  `MigrationInProgress`；生产部署必须使用显式清单入口。
 
 ## 事务边界
 
 - `use_transaction = true` 时，DML 迁移与迁移记录在同一 `yang_db::Transaction` 上执行。
-- MySQL DDL 会隐式提交，不能承诺 DDL 与迁移记录原子回滚；`running` 状态用于显式暴露这一恢复边界。插件应把每个 migration 声明为一个可独立审计、可判定是否完成的语句。
+- MySQL DDL 会隐式提交，不能承诺 DDL 与迁移记录原子回滚；`running` 状态用于显式
+  暴露这一恢复边界。每个 migration 应只包含一个可独立审计、可判定是否完成且可重入
+  的前向语句。
 - 一条 migration 不做分号切割。存储过程、触发器或包含内部分号的复杂脚本应交给专用脚本执行器。
 - `yang_db::mysql::Database::init` 与 `yang_db::postgres::Database::init` 的分号切割入口已 deprecated，不作为迁移执行路径。

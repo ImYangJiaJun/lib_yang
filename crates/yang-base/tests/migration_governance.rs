@@ -262,6 +262,83 @@ async fn explicit_manifest_supports_dry_run_apply_drift_and_idempotent_retry() {
 
 #[tokio::test]
 #[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn explicit_manifest_serializes_concurrency_and_recovers_interrupted_reservation() {
+    let verify_db = Database::connect(&mysql_url()).await.expect("连接验证库");
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("DROP TABLE IF EXISTS p4_manifest_recovery")
+            .await
+            .expect("清理恢复测试表");
+        verify_db
+            .execute("DROP TABLE IF EXISTS _migrations")
+            .await
+            .expect("清理迁移表");
+        verify_db
+            .execute("CREATE TABLE p4_manifest_recovery (marker VARCHAR(64) PRIMARY KEY)")
+            .await
+            .expect("创建恢复测试表");
+    }
+    let manifest = MigrationManifest::new(
+        "manifest-recovery",
+        [Migration::new(
+            "202607260010",
+            "INSERT IGNORE INTO p4_manifest_recovery(marker) VALUES ('once')",
+        )],
+    )
+    .expect("恢复清单应有效");
+    let first = DatabaseInitializer::new(
+        Database::connect(&mysql_url()).await.expect("连接并发库 1"),
+        false,
+    );
+    let second = DatabaseInitializer::new(
+        Database::connect(&mysql_url()).await.expect("连接并发库 2"),
+        false,
+    );
+
+    let (left, right) = tokio::join!(
+        first.apply_manifest(&manifest),
+        second.apply_manifest(&manifest)
+    );
+    assert!(left.is_ok(), "第一个显式清单作业应成功: {left:?}");
+    assert!(
+        right.is_ok(),
+        "并发显式清单作业应在数据库锁后观察到 applied: {right:?}"
+    );
+
+    #[allow(deprecated)]
+    verify_db
+        .execute("UPDATE _migrations SET status = 'running' WHERE module_name = 'manifest-recovery' AND version = '202607260010'")
+        .await
+        .expect("模拟 DDL 已完成但记录未标记 applied 的进程中断");
+    first
+        .apply_manifest(&manifest)
+        .await
+        .expect("持有数据库迁移锁后应恢复遗留 running 预留并安全重跑");
+    assert_eq!(
+        first
+            .plan_manifest(&manifest)
+            .await
+            .expect("恢复后计划")
+            .entries[0]
+            .status,
+        MigrationPlanStatus::Applied
+    );
+
+    #[derive(sqlx::FromRow)]
+    struct CountRow {
+        count: i64,
+    }
+    #[allow(deprecated)]
+    let rows: Vec<CountRow> = verify_db
+        .query("SELECT COUNT(*) AS count FROM p4_manifest_recovery")
+        .await
+        .expect("统计中断重跑结果");
+    assert_eq!(rows[0].count, 1, "幂等 SQL 在中断重跑后仍只能产生一份结果");
+}
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
 async fn table_definition_validation_reads_schema_without_altering_it() {
     let db = Database::connect(&mysql_url()).await.expect("连接 MySQL");
     #[allow(deprecated)]
