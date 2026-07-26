@@ -5,6 +5,9 @@ use crate::token::TokenManager;
 use jsonwebtoken::Algorithm;
 use serde_json::json;
 
+const ACTIVE_SECRET: &str = "active-secret-0123456789abcdef0123456789abcdef";
+const RETIRING_SECRET: &str = "retiring-secret-0123456789abcdef0123456789abcdef";
+
 /// 测试对称加密 Token 生成和验证
 #[test]
 fn test_symmetric_token_generation_and_verification() {
@@ -143,6 +146,198 @@ fn test_token_pair_generation() {
                 .is_some_and(serde_json::Map::is_empty),
         "旧入口必须保持 Refresh Token 无自定义声明的兼容语义"
     );
+}
+
+#[test]
+fn keyring_signs_with_active_kid_and_verifies_active_token() {
+    let manager = TokenManager::new_symmetric_keyring(
+        "2026-07-active".to_string(),
+        ACTIVE_SECRET,
+        Vec::new(),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("合法 keyring 应构建成功");
+
+    let token = manager
+        .generate_access_token("user-keyring", json!({}))
+        .expect("active key 应签发成功");
+    let header = jsonwebtoken::decode_header(&token).expect("签发结果应有合法 Header");
+
+    assert_eq!(header.kid.as_deref(), Some("2026-07-active"));
+    assert_eq!(
+        manager
+            .verify_token(&token)
+            .expect("active key Token 应验证成功")
+            .sub,
+        "user-keyring"
+    );
+}
+
+#[test]
+fn rotated_keyring_accepts_retiring_token_but_never_signs_with_retiring_key() {
+    let previous = TokenManager::new_symmetric_keyring(
+        "2026-06-retiring".to_string(),
+        RETIRING_SECRET,
+        Vec::new(),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("旧 keyring 应构建成功");
+    let old_token = previous
+        .generate_refresh_token("user-rotation")
+        .expect("旧 active key 应签发成功");
+
+    let rotated = TokenManager::new_symmetric_keyring(
+        "2026-07-active".to_string(),
+        ACTIVE_SECRET,
+        vec![("2026-06-retiring".to_string(), RETIRING_SECRET.to_string())],
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("轮换后 keyring 应构建成功");
+
+    assert_eq!(
+        rotated
+            .verify_token(&old_token)
+            .expect("retiring key 应验证存量 Token")
+            .sub,
+        "user-rotation"
+    );
+    let new_token = rotated
+        .generate_refresh_token("user-rotation")
+        .expect("新 active key 应签发成功");
+    assert_eq!(
+        jsonwebtoken::decode_header(&new_token)
+            .expect("新 Token Header 应合法")
+            .kid
+            .as_deref(),
+        Some("2026-07-active")
+    );
+    assert!(
+        previous.verify_token(&new_token).is_err(),
+        "旧 keyring 不得验证未知的新 kid"
+    );
+}
+
+#[test]
+fn keyring_fails_closed_for_missing_or_unknown_kid() {
+    let keyring = TokenManager::new_symmetric_keyring(
+        "known".to_string(),
+        ACTIVE_SECRET,
+        Vec::new(),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("keyring 应构建成功");
+    let legacy = TokenManager::new_symmetric(
+        ACTIVE_SECRET,
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    );
+    let unknown = TokenManager::new_symmetric_keyring(
+        "unknown".to_string(),
+        ACTIVE_SECRET,
+        Vec::new(),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("未知 kid 的独立 keyring 应构建成功");
+
+    let missing_kid = legacy
+        .generate_access_token("user", json!({}))
+        .expect("legacy Token 应签发成功");
+    let unknown_kid = unknown
+        .generate_access_token("user", json!({}))
+        .expect("未知 kid Token 应签发成功");
+
+    assert!(matches!(
+        keyring.verify_token(&missing_kid),
+        Err(BaseError::TokenVerifyFailed(_))
+    ));
+    assert!(matches!(
+        keyring.verify_token(&unknown_kid),
+        Err(BaseError::TokenVerifyFailed(_))
+    ));
+}
+
+#[test]
+fn keyring_rejects_weak_ambiguous_or_unbounded_keys() {
+    let build = |active_id: &str, active_secret: &str, retiring_keys| {
+        TokenManager::new_symmetric_keyring(
+            active_id.to_string(),
+            active_secret,
+            retiring_keys,
+            Algorithm::HS256,
+            "issuer".to_string(),
+            "audience".to_string(),
+            3600,
+            86400,
+        )
+    };
+
+    assert!(build("contains space", ACTIVE_SECRET, Vec::new()).is_err());
+    assert!(build("active", "short-secret", Vec::new()).is_err());
+    assert!(build(
+        "active",
+        ACTIVE_SECRET,
+        vec![("active".to_string(), RETIRING_SECRET.to_string())]
+    )
+    .is_err());
+    let excessive = (0..8)
+        .map(|index| (format!("retiring-{index}"), RETIRING_SECRET.to_string()))
+        .collect();
+    assert!(build("active", ACTIVE_SECRET, excessive).is_err());
+    assert!(TokenManager::new_symmetric_keyring(
+        "active".to_string(),
+        ACTIVE_SECRET,
+        Vec::new(),
+        Algorithm::RS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .is_err());
+}
+
+#[test]
+fn keyring_debug_reports_shape_without_secret_material() {
+    let manager = TokenManager::new_symmetric_keyring(
+        "active".to_string(),
+        ACTIVE_SECRET,
+        vec![("retiring".to_string(), RETIRING_SECRET.to_string())],
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("keyring 应构建成功");
+    let debug = format!("{manager:?}");
+
+    assert!(debug.contains("keyring"));
+    assert!(debug.contains("verification_key_count: 2"));
+    assert!(!debug.contains(ACTIVE_SECRET));
+    assert!(!debug.contains(RETIRING_SECRET));
 }
 
 /// 测试 Access/Refresh Token 分别携带由同一快照派生的声明
