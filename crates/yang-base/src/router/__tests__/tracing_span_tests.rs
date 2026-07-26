@@ -18,12 +18,25 @@ fn test_dispatch_span_fields() {
 
     let span = tracing::info_span!(
         "dispatch",
+        operation = "test_module.test_action",
         module = "test_module",
         action = "test_action",
         request_id = tracing::field::Empty,
+        actor_id = tracing::field::Empty,
+        tenant_scope = tracing::field::Empty,
+        tenant_id = tracing::field::Empty,
+        result = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
     );
     let _enter = span.enter();
     span.record("request_id", "req-0000000000000000");
+    span.record("actor_id", 7_i64);
+    span.record("tenant_scope", "tenant");
+    span.record("tenant_id", 42_i64);
+    span.record("result", "success");
+    span.record("error_code", 0_i32);
+    span.record("duration_ms", 12_u64);
 }
 
 /// 验证 handle span 创建不 panic
@@ -42,9 +55,16 @@ fn test_dispatch_nested_handle() {
 
     let dispatch = tracing::info_span!(
         "dispatch",
+        operation = "users.get",
         module = "users",
         action = "get",
         request_id = tracing::field::Empty,
+        actor_id = tracing::field::Empty,
+        tenant_scope = tracing::field::Empty,
+        tenant_id = tracing::field::Empty,
+        result = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
     );
     let _d_enter = dispatch.enter();
     dispatch.record("request_id", "req-1234567890abcdef");
@@ -60,9 +80,16 @@ fn test_multiple_records_same_field() {
 
     let span = tracing::info_span!(
         "dispatch",
+        operation = "test.update",
         module = "test",
         action = "update",
         request_id = tracing::field::Empty,
+        actor_id = tracing::field::Empty,
+        tenant_scope = tracing::field::Empty,
+        tenant_id = tracing::field::Empty,
+        result = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
     );
     let _enter = span.enter();
     span.record("request_id", "req-aaa");

@@ -292,9 +292,16 @@ impl Registry {
         };
         let span = tracing::info_span!(
             "dispatch",
+            operation = %runtime.ui_schema.operation_id,
             module = %runtime.module,
             action = %runtime.action,
             request_id = tracing::field::Empty,
+            actor_id = tracing::field::Empty,
+            tenant_scope = tracing::field::Empty,
+            tenant_id = tracing::field::Empty,
+            result = tracing::field::Empty,
+            error_code = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
         );
         span.record("request_id", tracing::field::display(context.request_id));
         let result = next.run(context).instrument(span).await;

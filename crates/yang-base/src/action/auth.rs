@@ -951,6 +951,9 @@ where
 
         // 5. 注入当前用户后继续调用链
         ctx.user = Some((self.build_user)(&claims).into_user_projection()?);
+        if let Some(user) = &ctx.user {
+            tracing::Span::current().record("actor_id", user.id);
+        }
         next.run(ctx).await
     }
 }

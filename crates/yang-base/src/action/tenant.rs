@@ -101,8 +101,15 @@ where
         let requested = requested_tenant(&context)?;
         let resolution = self.resolver.resolve(&context, requested).await?;
         let context = match resolution {
-            TenantResolution::Tenant(tenant) => context.with_tenant(tenant),
-            TenantResolution::System(capability) => context.with_system_tenant(capability),
+            TenantResolution::Tenant(tenant) => {
+                tracing::Span::current().record("tenant_scope", "tenant");
+                tracing::Span::current().record("tenant_id", tenant.id().get());
+                context.with_tenant(tenant)
+            }
+            TenantResolution::System(capability) => {
+                tracing::Span::current().record("tenant_scope", "system");
+                context.with_system_tenant(capability)
+            }
         };
         next.run(context).await
     }
