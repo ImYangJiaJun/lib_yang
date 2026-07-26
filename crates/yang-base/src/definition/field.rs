@@ -258,9 +258,9 @@ impl FieldSpec {
         if self.access.searchable {
             field = field.searchable();
         }
-        // searchable 与 filterable 是独立位，各自精确映射 AccessSpec 声明；
-        // 未声明 filterable 必须显式关闭 table 层的宽松默认值（fail-closed），
-        // 保证 UI 投影的 filter_fields 与服务端 where 校验点对点对齐。
+        // searchable、filterable 与 sortable 是独立位，各自精确映射 AccessSpec 声明；
+        // 未声明的查询能力必须显式关闭 table 层的宽松默认值（fail-closed），
+        // 保证 UI 投影与服务端 where/order 校验点对点对齐。
         if self.access.filterable {
             field = field.filterable();
         } else {
@@ -268,6 +268,8 @@ impl FieldSpec {
         }
         if self.access.sortable {
             field = field.sortable();
+        } else {
+            field = field.not_sortable();
         }
         if self.tenant_key {
             field = field.tenant_key();
