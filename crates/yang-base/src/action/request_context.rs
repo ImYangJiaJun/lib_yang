@@ -107,38 +107,42 @@ impl TenantId {
     }
 }
 
-/// 高频租户上下文；system 模式是唯一允许绕过租户条件的显式入口。
+/// 普通租户 capability；构造后始终携带一个不可选的租户主键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TenantContext {
-    id: Option<TenantId>,
-    system: bool,
+    id: TenantId,
 }
 
 impl TenantContext {
-    /// 创建普通租户上下文。
+    /// 创建普通租户 capability。
     pub const fn new(id: TenantId) -> Self {
-        Self {
-            id: Some(id),
-            system: false,
-        }
+        Self { id }
     }
 
-    /// 创建显式系统上下文。
-    pub const fn system() -> Self {
-        Self {
-            id: None,
-            system: true,
-        }
-    }
-
-    /// 返回租户主键；system 上下文返回 `None`。
-    pub const fn id(self) -> Option<TenantId> {
+    /// 返回不可选的租户主键。
+    pub const fn id(self) -> TenantId {
         self.id
     }
+}
 
-    /// 返回是否允许绕过租户隔离。
-    pub const fn is_system(self) -> bool {
-        self.system
+/// 显式系统级租户 capability。
+///
+/// 该类型没有公开构造器，只能由可信租户 resolver 在校验已认证 system 角色后签发。
+/// capability 绑定 actor，供系统级数据访问与审计关联；它不能伪装成普通
+/// [`TenantContext`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemTenantCapability {
+    actor: ActorContext,
+}
+
+impl SystemTenantCapability {
+    pub(crate) const fn issue(actor: ActorContext) -> Self {
+        Self { actor }
+    }
+
+    /// 返回获授系统级访问的操作者。
+    pub const fn actor(self) -> ActorContext {
+        self.actor
     }
 }
 
@@ -185,5 +189,11 @@ mod tests {
         assert!(context
             .get(ContextKey::<String>::new("tenant_id"))
             .is_none());
+    }
+
+    #[test]
+    fn tenant_context_always_contains_a_tenant_id() {
+        let tenant = TenantContext::new(TenantId::new(7));
+        assert_eq!(tenant.id(), TenantId::new(7));
     }
 }

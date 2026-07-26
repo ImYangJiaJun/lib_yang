@@ -1,9 +1,11 @@
 //! 请求租户解析中间件。
 //!
 //! 客户端提供的租户 ID 只是不可信候选；应用实现的 [`TenantResolver`] 必须结合
-//! 已认证用户、租户成员关系和业务状态完成校验，再返回可信 [`TenantContext`]。
+//! 已认证用户、租户成员关系和业务状态完成校验，再返回可信 [`TenantResolution`]。
 
-use super::{ActionContext, ApiResponse, TenantContext, TenantId};
+use super::{
+    ActionContext, ActorContext, ApiResponse, SystemTenantCapability, TenantContext, TenantId, User,
+};
 use crate::error::BaseError;
 use crate::router::{Middleware, MiddlewareRole, Next};
 use async_trait::async_trait;
@@ -11,11 +13,43 @@ use async_trait::async_trait;
 /// 默认租户候选请求头。
 pub const TENANT_ID_HEADER: &str = "x-tenant-id";
 
+/// 可信 resolver 的互斥解析结果。
+///
+/// 普通租户始终携带不可选 [`TenantContext`]；系统访问携带独立且绑定 actor 的
+/// [`SystemTenantCapability`]。代数和类型消除了 `Option<TenantId> + bool` 的非法状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TenantResolution {
+    /// 范围化普通租户访问。
+    Tenant(TenantContext),
+    /// 显式系统级访问。
+    System(SystemTenantCapability),
+}
+
+impl TenantResolution {
+    /// 在可信 resolver 中为已认证 system 角色签发系统 capability。
+    pub fn system_for(user: &User) -> Result<Self, BaseError> {
+        if !user.has_role("system") {
+            return Err(BaseError::PermissionDenied(
+                "只有已认证 system 角色可获授系统租户 capability".to_string(),
+            ));
+        }
+        Ok(Self::System(SystemTenantCapability::issue(
+            ActorContext::new(user.id),
+        )))
+    }
+}
+
+impl From<TenantContext> for TenantResolution {
+    fn from(value: TenantContext) -> Self {
+        Self::Tenant(value)
+    }
+}
+
 /// 将不可信租户候选解析为可信请求租户上下文。
 ///
 /// `requested` 仅表示客户端想访问的租户，不能证明当前用户属于该租户。实现者必须
 /// 依据已认证用户和服务端事实源校验成员关系；若允许系统级绕过，也必须在这里检查
-/// 独立的系统权限后显式返回 [`TenantContext::system`]。
+/// 独立的系统权限后显式返回 [`TenantResolution::System`]。
 #[async_trait]
 pub trait TenantResolver: Send + Sync + 'static {
     /// 解析当前请求的可信租户上下文。
@@ -25,7 +59,7 @@ pub trait TenantResolver: Send + Sync + 'static {
         &self,
         context: &ActionContext,
         requested: Option<TenantId>,
-    ) -> Result<TenantContext, BaseError>;
+    ) -> Result<TenantResolution, BaseError>;
 }
 
 /// 在 Action 派发前解析并注入可信租户上下文。
@@ -65,8 +99,12 @@ where
         next: Next<'_>,
     ) -> Result<ApiResponse, BaseError> {
         let requested = requested_tenant(&context)?;
-        let tenant = self.resolver.resolve(&context, requested).await?;
-        next.run(context.with_tenant(tenant)).await
+        let resolution = self.resolver.resolve(&context, requested).await?;
+        let context = match resolution {
+            TenantResolution::Tenant(tenant) => context.with_tenant(tenant),
+            TenantResolution::System(capability) => context.with_system_tenant(capability),
+        };
+        next.run(context).await
     }
 }
 
@@ -111,7 +149,7 @@ mod tests {
     #[derive(Debug, Serialize, JsonSchema)]
     struct TenantProbeOutput {
         tenant_id: Option<i64>,
-        system: bool,
+        system_actor_id: Option<i64>,
     }
 
     #[derive(Action)]
@@ -128,11 +166,16 @@ mod tests {
             context: ActionContext,
             _input: Self::Input,
         ) -> Result<Self::Output, BaseError> {
-            let tenant = context.tenant()?;
-            Ok(TenantProbeOutput {
-                tenant_id: tenant.id().map(TenantId::get),
-                system: tenant.is_system(),
-            })
+            match context.tenant() {
+                Ok(tenant) => Ok(TenantProbeOutput {
+                    tenant_id: Some(tenant.id().get()),
+                    system_actor_id: None,
+                }),
+                Err(_) => Ok(TenantProbeOutput {
+                    tenant_id: None,
+                    system_actor_id: Some(context.system_tenant()?.actor().user_id()),
+                }),
+            }
         }
     }
 
@@ -144,17 +187,17 @@ mod tests {
             &self,
             context: &ActionContext,
             requested: Option<TenantId>,
-        ) -> Result<TenantContext, BaseError> {
+        ) -> Result<TenantResolution, BaseError> {
             let user = context
                 .authenticated_user()
                 .ok_or_else(|| BaseError::Unauthorized("租户解析需要已认证用户".to_string()))?;
             if user.has_role("system") {
-                return Ok(TenantContext::system());
+                return TenantResolution::system_for(user);
             }
 
             let tenant = requested.unwrap_or_else(|| TenantId::new(10));
             if user.id == 7 && tenant == TenantId::new(10) {
-                Ok(TenantContext::new(tenant))
+                Ok(TenantContext::new(tenant).into())
             } else {
                 Err(BaseError::PermissionDenied(format!(
                     "用户无权访问租户 {}",
@@ -198,13 +241,12 @@ mod tests {
             .expect("租户探针应已注册")
     }
 
-    fn tenant_response(response: ApiResponse) -> (Option<i64>, bool) {
+    fn tenant_response(response: ApiResponse) -> (Option<i64>, Option<i64>) {
         let data = response.data.expect("租户探针应返回 JSON data");
         (
             data.get("tenant_id").and_then(serde_json::Value::as_i64),
-            data.get("system")
-                .and_then(serde_json::Value::as_bool)
-                .expect("租户探针应返回 system 布尔值"),
+            data.get("system_actor_id")
+                .and_then(serde_json::Value::as_i64),
         )
     }
 
@@ -232,12 +274,12 @@ mod tests {
         )
         .await
         .expect("成员应能选择所属租户");
-        assert_eq!(tenant_response(selected), (Some(10), false));
+        assert_eq!(tenant_response(selected), (Some(10), None));
 
         let defaulted = dispatch_as(&app, Request::new(serde_json::json!({})), Some(user))
             .await
             .expect("resolver 应能安全选择服务端默认租户");
-        assert_eq!(tenant_response(defaulted), (Some(10), false));
+        assert_eq!(tenant_response(defaulted), (Some(10), None));
     }
 
     #[tokio::test]
@@ -282,11 +324,15 @@ mod tests {
     async fn system_context_can_only_come_from_trusted_resolver() {
         let app = test_app();
         let system_user = User::new(1, "root").with_roles(["system"]);
+        assert!(matches!(
+            TenantResolution::system_for(&User::new(7, "member")),
+            Err(BaseError::PermissionDenied(_))
+        ));
 
         let response = dispatch_as(&app, Request::new(serde_json::json!({})), Some(system_user))
             .await
             .expect("系统角色应由可信 resolver 映射为 system 上下文");
-        assert_eq!(tenant_response(response), (None, true));
+        assert_eq!(tenant_response(response), (None, Some(1)));
 
         let forged = dispatch_as(
             &app,
@@ -464,8 +510,7 @@ mod tests {
         /// 同时观察租户上下文与认证状态的公开探针。
         #[derive(Debug, Serialize, JsonSchema)]
         struct TenantAuthProbeOutput {
-            tenant_id: Option<i64>,
-            system: bool,
+            tenant_id: i64,
             authenticated: bool,
         }
 
@@ -485,8 +530,7 @@ mod tests {
             ) -> Result<Self::Output, BaseError> {
                 let tenant = context.tenant()?;
                 Ok(TenantAuthProbeOutput {
-                    tenant_id: tenant.id().map(TenantId::get),
-                    system: tenant.is_system(),
+                    tenant_id: tenant.id().get(),
                     authenticated: context.authenticated_user().is_some(),
                 })
             }
@@ -502,13 +546,13 @@ mod tests {
                 &self,
                 context: &ActionContext,
                 requested: Option<TenantId>,
-            ) -> Result<TenantContext, BaseError> {
+            ) -> Result<TenantResolution, BaseError> {
                 let Some(user) = context.authenticated_user() else {
-                    return Ok(TenantContext::new(TenantId::new(1)));
+                    return Ok(TenantContext::new(TenantId::new(1)).into());
                 };
                 let tenant = requested.unwrap_or_else(|| TenantId::new(10));
                 if user.id == 7 && tenant == TenantId::new(10) {
-                    Ok(TenantContext::new(tenant))
+                    Ok(TenantContext::new(tenant).into())
                 } else {
                     Err(BaseError::PermissionDenied(format!(
                         "用户无权访问租户 {}",
@@ -549,13 +593,12 @@ mod tests {
                 .expect("三方组合测试应用应构建成功")
         }
 
-        fn probe_observation(response: ApiResponse) -> (Option<i64>, bool, bool) {
+        fn probe_observation(response: ApiResponse) -> (i64, bool) {
             let data = response.data.expect("探针应返回 JSON data");
             (
-                data.get("tenant_id").and_then(serde_json::Value::as_i64),
-                data.get("system")
-                    .and_then(serde_json::Value::as_bool)
-                    .expect("探针应返回 system 布尔值"),
+                data.get("tenant_id")
+                    .and_then(serde_json::Value::as_i64)
+                    .expect("探针应返回 tenant_id"),
                 data.get("authenticated")
                     .and_then(serde_json::Value::as_bool)
                     .expect("探针应返回 authenticated 布尔值"),
@@ -578,7 +621,7 @@ mod tests {
                 )
                 .await
                 .expect("匿名请求应经可选认证放行并获得访客租户上下文");
-            assert_eq!(probe_observation(anonymous), (Some(1), false, false));
+            assert_eq!(probe_observation(anonymous), (1, false));
 
             // 非 Bearer 的 Authorization 头：不降级为匿名。
             let wrong_scheme = app

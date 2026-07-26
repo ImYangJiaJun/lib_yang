@@ -3,7 +3,7 @@
 
 use crate::action::{ActionContext, Request, RequestMeta, User};
 #[cfg(feature = "mysql")]
-use crate::action::{TenantContext, TenantId};
+use crate::action::{TenantContext, TenantId, TenantResolution};
 use crate::error::BaseError;
 use crate::token::TokenManager;
 use crate::tools::{Tools, ToolsBuilder};
@@ -175,7 +175,7 @@ fn test_action_context_new() {
 
 #[cfg(feature = "mysql")]
 #[test]
-fn tenant_table_is_fail_closed_and_system_bypass_is_explicit() {
+fn tenant_table_is_fail_closed_and_system_bypass_requires_capability() {
     let base = ActionContext::new(Request::new(json!({})), create_test_tools())
         .with_table_definition(tenant_table());
     assert!(matches!(
@@ -193,15 +193,38 @@ fn tenant_table_is_fail_closed_and_system_bypass_is_explicit() {
         .expect("租户查询 SQL 应可构建");
     assert!(tenant_sql.contains("`org_id` = ?"));
 
+    let system_user = User::new(1, "root").with_roles(["system"]);
+    let capability = match TenantResolution::system_for(&system_user)
+        .expect("已认证 system 角色应获得系统 capability")
+    {
+        TenantResolution::System(capability) => capability,
+        TenantResolution::Tenant(_) => panic!("system 角色不得被解析为普通租户"),
+    };
     let system = ActionContext::new(Request::new(json!({})), create_test_tools())
         .with_table_definition(tenant_table())
-        .with_tenant(TenantContext::system());
+        .with_system_tenant(capability);
+    assert!(matches!(
+        system.table_query(),
+        Err(BaseError::Unauthorized(_))
+    ));
     let (system_sql, _) = system
-        .table_query()
-        .expect("system 上下文应显式绕过租户范围")
+        .system_table_query(capability)
+        .expect("显式传回当前请求 capability 后才可创建系统查询")
         .build_select_sql_for_test()
         .expect("system 查询 SQL 应可构建");
     assert!(!system_sql.contains("`org_id` = ?"));
+
+    let other_user = User::new(2, "other-root").with_roles(["system"]);
+    let other_capability = match TenantResolution::system_for(&other_user)
+        .expect("另一个 system 角色应获得 capability")
+    {
+        TenantResolution::System(capability) => capability,
+        TenantResolution::Tenant(_) => panic!("system 角色不得被解析为普通租户"),
+    };
+    assert!(matches!(
+        system.system_table_query(other_capability),
+        Err(BaseError::PermissionDenied(_))
+    ));
 }
 
 #[test]

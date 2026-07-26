@@ -19,7 +19,7 @@ use std::sync::Arc;
 use super::Request;
 use super::RequestId;
 use super::RequestMeta;
-use super::{ActorContext, RequestContext, TenantContext};
+use super::{ActorContext, RequestContext, SystemTenantCapability, TenantContext};
 
 /// 用户信息
 ///
@@ -86,6 +86,18 @@ impl User {
     }
 }
 
+/// 当前请求的互斥租户访问状态。
+///
+/// 单一代数和类型确保普通租户与系统 capability 不会同时存在，也避免用
+/// `Option<TenantContext>` 表达系统绕过。
+#[derive(Debug, Clone, Copy, Default)]
+enum TenantAccess {
+    #[default]
+    Missing,
+    Tenant(TenantContext),
+    System(SystemTenantCapability),
+}
+
 /// Action 执行上下文
 ///
 /// 包含 Action 执行所需的所有信息，包括请求数据、传输元数据、用户信息、应用资源和表配置。
@@ -129,8 +141,8 @@ pub struct ActionContext {
     cached_roles: Arc<[String]>,
     /// 当前请求独占的类型化扩展上下文。
     request_context: RequestContext,
-    /// 高频租户上下文；租户表查询缺少该值时 fail-closed。
-    tenant: Option<TenantContext>,
+    /// 普通租户、系统 capability 或缺失三者互斥的访问状态。
+    tenant_access: TenantAccess,
 }
 
 impl ActionContext {
@@ -148,7 +160,7 @@ impl ActionContext {
             action: None,
             cached_roles: Arc::from(Vec::new()),
             request_context: RequestContext::default(),
-            tenant: None,
+            tenant_access: TenantAccess::Missing,
         }
     }
 
@@ -182,16 +194,35 @@ impl ActionContext {
         &mut self.request_context
     }
 
-    /// 注入租户上下文。
+    /// 注入普通租户 capability。
     pub fn with_tenant(mut self, tenant: TenantContext) -> Self {
-        self.tenant = Some(tenant);
+        self.tenant_access = TenantAccess::Tenant(tenant);
         self
     }
 
-    /// 返回租户上下文。
+    pub(crate) fn with_system_tenant(mut self, capability: SystemTenantCapability) -> Self {
+        self.tenant_access = TenantAccess::System(capability);
+        self
+    }
+
+    /// 返回不可选的普通租户 capability。
     pub fn tenant(&self) -> Result<TenantContext, BaseError> {
-        self.tenant
-            .ok_or_else(|| BaseError::Unauthorized("请求缺少租户上下文".to_string()))
+        match self.tenant_access {
+            TenantAccess::Tenant(tenant) => Ok(tenant),
+            TenantAccess::Missing | TenantAccess::System(_) => Err(BaseError::Unauthorized(
+                "请求缺少普通租户 capability".to_string(),
+            )),
+        }
+    }
+
+    /// 返回当前请求已获授的系统级租户 capability。
+    pub fn system_tenant(&self) -> Result<SystemTenantCapability, BaseError> {
+        match self.tenant_access {
+            TenantAccess::System(capability) => Ok(capability),
+            TenantAccess::Missing | TenantAccess::Tenant(_) => Err(BaseError::PermissionDenied(
+                "请求缺少系统租户 capability".to_string(),
+            )),
+        }
     }
 
     /// 返回当前操作者上下文。
@@ -324,7 +355,7 @@ impl ActionContext {
     ///
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
-    pub fn table_query(&self) -> Result<TableQuery, BaseError> {
+    fn base_table_query(&self) -> Result<TableQuery, BaseError> {
         let definition = self
             .table_definition
             .as_ref()
@@ -350,24 +381,55 @@ impl ActionContext {
         // 注入可观测性：慢查询阈值（Tools 配置槽）+ 本次派发 request_id，
         // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
         let slow_threshold = self.slow_query_threshold();
-        let mut query = TableQuery::new(definition.shared_config(), user_roles, pool)
-            .with_slow_threshold(slow_threshold)
-            .with_request_id(self.request_id);
+        Ok(
+            TableQuery::new(definition.shared_config(), user_roles, pool)
+                .with_slow_threshold(slow_threshold)
+                .with_request_id(self.request_id),
+        )
+    }
+
+    /// 创建默认失败关闭的表查询构建器。
+    ///
+    /// 带 tenant key 的表必须存在普通 [`TenantContext`]，并始终自动施加租户条件。
+    /// 系统身份不会隐式绕过；全域访问必须显式调用
+    /// [`ActionContext::system_table_query`]。
+    pub fn table_query(&self) -> Result<TableQuery, BaseError> {
+        let definition = self
+            .table_definition
+            .as_ref()
+            .ok_or(BaseError::TableDefinitionNotSet)?;
+        let mut query = self.base_table_query()?;
         if let Some(field) = definition.tenant_key_field() {
-            let tenant = self.tenant()?;
-            if !tenant.is_system() {
-                let tenant_id = tenant.id().ok_or_else(|| {
-                    BaseError::Unauthorized("普通租户上下文缺少 tenant id".to_string())
-                })?;
-                query = query.scope_tenant(field, serde_json::json!(tenant_id.get()))?;
-            }
+            query = query.scope_tenant(field, serde_json::json!(self.tenant()?.id().get()))?;
         }
         Ok(query)
+    }
+
+    /// 使用显式、已绑定当前请求 actor 的系统 capability 创建全域表查询。
+    ///
+    /// 调用方必须先通过 [`ActionContext::system_tenant`] 取得 capability，再在具体
+    /// repository 旁路中显式传回；普通 CRUD 只调用 [`ActionContext::table_query`]，
+    /// 因而不会自动获得全租户访问。
+    pub fn system_table_query(
+        &self,
+        capability: SystemTenantCapability,
+    ) -> Result<TableQuery, BaseError> {
+        if self.system_tenant()? != capability {
+            return Err(BaseError::PermissionDenied(
+                "系统租户 capability 与当前请求不匹配".to_string(),
+            ));
+        }
+        self.base_table_query()
     }
 
     /// 创建 BR 心智连续的 Tables 入口。
     pub fn tables(&self) -> Result<Tables, BaseError> {
         self.table_query().map(Tables::new)
+    }
+
+    /// 使用显式系统 capability 创建全域 Tables 入口。
+    pub fn system_tables(&self, capability: SystemTenantCapability) -> Result<Tables, BaseError> {
+        self.system_table_query(capability).map(Tables::new)
     }
 
     /// 开启一个数据库事务（受保护层多步写的原子作用域）

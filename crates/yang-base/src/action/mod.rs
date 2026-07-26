@@ -76,7 +76,9 @@ pub use auth::{
 pub use context::{ActionContext, User};
 pub use meta::ActionMeta;
 pub use request::Request;
-pub use request_context::{ActorContext, ContextKey, RequestContext, TenantContext, TenantId};
+pub use request_context::{
+    ActorContext, ContextKey, RequestContext, SystemTenantCapability, TenantContext, TenantId,
+};
 pub use request_id::RequestId;
 pub use request_meta::RequestMeta;
 pub use response::{ApiResponse, ResponseAttachment, ResponseBody};
@@ -87,7 +89,7 @@ pub use step_up::{
     StepUpResourceResolver, StepUpVerification, DEFAULT_STEP_UP_CHALLENGE_TTL,
     DEFAULT_STEP_UP_PROOF_TTL, STEP_UP_PROOF_HEADER,
 };
-pub use tenant::{TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
+pub use tenant::{TenantResolution, TenantResolver, TenantResolverMiddleware, TENANT_ID_HEADER};
 pub use typed::{Action, DynAction, TypedAction, TypedHandler};
 pub use ui_catalog::{UiCatalogAction, UiCatalogInput};
 pub use upload::UploadedFile;
