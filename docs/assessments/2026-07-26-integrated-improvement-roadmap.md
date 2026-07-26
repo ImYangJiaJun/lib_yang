@@ -123,7 +123,7 @@ frontend 状态、页面与部署
 | C1 bootstrap 信任根 | **3/3 完成** | 高熵 secret 摘要、请求校验、并发/重放矩阵闭环 |
 | C2 租户隔离 | **当前范围完成** | 清单、CRUD/旁路负例、证据门禁与 scoped/system capability 闭环；新路径继续增量治理 |
 | C3 授权新鲜度 | **8/8 完成** | 数据库事实、事务 writer、outbox、Redis 加速、共享请求校验与故障矩阵闭环 |
-| P 生产共同基线 | **5/10 完成** | 受信代理、配置优先级、JWT keyring、shutdown 总预算与不可变审计模型已完成；下一步接入事务原子写 |
+| P 生产共同基线 | **7/10 完成** | 网络/配置/JWT/生命周期、审计原子性与结构化日志已闭环；下一步接入 metrics/trace exporter |
 | U/FE 显式契约与前端重构 | **待执行** | 框架不变；先完成后端稳定语义，再删除前端启发式并按行为拆分 |
 
 三份复评文档再次确认：基础库与系统已进入 L4 入口，但前端仍处于 L3 后段；因此不能跳过 P 队列直接用一次大型前端重写制造“整体已经成熟”的假象。
@@ -294,7 +294,7 @@ frontend 状态、页面与部署
 | P-03 | ✅ | S-07 | JWT `kid` 与 active/retiring key ring | 根 `e2697e6`；嵌套 `38692b0`；active 只签发、retiring 只验证 |
 | P-04 | ✅ | S-08 | 高权限业务 audit 表 | 嵌套 `d25b0d0`；白名单有界摘要、精确 Schema 失败关闭、追加门禁与 365 天在线保留策略 |
 | P-05 | ✅ | S-08 | 事务内 audit/outbox 原子写 | 嵌套 `d221f3a`；唯一 `append_in_tx` 复用业务事务，可信派发目标生成 action，审计失败时业务、授权版本与 Outbox 整体回滚 |
-| P-06 | 待执行 | S-09 | JSON 结构化日志与统一字段 | 统一 request/tenant/action/error 字段 |
+| P-06 | ✅ | S-09 | JSON 结构化日志与统一字段 | 根 `22e2a41`、`a79054a`；嵌套 `19b91ad`；Addon 共享外层中间件统一记录 Action 结果，JSON 固定服务/版本/环境/request/action/result/error/duration 字段，dispatch span 补齐可信 actor/tenant 维度 |
 | P-07 | 待执行 | S-09 | metrics/trace exporter 与低基数标签 | 先固定标签基数预算 |
 | P-08 | 待执行 | S-09 | readiness 总预算与 SLO/告警 | 依赖 P-07 的观测出口 |
 | P-09 | 待执行 | S-10 | raw SQL 边界与 sqlx offline 检查 | 枚举并收窄所有 raw SQL |
@@ -404,12 +404,11 @@ frontend 状态、页面与部署
 
 ## 十、立即执行顺序
 
-截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-05 和 P-10 已完成。下一批固定顺序更新为：
+截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-06 和 P-10 已完成。下一批固定顺序更新为：
 
-1. P-06：JSON 结构化日志与统一字段；
-2. P-07：metrics/trace exporter 与低基数标签；
-3. P-08：readiness 总预算与 SLO/告警；
-4. P-09：raw SQL 边界与 sqlx offline 检查。
+1. P-07：metrics/trace exporter 与低基数标签；
+2. P-08：readiness 总预算与 SLO/告警；
+3. P-09：raw SQL 边界与 sqlx offline 检查。
 
 生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
 
