@@ -1390,6 +1390,39 @@ fn module_crud_at_uses_explicit_versioned_path_and_stable_operation_ids() {
     assert!(matches!(invalid, Err(BaseError::ConfigError(_))));
 }
 
+#[cfg(feature = "mysql")]
+#[test]
+fn module_crud_at_with_mutations_preserves_framework_contracts() {
+    use crate::action::builtin::{AddAction, DelAction, PutAction};
+
+    let spec = ModuleSpec::new(module("org.user"))
+        .table(TableSpec::new(table("org_user")).field(FieldSpec::new(field("id"), FieldKind::Key)))
+        .crud_at_with_mutations(
+            "/api/v1/org/users",
+            AddAction::new(),
+            PutAction::new(),
+            DelAction::new(),
+        )
+        .expect("自定义 writer 应复用框架 CRUD 契约");
+
+    for name in ["add", "put", "del", "get", "select", "table"] {
+        let action = spec
+            .actions()
+            .iter()
+            .find(|action| action.name.as_str() == name)
+            .unwrap_or_else(|| panic!("应存在 org.user.{name}"));
+        assert!(
+            !action.input_schema.is_null(),
+            "{name} 应保留表驱动输入契约"
+        );
+        assert!(
+            !action.output_schema.is_null(),
+            "{name} 应保留表驱动输出契约"
+        );
+        assert_eq!(action.route.operation_id, format!("org.user.{name}"));
+    }
+}
+
 #[test]
 fn table_spec_projects_validated_composite_indexes() {
     let spec = TableSpec::new(table("org_user"))
