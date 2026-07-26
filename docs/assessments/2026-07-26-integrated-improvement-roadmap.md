@@ -291,7 +291,7 @@ frontend 状态、页面与部署
 |---|---|---|---|---|
 | P-01 | ✅ | S-04 | 受信代理 CIDR 与标准 client IP 解析 | 嵌套 `2e35f81`；默认不信任转发头，显式代理 CIDR 才启用可信链解析 |
 | P-02 | ✅ | S-07 | 配置文件 < 环境变量 < secret provider 的明确优先级 | 嵌套 `d14d10d`；应用与迁移共用启动期单一合成入口 |
-| P-03 | 待执行 | S-07 | JWT `kid` 与 active/retiring key ring | 依赖 P-02 的 secret provider 边界 |
+| P-03 | ✅ | S-07 | JWT `kid` 与 active/retiring key ring | 根 `e2697e6`；嵌套 `38692b0`；active 只签发、retiring 只验证 |
 | P-04 | 待执行 | S-08 | 高权限业务 audit 表 | 先定义不可变审计事件与保留策略 |
 | P-05 | 待执行 | S-08 | 事务内 audit/outbox 原子写 | 依赖 P-04 |
 | P-06 | 待执行 | S-09 | JSON 结构化日志与统一字段 | 统一 request/tenant/action/error 字段 |
@@ -404,16 +404,15 @@ frontend 状态、页面与部署
 
 ## 十、立即执行顺序
 
-截至本次复评，原立即执行序列、C1/C2/C3、P-01 和 P-02 已完成。下一批固定顺序更新为：
+截至本次复评，原立即执行序列、C1/C2/C3 和 P-01—P-03 已完成。下一批固定顺序更新为：
 
-1. P-03：JWT `kid` 与 active/retiring key ring；
-2. P-10：进程级 shutdown 总预算与超时诊断；
-3. P-04：高权限业务 audit 表；
-4. P-05：事务内 audit/outbox 原子写；
-5. P-06：JSON 结构化日志与统一字段；
-6. P-07：metrics/trace exporter 与低基数标签；
-7. P-08：readiness 总预算与 SLO/告警；
-8. P-09：raw SQL 边界与 sqlx offline 检查。
+1. P-10：进程级 shutdown 总预算与超时诊断；
+2. P-04：高权限业务 audit 表；
+3. P-05：事务内 audit/outbox 原子写；
+4. P-06：JSON 结构化日志与统一字段；
+5. P-07：metrics/trace exporter 与低基数标签；
+6. P-08：readiness 总预算与 SLO/告警；
+7. P-09：raw SQL 边界与 sqlx offline 检查。
 
 生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
 
