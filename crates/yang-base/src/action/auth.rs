@@ -794,11 +794,42 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 ///
 /// let module = ModuleSpec::new(ModuleName::new("account.user")?).middleware(auth);
 /// ```
-pub struct TokenAuthMiddleware<F> {
+pub struct TokenAuthMiddleware<F, V = NoopTokenClaimsValidator> {
     /// 从已验证声明构造业务 [`User`](crate::action::User) 的闭包
     build_user: F,
+    /// 签名与 Token 类型通过后的应用级异步声明校验器。
+    claims_validator: V,
     /// 是否在公开 Action 上执行可选认证。
     authenticate_public_actions: bool,
+}
+
+/// 已验签 Access Token 的应用级校验钩子。
+///
+/// 基础库保持 JWT、黑名单和类型校验的唯一认证链；业务系统可在用户投影前校验
+/// 授权版本、会话世代等应用事实，而无需重复解析或验签 Token。
+#[async_trait]
+pub trait TokenClaimsValidator: Send + Sync + 'static {
+    /// 校验已通过核心 Token 验证的声明；返回错误会在用户投影前短路认证。
+    async fn validate(
+        &self,
+        context: &ActionContext,
+        claims: &TokenClaims,
+    ) -> Result<(), BaseError>;
+}
+
+/// 不增加额外 I/O 的默认声明校验器。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopTokenClaimsValidator;
+
+#[async_trait]
+impl TokenClaimsValidator for NoopTokenClaimsValidator {
+    async fn validate(
+        &self,
+        _context: &ActionContext,
+        _claims: &TokenClaims,
+    ) -> Result<(), BaseError> {
+        Ok(())
+    }
 }
 
 /// 将不可失败的旧式用户投影和可失败的安全投影统一成认证结果。
@@ -822,7 +853,7 @@ impl IntoUserProjection for Result<User, BaseError> {
     }
 }
 
-impl<F, R> TokenAuthMiddleware<F>
+impl<F, R> TokenAuthMiddleware<F, NoopTokenClaimsValidator>
 where
     F: Fn(&TokenClaims) -> R + Send + Sync + 'static,
     R: IntoUserProjection,
@@ -834,7 +865,22 @@ where
     pub fn new(build_user: F) -> Self {
         Self {
             build_user,
+            claims_validator: NoopTokenClaimsValidator,
             authenticate_public_actions: false,
+        }
+    }
+}
+
+impl<F, V> TokenAuthMiddleware<F, V> {
+    /// 注入应用级异步声明校验器，并保留同一条 Token 认证链。
+    pub fn with_claims_validator<N>(self, claims_validator: N) -> TokenAuthMiddleware<F, N>
+    where
+        N: TokenClaimsValidator,
+    {
+        TokenAuthMiddleware {
+            build_user: self.build_user,
+            claims_validator,
+            authenticate_public_actions: self.authenticate_public_actions,
         }
     }
 
@@ -853,10 +899,11 @@ where
 }
 
 #[async_trait]
-impl<F, R> Middleware for TokenAuthMiddleware<F>
+impl<F, R, V> Middleware for TokenAuthMiddleware<F, V>
 where
     F: Fn(&TokenClaims) -> R + Send + Sync + 'static,
     R: IntoUserProjection + Send + Sync + 'static,
+    V: TokenClaimsValidator,
 {
     fn role(&self) -> MiddlewareRole {
         MiddlewareRole::Authentication
@@ -899,7 +946,10 @@ where
             return Err(BaseError::TokenTypeInvalid("期望 access token".into()));
         }
 
-        // 4. 注入当前用户后继续调用链
+        // 4. 应用级事实校验仍位于唯一认证链内，不重复解析或验签 Token
+        self.claims_validator.validate(&ctx, &claims).await?;
+
+        // 5. 注入当前用户后继续调用链
         ctx.user = Some((self.build_user)(&claims).into_user_projection()?);
         next.run(ctx).await
     }
@@ -994,6 +1044,22 @@ mod tests {
         ) -> Result<ApiResponse, BaseError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             next.run(ctx).await
+        }
+    }
+
+    struct RejectingClaimsValidator(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl TokenClaimsValidator for RejectingClaimsValidator {
+        async fn validate(
+            &self,
+            _context: &ActionContext,
+            _claims: &TokenClaims,
+        ) -> Result<(), BaseError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(BaseError::Unauthorized(
+                "应用级 Token 声明已失效".to_string(),
+            ))
         }
     }
 
@@ -1126,6 +1192,70 @@ mod tests {
 
         assert_middleware(&middleware);
         assert_eq!(middleware.scope(), MiddlewareScope::ProtectedActions);
+    }
+
+    #[tokio::test]
+    async fn application_claims_validator_never_runs_before_core_access_validation() {
+        let validation_calls = Arc::new(AtomicUsize::new(0));
+        let projection_calls = Arc::new(AtomicUsize::new(0));
+        let projection_counter = Arc::clone(&projection_calls);
+        let module_name =
+            ModuleName::new("account.claims_validation").expect("测试 Module 名称应有效");
+        let probe_ref = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("protected_probe").expect("测试 Action 名称应有效"),
+        );
+        let module = ModuleSpec::new(module_name)
+            .middleware(
+                TokenAuthMiddleware::new(move |claims| {
+                    projection_counter.fetch_add(1, Ordering::SeqCst);
+                    User::new(7, claims.sub.clone())
+                })
+                .with_claims_validator(RejectingClaimsValidator(Arc::clone(&validation_calls))),
+            )
+            .action(
+                ActionSpec::new(
+                    ActionName::new("protected_probe").expect("测试 Action 名称应有效"),
+                    RouteSpec::new(
+                        HttpMethod::Get,
+                        "/api/v1/claims-validation/protected",
+                        "account.claims_validation.protected_probe",
+                    ),
+                ),
+                ProtectedProbe,
+            );
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("account").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(test_tools())
+            .expect("声明校验测试应用应构建成功");
+        let token = test_access_token(&app);
+        let response = app
+            .dispatch(
+                app.registry()
+                    .resolve(&probe_ref)
+                    .expect("protected_probe 应已注册"),
+                crate::action::Request::new(serde_json::json!({}))
+                    .header("authorization", format!("Bearer {token}")),
+            )
+            .await;
+
+        assert!(
+            matches!(response, Err(BaseError::RedisNotInitialized)),
+            "核心撤销检查缺失时必须先 fail-closed: {response:?}"
+        );
+        assert_eq!(
+            validation_calls.load(Ordering::SeqCst),
+            0,
+            "核心 Access Token 验证失败前不得运行应用校验器"
+        );
+        assert_eq!(
+            projection_calls.load(Ordering::SeqCst),
+            0,
+            "应用级校验失败后不得投影或注入用户"
+        );
     }
 
     #[tokio::test]
