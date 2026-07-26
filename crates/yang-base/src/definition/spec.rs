@@ -814,4 +814,41 @@ impl AddonSpec {
         self.modules.push(module);
         self
     }
+
+    /// 向 Addon 的每个 Module 追加同一个跨切面中间件。
+    ///
+    /// 中间件位于各 Module 已声明中间件之后，适合在认证、租户解析等领域边界完成后
+    /// 统一记录日志或指标。所有 Module 共享同一个线程安全实例，不建立第二条派发链。
+    #[must_use]
+    pub fn middleware<M>(mut self, middleware: M) -> Self
+    where
+        M: Middleware,
+    {
+        let middleware: Arc<dyn Middleware> = Arc::new(middleware);
+        for module in &mut self.modules {
+            module.middlewares.push(Arc::clone(&middleware));
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+mod addon_middleware_tests {
+    use super::*;
+    use crate::router::RequestIdMiddleware;
+
+    #[test]
+    fn addon_middleware_appends_one_shared_instance_after_module_middleware() {
+        let addon = AddonSpec::new(crate::addon!("test"))
+            .module(ModuleSpec::new(crate::module!("test.first")).middleware(RequestIdMiddleware))
+            .module(ModuleSpec::new(crate::module!("test.second")))
+            .middleware(RequestIdMiddleware);
+
+        assert_eq!(addon.modules[0].middlewares().len(), 2);
+        assert_eq!(addon.modules[1].middlewares().len(), 1);
+        assert!(Arc::ptr_eq(
+            &addon.modules[0].middlewares()[1],
+            &addon.modules[1].middlewares()[0]
+        ));
+    }
 }
