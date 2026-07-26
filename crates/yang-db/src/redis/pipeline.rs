@@ -293,6 +293,11 @@ impl RedisPipeline {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "pipeline", otel.kind = "client")
+    )]
     pub async fn query<T: FromRedisValue>(self) -> Result<Vec<T>> {
         let mut conn = self
             .client
@@ -336,6 +341,11 @@ impl RedisPipeline {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "redis", db.operation = "pipeline", otel.kind = "client")
+    )]
     pub async fn execute(self) -> Result<Vec<RedisValue>> {
         let mut conn = self
             .client

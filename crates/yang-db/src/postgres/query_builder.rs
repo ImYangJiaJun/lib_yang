@@ -1474,6 +1474,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 查询单条记录（自动追加 LIMIT 1）
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn find<T>(mut self) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
@@ -1514,6 +1519,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 查询多条记录
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn select<T>(self) -> Result<Vec<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
@@ -1597,6 +1607,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 查询单个字段值（自动追加 LIMIT 1）
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn value<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
@@ -1609,6 +1624,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 统计记录数量（COUNT(*)）
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn count(self) -> Result<i64, crate::error::DbError> {
         if self.enable_logging {
             log::debug!("执行 count() 查询");
@@ -1620,6 +1640,11 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// 使用 `CAST(SUM(field) AS DOUBLE PRECISION)` 统一返回 `f64`，
     /// 与 MySQL 后端的 `AS DOUBLE` 对应（PostgreSQL 的等价类型为 `DOUBLE PRECISION`）。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn sum(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         if self.enable_logging {
             log::debug!("执行 sum() 查询，字段: {}", field.as_str());
@@ -1635,6 +1660,11 @@ impl<'a> QueryBuilder<'a> {
     /// 计算字段平均值（AVG）
     ///
     /// 使用 `CAST(AVG(field) AS DOUBLE PRECISION)` 统一返回 `f64`。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn avg(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         if self.enable_logging {
             log::debug!("执行 avg() 查询，字段: {}", field.as_str());
@@ -1648,6 +1678,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 获取字段最小值（MIN）
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn min<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
@@ -1664,6 +1699,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 获取字段最大值（MAX）
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn max<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
@@ -1686,6 +1726,11 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - Ok(u64): 插入成功，返回 `RETURNING` 列的值（自增主键）
     /// - Err(DbError): 插入失败
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -1750,6 +1795,11 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// 使用默认批大小 [`INSERT_BATCH_SIZE`]（500）分批执行，返回总受影响行数。
     /// 批量插入不使用 `RETURNING`，仅返回 `rows_affected()`。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert_batch<T>(self, data: &[T]) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -1760,6 +1810,11 @@ impl<'a> QueryBuilder<'a> {
     /// 批量插入数据（自定义批次大小）
     ///
     /// 允许调用方根据网络延迟、数据大小等自定义每批最大记录数（必须 > 0）。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert_batch_with_size<T>(
         self,
         data: &[T],
@@ -1911,6 +1966,11 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// 执行 UPDATE 操作。为防止误操作，必须提供 WHERE 条件，否则返回
     /// `MissingWhereClause`。返回受影响的行数。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn update<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -1969,6 +2029,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 原子增加字段值；增量使用绑定参数，且必须提供 WHERE。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn increment(
         self,
         field: &crate::FieldRef,
@@ -1979,6 +2044,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 原子减少字段值；增量使用绑定参数，且必须提供 WHERE。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn decrement(
         self,
         field: &crate::FieldRef,
@@ -2022,6 +2092,11 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// 执行 DELETE 操作。为防止误操作，必须提供 WHERE 条件，否则返回
     /// `MissingWhereClause`。返回受影响的行数。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "delete", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn delete(self) -> Result<u64, crate::error::DbError> {
         if self.enable_logging {
             log::debug!("执行 delete() 操作，表: {}", self.table);
@@ -2076,6 +2151,11 @@ impl<'a> QueryBuilder<'a> {
     /// 使用 CASE WHEN 策略在单次查询中更新多条记录，自动分批（每批
     /// [`UPDATE_BATCH_SIZE`]，1000），所有批次在同一事务中执行保证原子性。
     /// 返回总受影响行数。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn update_batch<T>(
         self,
         records: &[T],
@@ -2142,6 +2222,11 @@ impl<'a> QueryBuilder<'a> {
     /// 使用 PostgreSQL `INSERT ... ON CONFLICT (...) DO UPDATE SET col = EXCLUDED.col`
     /// 语法。冲突目标列默认 `["id"]`，可用 [`QueryBuilder::on_conflict`] 覆盖。
     /// 返回 `rows_affected()`。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "upsert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn upsert<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,

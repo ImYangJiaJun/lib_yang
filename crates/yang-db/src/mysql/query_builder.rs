@@ -1569,6 +1569,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn find<T>(mut self) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
@@ -1663,6 +1668,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn select<T>(self) -> Result<Vec<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
@@ -1814,6 +1824,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn value<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
@@ -1859,6 +1874,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn count(self) -> Result<i64, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
@@ -1915,6 +1935,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn sum(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
@@ -1981,6 +2006,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn avg(self, field: &crate::FieldRef) -> Result<Option<f64>, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
@@ -2061,6 +2091,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn min<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
@@ -2143,6 +2178,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "select", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn max<T>(self, field: &crate::FieldRef) -> Result<Option<T>, crate::error::DbError>
     where
         T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Send + Unpin,
@@ -2215,6 +2255,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -2343,6 +2388,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert_batch<T>(self, data: &[T]) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -2392,6 +2442,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn insert_batch_with_size<T>(
         self,
         data: &[T],
@@ -2605,6 +2660,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn update<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
@@ -2673,6 +2733,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 原子增加字段值；增量使用绑定参数，且必须提供 WHERE。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn increment(
         self,
         field: &crate::FieldRef,
@@ -2683,6 +2748,11 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 原子减少字段值；增量使用绑定参数，且必须提供 WHERE。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn decrement(
         self,
         field: &crate::FieldRef,
@@ -2748,6 +2818,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "delete", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn delete(self) -> Result<u64, crate::error::DbError> {
         // 记录日志
         if self.enable_logging {
@@ -2836,6 +2911,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn update_batch<T>(
         self,
         records: &[T],
@@ -2921,6 +3001,11 @@ impl<'a> QueryBuilder<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "upsert", db.collection = %self.table, otel.kind = "client")
+    )]
     pub async fn upsert<T>(self, data: &T) -> Result<u64, crate::error::DbError>
     where
         T: serde::Serialize,
