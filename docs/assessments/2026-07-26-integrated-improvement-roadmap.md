@@ -287,18 +287,18 @@ frontend 状态、页面与部署
 
 ## 五、生产共同基线队列
 
-| ID | 来源 | 独立改进点 |
-|---|---|---|
-| P-01 | S-04 | 受信代理 CIDR 与标准 client IP 解析 |
-| P-02 | S-07 | 配置文件 < 环境变量 < secret provider 的明确优先级 |
-| P-03 | S-07 | JWT `kid` 与 active/retiring key ring |
-| P-04 | S-08 | 高权限业务 audit 表 |
-| P-05 | S-08 | 事务内 audit/outbox 原子写 |
-| P-06 | S-09 | JSON 结构化日志与统一字段 |
-| P-07 | S-09 | metrics/trace exporter 与低基数标签 |
-| P-08 | S-09 | readiness 总预算与 SLO/告警 |
-| P-09 | S-10 | raw SQL 边界与 sqlx offline 检查 |
-| P-10 | S-06 复评 | 进程级 shutdown 总预算与超时诊断 |
+| ID | 状态 | 来源 | 独立改进点 | 提交证据/下一条件 |
+|---|---|---|---|---|
+| P-01 | ✅ | S-04 | 受信代理 CIDR 与标准 client IP 解析 | 嵌套 `2e35f81`；默认不信任转发头，显式代理 CIDR 才启用可信链解析 |
+| P-02 | 待执行 | S-07 | 配置文件 < 环境变量 < secret provider 的明确优先级 | 建立单一解析入口、可测试覆盖矩阵与敏感值脱敏 |
+| P-03 | 待执行 | S-07 | JWT `kid` 与 active/retiring key ring | 依赖 P-02 的 secret provider 边界 |
+| P-04 | 待执行 | S-08 | 高权限业务 audit 表 | 先定义不可变审计事件与保留策略 |
+| P-05 | 待执行 | S-08 | 事务内 audit/outbox 原子写 | 依赖 P-04 |
+| P-06 | 待执行 | S-09 | JSON 结构化日志与统一字段 | 统一 request/tenant/action/error 字段 |
+| P-07 | 待执行 | S-09 | metrics/trace exporter 与低基数标签 | 先固定标签基数预算 |
+| P-08 | 待执行 | S-09 | readiness 总预算与 SLO/告警 | 依赖 P-07 的观测出口 |
+| P-09 | 待执行 | S-10 | raw SQL 边界与 sqlx offline 检查 | 枚举并收窄所有 raw SQL |
+| P-10 | 待执行 | S-06 复评 | 进程级 shutdown 总预算与超时诊断 | 为各生命周期任务分配总预算 |
 
 这些点不能合成一个“production hardening”大提交。每个点独立设计、验证和回滚。
 
@@ -404,18 +404,17 @@ frontend 状态、页面与部署
 
 ## 十、立即执行顺序
 
-截至本次复评，原立即执行序列和 C1/C2/C3 已完成。下一批固定顺序更新为：
+截至本次复评，原立即执行序列、C1/C2/C3 和 P-01 已完成。下一批固定顺序更新为：
 
-1. P-01：受信代理 CIDR 与标准 client IP 解析；
-2. P-02：配置文件、环境变量、secret provider 的明确优先级；
-3. P-03：JWT `kid` 与 active/retiring key ring；
-4. P-10：进程级 shutdown 总预算与超时诊断；
-5. P-04：高权限业务 audit 表；
-6. P-05：事务内 audit/outbox 原子写；
-7. P-06：JSON 结构化日志与统一字段；
-8. P-07：metrics/trace exporter 与低基数标签；
-9. P-08：readiness 总预算与 SLO/告警；
-10. P-09：raw SQL 边界与 sqlx offline 检查。
+1. P-02：配置文件、环境变量、secret provider 的明确优先级；
+2. P-03：JWT `kid` 与 active/retiring key ring；
+3. P-10：进程级 shutdown 总预算与超时诊断；
+4. P-04：高权限业务 audit 表；
+5. P-05：事务内 audit/outbox 原子写；
+6. P-06：JSON 结构化日志与统一字段；
+7. P-07：metrics/trace exporter 与低基数标签；
+8. P-08：readiness 总预算与 SLO/告警；
+9. P-09：raw SQL 边界与 sqlx offline 检查。
 
 生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
 
