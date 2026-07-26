@@ -293,7 +293,7 @@ frontend 状态、页面与部署
 | P-02 | ✅ | S-07 | 配置文件 < 环境变量 < secret provider 的明确优先级 | 嵌套 `d14d10d`；应用与迁移共用启动期单一合成入口 |
 | P-03 | ✅ | S-07 | JWT `kid` 与 active/retiring key ring | 根 `e2697e6`；嵌套 `38692b0`；active 只签发、retiring 只验证 |
 | P-04 | ✅ | S-08 | 高权限业务 audit 表 | 嵌套 `d25b0d0`；白名单有界摘要、精确 Schema 失败关闭、追加门禁与 365 天在线保留策略 |
-| P-05 | 待执行 | S-08 | 事务内 audit/outbox 原子写 | 依赖 P-04 |
+| P-05 | ✅ | S-08 | 事务内 audit/outbox 原子写 | 嵌套 `d221f3a`；唯一 `append_in_tx` 复用业务事务，可信派发目标生成 action，审计失败时业务、授权版本与 Outbox 整体回滚 |
 | P-06 | 待执行 | S-09 | JSON 结构化日志与统一字段 | 统一 request/tenant/action/error 字段 |
 | P-07 | 待执行 | S-09 | metrics/trace exporter 与低基数标签 | 先固定标签基数预算 |
 | P-08 | 待执行 | S-09 | readiness 总预算与 SLO/告警 | 依赖 P-07 的观测出口 |
@@ -404,13 +404,12 @@ frontend 状态、页面与部署
 
 ## 十、立即执行顺序
 
-截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-04 和 P-10 已完成。下一批固定顺序更新为：
+截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-05 和 P-10 已完成。下一批固定顺序更新为：
 
-1. P-05：事务内 audit/outbox 原子写；
-2. P-06：JSON 结构化日志与统一字段；
-3. P-07：metrics/trace exporter 与低基数标签；
-4. P-08：readiness 总预算与 SLO/告警；
-5. P-09：raw SQL 边界与 sqlx offline 检查。
+1. P-06：JSON 结构化日志与统一字段；
+2. P-07：metrics/trace exporter 与低基数标签；
+3. P-08：readiness 总预算与 SLO/告警；
+4. P-09：raw SQL 边界与 sqlx offline 检查。
 
 生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
 
