@@ -4,10 +4,16 @@
 
 use crate::error::BaseError;
 use crate::token::TokenClaims;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use std::collections::HashSet;
+use jsonwebtoken::{
+    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use yang_db::RedisClient;
+
+const MAX_SYMMETRIC_KEYRING_KEYS: usize = 8;
+const MAX_KEY_ID_BYTES: usize = 64;
+const MIN_HMAC_SECRET_BYTES: usize = 32;
 
 /// 获取当前 Unix 时间戳（秒）
 ///
@@ -51,6 +57,54 @@ fn build_validation(algorithm: Algorithm, issuer: &str, audience: &str) -> Valid
     validation
 }
 
+enum VerificationKeys {
+    /// 兼容既有调用方，并保留无需解析 Header 的单密钥验证快路径。
+    Single(DecodingKey),
+    /// `kid` 到验证密钥的一对一映射；只在显式 keyring 模式启用。
+    Keyring(HashMap<String, DecodingKey>),
+}
+
+fn validate_hmac_algorithm(algorithm: Algorithm) -> Result<(), BaseError> {
+    if !matches!(
+        algorithm,
+        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
+    ) {
+        return Err(BaseError::TokenKeyInvalid(
+            "对称 Token keyring 仅支持 HS256、HS384、HS512".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_key_id(key_id: &str) -> Result<(), BaseError> {
+    if key_id.is_empty()
+        || key_id.len() > MAX_KEY_ID_BYTES
+        || !key_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(BaseError::TokenKeyInvalid(
+            "kid 必须是 1..=64 字节的 ASCII 字母、数字、点、下划线或连字符".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hmac_secret(secret: &str) -> Result<(), BaseError> {
+    if secret.len() < MIN_HMAC_SECRET_BYTES {
+        return Err(BaseError::TokenKeyInvalid(format!(
+            "HMAC secret 至少需要 {MIN_HMAC_SECRET_BYTES} 字节"
+        )));
+    }
+    Ok(())
+}
+
+fn invalid_key_selection() -> BaseError {
+    BaseError::TokenVerifyFailed(jsonwebtoken::errors::Error::from(
+        jsonwebtoken::errors::ErrorKind::InvalidToken,
+    ))
+}
+
 /// Token 管理器
 ///
 /// 提供 JWT Token 的生成、验证、解析和刷新功能。
@@ -90,8 +144,8 @@ pub struct TokenManager {
     /// 编码密钥
     encoding_key: EncodingKey,
 
-    /// 解码密钥
-    decoding_key: DecodingKey,
+    /// 单密钥快路径或按 `kid` 索引的验证 keyring。
+    verification_keys: VerificationKeys,
 
     /// 算法
     algorithm: Algorithm,
@@ -177,7 +231,9 @@ impl TokenManager {
 
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
-            decoding_key: DecodingKey::from_secret(secret.as_bytes()),
+            verification_keys: VerificationKeys::Single(DecodingKey::from_secret(
+                secret.as_bytes(),
+            )),
             algorithm,
             validation: build_validation(algorithm, &issuer, &audience),
             issuer,
@@ -187,6 +243,68 @@ impl TokenManager {
             jwt_header,
             revocation_cache: None,
         }
+    }
+
+    /// 创建带稳定 `kid` 的对称 Token keyring。
+    ///
+    /// 新 Token 只由 active key 签发；验证时只按 Header 中的 `kid` 精确选择
+    /// active 或 retiring key。keyring 模式不接受缺失/未知 `kid`，避免回退到
+    /// “逐把试签名”的模糊验证链。retiring key 应至少保留一个 Refresh Token
+    /// 最大有效期，再由运维显式移除。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_symmetric_keyring(
+        active_key_id: String,
+        active_secret: &str,
+        retiring_keys: Vec<(String, String)>,
+        algorithm: Algorithm,
+        issuer: String,
+        audience: String,
+        access_token_expiry: u64,
+        refresh_token_expiry: u64,
+    ) -> Result<Self, BaseError> {
+        validate_hmac_algorithm(algorithm)?;
+        validate_key_id(&active_key_id)?;
+        validate_hmac_secret(active_secret)?;
+        if retiring_keys.len() + 1 > MAX_SYMMETRIC_KEYRING_KEYS {
+            return Err(BaseError::TokenKeyInvalid(format!(
+                "Token keyring 最多允许 {MAX_SYMMETRIC_KEYRING_KEYS} 把密钥"
+            )));
+        }
+
+        let mut verification_keys = HashMap::with_capacity(retiring_keys.len() + 1);
+        verification_keys.insert(
+            active_key_id.clone(),
+            DecodingKey::from_secret(active_secret.as_bytes()),
+        );
+        for (key_id, secret) in retiring_keys {
+            validate_key_id(&key_id)?;
+            validate_hmac_secret(&secret)?;
+            if verification_keys
+                .insert(key_id, DecodingKey::from_secret(secret.as_bytes()))
+                .is_some()
+            {
+                return Err(BaseError::TokenKeyInvalid(
+                    "Token keyring 的 kid 必须唯一".to_string(),
+                ));
+            }
+        }
+
+        let mut jwt_header = Header::new(algorithm);
+        jwt_header.typ = Some("JWT".to_string());
+        jwt_header.kid = Some(active_key_id);
+
+        Ok(Self {
+            encoding_key: EncodingKey::from_secret(active_secret.as_bytes()),
+            verification_keys: VerificationKeys::Keyring(verification_keys),
+            algorithm,
+            validation: build_validation(algorithm, &issuer, &audience),
+            issuer,
+            audience,
+            access_token_expiry,
+            refresh_token_expiry,
+            jwt_header,
+            revocation_cache: None,
+        })
     }
 
     /// 创建新的 Token 管理器（非对称加密）
@@ -245,7 +363,7 @@ impl TokenManager {
 
         Ok(Self {
             encoding_key,
-            decoding_key,
+            verification_keys: VerificationKeys::Single(decoding_key),
             algorithm,
             validation: build_validation(algorithm, &issuer, &audience),
             issuer,
@@ -487,7 +605,18 @@ impl TokenManager {
     pub fn verify_token(&self, token: &str) -> Result<TokenClaims, BaseError> {
         // 复用构造时缓存的 Validation（token-10），避免每次验证重复分配
         // 算法白名单、签发者/受众集合与必需声明集合。
-        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &self.validation)?;
+        let decoding_key = match &self.verification_keys {
+            VerificationKeys::Single(key) => key,
+            VerificationKeys::Keyring(keys) => {
+                let header = decode_header(token).map_err(BaseError::TokenParseFailed)?;
+                if header.alg != self.algorithm {
+                    return Err(invalid_key_selection());
+                }
+                let key_id = header.kid.as_deref().ok_or_else(invalid_key_selection)?;
+                keys.get(key_id).ok_or_else(invalid_key_selection)?
+            }
+        };
+        let token_data = decode::<TokenClaims>(token, decoding_key, &self.validation)?;
 
         Ok(token_data.claims)
     }
@@ -760,16 +889,23 @@ impl TokenManager {
     }
 }
 
-// 手动实现 Debug trait，因为 EncodingKey 和 DecodingKey 不支持 Debug
-// 注意：故意不输出 encoding_key 和 decoding_key，防止密钥泄露到日志或调试输出中
+// 手动实现 Debug trait，因为 EncodingKey 和 DecodingKey 不支持 Debug。
+// 注意：故意不输出任何密钥，只暴露非敏感的 keyring 模式、数量和 active kid。
 impl std::fmt::Debug for TokenManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (verification_mode, verification_key_count) = match &self.verification_keys {
+            VerificationKeys::Single(_) => ("single", 1),
+            VerificationKeys::Keyring(keys) => ("keyring", keys.len()),
+        };
         f.debug_struct("TokenManager")
             .field("algorithm", &self.algorithm)
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("access_token_expiry", &self.access_token_expiry)
             .field("refresh_token_expiry", &self.refresh_token_expiry)
+            .field("verification_mode", &verification_mode)
+            .field("verification_key_count", &verification_key_count)
+            .field("active_key_id", &self.jwt_header.kid)
             // validation 仅含算法/签发者/受众/必需声明等非敏感校验规则，可安全输出
             .field("validation", &self.validation)
             // 使用 finish_non_exhaustive() 表明结构体还有其他字段（密钥字段）未输出
