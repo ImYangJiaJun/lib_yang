@@ -276,6 +276,18 @@ pub enum BaseError {
     #[error("Token 撤销状态无效: {0}")]
     TokenRevocationStateInvalid(String),
 
+    /// Access Token 中的授权版本已落后于当前事实版本。
+    #[error("授权状态已变更，请刷新登录")]
+    AuthorizationStale,
+
+    /// Access Token 中的授权版本缺失、非法或领先于事实版本。
+    #[error("授权版本无效")]
+    AuthorizationVersionInvalid,
+
+    /// 授权版本缓存与事实存储均无法完成请求时校验。
+    #[error("授权状态暂时无法校验")]
+    AuthorizationCheckUnavailable,
+
     /// Token 类型无效
     #[error("Token 类型无效: {0}")]
     TokenTypeInvalid(String),
@@ -621,6 +633,9 @@ impl BaseError {
             BaseError::TokenTypeInvalid(_) => 400006,
             BaseError::TokenRevoked => 400007,
             BaseError::TokenRevocationStateInvalid(_) => 400008,
+            BaseError::AuthorizationStale => 400009,
+            BaseError::AuthorizationVersionInvalid => 400010,
+            BaseError::AuthorizationCheckUnavailable => 400011,
 
             // ==================== 序列化错误 (5xxxxx) ====================
             BaseError::JsonSerializeFailed(_) => 500001,
@@ -717,6 +732,9 @@ impl BaseError {
             BaseError::TokenTypeInvalid(_) => "400006",
             BaseError::TokenRevoked => "400007",
             BaseError::TokenRevocationStateInvalid(_) => "400008",
+            BaseError::AuthorizationStale => "400009",
+            BaseError::AuthorizationVersionInvalid => "400010",
+            BaseError::AuthorizationCheckUnavailable => "400011",
             // 序列化错误 (5xxxxx)
             BaseError::JsonSerializeFailed(_) => "500001",
             BaseError::JsonDeserializeFailed(_) => "500002",
@@ -820,6 +838,8 @@ impl BaseError {
                 C::Auth
             }
             BaseError::TokenRevocationStateInvalid(_) => C::Server,
+            BaseError::AuthorizationStale | BaseError::AuthorizationVersionInvalid => C::Auth,
+            BaseError::AuthorizationCheckUnavailable => C::Transient,
             // 序列化错误
             BaseError::JsonSerializeFailed(_) | BaseError::JsonDeserializeFailed(_) => C::Client,
             // 字段验证错误
@@ -1242,6 +1262,9 @@ mod tests {
             BaseError::TokenExpired,
             BaseError::TokenRevoked,
             BaseError::TokenRevocationStateInvalid("invalid".into()),
+            BaseError::AuthorizationStale,
+            BaseError::AuthorizationVersionInvalid,
+            BaseError::AuthorizationCheckUnavailable,
             BaseError::JsonSerializeFailed("s".into()),
             BaseError::FieldNotFound("t".into(), "f".into()),
             BaseError::ParamInvalid("k".into(), "r".into()),
