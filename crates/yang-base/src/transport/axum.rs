@@ -1065,7 +1065,10 @@ fn status_for_error(error: &BaseError) -> StatusCode {
         | BaseError::TokenParseFailed(_)
         | BaseError::TokenExpired
         | BaseError::TokenRevoked
+        | BaseError::AuthorizationStale
+        | BaseError::AuthorizationVersionInvalid
         | BaseError::TokenTypeInvalid(_) => StatusCode::UNAUTHORIZED,
+        BaseError::AuthorizationCheckUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         BaseError::PermissionDenied(_) | BaseError::FieldPermissionDenied(_, _, _) => {
             StatusCode::FORBIDDEN
         }
@@ -1130,4 +1133,25 @@ fn error_response(status: StatusCode, error: BaseError) -> Response {
         ApiResponse::from_error(&error)
     };
     (status, Json(response)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorization_freshness_errors_have_stable_http_semantics() {
+        assert_eq!(
+            status_for_error(&BaseError::AuthorizationStale),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_for_error(&BaseError::AuthorizationVersionInvalid),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_for_error(&BaseError::AuthorizationCheckUnavailable),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }
