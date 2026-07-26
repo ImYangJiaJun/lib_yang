@@ -1,23 +1,37 @@
 # YANG 基础库能力与成熟度评估
 
 > 评估对象：`D:\code\lib_yang` 下的 `yang_*` workspace
-> 源码快照：`c33b603f278b4b303142f9b1252e88da6c36e6bf`
+> 初评源码快照：`c33b603f278b4b303142f9b1252e88da6c36e6bf`
+> 复评源码快照：`f899decdf086c43edf63a3cad9b6cc4f0617fc29`
 > 评估日期：2026-07-26
 > 评估方法：第一性原理约束、静态结构与调用链分析、测试/CI 契约核对、本机质量门禁
 > 说明：文中的分数是用于排序和决策的工程量表，不是统计学测量。
 
 ## 一、结论先行
 
-`yang-base + yang-db` 已经不是“基础工具集合”，而是一套有明确运行时模型的模块化应用内核：定义在启动期校验并冻结，运行期通过预解析句柄派发，数据访问在统一边界实施字段、租户和危险写保护。以“单体/模块化单体、MySQL 为应用层主数据库、Redis 提供会话与基础设施能力”为目标场景，它已达到 **工程完整、可进入受控试运行的水平**，但尚不称为 L4 生产候选，更不等同于已经由长期生产流量证明。
+`yang-base + yang-db` 已经不是“基础工具集合”，而是一套有明确运行时模型的模块化应用内核：定义在启动期校验并冻结，运行期通过预解析句柄派发，数据访问在统一边界实施字段、租户和危险写保护。以“单体/模块化单体、MySQL 为应用层主数据库、Redis 提供会话与基础设施能力”为目标场景，它已达到 **L4 入口的受控生产候选水平**，但仍不等同于已经由长期生产流量、灾备演练和稳定性能门禁证明。
 
-平台内核（`yang-base + yang-db + yang-base-derive`）评为 **3.8/5（L3 后段）**；整个 `yang_*` workspace 的治理成熟度评为 **3.5/5**。`yang-pcg` 是正交领域，不参与平台内核平均分。差距主要来自产品边界和治理尚未完全收敛：
+平台内核（`yang-base + yang-db + yang-base-derive`）复评为 **4.0/5（L4 入口）**；整个 `yang_*` workspace 的治理成熟度复评为 **4.0/5**。`yang-pcg` 是正交领域，不参与平台内核平均分。当前差距已经从“基础门禁不完整”收敛为“产品边界、概念与长期治理尚未完全统一”：
 
 - `Addon / Module / Action` 已经形成正确的唯一业务扩展主线，但旁边仍保留另一套 `PluginManager / PluginRegistry`，而 `definition::Plugins` 又表示“内部 Action 调用入口”，三个“插件”语义相互冲突。
 - `yang-db` 同时支持 MySQL、PostgreSQL、Redis，但 `yang-base` 的受保护表访问仍明确是 MySQL 模型。能力矩阵需要把“底层可用”和“平台已承诺”区分开。
-- CI 的稳定主门禁集中覆盖 `yang-base` 和 `yang-db`，没有把 `yang-migrate`、`yang-pcg`、`yang-base-derive` 作为同等级 workspace 成员治理。
-- 已有性能基准代码，但没有形成可重复的基线比较、噪声阈值和合并阻断机制。
+- workspace 全成员测试、Clippy、MSRV 和依赖策略已经进入统一门禁，初评中的成员治理缺口已经关闭。
+- 性能治理已有可重复的 shadow baseline、噪声协议和 CI 产物，但尚未在稳定 runner 上启用“稳定回归超过 3%”的合并阻断。
 
 因此，下一阶段的主题不应是继续横向增加框架能力，而应是：**收窄承诺、统一概念、补齐治理、用基准守住单运行时热路径**。
+
+### 复评增量
+
+本轮不是按代码量重新打分，而是逐项核对初评问题是否形成了“实现 + 门禁 + 失败方式”闭环：
+
+| 初评问题 | 复评状态 | 已落地证据 | 剩余边界 |
+|---|---|---|---|
+| F-05 workspace 治理 | **已完成** | `467b9b3` 全成员 full gate；`5798a78` 统一 MSRV；`ef7a925` Rust 依赖策略 | 继续维护 advisory 例外 owner 与到期日 |
+| F-06 性能回归治理 | **部分完成** | `0489625` runtime shadow baseline、重复采样、噪声带和 CI 产物 | 稳定 runner 与 >3% 阻断仍待落地 |
+| 认证/授权扩展点 | **能力增强** | `b3f5ae4` application claims validator；`f899dec` 授权新鲜度错误分类 | 生产效果仍依赖下游 writer/read-path 完整接入 |
+| 事务与受保护定位能力 | **能力增强** | `1927893` 事务 mutation handler；`89c8659` 受保护主键定位 | 仍需坚持单一原生运行链，避免业务旁路扩散 |
+
+所以分数上调的理由是工程治理已经可重复执行，而不是“所有架构问题都已消失”。F-01、F-02、F-03、F-04 仍是核心可读性和边界收敛项，F-06 仍是进入稳定 L4 的硬门槛。
 
 ## 二、成熟度口径
 
@@ -36,22 +50,22 @@
 | 核心运行时模型 | 4.5 | 构建期解析、冻结、预绑定和单次解码方向正确 |
 | 数据安全边界 | 4.2 | 字段权限、租户域、软删除、参数化查询和危险写保护完整 |
 | 错误与故障模型 | 3.5 | 错误码和错误链较完整，但中心错误枚举膨胀且有同义变体 |
-| 性能设计 | 3.8 | 关键路径避免动态查找，但仍有角色集合重复分配等源码漂移 |
+| 性能设计 | 4.0 | 关键路径避免动态查找并已有 shadow baseline，但阻断门槛尚未启用 |
 | 可读性与开发体验 | 3.8 | 原生 DSL 连贯；扩展概念和部分动态记录模型增加认知负担 |
-| 测试与发布治理 | 3.4 | 核心 crate 门禁强，workspace 成员覆盖和性能回归治理不足 |
-| 产品边界清晰度 | 3.2 | 应用层 MySQL 承诺、基础设施插件和独立 PCG 能力需重新分组 |
-| **平台内核** | **3.8** | **L3 后段；工程闭环较完整，可进入受控试运行** |
-| **workspace 治理** | **3.5** | **成员分组、发布和性能治理仍处于 L3** |
+| 测试与发布治理 | 4.2 | workspace 全成员、MSRV、依赖策略已统一；性能目前为非阻断 shadow |
+| 产品边界清晰度 | 3.3 | 应用层 MySQL 承诺、基础设施插件和独立 PCG 能力仍需重新分组 |
+| **平台内核** | **4.0** | **L4 入口；可作为受控生产候选，尚缺长期运行证明** |
+| **workspace 治理** | **4.0** | **全成员质量门禁已闭环，性能阻断与发布长期治理待完成** |
 
 ### 分 crate 判断
 
 | crate | 定位 | 成熟度 | 关键判断 |
 |---|---|---:|---|
-| `yang-base` | 应用定义、派发、鉴权、传输、受保护数据访问 | 4.0 | 主干成熟，优先做概念和错误模型收敛 |
+| `yang-base` | 应用定义、派发、鉴权、传输、受保护数据访问 | 4.1 | 主干成熟并支持应用声明校验，优先做概念和错误模型收敛 |
 | `yang-db` | MySQL/PostgreSQL/Redis 低层能力 | 4.1 | 能力面完整，方言和能力边界显式 |
-| `yang-base-derive` | Action 等派生宏 | 3.6 | 由主 crate 间接覆盖较多，但应成为显式 CI 对象 |
-| `yang-migrate` | 受控源码迁移/codemod | 3.2 | 对当前职责足够；不能误当作生产数据库迁移引擎 |
-| `yang-pcg` | 确定性程序化地图生成 | 3.8 | 自身设计完整，但与业务系统内核正交，应独立治理 |
+| `yang-base-derive` | Action 等派生宏 | 3.8 | 已成为显式 CI 对象，直接编译失败契约仍可继续加强 |
+| `yang-migrate` | 受控源码迁移/codemod | 3.5 | 已纳入统一门禁；不能误当作生产数据库迁移引擎 |
+| `yang-pcg` | 确定性程序化地图生成 | 3.9 | 已纳入统一门禁，但与业务系统内核正交，宜独立发布治理 |
 
 ## 三、从第一性原理建立评估基线
 
@@ -242,40 +256,36 @@
 - 角色集合不会在同一请求的每次表查询中重复深拷贝；
 - 吞吐、p50/p95、分配数均有基线，稳定热路径回归超过 3% 时阻断。
 
-### F-05：workspace 成员没有同等级治理
+### F-05：workspace 成员没有同等级治理（已完成）
 
 **优先级：P1；影响：发布可靠性。**
 
-当前稳定 CI/本地 `run_ci.py` 的主要 test、doc、Clippy、feature matrix 和 MSRV 对象是 `yang-base`、`yang-db`。`yang-base-derive` 会被间接编译，但 `yang-migrate` 和规模可观的 `yang-pcg` 没有进入同等级门禁。
+复评时该问题已经关闭：full gate 显式覆盖每个 workspace 成员的 all-target tests 和 Clippy；所有成员继承统一 `workspace.package.rust-version`，MSRV 门禁会核对成员集合；`cargo deny` 与仓库策略脚本共同检查 advisory、license、source 和例外到期信息。
 
-**建议路径：**
+**已完成路径：**
 
-- 二选一：
-  1. 把平台相关 crate 纳入统一 workspace 门禁，并为 `yang-pcg` 增加独立 job；
-  2. 把正交的 `yang-pcg` 拆成独立 workspace/repository，拥有自己的版本和 CI。
-- 对 `yang-base-derive` 增加显式 `trybuild`/编译失败用例门禁；
-- 对 `yang-migrate` 增加自身单元测试、fixture 和幂等性门禁；
-- 在各发布 crate 的 `Cargo.toml` 声明与 CI 一致的 `rust-version`。
-- 审计后引入 `cargo deny` 或等价 RustSec 门禁，明确 advisory 例外的 owner 和到期日。
+- `467b9b3` 将辅助 crate 的 all-target tests、全 workspace Clippy 和 CI 契约核对纳入 full gate；
+- `5798a78` 统一声明并验证 workspace MSRV；
+- `ef7a925` 增加 `cargo deny` 与依赖策略自检，例外必须携带理由、复核日期和退出条件。
 
 **验收条件：**
 
-- `cargo test --workspace --all-targets` 或等价的分组 job 覆盖每个 workspace 成员；
-- 每个可发布 crate 都有明确 MSRV、owner 和发布条件；
-- 独立领域 crate 的失败不会被核心 crate 的绿色状态遮蔽。
+- full gate 的测试与 Clippy 包集合必须与 workspace 成员集合完全一致；
+- 每个成员显式继承统一 MSRV，依赖策略配置能被仓库脚本自检；
+- 正交领域 crate 的失败不能被核心 crate 的绿色状态遮蔽。
 
-### F-06：性能基准尚未形成回归治理
+### F-06：性能基准尚未形成回归治理（部分完成）
 
 **优先级：P1；影响：核心设计承诺。**
 
-`crates/yang-base/benches/runtime_baseline.rs` 已说明团队意识到热路径重要，但普通 CI 未执行稳定基线比较。没有固定 runner、历史基准和噪声处理时，无法证明“变更没有性能回退”。
+`0489625` 已将 runtime benchmark 推进为 shadow baseline：配置明确场景、重复采样、相对比较和噪声处理，CI 保存报告但暂不阻断。它解决了“没有可重复协议”的问题；由于共享 runner 噪声和历史样本仍需校准，目前仍不能证明所有合并都没有性能回退。
 
 **建议路径：**
 
-- 在专用或可校准 runner 上记录 dispatch、typed call、UI catalog 投影和 TableQuery 构建；
-- 同时记录吞吐、p50、p95、分配次数、锁等待；数据库路径另记 SQL 数量和序列化成本；
-- PR 只做相对基线比较，采用重复采样和置信/噪声带；
-- 稳定回归超过 3% 阻断，噪声区间内要求人工复核而非直接失败；
+- 保持现有 dispatch、typed call、UI catalog 投影和 TableQuery 场景的 shadow 数据连续；
+- 在专用或可校准 runner 上积累稳定历史样本，并补充分配数、锁等待；数据库路径另记 SQL 数量和序列化成本；
+- 从非阻断 shadow 分阶段升级为相对基线门禁；
+- 稳定回归超过 3% 时阻断，噪声区间内要求人工复核而非直接失败；
 - 基线升级必须带原因和评审，不允许“更新基线让红灯变绿”。
 
 **验收条件：**
@@ -343,8 +353,8 @@
 
 1. 发布端到端能力矩阵，明确 `yang-base` 当前平台链是 MySQL。
 2. 记录公共扩展概念和生产使用者，决定 `PluginManager` 的保留/收窄/废弃方向。
-3. 把 `yang-base-derive`、`yang-migrate`、`yang-pcg` 纳入显式 CI，或先拆分 job。
-4. 固化运行时基准协议和当前主分支基线。
+3. ✅ 已把 `yang-base-derive`、`yang-migrate`、`yang-pcg` 纳入显式 CI。
+4. ◐ 已固化运行时 shadow 基准协议；稳定 runner 的阻断基线待完成。
 
 **退出条件：** 每个 crate 的定位、支持矩阵、owner、门禁和性能基线均可查。
 
@@ -362,7 +372,7 @@
 2. 统一 tracing/metrics/health 接入规范。
 3. 设计领域错误到稳定公共错误投影，处理同义变体。
 4. 修正 `cached_roles` 源码/注释漂移，并用测量决定是否保留缓存。
-5. 为所有发布 crate 声明 MSRV、SemVer 和发布检查。
+5. ◐ 所有 workspace 成员已统一声明并校验 MSRV；SemVer 与发布检查仍待闭环。
 6. 生成 capability ledger：每项能力链接实现、测试、feature 和使用者。
 
 **退出条件：** “支持什么、谁在使用、什么测试证明、性能是否退化”都能从一处回答。
@@ -401,7 +411,9 @@
 | 命令 | 结果 | 覆盖 |
 |---|---|---|
 | `python scripts/run_ci.py quick` | 通过 | CI 契约、feature isolation 自检、rustfmt、Clippy all targets/all features、核心单元与文档测试 |
-| `cargo test -p yang-base-derive -p yang-migrate -p yang-pcg --all-targets --locked` | 通过 | `yang-migrate` 4 项、`yang-pcg` 351 + 11 项；4 项 generation benchmark 被设计为 ignored；`yang-base-derive` 自身为 0 个直接单元测试 |
+| `cargo test -p yang-base-derive -p yang-migrate -p yang-pcg --all-targets --locked`（初评） | 通过 | `yang-migrate` 4 项、`yang-pcg` 351 + 11 项；4 项 generation benchmark 被设计为 ignored；`yang-base-derive` 自身为 0 个直接单元测试 |
+| full gate 契约（复评） | 已落地 | workspace 全成员 tests/Clippy 集合、统一 MSRV、依赖策略与 CI 配置均有自检 |
+| runtime shadow baseline（复评） | 已落地、非阻断 | 重复采样、噪声带、相对报告和 CI 产物；稳定 >3% 阻断尚未启用 |
 
 `quick` 的可见测试结果为：
 
@@ -409,6 +421,6 @@
 - `yang-base`：540 个 library test 通过、4 个 ignored；38 个 doc test 通过、115 个 ignored；
 - Clippy 和格式门禁通过。
 
-这些证据强化了核心实现质量，也直接佐证了 F-05：额外 crate 当前可以单独通过，但没有进入同等级主门禁；`yang-base-derive` 仍主要依赖间接/调用方覆盖。
+初评暴露的 F-05 已由后续提交关闭；复评仍保留“派生宏直接负例可加强”的判断，但它不再等同于 workspace 成员未进入主门禁。
 
-本轮没有执行根 workspace 的 MySQL/PostgreSQL/Redis 全套故障注入，也没有执行可比较性能基线，因此不作对应通过声明。当前环境也未安装 `cargo-audit`/`cargo-deny`，仓库主门禁未发现 RustSec advisory 扫描，Rust 依赖漏洞状态不作绿色声明。`yang-system` 的真实 MySQL/Redis 纵向集成另见系统评估。
+本轮复评仍没有把 shadow 数据当作稳定性能阻断证明，也没有据此宣称长期生产负载、灾备或跨版本兼容已经成熟。Rust 依赖策略现已进入仓库门禁，但被审计例外仍须按 owner、复核日期和退出条件持续治理。`yang-system` 的真实 MySQL/Redis 纵向集成另见系统评估。
