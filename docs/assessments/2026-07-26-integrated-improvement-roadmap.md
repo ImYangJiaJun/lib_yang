@@ -1,9 +1,10 @@
-# YANG 基础库、基础系统与前端统一完善路线图
+# YANG 基础库与基础系统完善路线图（前端冻结）
 
 > 适用仓库：`D:\code\lib_yang` 与独立 Git 仓库 `project/yang-system`
 > 基线评估日期：2026-07-26
-> 最近复评：根仓库 `3dbe019`；嵌套仓库 `1446df0`
+> 最近后端收尾：根仓库 `14c3ed8`；嵌套仓库 `ed7b95d`
 > 执行原则：一个可验证改进点对应一个 Git 提交；不跨仓库混合提交；不自动推送
+> 当前范围：仅基础库与 `yang-system` 后端；`frontend/` 及所有 U/FE 项已退出当前计划，不计入进度和剩余时间。
 
 ## 一、为什么不能按三份文档从上到下直接实施
 
@@ -123,10 +124,10 @@ frontend 状态、页面与部署
 | C1 bootstrap 信任根 | **3/3 完成** | 高熵 secret 摘要、请求校验、并发/重放矩阵闭环 |
 | C2 租户隔离 | **当前范围完成** | 清单、CRUD/旁路负例、证据门禁与 scoped/system capability 闭环；新路径继续增量治理 |
 | C3 授权新鲜度 | **8/8 完成** | 数据库事实、事务 writer、outbox、Redis 加速、共享请求校验与故障矩阵闭环 |
-| P 生产共同基线 | **7/10 完成** | 网络/配置/JWT/生命周期、审计原子性与结构化日志已闭环；下一步接入 metrics/trace exporter |
-| U/FE 显式契约与前端重构 | **待执行** | 框架不变；先完成后端稳定语义，再删除前端启发式并按行为拆分 |
+| P 生产共同基线 | **10/10 完成** | 网络、配置、JWT、审计、日志/metrics/trace、readiness/SLO、raw SQL 与生命周期均已闭环 |
+| U/FE 显式契约与前端重构 | **已排除当前计划** | `frontend/` 冻结；不修改、不验证、不计入后端完成率与 ETA |
 
-三份复评文档再次确认：基础库与系统已进入 L4 入口，但前端仍处于 L3 后段；因此不能跳过 P 队列直接用一次大型前端重写制造“整体已经成熟”的假象。
+排除前端后，当前后端实施范围的 A、C、P 队列已完成；B 仅剩必须依赖低方差 runner 的 B-07。基础库概念收敛与生产演练属于后续长期治理，不再把前端状态混入后端完成度。
 
 本次复评本身也遵守一点一提交：根 `3dbe019` 更新基础库评估，嵌套 `11563b0` 更新系统评估，嵌套 `1446df0` 更新前端评估。
 
@@ -186,8 +187,7 @@ frontend 状态、页面与部署
 | 改动类型 | 聚焦验证 | 提交前门禁 |
 |---|---|---|
 | 文档/ADR | 链接、章节、占位、尾随空格 | `git diff --check` |
-| 前端依赖 | frozen install、audit | `python scripts/run_ci.py full` + `pnpm --dir frontend e2e` |
-| 前端逻辑 | Vitest/组件测试 | `pnpm --dir frontend check`；高风险旅程加 E2E |
+| 前端依赖/逻辑 | 当前冻结 | 不执行 frontend 命令，不计入本轮门禁 |
 | Rust 内部逻辑 | 对应 package/test | `python scripts/run_ci.py quick` |
 | Rust 公共 API/feature | 单元、doc、feature 测试 | 根仓库 `python scripts/run_ci.py full` |
 | 数据库/Redis 行为 | 真实依赖集成测试 | 嵌套仓库 `python scripts/run_ci.py full` + `integration` |
@@ -199,7 +199,7 @@ frontend 状态、页面与部署
 | 仓库 | 负责内容 | 禁止事项 |
 |---|---|---|
 | `D:\code\lib_yang` | 基础库、根 CI、性能基线、跨项目 ADR | 不把 `project/` 加入根提交 |
-| `project/yang-system` | 系统 Rust、前端、嵌套 CI、系统文档 | 不暂存用户现有 `Cargo.lock`，除非某个改进点明确需要且先证明差异来源 |
+| `project/yang-system` | 系统 Rust、嵌套后端 CI、系统文档 | 当前不修改 `frontend/`；不暂存用户现有 `Cargo.lock`，除非某个改进点明确需要且先证明差异来源 |
 
 跨仓库能力按“基础库生产者提交 → 根门禁通过 → 系统消费者提交 → 嵌套门禁通过”的顺序执行。消费者提交应增加 `Foundation-Commit: <sha>` trailer，记录所依赖的基础库提交；删除旧 API 必须等消费者迁移完成。该短迁移窗口不得演化为双 Registry、双 Catalog 或双运行时。
 
@@ -295,77 +295,20 @@ frontend 状态、页面与部署
 | P-04 | ✅ | S-08 | 高权限业务 audit 表 | 嵌套 `d25b0d0`；白名单有界摘要、精确 Schema 失败关闭、追加门禁与 365 天在线保留策略 |
 | P-05 | ✅ | S-08 | 事务内 audit/outbox 原子写 | 嵌套 `d221f3a`；唯一 `append_in_tx` 复用业务事务，可信派发目标生成 action，审计失败时业务、授权版本与 Outbox 整体回滚 |
 | P-06 | ✅ | S-09 | JSON 结构化日志与统一字段 | 根 `22e2a41`、`a79054a`；嵌套 `19b91ad`；Addon 共享外层中间件统一记录 Action 结果，JSON 固定服务/版本/环境/request/action/result/error/duration 字段，dispatch span 补齐可信 actor/tenant 维度 |
-| P-07 | 待执行 | S-09 | metrics/trace exporter 与低基数标签 | 先固定标签基数预算 |
-| P-08 | 待执行 | S-09 | readiness 总预算与 SLO/告警 | 依赖 P-07 的观测出口 |
-| P-09 | 待执行 | S-10 | raw SQL 边界与 sqlx offline 检查 | 枚举并收窄所有 raw SQL |
+| P-07 | ✅ | S-09 | metrics/trace exporter 与低基数标签 | 根 `30611d4`；嵌套 `2b87f7c`；Prometheus 与 OTLP/W3C TraceContext 覆盖 Action、SQL、Redis，标签基数受架构门禁约束 |
+| P-08 | ✅ | S-09 | readiness 总预算与 SLO/告警 | 嵌套 `1daa1e8`；独立管理面、单一总预算、生命周期 gate、99.9% SLO 与多窗口告警规则 |
+| P-09 | ✅ | S-10 | raw SQL 边界与静态治理 | 嵌套 `ed7b95d`；生产 SQLx 文件声明与文档一一对应，运行时 SQL 必须是静态字面量；迁移到 `query!` 宏时再提交 offline metadata |
 | P-10 | ✅ | S-06 复评 | 进程级 shutdown 总预算与超时诊断 | 根 `178d8c8`；嵌套 `6c1e682`；HTTP drain、Worker 与 Tools 关闭共享唯一截止时间，固定阶段诊断与超时强制取消已验证 |
 
 这些点不能合成一个“production hardening”大提交。每个点独立设计、验证和回滚。
 
-## 六、显式 UI 契约队列
+## 六、前端冻结边界（非执行队列）
 
-| ID | 仓库 | 独立改进点 |
-|---|---|---|
-| U-01 | 根 | Module 稳定 ID、audience、navigation 语义 |
-| U-02 | 根 | Action `query/command/row/bulk` 与 placement/selection 语义 |
-| U-03 | 根 | Catalog schema version 兼容窗口和未知语义失败方式 |
-| U-04 | 嵌套 Rust | 为 account/admin/org 声明 module/action presentation |
-| U-05 | 嵌套前端 | Zod 消费新契约并增加 fixture |
-| U-06 | 嵌套前端 | 删除 `.list/.me/.select` 和 `id` 启发式 |
-| U-07 | 前后端分提交 | Catalog revision/ETag 协议 |
+此前评估中的 U、FE、FE-T、FE-S、FE-O、FE-A、FE-C 编号全部归档，不属于当前计划清单，不参与完成率、阻塞判断或剩余时间估算。本轮不修改 `frontend/`，也不运行前端依赖、构建、单测或 E2E 命令。若未来恢复前端工作，应基于当时 HEAD 重新评估并建立新计划，而不是直接沿用这些旧编号。
 
-约束：
+后端仍坚持一个边界：Catalog 只表达稳定业务语义，不输出任意 Quasar 组件名或动态 import；但这不是本轮新增交付项。
 
-- 后端只输出稳定业务语义，不输出任意 Quasar 组件名或动态 import；
-- 前端使用静态白名单映射图标/widget；
-- 不长期维护旧新双 Catalog；
-- 根 API 与前端消费绝不放在同一仓库提交中伪装成原子变更。
-
-## 七、前端可维护性与生产完整性队列
-
-### 7.1 生命周期和状态
-
-| ID | 独立改进点 |
-|---|---|
-| FE-01 | `store.start()` 移到唯一 Quasar boot/app root |
-| FE-02 | start 幂等与显式 dispose |
-| FE-03 | session store 从 Catalog store 提取 |
-| FE-04 | tenant/identity 状态边界提取 |
-| FE-05 | Catalog store 只负责给定上下文的目录 |
-
-### 7.2 TableView 按行为拆分
-
-| ID | 独立改进点 |
-|---|---|
-| FE-T01 | 锁定 TableView 当前行为的组件测试 |
-| FE-T02 | 提取 `useTableQuery` |
-| FE-T03 | 提取 `useRelationOptions` |
-| FE-T04 | 提取 `useTableSelection` |
-| FE-T05 | 提取 `useTableActions` |
-| FE-T06 | 提取 `useColumnPreferences` |
-| FE-T07+ | 分别提取纯呈现子组件 |
-
-每个 composable 单独提交；禁止一次性重写 1,000 行组件。
-
-### 7.3 浏览器安全、部署与可用性
-
-| ID | 独立改进点 |
-|---|---|
-| FE-S01 | 浏览器认证威胁模型与协议 ADR |
-| FE-S02 | refresh token HttpOnly Cookie/BFF 后端协议 |
-| FE-S03 | 前端 access token 内存化与多标签页语义 |
-| FE-S04 | CSRF、rotation、reuse detection 集成测试 |
-| FE-S05 | Workbench build/permission gate |
-| FE-S06 | CSP report-only |
-| FE-S07 | CSP enforce 与违规报告 |
-| FE-O01 | 全局错误处理和 request id 关联 |
-| FE-O02 | history fallback 与深链接 smoke test |
-| FE-O03 | HTML/hash 资源缓存策略 |
-| FE-A01 | accessibility lint |
-| FE-A02 | axe + keyboard E2E |
-| FE-C01 | Chromium/Firefox/WebKit 支持矩阵 |
-
-## 八、基础库长期收敛队列
+## 七、基础库长期收敛队列
 
 | ID | 来源 | 独立改进点 |
 |---|---|---|
@@ -375,18 +318,18 @@ frontend 状态、页面与部署
 | CORE-04 | F-02 | 发布端到端数据库能力矩阵 |
 | CORE-05 | F-03 | 建立领域错误到稳定传输错误投影 |
 | CORE-06+ | F-03 | 每组同义 BaseError 独立废弃/迁移 |
-| CORE-07 | F-04 | 修正 `cached_roles` 源码/注释漂移 |
+| CORE-07 | F-04 | ✅ `14c3ed8` 修正 `cached_roles` 源码/注释漂移 |
 | CORE-08 | F-07 | 强类型/动态 Record 使用边界检查 |
-| CORE-09 | F-08 | tracing/metrics/health 接入示例 |
+| CORE-09 | F-08 | ✅ 根 `30611d4` + 嵌套 P-07/P-08 提供 tracing/metrics/health 接入实现 |
 
 其中：
 
 - `CORE-01` 先重命名调用概念，不同时删除旧插件系统；
 - `CORE-02` 先完成使用者清单和 ADR，再决定 deprecated；
-- `CORE-07` 必须先测量，不能把未测量的角色复制当成性能瓶颈；
+- `CORE-07` 已静态消除请求内重复角色切片分配，但本机 shadow 方差过高，不宣称量化收益；
 - 所有热路径变更必须遵守 3% 相对基线门槛。
 
-## 九、提交命名建议
+## 八、提交命名建议
 
 | 类型 | 示例 |
 |---|---|
@@ -394,23 +337,23 @@ frontend 状态、页面与部署
 | 根质量门禁 | `ci: cover every workspace crate in full gate` |
 | 系统安全 | `fix(admin): require operator bootstrap secret` |
 | 数据库行为 | `feat(auth): persist authorization version` |
-| 前端依赖 | `fix(frontend): upgrade Quasar security patch` |
-| 前端架构 | `refactor(frontend): centralize catalog startup` |
 | 契约 | `feat(catalog): declare action placement semantics` |
 | 测试 | `test(org): cover cross-tenant relation access` |
 | 文档/ADR | `docs: define authorization freshness model` |
 
 测试提交只有在“建立独立契约或证明矩阵”时单独存在；与某个小行为修复直接对应的回归测试应和该修复同提交。
 
-## 十、立即执行顺序
+## 九、后端后续顺序
 
-截至本次复评，原立即执行序列、C1/C2/C3、P-01—P-06 和 P-10 已完成。下一批固定顺序更新为：
+截至后端收尾，C1/C2/C3 与 P-01—P-10 已完成。剩余工作不再是生产共同基线代码缺口，而是以下长期治理：
 
-1. P-07：metrics/trace exporter 与低基数标签；
-2. P-08：readiness 总预算与 SLO/告警；
-3. P-09：raw SQL 边界与 sqlx offline 检查。
+1. B-07：只在低方差 runner 上校准并启用稳定 >3% 性能阻断；
+2. CORE-01—CORE-03：统一扩展概念并收窄旧 `PluginManager`；
+3. CORE-04：发布数据库能力与平台承诺矩阵；
+4. CORE-05/CORE-06：渐进收敛领域错误与公共错误投影；
+5. 运行真实告警路由、JWT 轮换、滚动发布和备份恢复演练。
 
-生产共同基线之后进入 U-01 → U-06 的生产者/消费者序列，再执行 FE-01—FE-05 和 FE-T01—FE-T07。B-07 继续并行收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁。
+前端保持冻结，不进入上述顺序。B-07 继续收集 shadow 数据，但只有 runner 方差可控时才升级为阻断门禁；开发机单次结果不得阻塞或用于更新基线。
 
 若任何一点发现新的 P0：
 
@@ -419,7 +362,7 @@ frontend 状态、页面与部署
 - 不在当前提交顺手修复；
 - 完成并提交后再恢复队列。
 
-## 十一、完成定义
+## 十、完成定义
 
 单个点只有同时满足以下条件才算完成：
 
@@ -432,4 +375,4 @@ frontend 状态、页面与部署
 - 未推送；
 - 没有把失败、跳过或未执行的验证写成通过。
 
-三个原 P0 已完成，基础库与系统复评为 L4 入口；整个完善流程仍须完成生产共同基线和显式 UI 契约，前端才能重新评估为 L4 生产候选。代码量增长、测试数量增长、允许破坏性重构或所有现有门禁绿色，都不能单独替代这一判断。
+三个原 P0 和生产共同基线已完成，基础库与系统达到 L4 受控生产候选；排除前端后的本轮后端实现范围已经闭环。L5 仍要求稳定性能门禁、真实告警/轮换/发布/恢复演练以及长期兼容治理，不能由代码量或一次绿色门禁替代。
