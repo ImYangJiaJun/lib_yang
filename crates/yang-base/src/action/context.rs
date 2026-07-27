@@ -355,12 +355,7 @@ impl ActionContext {
     ///
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
-    fn base_table_query(&self) -> Result<TableQuery, BaseError> {
-        let definition = self
-            .table_definition
-            .as_ref()
-            .ok_or(BaseError::TableDefinitionNotSet)?;
-
+    fn base_table_query(&self, definition: &TableDefinition) -> Result<TableQuery, BaseError> {
         // 将用户角色 HashSet 转为 Vec 再打包为 Arc（table_query 需要 Vec）
         let roles_set = self.user_roles_set();
         let user_roles: Arc<[String]> = Arc::from(
@@ -394,11 +389,8 @@ impl ActionContext {
     /// 系统身份不会隐式绕过；全域访问必须显式调用
     /// [`ActionContext::system_table_query`]。
     pub fn table_query(&self) -> Result<TableQuery, BaseError> {
-        let definition = self
-            .table_definition
-            .as_ref()
-            .ok_or(BaseError::TableDefinitionNotSet)?;
-        let mut query = self.base_table_query()?;
+        let definition = self.table_definition()?;
+        let mut query = self.base_table_query(definition)?;
         if let Some(field) = definition.tenant_key_field() {
             query = query.scope_tenant(field, serde_json::json!(self.tenant()?.id().get()))?;
         }
@@ -419,7 +411,8 @@ impl ActionContext {
                 "系统租户 capability 与当前请求不匹配".to_string(),
             ));
         }
-        self.base_table_query()
+        let definition = self.table_definition()?;
+        self.base_table_query(definition)
     }
 
     /// 创建 BR 心智连续的 Tables 入口。
