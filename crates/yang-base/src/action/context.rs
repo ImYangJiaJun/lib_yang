@@ -137,7 +137,6 @@ pub struct ActionContext {
     action: Option<String>,
     /// PERF-13: 缓存用户角色的 Arc 副本，避免 table_query() 每次重新 Arc 化。
     /// 在 `with_user()` 时一次性构建，后续 `table_query()` 仅需 `Arc::clone`（O(1)）。
-    #[allow(dead_code)]
     cached_roles: Arc<[String]>,
     /// 当前请求独占的类型化扩展上下文。
     request_context: RequestContext,
@@ -257,6 +256,9 @@ impl ActionContext {
     /// 直接注入未验证的 User 将绕过所有鉴权。
     #[allow(dead_code)]
     pub(crate) fn with_user(mut self, user: User) -> Self {
+        let mut roles = user.roles.iter().cloned().collect::<Vec<_>>();
+        roles.sort_unstable();
+        self.cached_roles = Arc::from(roles);
         self.user = Some(user);
         self
     }
@@ -356,14 +358,6 @@ impl ActionContext {
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
     fn base_table_query(&self, definition: &TableDefinition) -> Result<TableQuery, BaseError> {
-        // 将用户角色 HashSet 转为 Vec 再打包为 Arc（table_query 需要 Vec）
-        let roles_set = self.user_roles_set();
-        let user_roles: Arc<[String]> = Arc::from(
-            roles_set
-                .map(|s| s.iter().cloned().collect::<Vec<_>>())
-                .unwrap_or_default(),
-        );
-
         // 启用 mysql feature 时，从当前应用资源注入连接池。
         #[cfg(feature = "mysql")]
         let pool = self
@@ -376,11 +370,13 @@ impl ActionContext {
         // 注入可观测性：慢查询阈值（Tools 配置槽）+ 本次派发 request_id，
         // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
         let slow_threshold = self.slow_query_threshold();
-        Ok(
-            TableQuery::new(definition.shared_config(), user_roles, pool)
-                .with_slow_threshold(slow_threshold)
-                .with_request_id(self.request_id),
+        Ok(TableQuery::new(
+            definition.shared_config(),
+            Arc::clone(&self.cached_roles),
+            pool,
         )
+        .with_slow_threshold(slow_threshold)
+        .with_request_id(self.request_id))
     }
 
     /// 创建默认失败关闭的表查询构建器。
@@ -540,6 +536,24 @@ mod tests {
         let context = ActionContext::new(Request::new(serde_json::json!({})), tools);
 
         assert_eq!(context.slow_query_threshold(), Some(threshold));
+    }
+
+    #[test]
+    fn authenticated_roles_are_cached_once_in_stable_order() {
+        let context = empty_context()
+            .with_user(User::new(1, "alice").with_roles(["operator", "admin", "operator"]));
+
+        assert_eq!(
+            context.cached_roles.as_ref(),
+            ["admin".to_string(), "operator".to_string()]
+        );
+        assert_eq!(
+            context.user_roles_set(),
+            Some(&HashSet::from([
+                "admin".to_string(),
+                "operator".to_string()
+            ]))
+        );
     }
 
     #[test]
