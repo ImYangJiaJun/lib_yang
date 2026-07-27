@@ -3,7 +3,9 @@
 > 评估对象：`D:\code\lib_yang` 下的 `yang_*` workspace
 > 初评源码快照：`c33b603f278b4b303142f9b1252e88da6c36e6bf`
 > 复评源码快照：`f899decdf086c43edf63a3cad9b6cc4f0617fc29`
+> 后端收尾快照：`14c3ed8d032b52a76212cefa6fed212cd46db2c4`
 > 评估日期：2026-07-26
+> 后端收尾日期：2026-07-27
 > 评估方法：第一性原理约束、静态结构与调用链分析、测试/CI 契约核对、本机质量门禁
 > 说明：文中的分数是用于排序和决策的工程量表，不是统计学测量。
 
@@ -16,6 +18,8 @@
 - `Addon / Module / Action` 已经形成正确的唯一业务扩展主线，但旁边仍保留另一套 `PluginManager / PluginRegistry`，而 `definition::Plugins` 又表示“内部 Action 调用入口”，三个“插件”语义相互冲突。
 - `yang-db` 同时支持 MySQL、PostgreSQL、Redis，但 `yang-base` 的受保护表访问仍明确是 MySQL 模型。能力矩阵需要把“底层可用”和“平台已承诺”区分开。
 - workspace 全成员测试、Clippy、MSRV 和依赖策略已经进入统一门禁，初评中的成员治理缺口已经关闭。
+- Action/SQL/Redis 已具备统一 trace 关联边界；`yang-system` 已提供结构化日志、Prometheus、OTLP 和 readiness/SLO 的真实消费实现。
+- 请求角色缓存的实现漂移已经修复：认证时一次性冻结角色切片，后续 `TableQuery` 复用该切片。
 - 性能治理已有可重复的 shadow baseline、噪声协议和 CI 产物，但尚未在稳定 runner 上启用“稳定回归超过 3%”的合并阻断。
 
 因此，下一阶段的主题不应是继续横向增加框架能力，而应是：**收窄承诺、统一概念、补齐治理、用基准守住单运行时热路径**。
@@ -28,10 +32,12 @@
 |---|---|---|---|
 | F-05 workspace 治理 | **已完成** | `467b9b3` 全成员 full gate；`5798a78` 统一 MSRV；`ef7a925` Rust 依赖策略 | 继续维护 advisory 例外 owner 与到期日 |
 | F-06 性能回归治理 | **部分完成** | `0489625` runtime shadow baseline、重复采样、噪声带和 CI 产物 | 稳定 runner 与 >3% 阻断仍待落地 |
+| F-04 请求角色缓存 | **已完成** | `14c3ed8` 在认证边界一次性构建稳定角色切片，查询构建仅 `Arc::clone` | `TableQuery` 内部角色集合成本继续由 F-06 度量 |
+| F-08 可观测性闭环 | **基础闭环已完成** | `22e2a41`、`a79054a`、`30611d4`；下游系统已接入日志、metrics、trace、readiness 与告警规则 | 真实告警路由、阈值校准和滚动发布演练 |
 | 认证/授权扩展点 | **能力增强** | `b3f5ae4` application claims validator；`f899dec` 授权新鲜度错误分类 | 生产效果仍依赖下游 writer/read-path 完整接入 |
 | 事务与受保护定位能力 | **能力增强** | `1927893` 事务 mutation handler；`89c8659` 受保护主键定位 | 仍需坚持单一原生运行链，避免业务旁路扩散 |
 
-所以分数上调的理由是工程治理已经可重复执行，而不是“所有架构问题都已消失”。F-01、F-02、F-03、F-04 仍是核心可读性和边界收敛项，F-06 仍是进入稳定 L4 的硬门槛。
+所以分数维持在 L4 入口，不因为完成若干实现点就虚增成熟度。F-01、F-02、F-03 仍是概念、承诺与错误边界的核心收敛项；F-06 的稳定 runner 和长期样本仍是从“受控候选”走向成熟平台的硬门槛。
 
 ## 二、成熟度口径
 
@@ -235,26 +241,25 @@
 - 传输错误码在重构前后保持兼容；
 - 新领域能力不再要求修改一个超大枚举的多个映射函数。
 
-### F-04：`ActionContext` 的角色缓存与实现已经漂移
+### F-04：`ActionContext` 的角色缓存与实现漂移（已完成）
 
 **优先级：P2；影响：热路径分配、源码可信度。**
 
-`ActionContext` 已声明 `cached_roles` 优化槽，但当前仍被允许为 dead code；`table_query()` 每次把角色 `HashSet` 克隆成 `Vec` 再转为 `Arc<[String]>`。连接池也在每次创建查询器时重新包装。
+初评确认 `ActionContext` 虽声明 `cached_roles`，但 `with_user()` 没有填充它，`table_query()` 也没有消费它；源码注释与真实运行路径不一致。
 
-单次成本尚未被测量，不能称为性能瓶颈；但这是典型的“注释宣称优化已完成，运行代码没有消费它”，会破坏性能设计文档的可信度。
+`14c3ed8` 已在受信认证注入边界对角色去重并稳定排序，冻结为 `Arc<[String]>`；普通与系统表查询都只克隆 `Arc`。同时删除 dead-code 豁免并加入缓存内容回归测试。该改动静态上消除了同一请求每次查询时的 `HashSet → Vec → Arc` 重建，但没有把本机噪声跑分包装成性能收益结论。
 
-**建议路径：**
+**已完成路径：**
 
-- 在身份注入时一次性构建不可变角色切片，所有 `TableQuery` 共享；
-- 或删除无效缓存字段和 PERF 注释，先用基准证明无需优化；
-- 记录每次 dispatch 的分配次数和 `table_query()` 微基准；
-- 以同一机器、同一 profile、足够样本比较改动前后，不使用单次绝对值。
+- 身份注入时一次性构建不可变角色切片，所有 `TableQuery` 共享；
+- 重复角色由 `User.roles` 去重，缓存再排序，避免对外观察到请求内漂移；
+- 聚焦单测、`yang-base` 全 library test 与 all-target/all-feature Clippy 均通过。
 
-**验收条件：**
+**验收结果与剩余边界：**
 
-- 不再有为热路径优化预留却未消费的 dead field；
-- 角色集合不会在同一请求的每次表查询中重复深拷贝；
-- 吞吐、p50/p95、分配数均有基线，稳定热路径回归超过 3% 时阻断。
+- ✅ 不再有为热路径优化预留却未消费的 dead field；
+- ✅ 角色切片不会在同一请求的每次表查询中重复深拷贝；
+- ◐ 吞吐、p50/p95 与稳定 3% 阻断属于 F-06，必须在低方差 runner 上完成。
 
 ### F-05：workspace 成员没有同等级治理（已完成）
 
@@ -313,25 +318,24 @@
 - `Record` 的允许使用边界写入架构检查或 review checklist；
 - 动态到强类型的转换错误具有稳定错误语义和回归测试。
 
-### F-08：可观测能力存在，但尚未形成平台级闭环
+### F-08：可观测能力已形成基础闭环
 
 **优先级：P2；影响：运维和诊断。**
 
-基础库已有 tracing、request id、慢查询阈值、health 和可选 metrics feature，但还缺少一份从能力启用、标签约束、导出到告警的规范。代码中同时存在 `log` 与 `tracing`，也增加了统一采集的成本。
+基础库现在用 `tracing` 串联可信 request/action/actor/tenant 维度，并覆盖 Action 派发与 SQL/Redis 受保护边界；下游 `yang-system` 已实现固定字段 JSON 日志、低基数 Prometheus 指标、OTLP/W3C TraceContext、独立管理面、readiness 单一预算和 Prometheus 告警规则。它证明了基础能力可以沿单一运行链被真实应用消费，而不是停留在可选 feature。
 
-**建议路径：**
+**已完成路径：**
 
-- 新代码统一使用 `tracing`；
-- 规定低基数标签：service、version、route/action、result，不把 user/tenant id 当 metrics label；
-- 给下游应用提供 metrics exporter、结构化日志和 trace 接入示例；
-- 把 health、readiness、slow query 和资源 close 事件纳入统一运维契约。
+- 新代码使用 `tracing`，Action 与数据库边界携带同一 request id；
+- metrics 固定低基数 service/action/result 等标签，user/tenant 只进入 trace/log 字段；
+- 下游系统提供 exporter、结构化日志、trace、health/readiness 与告警规则的可执行样例；
+- 生命周期关闭与依赖退化具有有界状态和诊断原因。
 
-**验收条件：**
+**剩余运营验收：**
 
-- 下游应用可用一个受支持示例完成结构化日志、metrics 和 trace 接入；
-- 指标标签通过低基数检查；
-- request id 能关联 dispatch、慢查询和资源故障；
-- 本项属于平台治理建议；在 exporter/SLO 尚未成为公共承诺前，不作为核心库功能正确性的阻断项。
+- 在真实 Prometheus/Alertmanager 环境验证规则加载与告警路由；
+- 用稳定负载校准延迟、连接池和授权传播阈值；
+- 在多副本滚动发布中验证 readiness 撤销、在途请求排空和关闭时限。
 
 ## 六、能力边界：哪些“不做”反而更成熟
 
@@ -369,9 +373,9 @@
 ### 阶段 2：生产治理闭环（6—12 周）
 
 1. 在稳定 runner 上启用性能相对比较和 3% 阻断规则。
-2. 统一 tracing/metrics/health 接入规范。
+2. ✅ 已完成 tracing/metrics/health 基础接入规范；继续执行真实告警和滚动发布演练。
 3. 设计领域错误到稳定公共错误投影，处理同义变体。
-4. 修正 `cached_roles` 源码/注释漂移，并用测量决定是否保留缓存。
+4. ✅ 已修正 `cached_roles` 源码/注释漂移；稳定性能判断继续归入 F-06。
 5. ◐ 所有 workspace 成员已统一声明并校验 MSRV；SemVer 与发布检查仍待闭环。
 6. 生成 capability ledger：每项能力链接实现、测试、feature 和使用者。
 
@@ -402,7 +406,7 @@
 
 本评估区分三种证据：
 
-- **源码已证实：** 构建期冻结、预绑定派发、租户/字段保护、扩展概念冲突、错误变体重复、角色缓存漂移；
+- **源码已证实：** 构建期冻结、预绑定派发、租户/字段保护、扩展概念冲突、错误变体重复，以及角色缓存漂移已关闭；
 - **测试/CI 契约已证实：** 核心 crate 有单元、属性、文档、feature matrix 和真实依赖集成门禁；
 - **尚不能据此宣称：** 高并发生产负载、跨版本兼容稳定性、灾难恢复时间、长期无性能回归。
 
@@ -414,8 +418,10 @@
 | `cargo test -p yang-base-derive -p yang-migrate -p yang-pcg --all-targets --locked`（初评） | 通过 | `yang-migrate` 4 项、`yang-pcg` 351 + 11 项；4 项 generation benchmark 被设计为 ignored；`yang-base-derive` 自身为 0 个直接单元测试 |
 | full gate 契约（复评） | 已落地 | workspace 全成员 tests/Clippy 集合、统一 MSRV、依赖策略与 CI 配置均有自检 |
 | runtime shadow baseline（复评） | 已落地、非阻断 | 重复采样、噪声带、相对报告和 CI 产物；稳定 >3% 阻断尚未启用 |
+| `cargo test -p yang-base --lib --locked`（后端收尾） | 通过 | 559 项通过、4 项按真实 Redis 条件 ignored；包含请求角色缓存回归 |
+| `cargo clippy -p yang-base --all-targets --all-features --locked -- -D warnings`（后端收尾） | 通过 | F-04 修复及全部 `yang-base` targets/features 无 Clippy 错误 |
 
-`quick` 的可见测试结果为：
+初评 `quick` 的可见测试结果为：
 
 - `yang-db`：387 个 library test 通过，64 个 doc test 通过；
 - `yang-base`：540 个 library test 通过、4 个 ignored；38 个 doc test 通过、115 个 ignored；
@@ -423,4 +429,6 @@
 
 初评暴露的 F-05 已由后续提交关闭；复评仍保留“派生宏直接负例可加强”的判断，但它不再等同于 workspace 成员未进入主门禁。
 
-本轮复评仍没有把 shadow 数据当作稳定性能阻断证明，也没有据此宣称长期生产负载、灾备或跨版本兼容已经成熟。Rust 依赖策略现已进入仓库门禁，但被审计例外仍须按 owner、复核日期和退出条件持续治理。`yang-system` 的真实 MySQL/Redis 纵向集成另见系统评估。
+后端收尾在同一会话比较 `0489625` 与当前实现时，目标场景曾出现 `+3.31%`、外层变异系数 `5.02%`；后续采样目标变为 `+6.82%`、外层变异系数升至 `8.10%`，同时无关场景也发生两位数漂移。因此这些数据只能证明本机 runner 不满足 3% 阻断的方差条件，不能证明回归或收益。`c734758` 与 `14c3ed8` 的提交依据是消除重复解析/分配和恢复源码不变量，不以该噪声跑分宣称性能提升。
+
+本轮仍没有据此宣称长期生产负载、灾备或跨版本兼容已经成熟。Rust 依赖策略现已进入仓库门禁，但被审计例外仍须按 owner、复核日期和退出条件持续治理。`yang-system` 的真实 MySQL/Redis 纵向集成另见系统评估。
