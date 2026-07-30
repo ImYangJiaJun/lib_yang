@@ -469,13 +469,24 @@ async fn dispatch_request(
         .with_request_id(request_id);
 
     let response = match state.app.dispatch_context(handle, context).await {
-        Ok(response) => match response.attachment.clone() {
-            Some(attachment) => attachment_response(attachment).await,
-            None => {
-                let status = StatusCode::from_u16(success_status).unwrap_or(StatusCode::OK);
-                (status, Json(response)).into_response()
+        Ok(response) => {
+            let status = response
+                .http_status()
+                .and_then(|status| StatusCode::from_u16(status).ok())
+                .unwrap_or_else(|| StatusCode::from_u16(success_status).unwrap_or(StatusCode::OK));
+            let response_headers = response.response_headers().to_vec();
+            let mut http_response = match response.attachment.clone() {
+                Some(attachment) => attachment_response(attachment).await,
+                None => (status, Json(response)).into_response(),
+            };
+            if let Err(error) =
+                append_action_response_headers(http_response.headers_mut(), &response_headers)
+            {
+                tracing::error!(error = %error, "Action 响应头无效");
+                http_response = error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
             }
-        },
+            http_response
+        }
         Err(error) => {
             let status = status_for_error(&error);
             if status.is_server_error() {
@@ -485,6 +496,28 @@ async fn dispatch_request(
         }
     };
     with_request_id_header(response, request_id)
+}
+
+fn append_action_response_headers(
+    target: &mut axum::http::HeaderMap,
+    headers: &[(String, String)],
+) -> Result<(), BaseError> {
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| BaseError::ConfigError("Action 响应头名称无效".to_string()))?;
+        if matches!(
+            name.as_str(),
+            "content-length" | "transfer-encoding" | "connection" | "x-request-id"
+        ) {
+            return Err(BaseError::ConfigError(format!(
+                "Action 不得覆盖传输层响应头: {name}"
+            )));
+        }
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| BaseError::ConfigError("Action 响应头值无效".to_string()))?;
+        target.append(name, value);
+    }
+    Ok(())
 }
 
 async fn decode_request_body(

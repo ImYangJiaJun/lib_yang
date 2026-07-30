@@ -1,7 +1,7 @@
 //! 请求级 UI 目录 Action。
 
-use super::{Action, ActionContext};
-use crate::definition::{ParamInput, Params, UiCatalog};
+use super::{Action, ActionContext, ApiResponse};
+use crate::definition::{ParamInput, Params};
 use crate::error::BaseError;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -35,13 +35,57 @@ pub struct UiCatalogAction;
 #[async_trait]
 impl Action for UiCatalogAction {
     type Input = UiCatalogInput;
-    type Output = UiCatalog;
+    type Output = ApiResponse;
 
     async fn index(
         &self,
         ctx: ActionContext,
         _input: Self::Input,
     ) -> Result<Self::Output, BaseError> {
-        ctx.ui_catalog()
+        let if_none_match = ctx.request.get_header("if-none-match").map(str::to_owned);
+        let catalog = ctx.ui_catalog()?;
+        let etag = format!("\"{}\"", catalog.revision);
+        let response = if if_none_match
+            .as_deref()
+            .is_some_and(|value| etag_matches(value, &catalog.revision))
+        {
+            ApiResponse::default().with_http_status(304)?
+        } else {
+            ApiResponse::success(catalog, "获取 UI 目录成功")?
+        };
+        response
+            .with_header("etag", etag)?
+            .with_header("cache-control", "private, no-cache")?
+            .with_header("vary", "authorization, x-tenant-id")
+    }
+}
+
+fn etag_matches(header: &str, revision: &str) -> bool {
+    header.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        if candidate == "*" {
+            return true;
+        }
+        candidate
+            .strip_prefix("W/")
+            .unwrap_or(candidate)
+            .trim()
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            == Some(revision)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::etag_matches;
+
+    #[test]
+    fn if_none_match_accepts_strong_weak_and_list_tags() {
+        assert!(etag_matches("\"abc\"", "abc"));
+        assert!(etag_matches("W/\"abc\"", "abc"));
+        assert!(etag_matches("\"old\", W/\"abc\"", "abc"));
+        assert!(etag_matches("*", "abc"));
+        assert!(!etag_matches("\"old\"", "abc"));
     }
 }

@@ -502,6 +502,8 @@ pub struct ModuleSpec {
     pub default_permission_mode: PermissionMode,
     /// View 集合。
     pub views: Vec<ViewSpec>,
+    /// 可选的前端 Module 页面展示声明。
+    pub presentation: Option<super::ModulePresentationSpec>,
 }
 
 impl ModuleSpec {
@@ -516,6 +518,7 @@ impl ModuleSpec {
             default_permissions: Vec::new(),
             default_permission_mode: PermissionMode::All,
             views: Vec::new(),
+            presentation: None,
         }
     }
 
@@ -523,6 +526,13 @@ impl ModuleSpec {
     #[must_use]
     pub fn table(mut self, table: TableSpec) -> Self {
         self.table = Some(table);
+        self
+    }
+
+    /// 设置前端 Module 页面展示声明。
+    #[must_use]
+    pub fn presentation(mut self, presentation: super::ModulePresentationSpec) -> Self {
+        self.presentation = Some(presentation);
         self
     }
 

@@ -20,7 +20,8 @@ use tower::ServiceExt;
 #[cfg(feature = "token")]
 use yang_base::action::StepUpChallenge;
 use yang_base::action::{
-    Action as BusinessAction, ActionContext, ResponseBody, UiCatalogAction, UploadedFile,
+    Action as BusinessAction, ActionContext, ApiResponse, ResponseBody, UiCatalogAction,
+    UploadedFile,
 };
 use yang_base::definition::{
     AddonName, AddonSpec, AppBuilder, BuiltApp, ModuleName, ModuleSpec, ParamInput, Params,
@@ -77,6 +78,35 @@ impl BusinessAction for EchoAction {
             value: input.value,
             request_id: ctx.request_id().to_string(),
         })
+    }
+}
+
+/// 验证 Action 可在不污染 JSON 线格式的前提下覆盖传输层状态码和响应头。
+#[derive(Action)]
+#[action(
+    name = "response_metadata",
+    display_name = "响应元数据",
+    method = "POST",
+    path = "/api/test/response-metadata",
+    public
+)]
+struct ResponseMetadataAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for ResponseMetadataAction {
+    type Input = EmptyInput;
+    type Output = ApiResponse;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        ApiResponse::success(serde_json::json!({ "accepted": true }), "已接受")?
+            .with_http_status(202)?
+            .with_header("x-action-metadata", "present")?
+            .with_header("set-cookie", "first=one; HttpOnly")?
+            .with_header("set-cookie", "second=two; HttpOnly")
     }
 }
 
@@ -659,6 +689,7 @@ fn build_app() -> Arc<BuiltApp> {
     let preview = temp_file("preview.txt", b"hello-preview-bytes");
     let module = ModuleSpec::new(ModuleName::new("test.probe").expect("模块名应有效"))
         .native_action(EchoAction)
+        .native_action(ResponseMetadataAction)
         .native_action(FailAction)
         .native_action(RateLimitedAction)
         .native_action(CrashAction)
@@ -957,6 +988,32 @@ async fn catalog_route_uses_action_success_status() {
     let json = body_json(response).await;
     assert_eq!(json["code"], 0);
     assert_eq!(json["data"]["value"], 42);
+}
+
+#[tokio::test]
+async fn action_response_metadata_reaches_http_response() {
+    let response = oneshot(
+        default_router(),
+        json_request("POST", "/api/test/response-metadata", "{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        response.headers().get("x-action-metadata"),
+        Some(&"present".parse().expect("测试响应头应有效"))
+    );
+    let cookies = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(cookies, vec!["first=one; HttpOnly", "second=two; HttpOnly"]);
+    let json = body_json(response).await;
+    assert_eq!(json["code"], 0);
+    assert_eq!(json["data"]["accepted"], true);
+    assert!(json.get("http_status").is_none());
+    assert!(json.get("headers").is_none());
 }
 
 #[tokio::test]

@@ -54,12 +54,13 @@ pub use spec::{
     TreeViewSpec, ViewSpec,
 };
 pub use ui::{
-    ActionConfirmation, ActionDemoParamSchema, ActionDemoSchema, ActionInteraction,
-    ActionPlacement, ActionPresentationSchema, ActionPresentationSpec, ActionResponseKind,
-    AvailabilityHint, AvailabilityState, FormFieldSchema, FormFieldValidationSchema, FormSchema,
-    RelationOptionsSchema, SortDirection, TableColumnSchema, TableQuerySchema, TableSortSchema,
-    TableSortSpec, TableViewSchema, TreeViewSchema, UiCatalog, UiParamSource, WidgetHint,
-    UI_SCHEMA_VERSION,
+    AccountIdentitySchema, AccountIdentitySpec, ActionConfirmation, ActionDemoParamSchema,
+    ActionDemoSchema, ActionInteraction, ActionPlacement, ActionPresentationSchema,
+    ActionPresentationSpec, ActionResponseKind, AvailabilityHint, AvailabilityState,
+    FormFieldSchema, FormFieldValidationSchema, FormSchema, ModulePresentationSchema,
+    ModulePresentationSpec, RelationOptionsSchema, SortDirection, TableColumnSchema,
+    TableQuerySchema, TableSortSchema, TableSortSpec, TableViewSchema, TreeViewSchema, UiCatalog,
+    UiParamSource, WidgetHint, UI_SCHEMA_VERSION,
 };
 pub use view::{CompiledTableView, CompiledTreeView};
 
