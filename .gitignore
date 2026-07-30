@@ -1,6 +1,8 @@
 # 项目排除路径
 /target/
 /.worktrees/
+/project/yang-system/
+/scs/
 .mcp.json
 .mcp.local.json
 */tests/
