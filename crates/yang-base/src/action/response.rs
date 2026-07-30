@@ -285,8 +285,11 @@ impl ApiResponse {
         self.http_status
     }
 
-    #[cfg(any(feature = "transport-axum", test))]
-    pub(crate) fn response_headers(&self) -> &[(String, String)] {
+    /// 返回 Action 显式追加、由传输层消费的响应头。
+    ///
+    /// 响应头不参与 [`ApiResponse`] 的 JSON 序列化；此只读视图主要用于
+    /// 传输适配器、集成测试以及需要检查 Cookie/缓存契约的应用层边界。
+    pub fn response_headers(&self) -> &[(String, String)] {
         &self.headers
     }
 
