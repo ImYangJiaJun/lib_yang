@@ -76,6 +76,7 @@ pub struct Registry {
     actions: BTreeMap<ActionRef, ActionHandle>,
     handlers: Vec<RuntimeAction>,
     table_views: Vec<RuntimeTableView>,
+    modules: Vec<RuntimeModule>,
 }
 
 #[derive(Clone)]
@@ -91,6 +92,7 @@ struct RuntimeAction {
 
 #[derive(Clone)]
 struct RuntimeTableView {
+    module: String,
     view_id: String,
     title: String,
     table: String,
@@ -262,11 +264,76 @@ impl Registry {
                             confirmation: presentation.confirmation.clone(),
                             availability: presentation.availability.clone(),
                             view_id: presentation.view_id.clone(),
+                            record_parameter: presentation.record_parameter.clone(),
                         })
                         .collect(),
                 })
             });
-        super::UiCatalog::new(actions)?.with_table_views(table_views)
+        let table_views = table_views.collect::<Vec<_>>();
+        let visible_views = table_views
+            .iter()
+            .map(|view| view.view_id.clone())
+            .collect::<HashSet<_>>();
+        let modules = self.modules.iter().filter_map(|module| {
+            let primary_action = module
+                .primary_action
+                .and_then(|handle| self.handlers.get(handle.slot()))
+                .filter(|runtime| runtime.policy.allows(context))
+                .map(|runtime| runtime.ui_schema.operation_id.clone());
+            if module.primary_action.is_some() && primary_action.is_none() {
+                return None;
+            }
+            let allowed_actions = module
+                .actions
+                .iter()
+                .filter_map(|action| {
+                    self.handlers
+                        .get(action.handle.slot())
+                        .filter(|runtime| runtime.policy.allows(context))
+                        .map(|runtime| (runtime, &action.presentation))
+                })
+                .collect::<Vec<_>>();
+            let views = self
+                .table_views
+                .iter()
+                .filter(|view| view.module == module.module_id)
+                .filter(|view| visible_views.contains(&view.view_id))
+                .map(|view| view.view_id.clone())
+                .collect::<Vec<_>>();
+            if primary_action.is_none() && allowed_actions.is_empty() && views.is_empty() {
+                return None;
+            }
+            Some(super::ModulePresentationSchema {
+                module_id: module.module_id.clone(),
+                identity: module.identity.clone(),
+                title: module.title.clone(),
+                description: module.description.clone(),
+                icon: module.icon.clone(),
+                order: module.order,
+                primary_action,
+                actions: allowed_actions
+                    .iter()
+                    .map(|(runtime, _)| runtime.ui_schema.operation_id.clone())
+                    .collect(),
+                action_presentations: allowed_actions
+                    .into_iter()
+                    .map(|(runtime, presentation)| super::ActionPresentationSchema {
+                        operation_id: runtime.ui_schema.operation_id.clone(),
+                        title: runtime.ui_schema.title.clone(),
+                        placement: presentation.placement,
+                        interaction: presentation.interaction,
+                        confirmation: presentation.confirmation.clone(),
+                        availability: presentation.availability.clone(),
+                        view_id: presentation.view_id.clone(),
+                        record_parameter: presentation.record_parameter.clone(),
+                    })
+                    .collect(),
+                views,
+            })
+        });
+        super::UiCatalog::new(actions)?
+            .with_table_views(table_views)?
+            .with_modules(modules)
     }
 
     /// 通过构建期 handle 执行唯一预绑定 Handler。
@@ -347,6 +414,18 @@ impl Registry {
             ))
         })
     }
+}
+
+#[derive(Clone)]
+struct RuntimeModule {
+    module_id: String,
+    identity: super::AccountIdentitySchema,
+    title: String,
+    description: String,
+    icon: String,
+    order: i32,
+    primary_action: Option<ActionHandle>,
+    actions: Arc<[RuntimeViewAction]>,
 }
 
 /// 比对运行时响应与 Action 声明的 `response_kind`，不一致时仅告警。
@@ -495,6 +574,7 @@ impl AppBuilder {
         let mut registry = build_registry(&self.addons)?;
         let compiled_views = compile_views(&self.addons, &registry)?;
         registry.table_views = compile_runtime_table_views(&self.addons, &registry)?;
+        registry.modules = compile_runtime_modules(&self.addons, &registry)?;
         for runtime in &registry.handlers {
             runtime.handler.bind_registry(&registry).map_err(|error| {
                 BuildError::InvalidReference {
@@ -729,6 +809,7 @@ fn compile_runtime_table_views(
                 .map(|field| runtime_table_column(field, registry))
                 .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
+                module: module.name.to_string(),
                 view_id: format!("{}.default", module.name),
                 title: if table.title.is_empty() {
                     module.name.to_string()
@@ -876,6 +957,7 @@ fn compile_runtime_table_views(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             compiled.push(RuntimeTableView {
+                module: module.name.to_string(),
                 view_id: format!("{}.{}", module.name, view.name),
                 title: view.title.clone(),
                 table: table.name.to_string(),
@@ -889,6 +971,135 @@ fn compile_runtime_table_views(
         }
     }
     Ok(compiled)
+}
+
+fn compile_runtime_modules(
+    addons: &[AddonSpec],
+    registry: &Registry,
+) -> Result<Vec<RuntimeModule>, BuildError> {
+    let mut compiled = Vec::new();
+    let mut identities = BTreeMap::<String, super::AccountIdentitySchema>::new();
+
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let Some(presentation) = &module.presentation else {
+            continue;
+        };
+        validate_presentation_text("Identity title", &presentation.identity.title, 100)?;
+        validate_presentation_text("Module title", &presentation.title, 100)?;
+        if presentation.description.chars().count() > 500 {
+            return Err(BuildError::InvalidReference {
+                kind: "Module Presentation",
+                reference: format!("{}: description 最多 500 字符", module.name),
+            });
+        }
+        if !is_semantic_token(&presentation.identity.id) {
+            return Err(BuildError::InvalidReference {
+                kind: "Module Presentation",
+                reference: format!("{}: identity id 必须是语义 token", module.name),
+            });
+        }
+        for (kind, token) in [
+            ("identity icon", presentation.identity.icon.as_str()),
+            ("icon", presentation.icon.as_str()),
+        ] {
+            if !is_semantic_token(token) {
+                return Err(BuildError::InvalidReference {
+                    kind: "Module Presentation",
+                    reference: format!("{}: {kind} 必须是语义 token", module.name),
+                });
+            }
+        }
+
+        let identity = super::AccountIdentitySchema {
+            id: presentation.identity.id.clone(),
+            title: presentation.identity.title.clone(),
+            icon: presentation.identity.icon.clone(),
+            order: presentation.identity.order,
+        };
+        if let Some(existing) = identities.get(&identity.id) {
+            if existing != &identity {
+                return Err(BuildError::InvalidReference {
+                    kind: "Module Presentation",
+                    reference: format!(
+                        "{}: identity {} 的 title/icon/order 声明不一致",
+                        module.name, identity.id
+                    ),
+                });
+            }
+        } else {
+            identities.insert(identity.id.clone(), identity.clone());
+        }
+
+        let resolve_owned_action = |reference: &ActionRef| -> Result<ActionHandle, BuildError> {
+            if reference.module() != &module.name {
+                return Err(BuildError::InvalidReference {
+                    kind: "Module Presentation Action",
+                    reference: format!("{}: 只能引用当前 Module Action", reference),
+                });
+            }
+            registry
+                .resolve(reference)
+                .ok_or_else(|| BuildError::InvalidReference {
+                    kind: "Module Presentation Action",
+                    reference: reference.to_string(),
+                })
+        };
+        let primary_action = presentation
+            .primary_action
+            .as_ref()
+            .map(resolve_owned_action)
+            .transpose()?;
+        let actions = presentation
+            .action_presentations
+            .iter()
+            .map(|(reference, action_presentation)| {
+                let handle = resolve_owned_action(reference)?;
+                let runtime = registry.handlers.get(handle.slot()).ok_or_else(|| {
+                    BuildError::InvalidReference {
+                        kind: "Module Presentation Action",
+                        reference: reference.to_string(),
+                    }
+                })?;
+                validate_action_presentation(reference, action_presentation, runtime)?;
+                Ok(RuntimeViewAction {
+                    handle,
+                    presentation: action_presentation.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        compiled.push(RuntimeModule {
+            module_id: module.name.to_string(),
+            identity,
+            title: presentation.title.clone(),
+            description: presentation.description.clone(),
+            icon: presentation.icon.clone(),
+            order: presentation.order,
+            primary_action,
+            actions: actions.into(),
+        });
+    }
+    Ok(compiled)
+}
+
+fn validate_presentation_text(
+    kind: &'static str,
+    value: &str,
+    max_chars: usize,
+) -> Result<(), BuildError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > max_chars {
+        return Err(BuildError::InvalidReference {
+            kind,
+            reference: format!("文本必须在 1..={max_chars} 字符"),
+        });
+    }
+    Ok(())
+}
+
+fn is_semantic_token(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn project_tree(view: &RuntimeTableView, context: &ActionContext) -> Option<super::TreeViewSchema> {
@@ -963,6 +1174,38 @@ fn validate_action_presentation(
         }
         (_, Some(_)) => {
             return Err(invalid("只有 custom 交互可以声明 view_id"));
+        }
+        (_, None) => {}
+    }
+
+    match (
+        presentation.placement,
+        presentation.record_parameter.as_deref(),
+    ) {
+        (super::ActionPlacement::Row, Some(parameter)) => {
+            if parameter.trim().is_empty()
+                || !(runtime
+                    .ui_schema
+                    .params
+                    .iter()
+                    .any(|candidate| candidate.name == parameter)
+                    || runtime
+                        .ui_schema
+                        .input_schema
+                        .get("properties")
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|properties| properties.contains_key(parameter)))
+            {
+                return Err(invalid(
+                    "row 展示必须声明 Action 中真实存在的 record_parameter",
+                ));
+            }
+        }
+        (super::ActionPlacement::Row, None) => {
+            return Err(invalid("row 展示缺少 record_parameter"));
+        }
+        (_, Some(_)) => {
+            return Err(invalid("只有 row 展示可以声明 record_parameter"));
         }
         (_, None) => {}
     }
@@ -1896,6 +2139,7 @@ fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildError> {
         actions,
         handlers,
         table_views: Vec::new(),
+        modules: Vec::new(),
     })
 }
 

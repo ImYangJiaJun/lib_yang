@@ -3,6 +3,7 @@
 //! 提供统一的 API 响应格式，包含状态码、消息和数据。
 
 use crate::error::BaseError;
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -37,7 +38,7 @@ use std::path::PathBuf;
 /// assert_eq!(response.code, 400001);
 /// assert!(response.data.is_none());
 /// ```
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct ApiResponse {
     /// 状态码
@@ -62,7 +63,18 @@ pub struct ApiResponse {
     /// 仅当 Action 以 [`ResponseBody`] 为输出时由派发边界填充；
     /// `serde(skip)` 保证普通 Action 的 JSON 线格式不受影响。
     #[serde(skip)]
+    #[schemars(skip)]
     pub attachment: Option<ResponseAttachment>,
+
+    /// 由 Action 显式声明、传输层消费的 HTTP 状态码覆盖。
+    #[serde(skip)]
+    #[schemars(skip)]
+    http_status: Option<u16>,
+
+    /// 由 Action 显式声明、传输层消费的响应头。
+    #[serde(skip)]
+    #[schemars(skip)]
+    headers: Vec<(String, String)>,
 }
 
 impl ApiResponse {
@@ -111,6 +123,8 @@ impl ApiResponse {
             message: message.into(),
             data: Some(json_value),
             attachment: None,
+            http_status: None,
+            headers: Vec::new(),
         })
     }
 
@@ -145,6 +159,8 @@ impl ApiResponse {
             message: message.into(),
             data: Some(data),
             attachment: None,
+            http_status: None,
+            headers: Vec::new(),
         }
     }
 
@@ -181,6 +197,8 @@ impl ApiResponse {
             message: message.into(),
             data: None,
             attachment: None,
+            http_status: None,
+            headers: Vec::new(),
         }
     }
 
@@ -203,7 +221,73 @@ impl ApiResponse {
             message: message.into(),
             data: None,
             attachment: Some(attachment),
+            http_status: None,
+            headers: Vec::new(),
         }
+    }
+
+    /// 覆盖 Action 静态声明的成功 HTTP 状态码。
+    pub fn with_http_status(mut self, status: u16) -> Result<Self, BaseError> {
+        if !(100..=599).contains(&status) {
+            return Err(BaseError::ConfigError(format!(
+                "响应 HTTP 状态码无效: {status}"
+            )));
+        }
+        self.http_status = Some(status);
+        Ok(self)
+    }
+
+    /// 追加一个经过最小 RFC 语法校验的响应头。
+    ///
+    /// 使用列表而不是 Map，以保留多个 `Set-Cookie` 等同名响应头。
+    pub fn with_header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, BaseError> {
+        let name = name.into();
+        let value = value.into();
+        let valid_name = !name.is_empty()
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            });
+        let valid_value = value
+            .bytes()
+            .all(|byte| byte == b'\t' || (byte >= 0x20 && byte != 0x7f));
+        if !valid_name || !valid_value {
+            return Err(BaseError::ConfigError(
+                "响应头名称或值包含非法字符".to_string(),
+            ));
+        }
+        self.headers.push((name, value));
+        Ok(self)
+    }
+
+    #[cfg(any(feature = "transport-axum", test))]
+    pub(crate) const fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    #[cfg(any(feature = "transport-axum", test))]
+    pub(crate) fn response_headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 
     /// 从 BaseError 创建失败响应
@@ -247,6 +331,8 @@ impl Default for ApiResponse {
             message: "OK".to_string(),
             data: None,
             attachment: None,
+            http_status: None,
+            headers: Vec::new(),
         }
     }
 }
@@ -357,6 +443,9 @@ where
     T: Serialize + 'static,
 {
     let erased = &output as &dyn std::any::Any;
+    if let Some(response) = erased.downcast_ref::<ApiResponse>() {
+        return Ok(response.clone());
+    }
     if let Some(body) = erased.downcast_ref::<ResponseBody>() {
         return Ok(ApiResponse::attachment(body.clone().into(), message));
     }
@@ -456,6 +545,29 @@ mod tests {
         assert_eq!(response.code, 0);
         assert_eq!(response.message, "OK");
         assert!(response.data.is_none());
+    }
+
+    #[test]
+    fn transport_metadata_is_validated_and_never_serialized() {
+        let response = ApiResponse::default()
+            .with_http_status(304)
+            .expect("304 应是合法 HTTP 状态码")
+            .with_header("set-cookie", "session=one; HttpOnly")
+            .expect("Set-Cookie 应是合法响应头")
+            .with_header("set-cookie", "session=two; HttpOnly")
+            .expect("重复 Set-Cookie 必须保留");
+        assert_eq!(response.http_status(), Some(304));
+        assert_eq!(response.response_headers().len(), 2);
+        let wire = serde_json::to_value(&response).expect("响应应可序列化");
+        assert!(wire.get("http_status").is_none());
+        assert!(wire.get("headers").is_none());
+        assert!(ApiResponse::default().with_http_status(99).is_err());
+        assert!(ApiResponse::default()
+            .with_header("bad header", "value")
+            .is_err());
+        assert!(ApiResponse::default()
+            .with_header("x-test", "line\r\nbreak")
+            .is_err());
     }
 
     #[test]

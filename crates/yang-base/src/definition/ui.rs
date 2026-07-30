@@ -13,13 +13,14 @@
 //! `definition/builder.rs` 的 registry 投影），在那里按请求上下文裁剪即可，
 //! 本模块的契约类型无需变更。
 
-use super::{ActionSpec, FieldRef, ParamSource};
+use super::{ActionRef, ActionSpec, FieldRef, ParamSource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "2.2";
+pub const UI_SCHEMA_VERSION: &str = "2.3";
 
 /// 与存储类型解耦的前端控件提示。
 ///
@@ -200,6 +201,8 @@ pub struct ActionPresentationSpec {
     pub availability: Option<AvailabilityHint>,
     /// 前端白名单注册表中的稳定标识。
     pub view_id: Option<String>,
+    /// 行上下文记录标识应写入的 Action 参数。
+    pub record_parameter: Option<String>,
 }
 
 impl ActionPresentationSpec {
@@ -211,6 +214,7 @@ impl ActionPresentationSpec {
             confirmation: None,
             availability: None,
             view_id: None,
+            record_parameter: None,
         }
     }
 
@@ -234,6 +238,13 @@ impl ActionPresentationSpec {
         self.view_id = Some(view_id.into());
         self
     }
+
+    /// 设置行上下文记录标识对应的 Action 参数。
+    #[must_use]
+    pub fn record_parameter(mut self, parameter: impl Into<String>) -> Self {
+        self.record_parameter = Some(parameter.into());
+        self
+    }
 }
 
 /// 请求级 Action 展示契约。
@@ -253,6 +264,151 @@ pub struct ActionPresentationSchema {
     pub availability: Option<AvailabilityHint>,
     /// 前端白名单注册表中的稳定标识；仅 custom 交互可用。
     pub view_id: Option<String>,
+    /// 行上下文记录标识应写入的 Action 参数；仅 row 位置可用。
+    pub record_parameter: Option<String>,
+}
+
+/// 一个可切换账户身份的构建期展示声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountIdentitySpec {
+    /// 跨模块稳定身份标识。
+    pub id: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// 前端语义图标 token，不是组件或文件路径。
+    pub icon: String,
+    /// 身份切换器中的稳定顺序。
+    pub order: i32,
+}
+
+impl AccountIdentitySpec {
+    /// 创建账户身份展示声明。
+    pub fn new(id: impl Into<String>, title: impl Into<String>, icon: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            icon: icon.into(),
+            order: 0,
+        }
+    }
+
+    /// 设置身份切换器中的稳定顺序。
+    #[must_use]
+    pub fn order(mut self, order: i32) -> Self {
+        self.order = order;
+        self
+    }
+}
+
+/// Module 的构建期展示声明。
+///
+/// 页面主 Action 与附加 Action 均使用强类型 [`ActionRef`]；前端只消费投影后的
+/// operation id，不再从 Action 名称后缀猜测页面语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModulePresentationSpec {
+    /// Module 所属账户身份。
+    pub identity: AccountIdentitySpec,
+    /// 用户可见标题。
+    pub title: String,
+    /// Module 业务说明。
+    pub description: String,
+    /// 前端语义图标 token。
+    pub icon: String,
+    /// 同一身份下的稳定顺序。
+    pub order: i32,
+    /// 可选页面主 Action。
+    pub primary_action: Option<ActionRef>,
+    /// 不属于 TableView 的页面级 Action 展示语义。
+    pub action_presentations: BTreeMap<ActionRef, ActionPresentationSpec>,
+}
+
+impl ModulePresentationSpec {
+    /// 创建 Module 展示声明。
+    pub fn new(
+        identity: AccountIdentitySpec,
+        title: impl Into<String>,
+        icon: impl Into<String>,
+    ) -> Self {
+        Self {
+            identity,
+            title: title.into(),
+            description: String::new(),
+            icon: icon.into(),
+            order: 0,
+            primary_action: None,
+            action_presentations: BTreeMap::new(),
+        }
+    }
+
+    /// 设置 Module 业务说明。
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// 设置同一身份下的稳定顺序。
+    #[must_use]
+    pub fn order(mut self, order: i32) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// 设置页面主 Action。
+    #[must_use]
+    pub fn primary_action(mut self, action: ActionRef) -> Self {
+        self.primary_action = Some(action);
+        self
+    }
+
+    /// 声明一个页面级 Action 的展示语义。
+    #[must_use]
+    pub fn present_action(
+        mut self,
+        action: ActionRef,
+        presentation: ActionPresentationSpec,
+    ) -> Self {
+        self.action_presentations.insert(action, presentation);
+        self
+    }
+}
+
+/// 请求级账户身份展示契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AccountIdentitySchema {
+    /// 跨模块稳定身份标识。
+    pub id: String,
+    /// 用户可见标题。
+    pub title: String,
+    /// 前端语义图标 token。
+    pub icon: String,
+    /// 身份切换器中的稳定顺序。
+    pub order: i32,
+}
+
+/// 请求级 Module 页面展示契约。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ModulePresentationSchema {
+    /// 全限定 Module ID。
+    pub module_id: String,
+    /// Module 所属账户身份。
+    pub identity: AccountIdentitySchema,
+    /// 用户可见标题。
+    pub title: String,
+    /// Module 业务说明。
+    pub description: String,
+    /// 前端语义图标 token。
+    pub icon: String,
+    /// 同一身份下的稳定顺序。
+    pub order: i32,
+    /// 当前请求有权访问的页面主 Action。
+    pub primary_action: Option<String>,
+    /// 当前请求有权访问的页面级 Actions。
+    pub actions: Vec<String>,
+    /// 页面级 Action 的显式展示语义。
+    pub action_presentations: Vec<ActionPresentationSchema>,
+    /// 当前请求有权访问且归属此 Module 的 TableView IDs。
+    pub views: Vec<String>,
 }
 
 /// Action 参数在 HTTP 请求中的来源。
@@ -579,6 +735,8 @@ pub struct UiCatalog {
     pub actions: Vec<ActionDemoSchema>,
     /// 当前请求有权访问的通用表格 Views。
     pub table_views: Vec<TableViewSchema>,
+    /// 当前请求有权访问的 Module 页面展示契约。
+    pub modules: Vec<ModulePresentationSchema>,
 }
 
 impl UiCatalog {
@@ -594,6 +752,7 @@ impl UiCatalog {
             revision: String::new(),
             actions,
             table_views: Vec::new(),
+            modules: Vec::new(),
         };
         catalog.refresh_revision()?;
         Ok(catalog)
@@ -610,11 +769,23 @@ impl UiCatalog {
         Ok(self)
     }
 
+    pub(crate) fn with_modules<I>(mut self, modules: I) -> Result<Self, crate::error::BaseError>
+    where
+        I: IntoIterator<Item = ModulePresentationSchema>,
+    {
+        self.modules = modules.into_iter().collect();
+        self.modules
+            .sort_by(|left, right| left.module_id.cmp(&right.module_id));
+        self.refresh_revision()?;
+        Ok(self)
+    }
+
     fn refresh_revision(&mut self) -> Result<(), crate::error::BaseError> {
         let payload = serde_json::to_vec(&(
             self.schema_version,
             self.actions.as_slice(),
             self.table_views.as_slice(),
+            self.modules.as_slice(),
         ))
         .map_err(|error| crate::error::BaseError::JsonSerializeFailed(error.to_string()))?;
         let digest = Sha256::digest(payload);
@@ -1099,6 +1270,7 @@ mod tests {
             .present_action(
                 action_ref("edit"),
                 ActionPresentationSpec::new(ActionPlacement::Row, ActionInteraction::Form)
+                    .record_parameter("id")
                     .confirmation(ActionConfirmation::new("确认修改", "将保存当前行的修改"))
                     .availability(AvailabilityHint::disabled("当前记录可能不允许修改")),
             )
@@ -1131,7 +1303,12 @@ mod tests {
                 RelationOptionsAction,
             )
             .action(
-                action("edit", "org.member.edit").permissions(["member:edit"], PermissionMode::All),
+                action("edit", "org.member.edit")
+                    .param(ParamSpec::new(
+                        FieldName::new("id").expect("测试字段名应有效"),
+                        ParamSource::Body,
+                    ))
+                    .permissions(["member:edit"], PermissionMode::All),
                 NoopAction,
             )
             .view(view);
@@ -1751,7 +1928,7 @@ mod tests {
     #[test]
     fn form_field_validation_serializes_only_declared_constraints() {
         assert_eq!(
-            UI_SCHEMA_VERSION, "2.2",
+            UI_SCHEMA_VERSION, "2.3",
             "TreeViewSchema.max_nodes 进入线上契约，必须递增 schema 版本"
         );
 
@@ -1914,5 +2091,70 @@ mod tests {
         assert_eq!(score.minimum.as_deref(), Some("0"));
         assert_eq!(score.maximum.as_deref(), Some("99.99"));
         assert_eq!(score.min_length, None);
+    }
+
+    #[test]
+    fn module_projection_uses_explicit_primary_and_hides_incomplete_identity_pages() {
+        let module_name = ModuleName::new("account.profile").expect("测试 Module 名称应有效");
+        let primary = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("profile").expect("测试 Action 名称应有效"),
+        );
+        let secondary = ActionRef::new(
+            module_name.clone(),
+            ActionName::new("logout").expect("测试 Action 名称应有效"),
+        );
+        let module = ModuleSpec::new(module_name)
+            .presentation(
+                ModulePresentationSpec::new(
+                    AccountIdentitySpec::new("user", "个人账户", "person"),
+                    "用户中心",
+                    "account",
+                )
+                .primary_action(primary)
+                .present_action(
+                    secondary,
+                    ActionPresentationSpec::new(
+                        ActionPlacement::Toolbar,
+                        ActionInteraction::Invoke,
+                    ),
+                ),
+            )
+            .action(action("profile", "account.profile.profile"), NoopAction)
+            .action(
+                action("logout", "account.profile.logout").public(true),
+                NoopAction,
+            );
+        let app = AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("account").expect("测试 Addon 名称应有效"))
+                    .module(module),
+            )
+            .build(ToolsBuilder::new().build().expect("测试 Tools 应构建成功"))
+            .expect("Module 展示测试应用应构建成功");
+
+        let anonymous = app
+            .ui_catalog(&app.context(Request::new(json!({}))))
+            .expect("匿名目录应可投影");
+        assert!(
+            anonymous.modules.is_empty(),
+            "主 Action 不可访问时不得仅凭 public 次要 Action 暴露身份页面"
+        );
+
+        let authenticated = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(7, "alice")),
+            )
+            .expect("认证目录应可投影");
+        assert_eq!(authenticated.modules.len(), 1);
+        let module = &authenticated.modules[0];
+        assert_eq!(module.module_id, "account.profile");
+        assert_eq!(
+            module.primary_action.as_deref(),
+            Some("account.profile.profile")
+        );
+        assert_eq!(module.actions, ["account.profile.logout"]);
+        assert_eq!(module.identity.id, "user");
     }
 }
