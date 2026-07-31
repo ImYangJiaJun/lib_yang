@@ -10,7 +10,9 @@ use crate::definition::ActionRef;
 use crate::error::BaseError;
 use crate::router::{Middleware, MiddlewareRole, Next};
 use async_trait::async_trait;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -27,6 +29,7 @@ pub const DEFAULT_STEP_UP_PROOF_TTL: Duration = Duration::from_secs(300);
 const MAX_STEP_UP_CHALLENGE_TTL: Duration = Duration::from_secs(300);
 const MAX_STEP_UP_PROOF_TTL: Duration = Duration::from_secs(600);
 const MIN_STEP_UP_SECRET_BYTES: usize = 32;
+const MAX_STEP_UP_RETIRING_KEYS: usize = 8;
 
 /// 敏感 Action 提交 step-up proof 的固定请求头。
 pub const STEP_UP_PROOF_HEADER: &str = "x-step-up-proof";
@@ -377,7 +380,8 @@ where
 /// 独立签名域的 step-up challenge/proof 管理器。
 pub struct StepUpManager {
     encoding_key: EncodingKey,
-    decoding_key: DecodingKey,
+    decoding_keys: HashMap<String, DecodingKey>,
+    legacy_decoding_key: Option<DecodingKey>,
     header: Header,
     validation: Validation,
     issuer: String,
@@ -412,7 +416,81 @@ impl StepUpManager {
         header.typ = Some("step-up+jwt".to_string());
         Ok(Self {
             encoding_key: EncodingKey::from_secret(secret),
-            decoding_key: DecodingKey::from_secret(secret),
+            decoding_keys: HashMap::new(),
+            legacy_decoding_key: Some(DecodingKey::from_secret(secret)),
+            header,
+            validation: step_up_validation(&issuer, &audience),
+            issuer,
+            audience,
+            challenge_ttl: DEFAULT_STEP_UP_CHALLENGE_TTL.as_secs(),
+            proof_ttl: DEFAULT_STEP_UP_PROOF_TTL.as_secs(),
+        })
+    }
+
+    /// 使用 active/retiring HS256 keyring 创建可无感轮换的管理器。
+    ///
+    /// 新 challenge/proof 始终使用 active key 并写入 `kid`；校验只接受 active 与
+    /// 显式 retiring keys。删除 retiring key 后，由该 key 签发且仍在 TTL 内的 Token
+    /// 会立即失效。
+    pub fn new_with_keyring<I, K, S>(
+        active_kid: impl Into<String>,
+        active_secret: impl AsRef<[u8]>,
+        retiring_keys: I,
+        issuer: impl Into<String>,
+        audience: impl Into<String>,
+    ) -> Result<Self, BaseError>
+    where
+        I: IntoIterator<Item = (K, S)>,
+        K: Into<String>,
+        S: AsRef<[u8]>,
+    {
+        let active_kid = active_kid.into();
+        validate_step_up_kid(&active_kid)?;
+        let active_secret = active_secret.as_ref();
+        validate_step_up_secret(active_secret)?;
+
+        let retiring_keys = retiring_keys.into_iter().collect::<Vec<_>>();
+        if retiring_keys.len() > MAX_STEP_UP_RETIRING_KEYS {
+            return Err(BaseError::ConfigError(format!(
+                "step-up retiring keys 最多允许 {MAX_STEP_UP_RETIRING_KEYS} 把"
+            )));
+        }
+        let mut decoding_keys = HashMap::with_capacity(retiring_keys.len() + 1);
+        decoding_keys.insert(active_kid.clone(), DecodingKey::from_secret(active_secret));
+        let mut seen_secrets = HashSet::with_capacity(retiring_keys.len() + 1);
+        seen_secrets.insert(active_secret.to_vec());
+        for (kid, secret) in retiring_keys {
+            let kid = kid.into();
+            validate_step_up_kid(&kid)?;
+            let secret = secret.as_ref();
+            validate_step_up_secret(secret)?;
+            if decoding_keys.contains_key(&kid) {
+                return Err(BaseError::ConfigError(format!(
+                    "step-up key id 重复: {kid}"
+                )));
+            }
+            if !seen_secrets.insert(secret.to_vec()) {
+                return Err(BaseError::ConfigError(
+                    "step-up active/retiring keys 不得复用同一密钥".to_string(),
+                ));
+            }
+            decoding_keys.insert(kid, DecodingKey::from_secret(secret));
+        }
+
+        let issuer = issuer.into();
+        let audience = audience.into();
+        if issuer.trim().is_empty() || audience.trim().is_empty() {
+            return Err(BaseError::ConfigError(
+                "step-up issuer/audience 不能为空".to_string(),
+            ));
+        }
+        let mut header = Header::new(Algorithm::HS256);
+        header.typ = Some("step-up+jwt".to_string());
+        header.kid = Some(active_kid);
+        Ok(Self {
+            encoding_key: EncodingKey::from_secret(active_secret),
+            decoding_keys,
+            legacy_decoding_key: None,
             header,
             validation: step_up_validation(&issuer, &audience),
             issuer,
@@ -629,7 +707,21 @@ impl StepUpManager {
         token: &str,
         expected: StepUpTokenKind,
     ) -> Result<StepUpClaims, BaseError> {
-        let claims = decode::<StepUpClaims>(token, &self.decoding_key, &self.validation)
+        let header = decode_header(token).map_err(|_| invalid_step_up("Token header 无效"))?;
+        if header.alg != Algorithm::HS256 || header.typ.as_deref() != Some("step-up+jwt") {
+            return Err(invalid_step_up("Token header 不匹配"));
+        }
+        let decoding_key = match header.kid.as_deref() {
+            Some(kid) => self
+                .decoding_keys
+                .get(kid)
+                .ok_or_else(|| invalid_step_up("Token kid 未知"))?,
+            None => self
+                .legacy_decoding_key
+                .as_ref()
+                .ok_or_else(|| invalid_step_up("Token 缺少 kid"))?,
+        };
+        let claims = decode::<StepUpClaims>(token, decoding_key, &self.validation)
             .map_err(|_| invalid_step_up("Token 无效或已过期"))?
             .claims;
         if claims.kind != expected {
@@ -637,6 +729,29 @@ impl StepUpManager {
         }
         Ok(claims)
     }
+}
+
+fn validate_step_up_secret(secret: &[u8]) -> Result<(), BaseError> {
+    if secret.len() < MIN_STEP_UP_SECRET_BYTES {
+        return Err(BaseError::ConfigError(
+            "step-up HMAC 密钥至少需要 32 字节".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_step_up_kid(kid: &str) -> Result<(), BaseError> {
+    if kid.is_empty()
+        || kid.len() > 64
+        || !kid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(BaseError::ConfigError(
+            "step-up key id 必须是 1..=64 位 ASCII 字母、数字、- 或 _".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn step_up_validation(issuer: &str, audience: &str) -> Validation {
@@ -1379,6 +1494,98 @@ mod tests {
             manager().issue_challenge("7", &action_ref("delete"), ""),
             Err(BaseError::ConfigError(_))
         ));
+        assert!(matches!(
+            StepUpManager::new_with_keyring(
+                "invalid kid",
+                SECRET,
+                std::iter::empty::<(&str, &str)>(),
+                "issuer",
+                "audience"
+            ),
+            Err(BaseError::ConfigError(_))
+        ));
+        assert!(matches!(
+            StepUpManager::new_with_keyring(
+                "active",
+                SECRET,
+                [("retiring", SECRET)],
+                "issuer",
+                "audience"
+            ),
+            Err(BaseError::ConfigError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn keyring_rotates_without_breaking_retiring_challenges() {
+        const OLD_SECRET: &str = "old-step-up-secret-must-be-at-least-32-bytes";
+        const NEW_SECRET: &str = "new-step-up-secret-must-be-at-least-32-bytes";
+        let old = StepUpManager::new_with_keyring(
+            "old-key",
+            OLD_SECRET,
+            std::iter::empty::<(&str, &str)>(),
+            "yang-test",
+            "yang-sensitive-actions",
+        )
+        .expect("旧 keyring 应有效");
+        let action = action_ref("delete");
+        let challenge = old
+            .issue_challenge("7", &action, "org_user:42")
+            .expect("旧 key 应可签发 challenge");
+        assert_eq!(
+            decode_header(&challenge.challenge)
+                .expect("challenge header 应可解码")
+                .kid
+                .as_deref(),
+            Some("old-key")
+        );
+
+        let rotated = StepUpManager::new_with_keyring(
+            "new-key",
+            NEW_SECRET,
+            [("old-key", OLD_SECRET)],
+            "yang-test",
+            "yang-sensitive-actions",
+        )
+        .expect("轮换 keyring 应有效");
+        let context = context();
+        let proof = rotated
+            .complete_challenge(
+                &context,
+                &TestVerifier,
+                &credentials("7", "correct-password"),
+                &challenge.challenge,
+            )
+            .await
+            .expect("retiring key 的未过期 challenge 应可完成");
+        assert_eq!(
+            decode_header(&proof.proof)
+                .expect("proof header 应可解码")
+                .kid
+                .as_deref(),
+            Some("new-key")
+        );
+        rotated
+            .verify_proof(&proof.proof, "7", &action, "org_user:42")
+            .expect("新 proof 应由 active key 验证");
+
+        let retired = StepUpManager::new_with_keyring(
+            "new-key",
+            NEW_SECRET,
+            std::iter::empty::<(&str, &str)>(),
+            "yang-test",
+            "yang-sensitive-actions",
+        )
+        .expect("移除旧 key 后 keyring 仍应有效");
+        assert!(retired
+            .complete_challenge(
+                &context,
+                &TestVerifier,
+                &credentials("7", "correct-password"),
+                &challenge.challenge,
+            )
+            .await
+            .is_err());
     }
 
     fn claims(
