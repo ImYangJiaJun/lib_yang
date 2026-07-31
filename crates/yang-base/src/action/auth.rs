@@ -492,6 +492,22 @@ pub trait RefreshClaimsResolver: Send + Sync + 'static {
     ) -> Result<TokenPairClaims, BaseError> {
         Ok(TokenPairClaims::new(self.resolve(ctx, sub).await?))
     }
+
+    /// 基于已通过核心签名、时效、类型和撤销校验的旧 Refresh Token 完整声明，解析
+    /// 新 Token 对的声明。
+    ///
+    /// 应用可覆盖本方法校验 `credential_version` 等 Refresh 专属事实，并从同一次数据库
+    /// 快照生成新 Access/Refresh 声明。默认仅把可信 `sub` 转交给
+    /// [`RefreshClaimsResolver::resolve_pair`]，因此既有实现保持兼容。
+    ///
+    /// 本 hook 在旧 JTI 被原子消费前执行；校验失败不会消耗仍然有效的 Refresh Token。
+    async fn resolve_pair_from_claims(
+        &self,
+        ctx: &ActionContext,
+        claims: &TokenClaims,
+    ) -> Result<TokenPairClaims, BaseError> {
+        self.resolve_pair(ctx, &claims.sub).await
+    }
 }
 
 /// 默认刷新声明解析器：不附加任何自定义声明（零配置可用）。
@@ -604,8 +620,11 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
                     "期望 refresh token".to_string(),
                 ));
             }
-            // 按业务解析器决定新 Token 的自定义声明
-            let custom_claims = self.resolver.resolve_pair(&ctx, &claims.sub).await?;
+            // 先由业务解析器校验旧 Refresh 完整声明并决定新 Token 声明；失败不消费旧 JTI
+            let custom_claims = self
+                .resolver
+                .resolve_pair_from_claims(&ctx, &claims)
+                .await?;
             // 使用已验证的 claims 直接轮换，跳过 rotate_refresh_token 内部二次验证
             let (access_token, refresh_token) = manager
                 .rotate_refresh_token_from_claims_with_refresh_claims(
@@ -1048,6 +1067,120 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             next.run(ctx).await
         }
+    }
+
+    struct LegacyRefreshResolver;
+
+    #[async_trait]
+    impl RefreshClaimsResolver for LegacyRefreshResolver {
+        async fn resolve(
+            &self,
+            _ctx: &ActionContext,
+            sub: &str,
+        ) -> Result<serde_json::Value, BaseError> {
+            Ok(serde_json::json!({ "resolved_sub": sub }))
+        }
+    }
+
+    struct CredentialVersionRefreshResolver;
+
+    #[async_trait]
+    impl RefreshClaimsResolver for CredentialVersionRefreshResolver {
+        async fn resolve(
+            &self,
+            _ctx: &ActionContext,
+            _sub: &str,
+        ) -> Result<serde_json::Value, BaseError> {
+            Err(BaseError::ConfigError(
+                "完整 claims hook 不应回退到旧 resolve".to_string(),
+            ))
+        }
+
+        async fn resolve_pair_from_claims(
+            &self,
+            _ctx: &ActionContext,
+            claims: &TokenClaims,
+        ) -> Result<TokenPairClaims, BaseError> {
+            let credential_version = claims
+                .custom
+                .get("credential_version")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| BaseError::Unauthorized("Refresh Token 缺少凭据版本".to_string()))?;
+            if credential_version != 7 {
+                return Err(BaseError::Unauthorized(
+                    "Refresh Token 凭据版本已失效".to_string(),
+                ));
+            }
+            Ok(TokenPairClaims::new(serde_json::json!({
+                "credential_version": credential_version,
+            })))
+        }
+    }
+
+    fn refresh_claims(custom: serde_json::Value) -> TokenClaims {
+        TokenClaims::new(
+            "test-issuer",
+            "user-7",
+            "test-audience",
+            u64::MAX,
+            0,
+            0,
+            "refresh-jti",
+            crate::token::TokenType::Refresh,
+            custom,
+        )
+    }
+
+    fn refresh_test_context() -> ActionContext {
+        ActionContext::new(
+            crate::action::Request::default(),
+            Arc::new(
+                crate::tools::ToolsBuilder::new()
+                    .build()
+                    .expect("Refresh hook 测试 Tools 应构建成功"),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn refresh_claims_hook_rejects_stale_credential_version() {
+        let error = CredentialVersionRefreshResolver
+            .resolve_pair_from_claims(
+                &refresh_test_context(),
+                &refresh_claims(serde_json::json!({ "credential_version": 6 })),
+            )
+            .await
+            .expect_err("旧凭据世代的 Refresh Token 必须被拒绝");
+
+        assert!(matches!(error, BaseError::Unauthorized(message) if message.contains("已失效")));
+    }
+
+    #[tokio::test]
+    async fn refresh_claims_hook_accepts_current_credential_version() {
+        let pair = CredentialVersionRefreshResolver
+            .resolve_pair_from_claims(
+                &refresh_test_context(),
+                &refresh_claims(serde_json::json!({ "credential_version": 7 })),
+            )
+            .await
+            .expect("当前凭据世代的 Refresh Token 应生成新声明");
+
+        assert_eq!(pair.access, serde_json::json!({ "credential_version": 7 }));
+        assert_eq!(pair.refresh, serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn refresh_claims_hook_keeps_legacy_subject_resolver_compatible() {
+        let pair = LegacyRefreshResolver
+            .resolve_pair_from_claims(
+                &refresh_test_context(),
+                &refresh_claims(serde_json::Value::Null),
+            )
+            .await
+            .expect("旧 resolver 应通过默认适配继续工作");
+
+        assert_eq!(pair.access, serde_json::json!({ "resolved_sub": "user-7" }));
+        assert_eq!(pair.refresh, serde_json::Value::Null);
     }
 
     struct RejectingClaimsValidator(Arc<AtomicUsize>);
