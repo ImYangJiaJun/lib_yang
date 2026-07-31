@@ -345,6 +345,30 @@ fn fields_macro_builds_the_native_field_collection() {
 }
 
 #[test]
+fn string_email_semantics_project_to_fields_and_action_params() {
+    let fields = crate::fields! {
+        email => Str::new().require(true).email(),
+    };
+    let params = Params::new().param(
+        field("email"),
+        ParamSource::Body,
+        Str::new().require(true).email(),
+    );
+
+    let expected = Some(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$".to_string());
+    assert_eq!(fields.as_slice()[0].validation.pattern, expected);
+    assert_eq!(params.as_slice()[0].validation.pattern, expected);
+    assert_eq!(
+        fields.as_slice()[0].presentation.widget,
+        Some(WidgetHint::Email)
+    );
+    assert_eq!(
+        params.as_slice()[0].presentation.widget,
+        Some(WidgetHint::Email)
+    );
+}
+
+#[test]
 fn params_macro_generates_typed_input_and_native_params() {
     let input: CreateUserInput = serde_json::from_value(serde_json::json!({
         "username": "alice",
