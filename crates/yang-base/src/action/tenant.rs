@@ -60,6 +60,20 @@ pub trait TenantResolver: Send + Sync + 'static {
         context: &ActionContext,
         requested: Option<TenantId>,
     ) -> Result<TenantResolution, BaseError>;
+
+    /// 解析租户并可同时写入仅在本次请求有效的服务端 capability。
+    ///
+    /// 默认实现保持既有 resolver 行为。需要把同一次事实源查询的附加结果交给后续
+    /// middleware 的实现可以覆盖此方法，通过 [`ActionContext::request_context`] 写入
+    /// 类型化值。附加 capability 只能作为事务前快速拒绝依据，不能替代写事务内的
+    /// 最终授权复核。
+    async fn resolve_with_context(
+        &self,
+        context: &mut ActionContext,
+        requested: Option<TenantId>,
+    ) -> Result<TenantResolution, BaseError> {
+        self.resolve(context, requested).await
+    }
 }
 
 /// 在 Action 派发前解析并注入可信租户上下文。
@@ -95,11 +109,14 @@ where
 
     async fn handle(
         &self,
-        context: ActionContext,
+        mut context: ActionContext,
         next: Next<'_>,
     ) -> Result<ApiResponse, BaseError> {
         let requested = requested_tenant(&context)?;
-        let resolution = self.resolver.resolve(&context, requested).await?;
+        let resolution = self
+            .resolver
+            .resolve_with_context(&mut context, requested)
+            .await?;
         let context = match resolution {
             TenantResolution::Tenant(tenant) => {
                 tracing::Span::current().record("tenant_scope", "tenant");
@@ -137,7 +154,7 @@ fn requested_tenant(context: &ActionContext) -> Result<Option<TenantId>, BaseErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Request, TypedHandler, User};
+    use crate::action::{ContextKey, Request, TypedHandler, User};
     use crate::definition::{
         ActionName, ActionRef, ActionSpec, AddonName, AddonSpec, AppBuilder, HttpMethod,
         ModuleName, ModuleSpec, RouteSpec,
@@ -157,7 +174,10 @@ mod tests {
     struct TenantProbeOutput {
         tenant_id: Option<i64>,
         system_actor_id: Option<i64>,
+        resolver_evidence: Option<i64>,
     }
+
+    const RESOLVER_EVIDENCE: ContextKey<i64> = ContextKey::new("resolver_evidence");
 
     #[derive(Action)]
     #[action(name = "tenant_probe", display_name = "租户探针")]
@@ -170,17 +190,20 @@ mod tests {
 
         async fn handle(
             &self,
-            context: ActionContext,
+            mut context: ActionContext,
             _input: Self::Input,
         ) -> Result<Self::Output, BaseError> {
+            let resolver_evidence = context.request_context().get(RESOLVER_EVIDENCE).copied();
             match context.tenant() {
                 Ok(tenant) => Ok(TenantProbeOutput {
                     tenant_id: Some(tenant.id().get()),
                     system_actor_id: None,
+                    resolver_evidence,
                 }),
                 Err(_) => Ok(TenantProbeOutput {
                     tenant_id: None,
                     system_actor_id: Some(context.system_tenant()?.actor().user_id()),
+                    resolver_evidence,
                 }),
             }
         }
@@ -211,6 +234,18 @@ mod tests {
                     tenant.get()
                 )))
             }
+        }
+
+        async fn resolve_with_context(
+            &self,
+            context: &mut ActionContext,
+            requested: Option<TenantId>,
+        ) -> Result<TenantResolution, BaseError> {
+            let resolution = self.resolve(context, requested).await?;
+            if matches!(resolution, TenantResolution::Tenant(_)) {
+                context.request_context().insert(RESOLVER_EVIDENCE, 42);
+            }
+            Ok(resolution)
         }
     }
 
@@ -281,6 +316,15 @@ mod tests {
         )
         .await
         .expect("成员应能选择所属租户");
+        assert_eq!(
+            selected
+                .data
+                .as_ref()
+                .and_then(|data| data.get("resolver_evidence"))
+                .and_then(serde_json::Value::as_i64),
+            Some(42),
+            "resolver 同一次事实查询写入的请求 capability 必须到达后续 Action"
+        );
         assert_eq!(tenant_response(selected), (Some(10), None));
 
         let defaulted = dispatch_as(&app, Request::new(serde_json::json!({})), Some(user))
