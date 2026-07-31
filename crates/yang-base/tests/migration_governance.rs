@@ -2,7 +2,8 @@
 #![allow(clippy::expect_used)]
 
 use yang_base::database::{
-    DatabaseInitializer, Migration, MigrationColumnCheck, MigrationManifest, MigrationPlanStatus,
+    DatabaseInitializer, Migration, MigrationCheckConstraint, MigrationColumnCheck,
+    MigrationManifest, MigrationPlanStatus,
 };
 use yang_base::error::BaseError;
 use yang_base::plugin::Plugin;
@@ -422,6 +423,106 @@ async fn column_completion_check_recovers_atomic_ddl_without_rerunning_alter() {
             .entries[0]
             .status,
         MigrationPlanStatus::Applied
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要真实 MySQL；通过 MYSQL_TEST_URL 配置"]
+async fn check_constraint_probe_applies_recovers_and_rejects_same_name_drift() {
+    let verify_db = Database::connect(&mysql_url()).await.expect("连接验证库");
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("DROP TABLE IF EXISTS p4_manifest_check_probe")
+            .await
+            .expect("清理 CHECK 探针测试表");
+        verify_db
+            .execute("DROP TABLE IF EXISTS _migrations")
+            .await
+            .expect("清理迁移表");
+        verify_db
+            .execute(
+                "CREATE TABLE p4_manifest_check_probe (id BIGINT NOT NULL PRIMARY KEY, status VARCHAR(16) NOT NULL)",
+            )
+            .await
+            .expect("创建 CHECK 探针测试表");
+    }
+    let migration = Migration::new(
+        "202607310001",
+        "ALTER TABLE p4_manifest_check_probe ADD CONSTRAINT chk_p4_status CHECK (status IN ('active','disabled'))",
+    )
+    .with_completion_check(MigrationCheckConstraint::new(
+        "p4_manifest_check_probe",
+        "chk_p4_status",
+        "status IN ('active','disabled')",
+        true,
+    ));
+    let manifest = MigrationManifest::new("manifest-check-probe", [migration.clone()])
+        .expect("CHECK 探针迁移清单应有效");
+    let initializer = DatabaseInitializer::new(
+        Database::connect(&mysql_url())
+            .await
+            .expect("连接 CHECK 探针迁移库"),
+        false,
+    );
+
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("fresh CHECK 迁移应成功");
+    #[allow(deprecated)]
+    verify_db
+        .execute("UPDATE _migrations SET status = 'running' WHERE module_name = 'manifest-check-probe' AND version = '202607310001'")
+        .await
+        .expect("模拟 CHECK DDL 已提交但迁移状态未落盘");
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("约束完成探针应恢复状态且不重复 ALTER");
+
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("ALTER TABLE p4_manifest_check_probe ALTER CHECK chk_p4_status NOT ENFORCED")
+            .await
+            .expect("制造未强制执行的同名 CHECK");
+        verify_db
+            .execute("UPDATE _migrations SET status = 'running' WHERE module_name = 'manifest-check-probe' AND version = '202607310001'")
+            .await
+            .expect("模拟未强制 CHECK 的中断状态");
+    }
+    assert!(
+        initializer.apply_manifest(&manifest).await.is_err(),
+        "同名同表达式但 NOT ENFORCED 的 CHECK 不得被误判为已应用"
+    );
+    #[allow(deprecated)]
+    verify_db
+        .execute("ALTER TABLE p4_manifest_check_probe ALTER CHECK chk_p4_status ENFORCED")
+        .await
+        .expect("恢复强制执行状态");
+    initializer
+        .apply_manifest(&manifest)
+        .await
+        .expect("恢复 ENFORCED 后探针应重新确认完成状态");
+
+    #[allow(deprecated)]
+    {
+        verify_db
+            .execute("ALTER TABLE p4_manifest_check_probe DROP CHECK chk_p4_status")
+            .await
+            .expect("移除原 CHECK");
+        verify_db
+            .execute("ALTER TABLE p4_manifest_check_probe ADD CONSTRAINT chk_p4_status CHECK (status = 'active')")
+            .await
+            .expect("制造同名异表达式 CHECK");
+        verify_db
+            .execute("UPDATE _migrations SET status = 'running' WHERE module_name = 'manifest-check-probe' AND version = '202607310001'")
+            .await
+            .expect("再次模拟中断状态");
+    }
+    assert!(
+        initializer.apply_manifest(&manifest).await.is_err(),
+        "同名但表达式不同的 CHECK 不得被完成探针误判为已应用"
     );
 }
 

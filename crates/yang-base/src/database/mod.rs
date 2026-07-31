@@ -29,8 +29,9 @@ mod schema_sync_tests;
 
 #[cfg(feature = "mysql")]
 pub use initializer::{
-    DatabaseInitializer, Migration, MigrationColumnCheck, MigrationCompletionCheck,
-    MigrationManifest, MigrationPlan, MigrationPlanEntry, MigrationPlanStatus,
+    DatabaseInitializer, Migration, MigrationCheckConstraint, MigrationColumnCheck,
+    MigrationCompletionCheck, MigrationManifest, MigrationPlan, MigrationPlanEntry,
+    MigrationPlanStatus,
 };
 #[cfg(feature = "mysql")]
 pub use schema_sync::{SchemaSyncChange, SchemaSyncChangeKind, SchemaSyncReport};

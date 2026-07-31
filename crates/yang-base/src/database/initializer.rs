@@ -180,11 +180,68 @@ impl MigrationColumnCheck {
 pub enum MigrationCompletionCheck {
     /// 精确匹配一个 MySQL 列的类型、可空性和默认值。
     Column(MigrationColumnCheck),
+    /// 精确匹配一个 MySQL CHECK 的名称、表达式和强制执行状态。
+    CheckConstraint(MigrationCheckConstraint),
 }
 
 impl From<MigrationColumnCheck> for MigrationCompletionCheck {
     fn from(value: MigrationColumnCheck) -> Self {
         Self::Column(value)
+    }
+}
+
+/// `ADD CONSTRAINT ... CHECK` DDL 的精确完成状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationCheckConstraint {
+    table: String,
+    constraint: String,
+    expression: String,
+    enforced: bool,
+}
+
+impl MigrationCheckConstraint {
+    /// 声明目标 CHECK 的表、约束名、表达式和强制执行状态。
+    ///
+    /// 表达式比较忽略 MySQL 元数据中的关键字大小写、空白、标识符反引号、字符集
+    /// introducer 与冗余外层括号，但不会改变字符串字面量或运算符顺序。
+    pub fn new(
+        table: impl Into<String>,
+        constraint: impl Into<String>,
+        expression: impl Into<String>,
+        enforced: bool,
+    ) -> Self {
+        Self {
+            table: table.into(),
+            constraint: constraint.into(),
+            expression: expression.into(),
+            enforced,
+        }
+    }
+
+    /// 返回目标表名。
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+
+    /// 返回目标约束名。
+    pub fn constraint(&self) -> &str {
+        &self.constraint
+    }
+
+    /// 返回预期 CHECK 表达式。
+    pub fn expression(&self) -> &str {
+        &self.expression
+    }
+
+    /// 返回约束是否必须由 MySQL 强制执行。
+    pub fn enforced(&self) -> bool {
+        self.enforced
+    }
+}
+
+impl From<MigrationCheckConstraint> for MigrationCompletionCheck {
+    fn from(value: MigrationCheckConstraint) -> Self {
+        Self::CheckConstraint(value)
     }
 }
 
@@ -262,6 +319,23 @@ fn validate_migration_completion_check(
                 )));
             }
         }
+        MigrationCompletionCheck::CheckConstraint(check) => {
+            validate_mysql_identifier("table", check.table()).map_err(|reason| {
+                BaseError::ConfigError(format!("迁移 {version} 的约束完成探针非法: {reason}"))
+            })?;
+            validate_mysql_identifier("constraint", check.constraint()).map_err(|reason| {
+                BaseError::ConfigError(format!("迁移 {version} 的约束完成探针非法: {reason}"))
+            })?;
+            if check.expression().trim().is_empty()
+                || check.expression().trim() != check.expression()
+                || check.expression().chars().count() > 4_096
+                || normalize_check_expression(check.expression()).is_none()
+            {
+                return Err(BaseError::ConfigError(format!(
+                    "迁移 {version} 的 CHECK 表达式不能为空、包含首尾空白、语法引号不完整或超过 4096 个字符"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -279,6 +353,136 @@ fn validate_mysql_identifier(kind: &str, value: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn normalize_check_expression(expression: &str) -> Option<String> {
+    let characters = expression.chars().collect::<Vec<_>>();
+    let mut normalized = String::with_capacity(expression.len());
+    let mut index = 0;
+    let mut in_literal = false;
+    let mut backslash_delimited_literal = false;
+    while index < characters.len() {
+        let character = characters[index];
+        if in_literal {
+            normalized.push(character);
+            if backslash_delimited_literal
+                && character == '\\'
+                && index + 1 < characters.len()
+                && characters[index + 1] == '\''
+            {
+                normalized.pop();
+                normalized.push('\'');
+                in_literal = false;
+                backslash_delimited_literal = false;
+                index += 2;
+                continue;
+            }
+            if !backslash_delimited_literal && character == '\\' && index + 1 < characters.len() {
+                index += 1;
+                normalized.push(characters[index]);
+            } else if !backslash_delimited_literal && character == '\'' {
+                if index + 1 < characters.len() && characters[index + 1] == '\'' {
+                    index += 1;
+                    normalized.push('\'');
+                } else {
+                    in_literal = false;
+                }
+            }
+            index += 1;
+            continue;
+        }
+        if character == '\'' {
+            in_literal = true;
+            backslash_delimited_literal = false;
+            normalized.push(character);
+            index += 1;
+            continue;
+        }
+        if character == '\\' && index + 1 < characters.len() && characters[index + 1] == '\'' {
+            in_literal = true;
+            backslash_delimited_literal = true;
+            normalized.push('\'');
+            index += 2;
+            continue;
+        }
+        if character.is_whitespace() || character == '`' {
+            index += 1;
+            continue;
+        }
+        if character == '_' {
+            let mut end = index + 1;
+            while end < characters.len()
+                && (characters[end] == '_' || characters[end].is_ascii_alphanumeric())
+            {
+                end += 1;
+            }
+            if end < characters.len() && characters[end] == '\'' {
+                index = end;
+                continue;
+            }
+            if end + 1 < characters.len() && characters[end] == '\\' && characters[end + 1] == '\''
+            {
+                in_literal = true;
+                backslash_delimited_literal = true;
+                normalized.push('\'');
+                index = end + 2;
+                continue;
+            }
+        }
+        normalized.push(character.to_ascii_lowercase());
+        index += 1;
+    }
+    if in_literal || normalized.is_empty() {
+        return None;
+    }
+    while expression_has_redundant_outer_parentheses(&normalized) {
+        normalized = normalized.strip_prefix('(')?.strip_suffix(')')?.to_string();
+    }
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn expression_has_redundant_outer_parentheses(expression: &str) -> bool {
+    if !expression.starts_with('(') || !expression.ends_with(')') {
+        return false;
+    }
+    let characters = expression.chars().collect::<Vec<_>>();
+    let mut depth = 0_i64;
+    let mut in_literal = false;
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        if in_literal {
+            if character == '\\' && index + 1 < characters.len() {
+                index += 2;
+                continue;
+            }
+            if character == '\'' {
+                if index + 1 < characters.len() && characters[index + 1] == '\'' {
+                    index += 2;
+                    continue;
+                }
+                in_literal = false;
+            }
+            index += 1;
+            continue;
+        }
+        match character {
+            '\'' => in_literal = true,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 && index + 1 != characters.len() {
+                    return false;
+                }
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    !in_literal && depth == 0
 }
 
 fn validate_migration_identity(kind: &str, value: &str) -> Result<(), BaseError> {
@@ -335,19 +539,31 @@ fn migration_sql_checksum(sql: &str) -> String {
 fn migration_checksum(migration: &Migration) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     update_migration_hash(&mut hash, migration.sql().as_bytes());
-    if let Some(MigrationCompletionCheck::Column(check)) = migration.completion_check() {
-        update_migration_hash(&mut hash, b"\0column");
-        for value in [check.table(), check.column(), check.column_type()] {
-            update_migration_hash(&mut hash, b"\0");
-            update_migration_hash(&mut hash, value.as_bytes());
-        }
-        update_migration_hash(&mut hash, &[u8::from(check.nullable())]);
-        match check.default() {
-            Some(default) => {
-                update_migration_hash(&mut hash, b"\x01");
-                update_migration_hash(&mut hash, default.as_bytes());
+    if let Some(check) = migration.completion_check() {
+        match check {
+            MigrationCompletionCheck::Column(check) => {
+                update_migration_hash(&mut hash, b"\0column");
+                for value in [check.table(), check.column(), check.column_type()] {
+                    update_migration_hash(&mut hash, b"\0");
+                    update_migration_hash(&mut hash, value.as_bytes());
+                }
+                update_migration_hash(&mut hash, &[u8::from(check.nullable())]);
+                match check.default() {
+                    Some(default) => {
+                        update_migration_hash(&mut hash, b"\x01");
+                        update_migration_hash(&mut hash, default.as_bytes());
+                    }
+                    None => update_migration_hash(&mut hash, b"\x00"),
+                }
             }
-            None => update_migration_hash(&mut hash, b"\x00"),
+            MigrationCompletionCheck::CheckConstraint(check) => {
+                update_migration_hash(&mut hash, b"\0check-constraint");
+                for value in [check.table(), check.constraint(), check.expression()] {
+                    update_migration_hash(&mut hash, b"\0");
+                    update_migration_hash(&mut hash, value.as_bytes());
+                }
+                update_migration_hash(&mut hash, &[u8::from(check.enforced())]);
+            }
         }
     }
     format!("{hash:016x}")
@@ -1060,6 +1276,40 @@ impl DatabaseInitializer {
                         && metadata.column_default.as_deref() == check.default()
                 }))
             }
+            MigrationCompletionCheck::CheckConstraint(check) => {
+                #[derive(sqlx::FromRow)]
+                struct CheckMetadata {
+                    check_clause: String,
+                    enforced: String,
+                }
+
+                let metadata = sqlx::query_as::<_, CheckMetadata>(
+                    "SELECT CAST(cc.CHECK_CLAUSE AS CHAR) AS check_clause, \
+                            CAST(tc.ENFORCED AS CHAR) AS enforced \
+                     FROM information_schema.table_constraints AS tc \
+                     INNER JOIN information_schema.check_constraints AS cc \
+                       ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA \
+                      AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME \
+                     WHERE tc.CONSTRAINT_SCHEMA = DATABASE() \
+                       AND tc.TABLE_NAME = ? \
+                       AND tc.CONSTRAINT_NAME = ? \
+                       AND tc.CONSTRAINT_TYPE = 'CHECK'",
+                )
+                .bind(check.table())
+                .bind(check.constraint())
+                .fetch_optional(self.db().pool())
+                .await
+                .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+                let expected_expression = normalize_check_expression(check.expression());
+                Ok(metadata.is_some_and(|metadata| {
+                    normalize_check_expression(&metadata.check_clause) == expected_expression
+                        && metadata.enforced.eq_ignore_ascii_case(if check.enforced() {
+                            "YES"
+                        } else {
+                            "NO"
+                        })
+                }))
+            }
         }
     }
 
@@ -1486,6 +1736,32 @@ mod tests {
         assert_eq!(migration_checksum(&plain), migration_sql_checksum(sql));
         assert_ne!(migration_checksum(&checked), migration_checksum(&plain));
 
+        let constraint_checked = Migration::new(
+            "202607260004",
+            "ALTER TABLE users ADD CONSTRAINT chk_users_status CHECK (status IN ('active','disabled'))",
+        )
+        .with_completion_check(MigrationCheckConstraint::new(
+            "users",
+            "chk_users_status",
+            "status IN ('active','disabled')",
+            true,
+        ));
+        let constraint_drift = Migration::new(
+            "202607260004",
+            "ALTER TABLE users ADD CONSTRAINT chk_users_status CHECK (status IN ('active','disabled'))",
+        )
+        .with_completion_check(MigrationCheckConstraint::new(
+            "users",
+            "chk_users_status",
+            "status = 'active'",
+            true,
+        ));
+        assert_ne!(
+            migration_checksum(&constraint_checked),
+            migration_checksum(&constraint_drift),
+            "CHECK 表达式必须进入迁移校验和"
+        );
+
         let invalid =
             MigrationManifest::new(
                 "yang-system",
@@ -1500,5 +1776,34 @@ mod tests {
                 )],
             );
         assert!(invalid.is_err(), "非法标识符必须在数据库连接前失败");
+
+        let invalid_constraint = MigrationManifest::new(
+            "yang-system",
+            [
+                Migration::new("202607260004", "SELECT 1").with_completion_check(
+                    MigrationCheckConstraint::new("users", "chk users", "status = 'active", true),
+                ),
+            ],
+        );
+        assert!(
+            invalid_constraint.is_err(),
+            "非法约束名或未闭合字符串必须在数据库连接前失败"
+        );
+    }
+
+    #[test]
+    fn check_expression_normalization_preserves_literal_semantics() {
+        assert_eq!(
+            normalize_check_expression(
+                r"((`status` IN (_utf8mb4\'active\', _utf8mb4\'disabled\')))"
+            ),
+            normalize_check_expression("status in ('active','disabled')")
+        );
+        assert_ne!(
+            normalize_check_expression("status = 'ACTIVE'"),
+            normalize_check_expression("status = 'active'"),
+            "字符串字面量大小写不可被归一化"
+        );
+        assert!(normalize_check_expression("status = 'active").is_none());
     }
 }
