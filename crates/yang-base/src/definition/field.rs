@@ -649,6 +649,14 @@ impl Str {
         self.0.validation.pattern = Some(value.into());
         self
     }
+
+    /// 设置严格 ASCII 邮箱格式，并提示前端使用 email 控件。
+    pub fn email(mut self) -> Self {
+        self.0.validation.pattern =
+            Some(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$".to_string());
+        self.0.presentation.widget = Some(WidgetHint::Email);
+        self
+    }
 }
 
 impl Decimal {
