@@ -2,10 +2,11 @@
 
 use super::{ActionRef, FieldKind, FieldName, FieldRef, TableName, WidgetHint};
 use crate::error::BaseError;
-use crate::table::{Field, RelationType, Table as SchemaTable, TableDefinition};
+use crate::table::{Field, RelationType, Table as SchemaTable, TableDefinition, Validator};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// 字段的数据库存储语义。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -218,7 +219,42 @@ impl FieldSpec {
             ),
             FieldKind::Switch => Field::boolean(name),
             FieldKind::Radio => {
-                Field::enumeration(name, self.options.iter().map(|(value, _)| value.clone()))
+                let values = self
+                    .options
+                    .iter()
+                    .map(|(value, _)| value.clone())
+                    .collect::<Vec<_>>();
+                if let Some(max_length) = self.storage.max_length {
+                    let unique = values.iter().collect::<BTreeSet<_>>();
+                    let longest = values
+                        .iter()
+                        .map(|value| value.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    if values.is_empty() || unique.len() != values.len() || longest > max_length {
+                        return Err(BaseError::ConfigError(format!(
+                            "VARCHAR Radio 字段 {name} 必须提供非空、不重复且不超过 {max_length} 字符的候选值"
+                        )));
+                    }
+                    let allowed = Arc::new(values);
+                    Field::string(name, max_length).validator(Validator::Custom(Arc::new(
+                        move |field_name, value| match value.as_str() {
+                            Some(value) if allowed.iter().any(|candidate| candidate == value) => {
+                                Ok(())
+                            }
+                            Some(value) => Err(BaseError::InvalidEnumValue(
+                                field_name.to_string(),
+                                value.to_string(),
+                            )),
+                            None => Err(BaseError::InvalidFieldType(
+                                field_name.to_string(),
+                                "期望字符串类型的枚举值".to_string(),
+                            )),
+                        },
+                    )))
+                } else {
+                    Field::enumeration(name, values)
+                }
             }
             FieldKind::Table | FieldKind::Tree => Field::bigint(name),
             FieldKind::Timestamp => match self.timestamp_mode {
@@ -711,6 +747,15 @@ impl<T> Radio<T> {
     /// 设置必填。
     pub fn require(mut self, value: bool) -> Self {
         self.inner.storage.required = value;
+        self
+    }
+
+    /// 使用 VARCHAR 作为物理存储，同时保留 Radio 候选值的应用层校验。
+    ///
+    /// 适用于需要通过前向 CHECK 迁移约束既有 VARCHAR 列的场景；未调用时仍使用
+    /// 数据库原生 ENUM。`max_length` 必须覆盖所有候选值。
+    pub fn varchar(mut self, max_length: usize) -> Self {
+        self.inner.storage.max_length = Some(max_length);
         self
     }
 

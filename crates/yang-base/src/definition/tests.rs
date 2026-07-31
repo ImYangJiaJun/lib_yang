@@ -250,6 +250,68 @@ fn radio_builder_declares_filter_and_sort_access() {
     assert!(status.access.sortable);
 }
 
+#[tokio::test]
+async fn radio_can_keep_varchar_storage_without_losing_value_validation() {
+    use crate::table::FieldType;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let spec = TableSpec::new(table("users")).fields(crate::fields! {
+        id => Key::new(),
+        status => Radio::<String>::new()
+            .varchar(16)
+            .require(true)
+            .options([("active", "启用"), ("disabled", "停用")]),
+    });
+    let definition = spec
+        .table_definition()
+        .unwrap_or_else(|error| panic!("VARCHAR Radio 表定义应有效: {error}"));
+    assert!(matches!(
+        definition
+            .field("status")
+            .unwrap_or_else(|| panic!("应存在 status 字段"))
+            .field_type(),
+        FieldType::String { max_length: 16 }
+    ));
+
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .connect_lazy("mysql://root:test@127.0.0.1:3306/test")
+        .unwrap_or_else(|error| panic!("测试连接配置应有效: {error}"));
+    let query = definition
+        .bind(Arc::new(pool))
+        .query(std::iter::empty::<&str>());
+    let valid = HashMap::from([("status".to_string(), serde_json::json!("active"))]);
+    assert!(query.validate_update_data(&valid).is_ok());
+    let invalid = HashMap::from([("status".to_string(), serde_json::json!("pending"))]);
+    assert!(matches!(
+        query.validate_update_data(&invalid),
+        Err(BaseError::InvalidEnumValue(field, value)) if field == "status" && value == "pending"
+    ));
+}
+
+#[test]
+fn varchar_radio_rejects_empty_duplicate_and_oversized_candidates() {
+    let empty = TableSpec::new(table("empty_radio")).fields(crate::fields! {
+        id => Key::new(),
+        status => Radio::<String>::new().varchar(8).options([] as [(&str, &str); 0]),
+    });
+    assert!(empty.table_definition().is_err());
+
+    let duplicate = TableSpec::new(table("duplicate_radio")).fields(crate::fields! {
+        id => Key::new(),
+        status => Radio::<String>::new()
+            .varchar(8)
+            .options([("active", "启用"), ("active", "重复")]),
+    });
+    assert!(duplicate.table_definition().is_err());
+
+    let oversized = TableSpec::new(table("oversized_radio")).fields(crate::fields! {
+        id => Key::new(),
+        status => Radio::<String>::new().varchar(4).options([("active", "启用")]),
+    });
+    assert!(oversized.table_definition().is_err());
+}
+
 fn table(value: &str) -> TableName {
     TableName::new(value).expect("测试 Table 名称应有效")
 }
