@@ -182,6 +182,8 @@ pub enum MigrationCompletionCheck {
     Column(MigrationColumnCheck),
     /// 精确匹配一个 MySQL CHECK 的名称、表达式和强制执行状态。
     CheckConstraint(MigrationCheckConstraint),
+    /// 精确匹配一个单列 MySQL 外键及其更新/删除规则。
+    ForeignKey(MigrationForeignKeyCheck),
 }
 
 impl From<MigrationColumnCheck> for MigrationCompletionCheck {
@@ -242,6 +244,83 @@ impl MigrationCheckConstraint {
 impl From<MigrationCheckConstraint> for MigrationCompletionCheck {
     fn from(value: MigrationCheckConstraint) -> Self {
         Self::CheckConstraint(value)
+    }
+}
+
+/// `ADD CONSTRAINT ... FOREIGN KEY` DDL 的精确完成状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationForeignKeyCheck {
+    table: String,
+    constraint: String,
+    column: String,
+    referenced_table: String,
+    referenced_column: String,
+    update_rule: String,
+    delete_rule: String,
+}
+
+impl MigrationForeignKeyCheck {
+    /// 声明单列外键的本地列、目标列及引用动作。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        table: impl Into<String>,
+        constraint: impl Into<String>,
+        column: impl Into<String>,
+        referenced_table: impl Into<String>,
+        referenced_column: impl Into<String>,
+        update_rule: impl Into<String>,
+        delete_rule: impl Into<String>,
+    ) -> Self {
+        Self {
+            table: table.into(),
+            constraint: constraint.into(),
+            column: column.into(),
+            referenced_table: referenced_table.into(),
+            referenced_column: referenced_column.into(),
+            update_rule: update_rule.into(),
+            delete_rule: delete_rule.into(),
+        }
+    }
+
+    /// 返回持有外键的表名。
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+
+    /// 返回外键约束名。
+    pub fn constraint(&self) -> &str {
+        &self.constraint
+    }
+
+    /// 返回本地外键列名。
+    pub fn column(&self) -> &str {
+        &self.column
+    }
+
+    /// 返回被引用表名。
+    pub fn referenced_table(&self) -> &str {
+        &self.referenced_table
+    }
+
+    /// 返回被引用列名。
+    pub fn referenced_column(&self) -> &str {
+        &self.referenced_column
+    }
+
+    /// 返回 `ON UPDATE` 引用动作。
+    pub fn update_rule(&self) -> &str {
+        &self.update_rule
+    }
+
+    /// 返回 `ON DELETE` 引用动作。
+    pub fn delete_rule(&self) -> &str {
+        &self.delete_rule
+    }
+}
+
+impl From<MigrationForeignKeyCheck> for MigrationCompletionCheck {
+    fn from(value: MigrationForeignKeyCheck) -> Self {
+        Self::ForeignKey(value)
     }
 }
 
@@ -334,6 +413,32 @@ fn validate_migration_completion_check(
                 return Err(BaseError::ConfigError(format!(
                     "迁移 {version} 的 CHECK 表达式不能为空、包含首尾空白、语法引号不完整或超过 4096 个字符"
                 )));
+            }
+        }
+        MigrationCompletionCheck::ForeignKey(check) => {
+            for (kind, value) in [
+                ("table", check.table()),
+                ("constraint", check.constraint()),
+                ("column", check.column()),
+                ("referenced_table", check.referenced_table()),
+                ("referenced_column", check.referenced_column()),
+            ] {
+                validate_mysql_identifier(kind, value).map_err(|reason| {
+                    BaseError::ConfigError(format!("迁移 {version} 的外键完成探针非法: {reason}"))
+                })?;
+            }
+            for (kind, rule) in [
+                ("update_rule", check.update_rule()),
+                ("delete_rule", check.delete_rule()),
+            ] {
+                if !matches!(
+                    rule,
+                    "CASCADE" | "SET NULL" | "RESTRICT" | "NO ACTION" | "SET DEFAULT"
+                ) {
+                    return Err(BaseError::ConfigError(format!(
+                        "迁移 {version} 的外键完成探针 {kind} 必须使用标准大写引用动作"
+                    )));
+                }
             }
         }
     }
@@ -563,6 +668,21 @@ fn migration_checksum(migration: &Migration) -> String {
                     update_migration_hash(&mut hash, value.as_bytes());
                 }
                 update_migration_hash(&mut hash, &[u8::from(check.enforced())]);
+            }
+            MigrationCompletionCheck::ForeignKey(check) => {
+                update_migration_hash(&mut hash, b"\0foreign-key");
+                for value in [
+                    check.table(),
+                    check.constraint(),
+                    check.column(),
+                    check.referenced_table(),
+                    check.referenced_column(),
+                    check.update_rule(),
+                    check.delete_rule(),
+                ] {
+                    update_migration_hash(&mut hash, b"\0");
+                    update_migration_hash(&mut hash, value.as_bytes());
+                }
             }
         }
     }
@@ -1310,6 +1430,52 @@ impl DatabaseInitializer {
                         })
                 }))
             }
+            MigrationCompletionCheck::ForeignKey(check) => {
+                #[derive(sqlx::FromRow)]
+                struct ForeignKeyMetadata {
+                    column_name: String,
+                    referenced_table_name: String,
+                    referenced_column_name: String,
+                    update_rule: String,
+                    delete_rule: String,
+                }
+
+                let metadata = sqlx::query_as::<_, ForeignKeyMetadata>(
+                    "SELECT CAST(kcu.COLUMN_NAME AS CHAR) AS column_name, \
+                            CAST(kcu.REFERENCED_TABLE_NAME AS CHAR) AS referenced_table_name, \
+                            CAST(kcu.REFERENCED_COLUMN_NAME AS CHAR) AS referenced_column_name, \
+                            CAST(rc.UPDATE_RULE AS CHAR) AS update_rule, \
+                            CAST(rc.DELETE_RULE AS CHAR) AS delete_rule \
+                     FROM information_schema.referential_constraints AS rc \
+                     INNER JOIN information_schema.key_column_usage AS kcu \
+                       ON kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA \
+                      AND kcu.TABLE_NAME = rc.TABLE_NAME \
+                      AND kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME \
+                     WHERE rc.CONSTRAINT_SCHEMA = DATABASE() \
+                       AND rc.TABLE_NAME = ? \
+                       AND rc.CONSTRAINT_NAME = ? \
+                     ORDER BY kcu.ORDINAL_POSITION",
+                )
+                .bind(check.table())
+                .bind(check.constraint())
+                .fetch_all(self.db().pool())
+                .await
+                .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+                Ok(metadata.len() == 1
+                    && metadata[0].column_name.eq_ignore_ascii_case(check.column())
+                    && metadata[0]
+                        .referenced_table_name
+                        .eq_ignore_ascii_case(check.referenced_table())
+                    && metadata[0]
+                        .referenced_column_name
+                        .eq_ignore_ascii_case(check.referenced_column())
+                    && metadata[0]
+                        .update_rule
+                        .eq_ignore_ascii_case(check.update_rule())
+                    && metadata[0]
+                        .delete_rule
+                        .eq_ignore_ascii_case(check.delete_rule()))
+            }
         }
     }
 
@@ -1762,6 +1928,38 @@ mod tests {
             "CHECK 表达式必须进入迁移校验和"
         );
 
+        let foreign_key_checked = Migration::new(
+            "202607260005",
+            "ALTER TABLE admin_user ADD CONSTRAINT fk_admin_user_user FOREIGN KEY (user_user) REFERENCES users(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        )
+        .with_completion_check(MigrationForeignKeyCheck::new(
+            "admin_user",
+            "fk_admin_user_user",
+            "user_user",
+            "users",
+            "id",
+            "RESTRICT",
+            "RESTRICT",
+        ));
+        let foreign_key_drift = Migration::new(
+            "202607260005",
+            "ALTER TABLE admin_user ADD CONSTRAINT fk_admin_user_user FOREIGN KEY (user_user) REFERENCES users(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        )
+        .with_completion_check(MigrationForeignKeyCheck::new(
+            "admin_user",
+            "fk_admin_user_user",
+            "user_user",
+            "users",
+            "id",
+            "CASCADE",
+            "RESTRICT",
+        ));
+        assert_ne!(
+            migration_checksum(&foreign_key_checked),
+            migration_checksum(&foreign_key_drift),
+            "外键目标与引用动作必须进入迁移校验和"
+        );
+
         let invalid =
             MigrationManifest::new(
                 "yang-system",
@@ -1788,6 +1986,27 @@ mod tests {
         assert!(
             invalid_constraint.is_err(),
             "非法约束名或未闭合字符串必须在数据库连接前失败"
+        );
+
+        let invalid_foreign_key = MigrationManifest::new(
+            "yang-system",
+            [
+                Migration::new("202607260005", "SELECT 1").with_completion_check(
+                    MigrationForeignKeyCheck::new(
+                        "admin_user",
+                        "fk_admin_user_user",
+                        "user_user",
+                        "users",
+                        "id",
+                        "restrict",
+                        "RESTRICT",
+                    ),
+                ),
+            ],
+        );
+        assert!(
+            invalid_foreign_key.is_err(),
+            "非规范引用动作必须在数据库连接前失败"
         );
     }
 
