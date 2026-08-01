@@ -25,6 +25,8 @@ pub struct StorageSpec {
     pub unique: bool,
     /// 是否建立普通索引。
     pub indexed: bool,
+    /// 显式声明该字段由哪个旧列原位改名而来。
+    pub renamed_from: Option<String>,
 }
 
 /// 字段的输入验证语义。
@@ -277,6 +279,9 @@ impl FieldSpec {
         if self.storage.indexed {
             field = field.index();
         }
+        if let Some(legacy_name) = self.storage.renamed_from {
+            field = field.renamed_from(legacy_name);
+        }
         if let Some(value) = self.validation.min_length {
             field = field.min_length(value);
         }
@@ -484,6 +489,12 @@ macro_rules! simple_builder {
             /// 设置普通索引。
             pub fn indexed(mut self, value: bool) -> Self {
                 self.0.storage.indexed = value;
+                self
+            }
+
+            /// 声明当前字段由旧列原位改名而来。
+            pub fn renamed_from(mut self, legacy_name: impl Into<String>) -> Self {
+                self.0.storage.renamed_from = Some(legacy_name.into());
                 self
             }
 
@@ -820,6 +831,26 @@ pub struct TableIndexSpec {
     pub unique: bool,
 }
 
+/// 表级 CHECK 约束声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableCheckSpec {
+    /// 约束名。
+    pub name: String,
+    /// 受信任的 MySQL 布尔表达式。
+    pub expression: String,
+}
+
+/// 表级复合外键声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableForeignKeySpec {
+    /// 约束名。
+    pub name: String,
+    /// 当前表字段。
+    pub fields: Vec<FieldRef>,
+    /// 目标表字段；必须全部来自同一张表。
+    pub referenced_fields: Vec<FieldRef>,
+}
+
 /// 表及其唯一字段定义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableSpec {
@@ -831,6 +862,10 @@ pub struct TableSpec {
     pub fields: Vec<FieldSpec>,
     /// 表级复合索引。
     pub indexes: Vec<TableIndexSpec>,
+    /// 表级 CHECK 约束。
+    pub checks: Vec<TableCheckSpec>,
+    /// 表级外键约束。
+    pub foreign_keys: Vec<TableForeignKeySpec>,
 }
 
 impl TableSpec {
@@ -841,6 +876,8 @@ impl TableSpec {
             title: String::new(),
             fields: Vec::new(),
             indexes: Vec::new(),
+            checks: Vec::new(),
+            foreign_keys: Vec::new(),
         }
     }
 
@@ -911,6 +948,30 @@ impl TableSpec {
         self
     }
 
+    /// 添加指定名称的 CHECK 约束。
+    pub fn check_named(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.checks.push(TableCheckSpec {
+            name: name.into(),
+            expression: expression.into(),
+        });
+        self
+    }
+
+    /// 添加指定名称的复合外键；更新和删除规则固定为 `RESTRICT`。
+    pub fn foreign_key_named(
+        mut self,
+        name: impl Into<String>,
+        fields: impl IntoIterator<Item = FieldRef>,
+        referenced_fields: impl IntoIterator<Item = FieldRef>,
+    ) -> Self {
+        self.foreign_keys.push(TableForeignKeySpec {
+            name: name.into(),
+            fields: fields.into_iter().collect(),
+            referenced_fields: referenced_fields.into_iter().collect(),
+        });
+        self
+    }
+
     /// 生成 schema 同步和 TableQuery 使用的不可变执行产物。
     pub fn table_definition(&self) -> Result<TableDefinition, BaseError> {
         let mut table = SchemaTable::new(self.name.to_string());
@@ -925,6 +986,19 @@ impl TableSpec {
                 (Some(name), false) => table.index_named(name.clone(), fields),
                 (None, false) => table.index(fields),
             };
+        }
+        for check in &self.checks {
+            table = table.check_named(check.name.clone(), check.expression.clone());
+        }
+        for foreign_key in &self.foreign_keys {
+            let (columns, referenced_table, referenced_columns) =
+                self.validate_foreign_key(foreign_key)?;
+            table = table.foreign_key_named(
+                foreign_key.name.clone(),
+                columns,
+                referenced_table,
+                referenced_columns,
+            );
         }
         let fields = self
             .fields
@@ -972,5 +1046,54 @@ impl TableSpec {
             fields.push(field.to_string());
         }
         Ok(fields)
+    }
+
+    fn validate_foreign_key(
+        &self,
+        foreign_key: &TableForeignKeySpec,
+    ) -> Result<(Vec<String>, String, Vec<String>), BaseError> {
+        if foreign_key.fields.is_empty()
+            || foreign_key.fields.len() != foreign_key.referenced_fields.len()
+        {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 的外键 {} 本地字段与目标字段必须非空且数量一致",
+                self.name, foreign_key.name
+            )));
+        }
+        let declared = self
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut columns = Vec::with_capacity(foreign_key.fields.len());
+        for field in &foreign_key.fields {
+            if field.table() != &self.name || !declared.contains(field.field().as_str()) {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的外键 {} 引用了未声明的本地字段 {}",
+                    self.name, foreign_key.name, field
+                )));
+            }
+            columns.push(field.field().to_string());
+        }
+        let referenced_table = foreign_key.referenced_fields[0].table().clone();
+        if foreign_key
+            .referenced_fields
+            .iter()
+            .any(|field| field.table() != &referenced_table)
+        {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 的外键 {} 目标字段必须来自同一张表",
+                self.name, foreign_key.name
+            )));
+        }
+        Ok((
+            columns,
+            referenced_table.to_string(),
+            foreign_key
+                .referenced_fields
+                .iter()
+                .map(|field| field.field().to_string())
+                .collect(),
+        ))
     }
 }

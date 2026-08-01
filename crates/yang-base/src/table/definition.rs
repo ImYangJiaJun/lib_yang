@@ -5,7 +5,9 @@
 //! 生成不可变 [`TableDefinition`]。
 
 use super::field_config::{Audience, FieldConfig, FieldPermissions, RelationConfig, RelationType};
-use super::table_config::{IndexConfig, TableConfig, TimestampFields};
+use super::table_config::{
+    CheckConfig, ForeignKeyConfig, IndexConfig, TableConfig, TimestampFields,
+};
 #[cfg(feature = "mysql")]
 use super::TableQuery;
 use super::{FieldType, SortOrder, Validator};
@@ -99,6 +101,12 @@ impl Field {
             soft_delete: false,
             relation_display_fields: None,
         }
+    }
+
+    /// 声明当前字段由一个旧列原位改名而来；同步器不会复制或删除数据。
+    pub fn renamed_from(mut self, legacy_name: impl Into<String>) -> Self {
+        self.config.renamed_from = Some(legacy_name.into());
+        self
     }
 
     /// 创建 64 位自增主键字段。
@@ -482,6 +490,20 @@ struct PendingIndex {
     unique: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCheck {
+    name: String,
+    expression: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingForeignKey {
+    name: String,
+    columns: Vec<String>,
+    referenced_table: String,
+    referenced_columns: Vec<String>,
+}
+
 /// Schema-first 表构建器。
 #[derive(Debug, Clone)]
 #[must_use = "表构建器必须调用 build"]
@@ -490,6 +512,8 @@ pub struct Table {
     label: Option<String>,
     fields: Vec<Field>,
     indexes: Vec<PendingIndex>,
+    checks: Vec<PendingCheck>,
+    foreign_keys: Vec<PendingForeignKey>,
     default_order: Vec<Order>,
 }
 
@@ -501,6 +525,8 @@ impl Table {
             label: None,
             fields: Vec::new(),
             indexes: Vec::new(),
+            checks: Vec::new(),
+            foreign_keys: Vec::new(),
             default_order: Vec::new(),
         }
     }
@@ -588,6 +614,46 @@ impl Table {
         self
     }
 
+    /// 添加指定名称的 MySQL CHECK 约束。
+    ///
+    /// 表达式属于受信任的应用定义，不得来自请求或运行时配置。
+    pub fn check_named(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.checks.push(PendingCheck {
+            name: name.into(),
+            expression: expression.into(),
+        });
+        self
+    }
+
+    /// 添加指定名称的复合外键；更新和删除规则固定为 `RESTRICT`。
+    pub fn foreign_key_named<I, C, R, RC>(
+        mut self,
+        name: impl Into<String>,
+        columns: I,
+        referenced_table: impl Into<String>,
+        referenced_columns: R,
+    ) -> Self
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<ColumnName>,
+        R: IntoIterator<Item = RC>,
+        RC: Into<ColumnName>,
+    {
+        self.foreign_keys.push(PendingForeignKey {
+            name: name.into(),
+            columns: columns
+                .into_iter()
+                .map(|column| column.into().into_name())
+                .collect(),
+            referenced_table: referenced_table.into(),
+            referenced_columns: referenced_columns
+                .into_iter()
+                .map(|column| column.into().into_name())
+                .collect(),
+        });
+        self
+    }
+
     /// 设置首个默认排序规则。
     pub fn default_order(mut self, order: Order) -> Self {
         self.default_order = vec![order];
@@ -611,6 +677,7 @@ impl Table {
         }
 
         let mut field_names = HashSet::with_capacity(self.fields.len());
+        let mut legacy_names = HashSet::new();
         let mut configs = HashMap::with_capacity(self.fields.len());
         let mut primary_key: Option<String> = None;
         let mut created_at: Option<String> = None;
@@ -619,6 +686,8 @@ impl Table {
         let mut soft_delete: Option<String> = None;
         let mut tenant_key: Option<String> = None;
         let mut indexes = self.indexes;
+        let checks = self.checks;
+        let foreign_keys = self.foreign_keys;
 
         for mut field in self.fields {
             validate_identifier("字段", &field.config.name)?;
@@ -627,6 +696,16 @@ impl Table {
                     "表 {} 存在重复字段: {}",
                     self.name, field.config.name
                 )));
+            }
+            if let Some(legacy_name) = field.config.renamed_from.as_deref() {
+                validate_identifier("旧字段", legacy_name)?;
+                if legacy_name == field.config.name || !legacy_names.insert(legacy_name.to_string())
+                {
+                    return Err(BaseError::ConfigError(format!(
+                        "表 {} 的旧字段改名来源重复或未发生改名: {}",
+                        self.name, legacy_name
+                    )));
+                }
             }
             if field.config.display_name.is_empty() {
                 field.config.display_name = field.config.name.clone();
@@ -700,6 +779,16 @@ impl Table {
             configs.insert(field.config.name.clone(), field.config);
         }
 
+        if let Some(legacy_name) = legacy_names
+            .iter()
+            .find(|legacy_name| field_names.contains(legacy_name.as_str()))
+        {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 同时声明旧字段与改名后字段: {}",
+                self.name, legacy_name
+            )));
+        }
+
         let primary_key = primary_key
             .ok_or_else(|| BaseError::ConfigError(format!("表 {} 必须定义一个主键", self.name)))?;
 
@@ -715,6 +804,32 @@ impl Table {
                 normal_indexes.push(config);
             }
         }
+
+        let mut constraint_names = HashSet::new();
+        let checks = checks
+            .into_iter()
+            .map(|check| {
+                validate_constraint_name(&self.name, &check.name, &mut constraint_names)?;
+                validate_check_expression(&self.name, &check.name, &check.expression)?;
+                Ok(CheckConfig {
+                    name: check.name,
+                    expression: check.expression,
+                })
+            })
+            .collect::<Result<Vec<_>, BaseError>>()?;
+        let foreign_keys = foreign_keys
+            .into_iter()
+            .map(|foreign_key| {
+                validate_constraint_name(&self.name, &foreign_key.name, &mut constraint_names)?;
+                validate_foreign_key(&self.name, &field_names, &foreign_key)?;
+                Ok(ForeignKeyConfig {
+                    name: foreign_key.name,
+                    columns: foreign_key.columns,
+                    referenced_table: foreign_key.referenced_table,
+                    referenced_columns: foreign_key.referenced_columns,
+                })
+            })
+            .collect::<Result<Vec<_>, BaseError>>()?;
 
         let mut orders = Vec::with_capacity(self.default_order.len());
         for order in self.default_order {
@@ -754,6 +869,8 @@ impl Table {
                 field_refs,
                 unique_indexes,
                 indexes: normal_indexes,
+                checks,
+                foreign_keys,
                 default_order: orders,
                 soft_delete_field: soft_delete,
                 timestamp_fields,
@@ -1338,6 +1455,72 @@ fn validate_index(
         return Err(BaseError::ConfigError(format!(
             "表 {table} 存在重复索引名: {effective_name}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_constraint_name(
+    table: &str,
+    name: &str,
+    names: &mut HashSet<String>,
+) -> Result<(), BaseError> {
+    validate_identifier("约束", name)?;
+    if !names.insert(name.to_string()) {
+        return Err(BaseError::ConfigError(format!(
+            "表 {table} 存在重复约束名: {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_check_expression(table: &str, name: &str, expression: &str) -> Result<(), BaseError> {
+    let expression = expression.trim();
+    if expression.is_empty()
+        || expression.chars().count() > 2_048
+        || [";", "--", "/*", "*/"]
+            .iter()
+            .any(|marker| expression.contains(marker))
+    {
+        return Err(BaseError::ConfigError(format!(
+            "表 {table} 的 CHECK {name} 必须是单条、非空且长度受限的受信表达式"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_foreign_key(
+    table: &str,
+    field_names: &HashSet<String>,
+    foreign_key: &PendingForeignKey,
+) -> Result<(), BaseError> {
+    validate_identifier("外键目标表", &foreign_key.referenced_table)?;
+    if foreign_key.columns.is_empty()
+        || foreign_key.columns.len() != foreign_key.referenced_columns.len()
+    {
+        return Err(BaseError::ConfigError(format!(
+            "表 {table} 的外键 {} 本地列与目标列必须非空且数量一致",
+            foreign_key.name
+        )));
+    }
+    let mut local = HashSet::new();
+    let mut referenced = HashSet::new();
+    for column in &foreign_key.columns {
+        validate_identifier("外键列", column)?;
+        if !field_names.contains(column) || !local.insert(column) {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的外键 {} 引用了缺失或重复的本地列 {column}",
+                foreign_key.name
+            )));
+        }
+    }
+    for column in &foreign_key.referenced_columns {
+        validate_identifier("外键目标列", column)?;
+        if !referenced.insert(column) {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的外键 {} 重复引用目标列 {column}",
+                foreign_key.name
+            )));
+        }
     }
     Ok(())
 }

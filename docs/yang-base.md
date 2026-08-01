@@ -319,7 +319,7 @@ initializer.initialize_all(&plugin_manager).await?;
 let report = initializer.sync_app_schema(&app).await?;
 ```
 
-`sync_app_schema` 从 `AppRouter::table_definitions()` 汇总主表和附属表，在数据库级 advisory lock 下执行 additive 同步：只创建缺失表、列、主键和索引；已有字段类型、NULL、自增或主键冲突会 fail-fast。它不会自动执行 `DROP` 或改写不兼容列。
+`sync_app_schema` 从应用定义汇总数据表，在数据库级 advisory lock 下执行保数据演进：创建缺失结构，支持显式列改名、受控列修改、唯一索引、CHECK 与外键。可能受旧数据影响的变更先只读预检并报告表、对象和主键；任何问题都会阻止整批 DDL。未知列、索引和约束不会被自动删除。
 
 ## Plugin
 
@@ -328,7 +328,7 @@ let report = initializer.sync_app_schema(&app).await?;
 - `PluginRegistry`：构建完成后的确定性只读注册表。
 - `PluginManager`：需要运行时动态注册时使用的有锁版本。
 
-插件数据库迁移与应用表定义是两条互补入口：前者承载业务迁移历史，后者承载当前 schema-first additive 启动同步。
+应用表定义是当前 schema-first 结构契约；版本化迁移 API 仅为旧插件兼容入口，新应用应优先使用声明式预检与同步。
 
 ## Token（`token` feature）
 

@@ -161,7 +161,7 @@ let catalog = app.catalog()?;
 let report = initializer.sync_app_schema(&app).await?;
 ```
 
-`sync_app_schema` 执行 additive 同步，只创建缺失表、列、主键和索引；已有类型、NULL、自增或主键不兼容时 fail-fast，不自动执行破坏性变更。
+`sync_app_schema` 执行保数据同步：支持缺失结构、显式列改名、受控列修改、唯一索引、CHECK 与外键。旧数据不满足新约束时会报告表、对象和主键并在任何 DDL 前失败；未知结构不会被自动删除。
 
 推荐启动顺序：
 

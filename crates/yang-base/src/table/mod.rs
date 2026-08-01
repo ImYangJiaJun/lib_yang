@@ -13,8 +13,8 @@
 //! - 动态记录：[`Record`]
 //! - 可选数据库列兼容验证：[`SchemaColumn`]、[`SchemaValidationReport`]
 //!
-//! [`TableDefinition`] 是运行期访问、校验与权限契约，也是可选 additive schema
-//! 同步的声明来源；同步器只创建缺失表/列/主键/索引，绝不删除或改写已有结构。
+//! [`TableDefinition`] 是运行期访问、校验与权限契约，也是保数据 schema 演进的
+//! 声明来源；同步器支持显式改名和受控约束更新，但绝不自动删除未知结构。
 //!
 //! # 示例
 //!
@@ -80,6 +80,8 @@ pub use relation_options::{RelationOption, RelationOptionsRequest, RelationOptio
 pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaValidationReport};
 pub use table_config::SortOrder;
 pub(crate) use table_config::TableConfig;
+#[cfg(feature = "mysql")]
+pub(crate) use table_config::{CheckConfig, ForeignKeyConfig};
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
 pub use tables::{TableListResult, TableTreeNode, Tables, DEFAULT_TREE_MAX_NODES};
 pub use validator::{Validator, ValidatorFn};

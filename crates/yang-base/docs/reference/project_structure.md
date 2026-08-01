@@ -85,7 +85,7 @@ crates/yang-base/
 ### database
 
 - `GlobalDatabase` / `GlobalRedis`：进程级数据库客户端入口。
-- `DatabaseInitializer`：插件 migration、schema 验证和应用表 additive 同步。
+- `DatabaseInitializer`：旧插件 migration 兼容、schema 验证和应用表保数据演进。
 - `SchemaValidationReport`：记录兼容、缺失和破坏性差异。
 
 应用启动时应先完成底层数据库与插件初始化，再调用 `sync_app_schema(&app)`。同步器只创建缺失对象；不兼容差异会 fail-fast，不自动执行破坏性变更。

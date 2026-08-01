@@ -41,6 +41,9 @@ pub(crate) struct FieldConfig {
     /// 仅允许用于整数类型的主键字段；schema 同步器会在启动期校验该约束。
     pub auto_increment: bool,
 
+    /// 显式声明该字段由哪个旧列原位改名而来。
+    pub renamed_from: Option<String>,
+
     /// 验证器列表
     ///
     /// 用于验证字段值的验证器，按顺序执行
@@ -99,6 +102,7 @@ impl FieldConfig {
             required: false,
             default_value: None,
             auto_increment: false,
+            renamed_from: None,
             validators: Vec::new(),
             permissions: FieldPermissions::default(),
             hidden: false,
