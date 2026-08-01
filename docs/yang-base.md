@@ -303,19 +303,12 @@ let document = catalog.to_openapi(
 
 ### DatabaseInitializer
 
-`DatabaseInitializer` 负责：
-
-- 插件初始化 SQL 与 migration checksum
-- migration plan / dry-run / 并发占位 / 漂移检测
-- `validate_table_definition(&TableDefinition) -> SchemaValidationReport`
-- `sync_app_schema(&AppRouter)` 启动期 schema 同步
+`DatabaseInitializer` 负责基于 `TableDefinition` 做只读预检和启动期 Schema 同步。
 
 推荐启动顺序：
 
 ```rust
-let initializer = DatabaseInitializer::new(database, true);
-initializer.initialize_all(&plugin_manager).await?;
-
+let initializer = DatabaseInitializer::new(database);
 let report = initializer.sync_app_schema(&app).await?;
 ```
 
@@ -323,7 +316,7 @@ let report = initializer.sync_app_schema(&app).await?;
 
 ## Plugin
 
-- `Plugin`：名称、版本、依赖、配置 schema、初始化 SQL、迁移声明和生命周期回调。
+- `Plugin`：名称、版本、依赖、配置 schema 和生命周期回调。
 - `PluginManagerBuilder`：构建期注册并检查缺失/循环依赖。
 - `PluginRegistry`：构建完成后的确定性只读注册表。
 - `PluginManager`：需要运行时动态注册时使用的有锁版本。

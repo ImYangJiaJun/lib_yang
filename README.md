@@ -13,7 +13,6 @@ lib_yang/
 │   ├── yang-base/          # 后端服务、Action、路由、Token 与数据库编排
 │   ├── yang-base-derive/   # Action 派生宏
 │   ├── yang-runtime/       # 配置源、可观测性与进程生命周期
-│   ├── yang-migrate/       # BR 到 YANG 的迁移 codemod
 │   └── yang-pcg/           # UE5/Roguelike 过程式地图生成
 └── project/
     └── yang-system/        # 基于 yang-base 的基础系统与联合调试入口
@@ -51,7 +50,7 @@ pwsh -NoProfile -File project/yang-system/scripts/setup_local.ps1 -CheckOnly
 
 ### 编译基础库
 
-根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-runtime`、`yang-migrate` 和 `yang-pcg`：
+根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-runtime` 和 `yang-pcg`：
 
 ```powershell
 cargo check --workspace --all-targets --locked

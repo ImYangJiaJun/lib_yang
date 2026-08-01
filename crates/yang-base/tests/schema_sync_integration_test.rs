@@ -56,13 +56,11 @@ async fn schema_sync_is_concurrent_idempotent_additive_and_fail_closed() {
         Database::connect(&url)
             .await
             .expect("第一个数据库连接应成功"),
-        false,
     );
     let second = DatabaseInitializer::new(
         Database::connect(&url)
             .await
             .expect("第二个数据库连接应成功"),
-        false,
     );
     let initial = Arc::new(account_table(32, false));
     let first_definitions = [initial.as_ref()];
@@ -198,7 +196,7 @@ async fn schema_evolution_reports_dirty_primary_keys_before_any_ddl_and_retries_
         .build()
         .expect("目标表定义应有效");
     let pool = database.pool().clone();
-    let initializer = DatabaseInitializer::new(database, false);
+    let initializer = DatabaseInitializer::new(database);
 
     let preflight = initializer
         .preflight_table_definitions(&[&desired])

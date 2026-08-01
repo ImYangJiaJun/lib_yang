@@ -9,7 +9,7 @@ use super::DatabaseInitializer;
 use crate::error::BaseError;
 use crate::table::{
     CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, SchemaColumn, SchemaIssueKind,
-    TableConfig, TableDefinition,
+    SchemaValidationReport, TableConfig, TableDefinition,
 };
 use sqlx::mysql::MySqlConnection;
 use sqlx::{Executor, FromRow};
@@ -223,6 +223,54 @@ struct DesiredIndex {
 }
 
 impl DatabaseInitializer {
+    /// 从 MySQL information_schema 读取当前列并验证表定义的运行期字段契约。
+    ///
+    /// 本方法只读，不生成或执行 ALTER；数据库额外列不视为问题。
+    pub async fn validate_table_definition(
+        &self,
+        table: &TableDefinition,
+    ) -> Result<SchemaValidationReport, BaseError> {
+        #[derive(sqlx::FromRow)]
+        struct ColumnRow {
+            column_name: String,
+            data_type: String,
+            column_type: String,
+            is_nullable: String,
+            character_maximum_length: Option<i64>,
+            column_default: Option<String>,
+            extra: String,
+        }
+
+        let rows: Vec<ColumnRow> = self
+            .db()
+            .query_with_params(
+                "SELECT CAST(COLUMN_NAME AS CHAR) AS column_name, CAST(DATA_TYPE AS CHAR) AS data_type, CAST(COLUMN_TYPE AS CHAR) AS column_type, CAST(IS_NULLABLE AS CHAR) AS is_nullable, CAST(CHARACTER_MAXIMUM_LENGTH AS SIGNED) AS character_maximum_length, CAST(COLUMN_DEFAULT AS CHAR) AS column_default, CAST(EXTRA AS CHAR) AS extra FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+                vec![serde_json::Value::String(table.name().to_string())],
+            )
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        let columns = rows
+            .into_iter()
+            .map(|row| {
+                SchemaColumn::new(
+                    row.column_name,
+                    row.data_type,
+                    row.column_type,
+                    row.is_nullable.eq_ignore_ascii_case("YES"),
+                    row.character_maximum_length
+                        .and_then(|length| u64::try_from(length).ok()),
+                    row.column_default,
+                )
+                .with_auto_increment(
+                    row.extra
+                        .split_whitespace()
+                        .any(|part| part.eq_ignore_ascii_case("auto_increment")),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(table.validate_schema(&columns))
+    }
+
     /// 只读取当前数据库 schema 并计算待执行变更，不获取同步锁、不执行 DDL。
     ///
     /// 适用于生产启动门禁：返回非空 `changes` 表示数据库尚未与定义对齐；不兼容

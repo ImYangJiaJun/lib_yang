@@ -81,12 +81,6 @@ fn test_database_init_failed_message() {
 }
 
 #[test]
-fn test_database_migration_failed_message() {
-    let err = BaseError::DatabaseMigrationFailed("v1.0.0".to_string(), "SQL 语法错误".to_string());
-    assert_eq!(format!("{}", err), "数据库迁移失败 [v1.0.0]: SQL 语法错误");
-}
-
-#[test]
 fn test_database_not_initialized_message() {
     let err = BaseError::DatabaseNotInitialized;
     assert_eq!(format!("{}", err), "数据库未初始化");
@@ -214,7 +208,6 @@ fn test_all_error_messages_contain_chinese() {
         BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("test".to_string())),
         BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError("test".to_string())),
         BaseError::DatabaseInitFailed("test".to_string()),
-        BaseError::DatabaseMigrationFailed("v1".to_string(), "reason".to_string()),
         BaseError::DatabaseNotInitialized,
         BaseError::DatabaseTransactionFailed(yang_db::DbError::TransactionError(
             "test".to_string(),

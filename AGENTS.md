@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-YANG Rust workspace：包含 `yang-db`、`yang-base`（+ `yang-base-derive` 宏）、`yang-migrate`、`yang-pcg` 五个基础库 crate，以及用于联合调试基础库的 `yang-system` 应用。
+YANG Rust workspace：包含 `yang-db`、`yang-base`（+ `yang-base-derive` 宏）、`yang-runtime`、`yang-pcg` 五个基础库 crate，以及用于联合调试基础库的 `yang-system` 应用。
 
 ## STRUCTURE
 ```text
@@ -15,7 +15,7 @@ lib_yang/
 │   ├── yang-db/            # MySQL query builder + Redis client
 │   ├── yang-base/          # definition 内核、actions、tables、Tools、token、HTTP、transport-axum
 │   ├── yang-base-derive/   # #[derive(Action)] 与 params! 宏
-│   ├── yang-migrate/       # br-to-yang 迁移 codemod
+│   ├── yang-runtime/       # 配置源、可观测性与进程生命周期
 │   └── yang-pcg/           # deterministic PCG map generator + UE5 adapter
 ├── project/
 │   └── yang-system/        # independent nested Git/Cargo application for local integration

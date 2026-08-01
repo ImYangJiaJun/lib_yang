@@ -14,15 +14,15 @@
 
 - `AppRouter::table_configs()` 汇总每个模块的主表与附属表；附属表通过 `ModuleRouter::with_schema_table` 注册，不进入主表 CRUD 上下文。
 - `DatabaseInitializer::sync_app_schema(&app_router)` 必须在监听 HTTP 端口前调用。系统项目不需要 `.sql` 文件。
-- 缺失表按字段、主键和索引整体创建；已有表只增加缺失列、主键和索引。
+- 缺失表按字段、主键、索引、CHECK 和外键整体创建；已有表支持增加缺失结构、显式列改名和受控字段修改。
 - 同一数据库使用 MySQL advisory lock 串行化多服务器并发启动；DDL 中断后下一次按 `information_schema` 重新规划，已完成步骤不会重复。
 - 持锁后先读取并规划全部表；发现任意已知冲突时不会先修改排在前面的表。MySQL DDL 仍会隐式提交，执行阶段的数据库故障依靠下次启动幂等续作，而不是伪装成跨表事务。
-- 已有表的类型、NULL、自增、主键或同名索引冲突都会 fail-fast；同步器从不执行 `DROP`，也不自动改写现存列。
-- 已有数据的表不能增加无默认值的必填字段；已有表缺失自增主键列时要求人工处理。
+- 所有可能被旧数据阻止的修改会先做全局只读预检；失败报告包含表、约束对象和确定性排序的主键，且不会执行任何 DDL。
+- 同步器从不删除未知表、列、索引或约束；未声明 `renamed_from` 的字段不会被猜测改名。
 
 ```rust,ignore
 let app_router = build_app_router()?;
-let initializer = DatabaseInitializer::new(database, false);
+let initializer = DatabaseInitializer::new(database);
 let report = initializer.sync_app_schema(&app_router).await?;
 // schema 就绪后才启动 HTTP listener
 serve(app_router).await?;
@@ -30,4 +30,4 @@ serve(app_router).await?;
 
 ## 明确不做
 
-同步器不删除表/列/索引，不修改已有字段，不生成回滚，不管理外键、触发器、分区和在线 DDL 策略。需要数据回填、类型变更或零停机大表变更时，必须走单独、可审计的运维流程。
+同步器不删除表/列/索引/约束，不猜测字段改名，不生成回滚，也不管理触发器、分区和在线 DDL 策略。旧数据不满足新约束时启动失败，由运维按报告中的表、对象和主键人工修复后重试。
