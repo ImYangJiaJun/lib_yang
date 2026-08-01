@@ -26,8 +26,6 @@ AUXILIARY_PACKAGE_FLAGS = (
     "-p",
     "yang-base-derive",
     "-p",
-    "yang-migrate",
-    "-p",
     "yang-pcg",
     "-p",
     "yang-runtime",

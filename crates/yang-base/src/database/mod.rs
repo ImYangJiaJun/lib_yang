@@ -1,23 +1,20 @@
 //! 数据库管理模块
 //!
-//! 提供显式数据库初始化与 Schema 同步功能。
+//! 提供基于 [`crate::table::TableDefinition`] 的声明式 Schema 同步功能。
 //!
 //! # 主要组件
 //!
-//! - `DatabaseInitializer`：数据库初始化器（需启用 `mysql` feature）
+//! - `DatabaseInitializer`：数据库结构同步器（需启用 `mysql` feature）
 //!
 //! # 示例
 //!
 //! ```rust,ignore
 //! use yang_base::database::DatabaseInitializer;
-//! use yang_base::plugin::PluginManager;
 //! use yang_db::Database;
 //!
-//! // 初始化插件数据库
 //! let db = Database::connect("mysql://user:pass@localhost/db").await?;
-//! let manager = PluginManager::new();
-//! let initializer = DatabaseInitializer::new(db, true);
-//! initializer.initialize_all(&manager).await?;
+//! let initializer = DatabaseInitializer::new(db);
+//! initializer.sync_tables(&table_definitions).await?;
 //! ```
 
 #[cfg(feature = "mysql")]
@@ -28,11 +25,7 @@ mod schema_sync;
 mod schema_sync_tests;
 
 #[cfg(feature = "mysql")]
-pub use initializer::{
-    DatabaseInitializer, Migration, MigrationCheckConstraint, MigrationColumnCheck,
-    MigrationCompletionCheck, MigrationForeignKeyCheck, MigrationManifest, MigrationPlan,
-    MigrationPlanEntry, MigrationPlanStatus,
-};
+pub use initializer::DatabaseInitializer;
 #[cfg(feature = "mysql")]
 pub use schema_sync::{
     SchemaDataViolation, SchemaPreflightReport, SchemaSyncChange, SchemaSyncChangeKind,

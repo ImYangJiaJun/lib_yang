@@ -108,50 +108,6 @@ pub enum BaseError {
     #[error("数据库初始化失败: {0}")]
     DatabaseInitFailed(String),
 
-    /// 数据库迁移失败
-    #[error("数据库迁移失败 [{0}]: {1}")]
-    DatabaseMigrationFailed(String, String),
-
-    /// 迁移失败（别名）
-    #[error("迁移失败 [{0}] v{1}: {2}")]
-    MigrationFailed(String, String, String),
-
-    /// 迁移 SQL 执行失败，保留迁移身份、内容校验和与底层数据库错误链。
-    #[error("迁移执行失败 [{module}] v{version} checksum={checksum}: {source}")]
-    MigrationExecutionFailed {
-        /// 模块或插件名称。
-        module: String,
-        /// 迁移版本。
-        version: String,
-        /// 迁移 SQL 的稳定校验和。
-        checksum: String,
-        /// 底层数据库错误。
-        #[source]
-        source: yang_db::DbError,
-    },
-
-    /// 已执行迁移的内容与当前声明不一致。
-    #[error("迁移校验和不一致 [{module}] v{version}: expected={expected}, actual={actual:?}")]
-    MigrationChecksumMismatch {
-        /// 模块或插件名称。
-        module: String,
-        /// 迁移版本。
-        version: String,
-        /// 当前声明的校验和。
-        expected: String,
-        /// 数据库中保存的校验和；None 表示旧记录不可验证。
-        actual: Option<String>,
-    },
-
-    /// 同一迁移已被另一个初始化器预留。
-    #[error("迁移正在执行 [{module}] v{version}")]
-    MigrationInProgress {
-        /// 模块或插件名称。
-        module: String,
-        /// 迁移版本。
-        version: String,
-    },
-
     /// 数据库未初始化
     #[error("数据库未初始化")]
     DatabaseNotInitialized,
@@ -599,11 +555,6 @@ impl BaseError {
             BaseError::DatabaseQueryFailed(_) => 200003,
             BaseError::DatabaseExecuteFailed(_) => 200004,
             BaseError::DatabaseInitFailed(_) => 200005,
-            BaseError::DatabaseMigrationFailed(_, _) => 200006,
-            BaseError::MigrationFailed(_, _, _) => 200007,
-            BaseError::MigrationExecutionFailed { .. }
-            | BaseError::MigrationChecksumMismatch { .. }
-            | BaseError::MigrationInProgress { .. } => 200007,
             BaseError::DatabaseNotInitialized => 200008,
             BaseError::DatabaseTransactionFailed(_) => 200009,
             BaseError::MissingWhereClause(_) => 200010,
@@ -701,11 +652,6 @@ impl BaseError {
             BaseError::DatabaseQueryFailed(_) => "200003",
             BaseError::DatabaseExecuteFailed(_) => "200004",
             BaseError::DatabaseInitFailed(_) => "200005",
-            BaseError::DatabaseMigrationFailed(_, _) => "200006",
-            BaseError::MigrationFailed(_, _, _) => "200007",
-            BaseError::MigrationExecutionFailed { .. }
-            | BaseError::MigrationChecksumMismatch { .. }
-            | BaseError::MigrationInProgress { .. } => "200007",
             BaseError::DatabaseNotInitialized => "200008",
             BaseError::DatabaseTransactionFailed(_) => "200009",
             BaseError::MissingWhereClause(_) => "200010",
@@ -794,12 +740,7 @@ impl BaseError {
             BaseError::DatabaseConnectionFailed(_) | BaseError::DatabaseConnectionDbError(_) => {
                 C::Transient
             }
-            BaseError::MissingWhereClause(_)
-            | BaseError::DatabaseMigrationFailed(_, _)
-            | BaseError::MigrationFailed(_, _, _)
-            | BaseError::MigrationExecutionFailed { .. }
-            | BaseError::MigrationChecksumMismatch { .. }
-            | BaseError::MigrationInProgress { .. } => C::Client,
+            BaseError::MissingWhereClause(_) => C::Client,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
             | BaseError::DatabaseInitFailed(_) => C::Server,
@@ -956,19 +897,6 @@ mod tests {
         assert_eq!(
             BaseError::DatabaseInitFailed("reason".to_string()).code(),
             200005
-        );
-        assert_eq!(
-            BaseError::DatabaseMigrationFailed("plugin".to_string(), "reason".to_string()).code(),
-            200006
-        );
-        assert_eq!(
-            BaseError::MigrationFailed(
-                "plugin".to_string(),
-                "v1".to_string(),
-                "reason".to_string()
-            )
-            .code(),
-            200007
         );
         assert_eq!(BaseError::DatabaseNotInitialized.code(), 200008);
         assert_eq!(
@@ -1199,25 +1127,6 @@ mod tests {
     }
 
     #[test]
-    fn test_migration_execution_error_preserves_context_and_source() {
-        use std::error::Error;
-
-        let error = BaseError::MigrationExecutionFailed {
-            module: "accounts".into(),
-            version: "202607150001".into(),
-            checksum: "0123456789abcdef".into(),
-            source: yang_db::DbError::SqlSyntaxError("bad ddl".into()),
-        };
-
-        assert_eq!(error.code(), 200007);
-        assert_eq!(error.code_str(), "200007");
-        assert!(error.to_string().contains("accounts"));
-        assert!(error.to_string().contains("202607150001"));
-        assert!(error.to_string().contains("0123456789abcdef"));
-        assert!(error.source().is_some());
-    }
-
-    #[test]
     fn test_plugin_lifecycle_error_preserves_stage_and_source() {
         use std::error::Error;
 
@@ -1247,12 +1156,6 @@ mod tests {
             },
             BaseError::DatabaseConnectionFailed(yang_db::DbError::ConnectionError("c".into())),
             BaseError::DatabaseConnectionDbError(yang_db::DbError::ConnectionError("c".into())),
-            BaseError::MigrationExecutionFailed {
-                module: "m".into(),
-                version: "v1".into(),
-                checksum: "c".into(),
-                source: yang_db::DbError::QueryError("q".into()),
-            },
             BaseError::DatabaseNotInitialized,
             BaseError::RedisNotInitialized,
             BaseError::RedisConnectionFailed(yang_db::DbError::RedisConnectionError("c".into())),

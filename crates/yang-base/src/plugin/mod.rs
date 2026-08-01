@@ -100,11 +100,6 @@ fn normalize_plugin_lookup_name(name: &str) -> Option<&str> {
 ///         "1.0.0"
 ///     }
 ///     
-///     fn init_sql(&self) -> Vec<String> {
-///         vec![
-///             "CREATE TABLE IF NOT EXISTS my_table (id INT PRIMARY KEY)".to_string()
-///         ]
-///     }
 /// }
 /// ```
 #[async_trait]
@@ -136,28 +131,6 @@ pub trait Plugin: Send + Sync {
     /// - 依赖插件名称列表，默认为空
     fn dependencies(&self) -> &[&str] {
         &[]
-    }
-
-    /// 获取数据库初始化 SQL 脚本
-    ///
-    /// 返回创建表的 SQL 语句列表
-    /// 建议使用 IF NOT EXISTS 确保幂等性
-    ///
-    /// # 返回
-    /// - SQL 语句列表，默认为空
-    fn init_sql(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// 获取数据库迁移脚本
-    ///
-    /// 返回 (版本号, SQL 脚本) 的列表
-    /// 版本号格式：YYYYMMDDHHMMSS
-    ///
-    /// # 返回
-    /// - (版本号, SQL 脚本) 元组列表，默认为空
-    fn migration_sql(&self) -> Vec<(String, String)> {
-        Vec::new()
     }
 
     /// 获取插件配置 Schema

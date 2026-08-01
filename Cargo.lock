@@ -4469,13 +4469,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yang-migrate"
-version = "0.1.0"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "yang-pcg"
 version = "0.1.1"
 dependencies = [
