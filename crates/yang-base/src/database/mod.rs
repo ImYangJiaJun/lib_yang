@@ -34,4 +34,7 @@ pub use initializer::{
     MigrationPlanEntry, MigrationPlanStatus,
 };
 #[cfg(feature = "mysql")]
-pub use schema_sync::{SchemaSyncChange, SchemaSyncChangeKind, SchemaSyncReport};
+pub use schema_sync::{
+    SchemaDataViolation, SchemaPreflightReport, SchemaSyncChange, SchemaSyncChangeKind,
+    SchemaSyncReport,
+};

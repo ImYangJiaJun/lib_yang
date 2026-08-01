@@ -19,10 +19,30 @@ pub(crate) struct TableConfig {
     pub(crate) unique_indexes: Vec<IndexConfig>,
     #[cfg_attr(not(any(feature = "mysql", test)), allow(dead_code))]
     pub(crate) indexes: Vec<IndexConfig>,
+    #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
+    pub(crate) checks: Vec<CheckConfig>,
+    #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
+    pub(crate) foreign_keys: Vec<ForeignKeyConfig>,
     #[cfg_attr(not(any(feature = "mysql", test)), allow(dead_code))]
     pub(crate) default_order: Vec<(String, SortOrder)>,
     pub(crate) soft_delete_field: Option<String>,
     pub(crate) timestamp_fields: Option<TimestampFields>,
+}
+
+/// 编译后的 CHECK 约束。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckConfig {
+    pub(crate) name: String,
+    pub(crate) expression: String,
+}
+
+/// 编译后的外键约束；删除和更新规则固定为 RESTRICT。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignKeyConfig {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<String>,
+    pub(crate) referenced_table: String,
+    pub(crate) referenced_columns: Vec<String>,
 }
 
 impl TableConfig {

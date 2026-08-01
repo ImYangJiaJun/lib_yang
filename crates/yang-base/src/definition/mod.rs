@@ -28,8 +28,8 @@ pub use error::BuildError;
 pub use field::FieldSpec;
 pub use field::{
     AccessRule, AccessSpec, Decimal, Fields, Int, IntoFieldSpec, Key, Password, PresentationSpec,
-    Radio, StorageSpec, Str, Switch, Table, TableSpec, Text, Timestamp, TimestampMode, Tree,
-    ValidationSpec,
+    Radio, StorageSpec, Str, Switch, Table, TableCheckSpec, TableForeignKeySpec, TableSpec, Text,
+    Timestamp, TimestampMode, Tree, ValidationSpec,
 };
 pub use interface::{Actions, Addon, Module, Modules};
 pub use media::{
