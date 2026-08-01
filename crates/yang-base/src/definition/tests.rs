@@ -250,6 +250,7 @@ fn radio_builder_declares_filter_and_sort_access() {
     assert!(status.access.sortable);
 }
 
+#[cfg(feature = "mysql")]
 #[tokio::test]
 async fn radio_can_keep_varchar_storage_without_losing_value_validation() {
     use crate::table::FieldType;

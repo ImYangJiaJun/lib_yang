@@ -5,6 +5,9 @@
 //!
 //! - [`axum`]：Axum 0.8 HTTP 适配器（`transport-axum` feature）
 
+/// 受信代理后的客户端 IP 解析与请求扩展。
+pub mod client_ip;
+
 /// Axum 0.8 HTTP 传输适配器。
 #[cfg(feature = "transport-axum")]
 pub mod axum;

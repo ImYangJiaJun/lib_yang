@@ -17,6 +17,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/yang-migrate/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/project/yang-system/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/project/yang-system/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/yang-runtime/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/yang-runtime/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/project/yang-system/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

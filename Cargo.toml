@@ -16,11 +16,13 @@ repository = "https://github.com/ImYangJiaJun/lib_yang"
 [workspace.dependencies]
 # 异步运行时
 tokio = { version = "1.52.1", features = ["full"] }
+async-trait = "0.1.89"
 
 # 序列化
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.140"
 serde_urlencoded = "0.7"
+toml = "0.8"
 
 # Base64 编解码
 base64 = "0.22"
@@ -29,6 +31,7 @@ base64 = "0.22"
 sha2 = "0.10"
 
 # 错误处理
+anyhow = "1.0"
 thiserror = "2.0.18"
 
 # 日志
@@ -41,6 +44,12 @@ tracing-log = "0.2.0"
 
 # 指标门面（可选，feature "metrics" 启用；运行期由调用方挂 exporter）
 metrics = "0.24.2"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+opentelemetry = { version = "0.30", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.30", default-features = false, features = ["grpc-tonic", "tls", "trace"] }
+opentelemetry_sdk = { version = "0.30", default-features = false, features = ["trace"] }
+tracing-opentelemetry = "0.31"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # 时间与唯一标识
 chrono = "0.4.44"

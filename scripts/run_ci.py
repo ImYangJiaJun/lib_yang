@@ -29,6 +29,8 @@ AUXILIARY_PACKAGE_FLAGS = (
     "yang-migrate",
     "-p",
     "yang-pcg",
+    "-p",
+    "yang-runtime",
 )
 
 STABLE_COMMANDS = (
@@ -83,6 +85,10 @@ STABLE_COMMANDS = (
     Command(
         "yang-base documentation tests",
         ("cargo", "test", "--doc", "-p", "yang-base", "--locked"),
+    ),
+    Command(
+        "yang-runtime documentation tests",
+        ("cargo", "test", "--doc", "-p", "yang-runtime", "--locked"),
     ),
 )
 
