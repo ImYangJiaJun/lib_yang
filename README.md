@@ -12,13 +12,14 @@ lib_yang/
 │   ├── yang-db/            # MySQL/PostgreSQL 查询与 Redis 客户端
 │   ├── yang-base/          # 后端服务、Action、路由、Token 与数据库编排
 │   ├── yang-base-derive/   # Action 派生宏
+│   ├── yang-runtime/       # 配置源、可观测性与进程生命周期
 │   ├── yang-migrate/       # BR 到 YANG 的迁移 codemod
 │   └── yang-pcg/           # UE5/Roguelike 过程式地图生成
 └── project/
     └── yang-system/        # 基于 yang-base 的基础系统与联合调试入口
 ```
 
-`project/yang-system` 是独立 Git/Cargo 项目，并从根 workspace 排除。它通过相对路径直接依赖 `../../crates/yang-base` 和 `../../crates/yang-db`，因此基础库修改会直接参与基础系统编译，无需 Cargo patch。
+`project/yang-system` 是独立 Git/Cargo 项目，并从根 workspace 排除。它通过相对路径直接依赖 `../../crates/yang-base`、`../../crates/yang-db` 和 `../../crates/yang-runtime`，因此基础库修改会直接参与基础系统编译，无需 Cargo patch。
 
 `yang-base 0.2.0` 的注册边界同时承担契约和安全校验：同一 `ModuleRouter` 可以组合公开与受保护 API，`TokenAuthMiddleware` 只拦截受保护 Action；`.crud()` 自动为写接口生成 `{module}:write`、为读接口生成 `{module}:read`，并把具体 `TableDefinition` 的字段、主键和查询能力投影到 `ApiCatalog`。路由模板在注册/目录构建期按 Axum 0.8 的 `{name}` / `{*name}` 语法检查，`TableQuery` 则在生成 SQL 前校验 WHERE 字段、操作符和值类型，并把与 `null` 的等值比较规范化为 `IS NULL` / `IS NOT NULL`。
 
@@ -50,7 +51,7 @@ pwsh -NoProfile -File project/yang-system/scripts/setup_local.ps1 -CheckOnly
 
 ### 编译基础库
 
-根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-migrate` 和 `yang-pcg`：
+根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-runtime`、`yang-migrate` 和 `yang-pcg`：
 
 ```powershell
 cargo check --workspace --all-targets --locked
