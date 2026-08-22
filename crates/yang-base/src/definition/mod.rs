@@ -31,7 +31,7 @@ pub use field::{
     Radio, StorageSpec, Str, Switch, Table, TableCheckSpec, TableForeignKeySpec, TableSpec, Text,
     Timestamp, TimestampMode, Tree, ValidationSpec,
 };
-pub use interface::{Actions, Addon, Module, Modules};
+pub use interface::{ActionFnBuilder, Actions, Addon, Module, Modules};
 pub use media::{
     ActionMediaType, MultipartSpec, UploadLifecycle, DEFAULT_MULTIPART_MAX_FIELDS,
     DEFAULT_MULTIPART_MAX_FILES, DEFAULT_MULTIPART_MAX_FILE_BYTES,

@@ -53,6 +53,7 @@ mod action_trait;
 pub mod auth;
 pub mod builtin;
 mod context;
+pub(crate) mod functional;
 pub mod meta;
 mod request;
 mod request_context;
