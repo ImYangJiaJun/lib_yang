@@ -314,6 +314,8 @@ let report = initializer.sync_app_schema(&app).await?;
 
 `sync_app_schema` 从应用定义汇总数据表，在数据库级 advisory lock 下执行保数据演进：创建缺失结构，支持显式列改名、受控列修改、唯一索引、CHECK 与外键。可能受旧数据影响的变更先只读预检并报告表、对象和主键；任何问题都会阻止整批 DDL。未知列、索引和约束不会被自动删除。
 
+`validate_table_definition(table)` 提供单表只读校验：从 MySQL information_schema 读取当前列并验证表定义的运行期字段契约，返回 `SchemaValidationReport`，不生成或执行 ALTER。
+
 ## Plugin
 
 - `Plugin`：名称、版本、依赖、配置 schema 和生命周期回调。

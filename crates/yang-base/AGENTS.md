@@ -34,7 +34,7 @@ yang-base/
 |------|----------|-------|
 | 资源组装 | `src/tools.rs` | `ToolsBuilder` 仅启动期可变 → `Tools` 冻结只读；重复注册构建期报错；health_check/幂等 close |
 | 定义与组装应用 | `src/definition/builder.rs` | `AppBuilder::build` 全量交叉校验 → `BuiltApp`（catalog/registry/tools/table_definitions/compiled_views） |
-| Action 定义 | `src/action/typed.rs` + `#[derive(Action)]` | 业务实现 `Action::index`；宏生成 `TypedAction`；blanket 桥接 `DynAction` |
+| Action 定义 | `src/action/typed.rs` + `#[derive(Action)]` | 业务实现 `Action::index`；宏生成 `TypedAction`；blanket 桥接 `DynAction`。函数式通道：`ModuleSpec::action_fn`（`src/definition/interface.rs` + `src/action/functional.rs`），普通 async fn 直接注册 |
 | 输入声明 | `yang_base::params!` / `src/definition/param.rs` | body/query/path/header 合并一次反序列化 |
 | 文件/重定向响应 | `src/action/response.rs` | `ResponseBody::download/preview/redirect` → `ApiResponse::attachment`（JSON 线格式不变） |
 | HTTP 服务 | `src/transport/axum.rs` | `router()`/`serve()` + `AxumTransportConfig`/`CorsConfig`；CORS 白名单、超时、压缩、`/health/live|ready`、x-request-id 透传 |
@@ -88,7 +88,7 @@ Default = `token`, `http`, `mysql`, `redis`, `validator`, `plugin-schema`（`tra
 
 ## ANTI-PATTERNS
 - Builtin actions are non-generic typed handlers over runtime `TableDefinition`: add/get/select use `Record`, dynamic primary keys live inside typed DTOs. Custom actions implement the business `Action` trait（`index` + 强类型 Input/Output），由 `actions!`/`ModuleSpec::native_action` 原子注册；do not use a bare `serde_json::Value` as the whole input/output contract.
-- 不要把 Action 定义与路由注册拆成两步；`#[derive(Action)]` 的 route/params/权限与 Handler 必须同源。
+- 不要把 Action 定义与路由注册拆成两步；`#[derive(Action)]` 的 route/params/权限与 Handler 必须同源。函数式通道同样满足同源约定：`ModuleSpec::action_fn` 返回终结式 `ActionFnBuilder`，一次调用链同时给出 spec 与 handler，由 `.register()` 原子完成注册。
 - Plugin code is a 1.4k-line single file with existing unwraps; avoid adding new panic paths.
 - Do not bypass `TableQuery`/`FieldPermissions` when handling user-selected fields.
 - Do not add hardcoded production credentials; test/default Docker credentials belong only in test docs/examples.
