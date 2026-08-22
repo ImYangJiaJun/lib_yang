@@ -65,7 +65,7 @@ fn test_clear_preserves_capacity() {
     // 先写入一些内容以触发可能的扩容
     let data = serde_json::json!({"name": "test_user", "age": 18, "email": "test@example.com"});
     sql_gen
-        .build_insert("users", &data, &HashMap::new())
+        .build_insert("users", &data, &HashMap::new(), &[])
         .unwrap();
 
     let sql_cap_before = sql_gen.sql_capacity();
@@ -103,7 +103,9 @@ fn test_clear_does_not_use_new_allocation() {
 
     // 写入数据
     let data = serde_json::json!({"field1": "value1", "field2": 42});
-    sql_gen.build_insert("tbl", &data, &HashMap::new()).unwrap();
+    sql_gen
+        .build_insert("tbl", &data, &HashMap::new(), &[])
+        .unwrap();
 
     // clear 后容量应 >= 预分配值（256 和 8）
     sql_gen.clear_for_test();
@@ -162,7 +164,7 @@ proptest! {
 
         // 使用预分配的 SqlGenerator 生成 SQL
         let mut sql_gen = SqlGenerator::new();
-        sql_gen.build_insert("test_table", &data, &HashMap::new()).unwrap();
+        sql_gen.build_insert("test_table", &data, &HashMap::new(), &[]).unwrap();
 
         let sql = sql_gen.get_sql().to_string();
         let params_len = sql_gen.get_params().len();
@@ -238,13 +240,13 @@ proptest! {
         let mut sql_gen = SqlGenerator::new();
 
         // 第一次生成
-        sql_gen.build_insert("tbl", &data, &HashMap::new()).unwrap();
+        sql_gen.build_insert("tbl", &data, &HashMap::new(), &[]).unwrap();
         let sql_first = sql_gen.get_sql().to_string();
         let params_len_first = sql_gen.get_params().len();
 
         // clear 后第二次生成（验证容量保留不影响结果）
         sql_gen.clear_for_test();
-        sql_gen.build_insert("tbl", &data, &HashMap::new()).unwrap();
+        sql_gen.build_insert("tbl", &data, &HashMap::new(), &[]).unwrap();
         let sql_second = sql_gen.get_sql().to_string();
         let params_len_second = sql_gen.get_params().len();
 

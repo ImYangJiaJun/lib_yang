@@ -330,6 +330,58 @@ impl SelectExpr {
     }
 }
 
+/// 受控服务端 SQL 标量表达式。
+///
+/// 只能由白名单构造函数创建：渲染进 SQL 文本的是固定片段，动态部分一律走
+/// 绑定参数，调用方无法注入任意 SQL。目前覆盖服务端 Unix 时间戳场景
+/// （MySQL `UNIX_TIMESTAMP()`），后续新增函数按同一模式扩展枚举变体即可。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SqlExpr {
+    /// 服务端当前 Unix 时间戳（秒）。
+    UnixTimestamp,
+    /// 服务端当前 Unix 时间戳加偏移秒数；偏移量以绑定参数传递。
+    UnixTimestampAdd(i64),
+}
+
+impl SqlExpr {
+    /// 服务端当前 Unix 时间戳（秒）：MySQL `UNIX_TIMESTAMP()`，
+    /// PostgreSQL `EXTRACT(EPOCH FROM now())`。
+    pub fn unix_timestamp() -> Self {
+        Self::UnixTimestamp
+    }
+
+    /// 服务端当前 Unix 时间戳加 `seconds` 秒；`seconds` 以绑定参数传递，可正可负。
+    pub fn unix_timestamp_add(seconds: i64) -> Self {
+        Self::UnixTimestampAdd(seconds)
+    }
+
+    /// 渲染 MySQL 片段，返回（固定 SQL 片段，可选的 i64 绑定参数）。
+    #[cfg(feature = "mysql")]
+    pub(crate) fn mysql_render(&self) -> (&'static str, Option<i64>) {
+        match self {
+            Self::UnixTimestamp => ("UNIX_TIMESTAMP()", None),
+            Self::UnixTimestampAdd(seconds) => ("UNIX_TIMESTAMP() + ?", Some(*seconds)),
+        }
+    }
+
+    /// 渲染 PostgreSQL 片段；`placeholder` 为携带参数时 `$n` 占位符的序号。
+    ///
+    /// PostgreSQL 构造器尚未接入表达式入口，此渲染当前仅由单元测试覆盖，
+    /// 待 PG 侧需要时直接复用。
+    #[cfg(feature = "postgres")]
+    #[allow(dead_code)]
+    pub(crate) fn postgres_render(&self, placeholder: usize) -> (String, Option<i64>) {
+        match self {
+            Self::UnixTimestamp => ("EXTRACT(EPOCH FROM now())".to_string(), None),
+            Self::UnixTimestampAdd(seconds) => (
+                format!("EXTRACT(EPOCH FROM now()) + ${placeholder}"),
+                Some(*seconds),
+            ),
+        }
+    }
+}
+
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 fn quote_qualified(value: &str, quote: char) -> String {
     value
@@ -369,6 +421,37 @@ mod tests {
         for invalid in ["", "users;DROP", "COUNT(*)", "users.id.extra", "用户"] {
             assert!(TableRef::new(invalid).is_err());
             assert!(FieldRef::new(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn server_expressions_render_fixed_fragments_with_bound_dynamic_parts() {
+        #[cfg(feature = "mysql")]
+        {
+            assert_eq!(
+                SqlExpr::unix_timestamp().mysql_render(),
+                ("UNIX_TIMESTAMP()", None)
+            );
+            assert_eq!(
+                SqlExpr::unix_timestamp_add(900).mysql_render(),
+                ("UNIX_TIMESTAMP() + ?", Some(900))
+            );
+            // 负偏移同样走绑定参数，片段保持固定。
+            assert_eq!(
+                SqlExpr::unix_timestamp_add(-30).mysql_render(),
+                ("UNIX_TIMESTAMP() + ?", Some(-30))
+            );
+        }
+        #[cfg(feature = "postgres")]
+        {
+            assert_eq!(
+                SqlExpr::unix_timestamp().postgres_render(1),
+                ("EXTRACT(EPOCH FROM now())".to_string(), None)
+            );
+            assert_eq!(
+                SqlExpr::unix_timestamp_add(900).postgres_render(3),
+                ("EXTRACT(EPOCH FROM now()) + $3".to_string(), Some(900))
+            );
         }
     }
 

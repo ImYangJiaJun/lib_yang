@@ -66,6 +66,7 @@ yang-db/
 | `QueryBuilder` | `src/mysql/query_builder.rs` | main chainable SQL builder |
 | `Condition` | `src/mysql/condition.rs` | nested boolean condition tree |
 | `SqlValue` | `src/mysql/condition.rs` | bind parameter representation |
+| `SqlExpr` | `src/reference.rs` | 受控服务端标量表达式白名单（UNIX_TIMESTAMP 系列），渲染固定片段+绑定参数 |
 | `Transaction` | `src/mysql/transaction.rs` | transaction lifecycle wrapper |
 | `RedisClient` | `src/redis/client.rs` | Redis operation API |
 | `RedisConfig` | `src/redis/config.rs` | pool/timeouts/logging config |
@@ -86,6 +87,7 @@ yang-db/
 - `update()` and `delete()` require WHERE conditions; empty conditions return `MissingWhereClause`.
 - Use checked operator APIs (`where_and`, `where_or`, `having_cond`) for user input.
 - `insert_batch` auto-splits at 500 rows; use `insert_batch_with_size` for custom batch sizes.
+- 服务端时间用 `SqlExpr` 白名单（`unix_timestamp()`/`unix_timestamp_add(s)`），经 `set_expr`（INSERT VALUES / UPDATE SET）、`where_expr`（列↔表达式比较）、`select_expr`（投影+受控别名）接入构造器；`insert_returning_id` 显式返回自增主键。事务内行锁 SELECT 的构建器用 `QueryBuilder::from_pool(db.pool(), ...)` 创建后交给 `Transaction::select_for_update`。
 - Redis scripts use `redis::Script`; pipeline/transaction wrappers already build on `redis::pipe()`.
 
 ## HOTSPOTS

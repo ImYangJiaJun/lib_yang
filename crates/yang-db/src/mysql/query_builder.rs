@@ -150,12 +150,32 @@ impl SqlGenerator {
             self.append("DISTINCT ");
         }
 
-        // 字段列表
-        if builder.fields.is_empty() {
+        // 字段列表（普通投影字段 + 受控服务端表达式投影）
+        if builder.fields.is_empty() && builder.select_exprs.is_empty() {
             self.append("*");
         } else {
             // 验证需求: ID-1 — field() 按设计接受 SQL 表达式，标识符转义由调用方负责
-            self.append(&builder.fields.join(", "));
+            let mut has_projection = false;
+            if !builder.fields.is_empty() {
+                self.append(&builder.fields.join(", "));
+                has_projection = true;
+            }
+            // 受控服务端表达式投影：SQL 片段为 SqlExpr 白名单固定文本，别名经
+            // 标识符校验转义，动态部分（如偏移秒数）以绑定参数进入参数列表。
+            // 投影先于 WHERE 渲染，参数顺序与占位符顺序一致。
+            for (expression, alias) in &builder.select_exprs {
+                if has_projection {
+                    self.append(", ");
+                }
+                has_projection = true;
+                let (fragment, param) = expression.mysql_render();
+                self.append(fragment);
+                self.append(" AS ");
+                self.append(&super::identifier::quote_qualified(alias)?);
+                if let Some(seconds) = param {
+                    self.add_param(SqlValue::Int(seconds));
+                }
+            }
         }
 
         // FROM 子句
@@ -334,11 +354,13 @@ impl SqlGenerator {
     /// # 返回
     /// - Ok(()): 成功生成 SQL
     /// - Err(DbError): 生成失败
+    /// - expr_assignments: 受控服务端表达式写入值（追加在 JSON 数据列之后）
     pub(crate) fn build_insert(
         &mut self,
         table: &str,
         data: &serde_json::Value,
         field_types: &HashMap<String, FieldType>,
+        expr_assignments: &[(String, crate::SqlExpr)],
     ) -> Result<(), crate::error::DbError> {
         // 清空之前的内容
         self.clear();
@@ -348,7 +370,7 @@ impl SqlGenerator {
             crate::error::DbError::SerializationError("插入数据必须是 JSON 对象".to_string())
         })?;
 
-        if obj.is_empty() {
+        if obj.is_empty() && expr_assignments.is_empty() {
             return Err(crate::error::DbError::SerializationError(
                 "插入数据不能为空".to_string(),
             ));
@@ -365,6 +387,16 @@ impl SqlGenerator {
             // 根据字段类型转换值
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
             self.add_param(sql_value);
+        }
+
+        // 受控服务端表达式列：片段固定，动态部分（如偏移秒数）走绑定参数
+        for (field, expression) in expr_assignments {
+            fields.push(super::identifier::quote_identifier(field)?);
+            let (fragment, param) = expression.mysql_render();
+            placeholders.push(fragment.to_string());
+            if let Some(seconds) = param {
+                self.add_param(SqlValue::Int(seconds));
+            }
         }
 
         // 构建 INSERT 语句（表名亦 quote）
@@ -493,12 +525,14 @@ impl SqlGenerator {
     /// # 返回
     /// - Ok(()): 成功生成 SQL
     /// - Err(DbError): 生成失败
+    /// - expr_assignments: 受控服务端表达式赋值（追加在 JSON 数据列之后）
     pub(crate) fn build_update(
         &mut self,
         table: &str,
         data: &serde_json::Value,
         field_types: &HashMap<String, FieldType>,
         conditions: &[Condition],
+        expr_assignments: &[(String, crate::SqlExpr)],
     ) -> Result<(), crate::error::DbError> {
         // 清空之前的内容
         self.clear();
@@ -513,7 +547,7 @@ impl SqlGenerator {
             crate::error::DbError::SerializationError("更新数据必须是 JSON 对象".to_string())
         })?;
 
-        if obj.is_empty() {
+        if obj.is_empty() && expr_assignments.is_empty() {
             return Err(crate::error::DbError::SerializationError(
                 "更新数据不能为空".to_string(),
             ));
@@ -533,6 +567,19 @@ impl SqlGenerator {
             // 根据字段类型转换值
             let sql_value = self.json_value_to_sql_value(value, field_types.get(key))?;
             self.add_param(sql_value);
+        }
+
+        // 受控服务端表达式赋值：如 `used_at` = UNIX_TIMESTAMP()，动态部分走绑定参数
+        for (field, expression) in expr_assignments {
+            let (fragment, param) = expression.mysql_render();
+            set_clauses.push(format!(
+                "{} = {}",
+                super::identifier::quote_identifier(field)?,
+                fragment
+            ));
+            if let Some(seconds) = param {
+                self.add_param(SqlValue::Int(seconds));
+            }
         }
 
         self.append(&set_clauses.join(", "));
@@ -983,13 +1030,22 @@ pub struct QueryBuilder<'a> {
     distinct: bool,
     unions: Vec<(UnionOperator, Box<QueryBuilder<'a>>)>,
     field_types: HashMap<String, FieldType>,
+    /// 受控服务端表达式写入值（UPDATE 的 SET 与 INSERT 的 VALUES 共用）。
+    expr_assignments: Vec<(String, crate::SqlExpr)>,
+    /// SELECT 投影中的受控服务端标量表达式及其输出别名。
+    select_exprs: Vec<(crate::SqlExpr, String)>,
     #[allow(dead_code)]
     enable_logging: bool,
 }
 
 impl<'a> QueryBuilder<'a> {
-    /// 从共享 pool 与受控表引用创建查询；供上层权限/租户计划编译器使用。
-    #[doc(hidden)]
+    /// 从共享连接池创建查询构建器（pool 侧正式入口，与 [`crate::Database::table`]
+    /// 等价，但不携带连接池的日志开关）。
+    ///
+    /// 主要用途：构造将要交给 [`crate::mysql::Transaction::select`] /
+    /// [`crate::mysql::Transaction::select_for_update`] /
+    /// [`crate::mysql::Transaction::select_locked`] 执行的 SELECT——这些方法只读取
+    /// 构建器状态并在事务连接上执行，因此构建器必须从不借用事务的 pool 创建。
     pub fn from_pool(pool: &'a MySqlPool, table: &crate::TableRef) -> Self {
         Self::new(pool, table.as_str(), false)
     }
@@ -1010,6 +1066,8 @@ impl<'a> QueryBuilder<'a> {
             distinct: false,
             unions: Vec::new(),
             field_types: HashMap::new(),
+            expr_assignments: Vec::new(),
+            select_exprs: Vec::new(),
             enable_logging,
         }
     }
@@ -1033,6 +1091,8 @@ impl<'a> QueryBuilder<'a> {
             distinct: false,
             unions: Vec::new(),
             field_types: HashMap::new(),
+            expr_assignments: Vec::new(),
+            select_exprs: Vec::new(),
             enable_logging,
         }
     }
@@ -1054,6 +1114,30 @@ impl<'a> QueryBuilder<'a> {
     /// 添加受控聚合表达式。
     pub fn expr(mut self, expression: crate::SelectExpr) -> Self {
         self.fields.push(expression.mysql_sql());
+        self
+    }
+
+    /// 在 SELECT 投影中追加受控服务端标量表达式，并以受控字段引用作为输出别名。
+    ///
+    /// 渲染形如 ``UNIX_TIMESTAMP() AS `now```；表达式片段是 [`crate::SqlExpr`]
+    /// 白名单内的固定文本，别名经标识符校验转义，动态部分（如偏移秒数）以绑定
+    /// 参数传递。可与 [`crate::mysql::Transaction::select_for_update`] 等行锁查询
+    /// 组合，覆盖「读取行的同时取服务端当前时间」的场景。
+    pub fn select_expr(mut self, expression: crate::SqlExpr, alias: &crate::FieldRef) -> Self {
+        self.select_exprs
+            .push((expression, alias.as_str().to_string()));
+        self
+    }
+
+    /// 把字段的写入值设为受控服务端表达式，UPDATE 的 SET 子句与 INSERT 的
+    /// VALUES 子句同样生效（如 `used_at = UNIX_TIMESTAMP()`）。
+    ///
+    /// 与 JSON 数据列混用时表达式列追加在其后；表达式只能由 [`crate::SqlExpr`]
+    /// 的白名单构造函数创建，动态部分一律走绑定参数，调用方无法注入 SQL 片段。
+    /// `insert`/`update` 时若 JSON 数据为空对象但存在表达式赋值，语句仍然合法。
+    pub fn set_expr(mut self, field: &crate::FieldRef, expression: crate::SqlExpr) -> Self {
+        self.expr_assignments
+            .push((field.as_str().to_string(), expression));
         self
     }
 
@@ -1338,6 +1422,40 @@ impl<'a> QueryBuilder<'a> {
         predicate: &crate::Predicate,
     ) -> Result<Self, crate::error::DbError> {
         self.conditions.push(predicate_condition(predicate)?);
+        Ok(self)
+    }
+
+    /// 添加字段与受控服务端表达式的 AND 比较条件（如 `expires_at > UNIX_TIMESTAMP()`）。
+    ///
+    /// `op` 仅支持六个比较操作符；传入 [`crate::CompareOp::Like`] 时返回
+    /// `Err(DbError::UnsupportedOperator)`。表达式右值由 [`crate::SqlExpr`] 白名单
+    /// 构造函数创建，动态部分（如偏移秒数）以绑定参数传递。
+    pub fn where_expr(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        expression: crate::SqlExpr,
+    ) -> Result<Self, crate::error::DbError> {
+        use crate::mysql::condition::ComparisonOperator;
+
+        let operator = match op {
+            crate::CompareOp::Eq => ComparisonOperator::Eq,
+            crate::CompareOp::Ne => ComparisonOperator::Ne,
+            crate::CompareOp::Gt => ComparisonOperator::Gt,
+            crate::CompareOp::Lt => ComparisonOperator::Lt,
+            crate::CompareOp::Gte => ComparisonOperator::Gte,
+            crate::CompareOp::Lte => ComparisonOperator::Lte,
+            crate::CompareOp::Like => {
+                return Err(crate::error::DbError::UnsupportedOperator(
+                    "LIKE 不支持服务端表达式右值".to_string(),
+                ));
+            }
+        };
+        self.conditions.push(Condition::ColumnExprComparison(
+            field.as_str().to_string(),
+            operator,
+            expression,
+        ));
         Ok(self)
     }
 
@@ -2276,7 +2394,12 @@ impl<'a> QueryBuilder<'a> {
 
         // 生成 INSERT 语句
         let mut generator = SqlGenerator::new();
-        generator.build_insert(&self.table, &json_data, &self.field_types)?;
+        generator.build_insert(
+            &self.table,
+            &json_data,
+            &self.field_types,
+            &self.expr_assignments,
+        )?;
 
         let sql = generator.get_sql();
         let params = generator.get_params();
@@ -2319,6 +2442,37 @@ impl<'a> QueryBuilder<'a> {
                 Err(crate::error::DbError::from(e))
             }
         }
+    }
+
+    /// 插入单条数据并显式返回 MySQL 自增主键（`LAST_INSERT_ID()`）。
+    ///
+    /// 语义与 [`Self::insert`] 的返回值一致（`insert` 历来返回自增 ID 而非受影响
+    /// 行数），本方法以更明确的名字供「插入后立刻拿主键」的场景使用（如唯一哨兵
+    /// 的原子 claim）。表没有 AUTO_INCREMENT 列时返回 0。
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use yang_db::Database;
+    /// # use serde_json::json;
+    /// # async fn example() -> Result<(), yang_db::DbError> {
+    /// # let db = Database::connect("mysql://root:password@localhost/test").await?;
+    /// let id = db.table(yang_db::table!("users"))
+    ///     .insert_returning_id(&json!({"name": "张三"}))
+    ///     .await?;
+    /// assert!(id > 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn insert_returning_id<T>(self, data: &T) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        self.insert(data).await
     }
 
     /// 批量插入数据
@@ -2687,7 +2841,13 @@ impl<'a> QueryBuilder<'a> {
 
         // 生成 UPDATE 语句
         let mut generator = SqlGenerator::new();
-        generator.build_update(&self.table, &json_data, &self.field_types, &self.conditions)?;
+        generator.build_update(
+            &self.table,
+            &json_data,
+            &self.field_types,
+            &self.conditions,
+            &self.expr_assignments,
+        )?;
 
         let sql = generator.get_sql();
         let params = generator.get_params();
@@ -4366,7 +4526,7 @@ mod tests {
         });
         let field_types = HashMap::new();
 
-        let result = generator.build_insert("users", &data, &field_types);
+        let result = generator.build_insert("users", &data, &field_types, &[]);
         assert!(result.is_ok());
 
         let sql = generator.get_sql();
@@ -4389,7 +4549,7 @@ mod tests {
         let mut field_types = HashMap::new();
         field_types.insert("data".to_string(), FieldType::Json);
 
-        let result = generator.build_insert("users", &data, &field_types);
+        let result = generator.build_insert("users", &data, &field_types, &[]);
         assert!(result.is_ok());
 
         let sql = generator.get_sql();
@@ -4410,7 +4570,7 @@ mod tests {
         let data = serde_json::json!({});
         let field_types = HashMap::new();
 
-        let result = generator.build_insert("users", &data, &field_types);
+        let result = generator.build_insert("users", &data, &field_types, &[]);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -4424,7 +4584,7 @@ mod tests {
         let data = serde_json::json!([1, 2, 3]); // 数组而不是对象
         let field_types = HashMap::new();
 
-        let result = generator.build_insert("users", &data, &field_types);
+        let result = generator.build_insert("users", &data, &field_types, &[]);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
