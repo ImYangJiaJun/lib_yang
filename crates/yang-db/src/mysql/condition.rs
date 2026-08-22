@@ -145,6 +145,8 @@ pub enum Condition {
     IsNotNull(String),
     /// 两个标识符之间的受控比较。
     ColumnComparison(String, ComparisonOperator, String),
+    /// 字段与受控服务端表达式的比较（如 `expires_at > UNIX_TIMESTAMP()`）。
+    ColumnExprComparison(String, ComparisonOperator, crate::SqlExpr),
     /// EXISTS 子查询。
     Exists(Box<Subquery>),
     /// NOT EXISTS 子查询。
@@ -431,6 +433,21 @@ fn write_condition_to_sql_owned_checked(
             ));
             Ok(())
         }
+        Condition::ColumnExprComparison(field, op, expression) => {
+            // 表达式片段是 SqlExpr 白名单内的固定文本，动态部分（如偏移秒数）
+            // 只以绑定参数进入参数列表，绝不内联进 SQL 文本。
+            let (fragment, param) = expression.mysql_render();
+            if let Some(seconds) = param {
+                params.push(SqlValue::Int(seconds));
+            }
+            out.push_str(&format!(
+                "{} {} {}",
+                quote_identifier(&field)?,
+                op.as_sql(),
+                fragment
+            ));
+            Ok(())
+        }
         Condition::Exists(subquery) => {
             out.push_str("EXISTS (");
             write_subquery(*subquery, out, params)?;
@@ -508,7 +525,7 @@ fn write_subquery(
 }
 
 #[cfg(test)]
-#[allow(deprecated, clippy::unwrap_used)]
+#[allow(deprecated, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use chrono::NaiveDate;
@@ -784,6 +801,38 @@ mod tests {
     }
 
     // 测试 condition_to_sql 函数
+    #[test]
+    fn test_condition_column_expr_comparison_renders_fixed_fragment_with_bound_param() {
+        // 无参表达式：不产出绑定参数
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::ColumnExprComparison(
+                "expires_at".to_string(),
+                ComparisonOperator::Gt,
+                crate::SqlExpr::unix_timestamp(),
+            ),
+            &mut params,
+        )
+        .expect("合法表达式条件应渲染成功");
+        assert_eq!(sql, "`expires_at` > UNIX_TIMESTAMP()");
+        assert!(params.is_empty());
+
+        // 带参表达式：偏移秒数只进参数列表，不进 SQL 文本
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::ColumnExprComparison(
+                "expires_at".to_string(),
+                ComparisonOperator::Lte,
+                crate::SqlExpr::unix_timestamp_add(600),
+            ),
+            &mut params,
+        )
+        .expect("合法表达式条件应渲染成功");
+        assert_eq!(sql, "`expires_at` <= UNIX_TIMESTAMP() + ?");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0], SqlValue::Int(600)));
+    }
+
     #[test]
     fn test_condition_eq() {
         let mut params = Vec::new();
