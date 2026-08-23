@@ -71,7 +71,6 @@ pub mod table;
 #[cfg(feature = "token")]
 pub mod token;
 pub mod tools;
-#[cfg(feature = "transport-axum")]
 pub mod transport;
 
 // 重新导出插件系统的核心类型，方便用户直接使用
