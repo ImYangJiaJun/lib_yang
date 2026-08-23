@@ -4,6 +4,7 @@
 //! 剥离可信代理；遇到第一个不受信地址即停止，从而忽略客户端伪造的更左侧前缀。
 
 use async_trait::async_trait;
+use std::borrow::Cow;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use yang_base::action::{ActionContext, ApiResponse};
 use yang_base::router::{Middleware, Next};
@@ -26,6 +27,7 @@ enum ResolutionSource {
 }
 
 impl ResolutionSource {
+    #[cfg(feature = "metrics")]
     const fn metric_label(self) -> &'static str {
         match self {
             Self::DirectPeer => "direct",
@@ -196,6 +198,21 @@ impl TrustedClientIpResolver {
 /// 校验受信代理配置；空列表表示完全忽略外部转发头。
 pub fn validate_trusted_proxy_cidrs(values: &[String]) -> Result<(), BaseError> {
     TrustedClientIpResolver::from_cidrs(values).map(|_| ())
+}
+
+/// 限流等场景使用的客户端 IP 身份：优先取受信中间件写入的请求扩展，
+/// 其次退回 TCP 对端地址，两者都缺失时归入共享 `"unknown"` 分组。
+pub fn client_ip_identity(ctx: &ActionContext) -> Cow<'_, str> {
+    ctx.request_meta
+        .extensions
+        .get(CLIENT_IP_META_KEY)
+        .map(|value| Cow::Borrowed(value.as_str()))
+        .or_else(|| {
+            ctx.request_meta
+                .peer_addr
+                .map(|address| Cow::Owned(address.ip().to_string()))
+        })
+        .unwrap_or(Cow::Borrowed("unknown"))
 }
 
 /// 把解析后的客户端 IP 写入只有受信代码可构造的请求传输扩展。

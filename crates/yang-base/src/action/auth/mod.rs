@@ -34,6 +34,29 @@
 //!
 //! let login = LoginAction::new(MyVerifier);
 //! ```
+//!
+//! # 认证通用机制
+//!
+//! 除内置 Action 外，本模块还下沉了账号域可复用的机制能力：
+//!
+//! - [`password`]：Argon2 密码哈希与校验的受控执行边界（并发上限由构造函数注入）。
+//! - [`rate_limit`]：认证入口的 Redis 原子限流与失败计数。
+//! - [`email_verification`]：一次性邮箱验证码（摘要存储、防枚举、原子单次消费），
+//!   投递经业务实现的 sender trait 注入。
+//! - [`browser_session`]：浏览器刷新会话 Cookie 签发/清除与同源校验。
+
+mod browser_session;
+mod email_verification;
+mod password;
+mod rate_limit;
+
+pub use browser_session::{BrowserAccessToken, BrowserSession, ReloginRequired};
+pub use email_verification::{
+    normalize_email, EmailDeliveryError, EmailVerificationConfig, RegistrationEmailCodeAccepted,
+    RegistrationEmailSender, RegistrationEmailSenderHandle, RegistrationEmailVerification,
+};
+pub use password::PasswordEngine;
+pub use rate_limit::{AuthOperation, AuthRateLimitConfig, AuthRateLimiter};
 
 use crate::action::{ActionContext, ApiResponse, TypedHandler, User};
 use crate::error::BaseError;

@@ -17,10 +17,10 @@ yang-base/
 │   ├── database/        # DatabaseInitializer（迁移治理 + additive schema 同步）
 │   ├── definition/      # 定义内核：AppBuilder/BuiltApp/Catalog/Registry/Spec/字段与参数定义
 │   ├── plugin/          # 旧代插件生命周期（新链路以 definition Addon 组织业务）
-│   ├── action/          # child AGENTS.md: Action(业务 trait)/TypedHandler/TypedAction/DynAction
+│   ├── action/          # child AGENTS.md: Action(业务 trait)/TypedHandler/TypedAction/DynAction；auth/ 内含认证通用机制
 │   ├── table/           # child AGENTS.md: Table/Field/TableDefinition/Record/TableQuery
 │   ├── router/          # 洋葱中间件（RequestId/authz 等）
-│   ├── transport/       # axum.rs：Axum 0.8 HTTP 适配器，`transport-axum` feature
+│   ├── transport/       # client_ip（无门控：受信代理 IP 解析与限流身份）；axum.rs 适配器走 `transport-axum` feature
 │   ├── http/            # reqwest wrapper，`http` feature（经 Tools http 槽获取）
 │   ├── token/           # JWT TokenManager + revocation，`token` feature
 │   └── error/           # BaseError with numeric codes
@@ -62,11 +62,16 @@ yang-base/
 | `HttpClient` | `src/http/client.rs` | reqwest client wrapper（Tools http 槽） |
 | `router` / `serve` / `AxumTransportConfig` | `src/transport/axum.rs` | Axum 0.8 传输适配器 |
 | `BaseError` | `src/error/mod.rs` | crate-wide structured errors |
+| `PasswordEngine` | `src/action/auth/password.rs` | Argon2 密码哈希/校验，spawn_blocking + Semaphore 并发上限（参数注入） |
+| `AuthRateLimiter` / `AuthRateLimitConfig` / `AuthOperation` | `src/action/auth/rate_limit.rs` | 认证入口 Redis 原子限流与失败计数（IP+身份双维度） |
+| `RegistrationEmailVerification` / `EmailVerificationConfig` / `RegistrationEmailSender(Handle)` | `src/action/auth/email_verification.rs` | 一次性验证码：摘要存储、防枚举、原子单次消费；投递经 trait 注入 |
+| `BrowserSession` | `src/action/auth/browser_session.rs` | 刷新会话 Cookie 签发/清除 + Same-Origin 校验（cookie 名/Path 参数化） |
+| `client_ip_identity` | `src/transport/client_ip.rs` | 限流身份：受信扩展 → TCP 对端 → "unknown" |
 
 ## FEATURE GATES
 | Feature | Enables |
 |---------|---------|
-| `token` | `src/token`, `TokenManager`（自动启用 `redis`） |
+| `token` | `src/token`, `TokenManager`（自动启用 `redis`）；并启用 `action::auth` 认证通用机制（PasswordEngine/AuthRateLimiter/邮箱验证码/BrowserSession，拉入 argon2/rand_core/hmac/http-uri） |
 | `http` | `src/http` reqwest wrapper + Tools http 槽 |
 | `mysql` | sqlx-backed table/action/database execution |
 | `redis` | Redis client resource slot |
