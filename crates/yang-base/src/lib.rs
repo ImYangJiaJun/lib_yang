@@ -147,6 +147,15 @@ macro_rules! action {
     }};
 }
 
+/// 编译期校验的 ActionName 字面量，例如 `action_name!("login")`。
+#[macro_export]
+macro_rules! action_name {
+    ($value:literal) => {{
+        const _: () = $crate::definition::__validate_segment_literal($value);
+        $crate::definition::ActionName::__from_validated_literal($value)
+    }};
+}
+
 /// 编译期校验的限定 ViewRef 字面量。
 #[macro_export]
 macro_rules! view {

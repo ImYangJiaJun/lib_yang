@@ -76,6 +76,7 @@ pub use auth::{
     TokenAuthMiddleware, TokenClaimsValidator, TracingAuditHook,
 };
 pub use context::{ActionContext, User};
+pub use functional::CrudFnAction;
 pub use meta::ActionMeta;
 pub use request::Request;
 pub use request_context::{
