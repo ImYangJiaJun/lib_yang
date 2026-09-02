@@ -1,0 +1,34 @@
+# lib_yang 仓库根 .dockerignore
+# 供 yang-system 后端镜像使用（构建上下文必须是仓库根，因为
+# project/yang-system 通过相对路径依赖 ../../crates）。
+# 本文件只影响 docker build 上下文，不改变 .gitignore 语义。
+
+# VCS 与工具元数据
+.git
+.gitattributes
+.gitignore
+.idea
+.vscode
+.claude
+.codegraph
+.codex
+.agents
+
+# 构建产物与缓存
+target
+**/target
+**/node_modules
+**/.quasar
+**/dist
+**/coverage
+**/playwright-report
+**/test-results
+**/test-results-production
+
+# 本地配置与密钥（禁止进入构建上下文；生产凭据经环境变量/secret 目录注入）
+**/.env
+project/yang-system/config.toml
+project/yang-system/config.local.toml
+
+# 压缩包与杂项
+*.7z
