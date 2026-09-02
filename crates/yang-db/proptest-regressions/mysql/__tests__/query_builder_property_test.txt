@@ -1,0 +1,60 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 226070b15a881a07f861eff9546259e4b3f92b6f2fe66f5b3852d68871d17c16 # shrinks to table_name = "a", field_name = "a"
+cc 975b3a80483fae063c363dfecf92fea1a5f6b0c83c1c4db6e10083d90a333446 # shrinks to table_name = "a", fields = ["a"]
+cc 2eefd9d63f30ceb9536a811dc0f384e12a8ea5d055ad0d6557c056f438277a53 # shrinks to table_name = "a"
+cc 92d60011c1efc047ad201d7d42d57b4781d882baa4c608e06dccc95bba829393 # shrinks to table_name = "a", field = "a", asc = false
+cc c6728c9236cd4f69b47c1d50a53e096b61769fdf42179411405a0b4c3b8b7096 # shrinks to table_name = "a", join_tables = ["a"]
+cc 0df24340cb19761a208492b4b9eeb5e569ecf48edef6c2610b7744a479a2294a # shrinks to table_name = "a", field = "a"
+cc f82c803d07254ce8bb0ee3a45f98b07b511fed6afd03af50a99799ddab4b69dd # shrinks to table_name = "a", field = "a"
+cc b9f1927ccff9e04f84fa034e1e689b3330398002913f83d3922a5a534c570f9b # shrinks to table_name = "a", field = "a", values = [0]
+cc d3310c4e6fdf61bed1835d5c0234c4a1c657a436b45d5dbbe01aff92060fa6d6 # shrinks to table_name = "a", fields = ["a"]
+cc f10c2aeb1b106b05e60a8c9bd0ebabf2da80ed863146f532fbf82e920ddeea26 # shrinks to table_name = "a", fields = ["a"]
+cc 34179747a26f8f9e7663fb061f27e974fda0a1d8816d67c69f7dc2419185118a # shrinks to table_name = "a", field_name = "a", field_value = 1
+cc f140db788228d1343f4e75c6bd42e54d1f471feeee0e6ecab6e4551841e3a8e4 # shrinks to table_name = "a", join_table = "a", on_condition = "a.a = a.a"
+cc d1fb6269f407d64a2ce604b8b7c5c9143a38f7e117d9524437aa454a60aa8190 # shrinks to table_name = "a", json_field = "a", datetime_field = "a_", timestamp_field = "aa", decimal_field = "d3", blob_field = "jy___t_4_4__5i4_755ar", text_field = "e316__o1p_vd792_r1__03xjq__m"
+cc 846516cba1cf0d621d42d7c318ae9ee72ef72f3fa9d33e243f86c1943ac65ca4 # shrinks to table_name = "a", field = "a", value = -21
+cc 68beda44750dcc8d220eddb9104117003aee7b524ed98a3d5293d77c9ca88808 # shrinks to table_name = "a", field = "a", values = [0, -717]
+cc 0eebf5c7489d19036b97ecd3c48b7a34ff62e5b3d00c29946b503133d09f72b4 # shrinks to table_name = "a", field = "a", start = 0, end = -136222
+cc 2353a97591d029e575bc7778e3fb89b7d4c59095ec1bb27bdb4cf9edb479cf85 # shrinks to table_name = "d_1___6u_4", fields = ["a___sg_ik__80fsq6y5f_5_"], join_table = "uq7s_4d8yolgq_ob9m_", where_field = "d_euz_2w9rm", order_field = "d1mlta8b___fm6__410mk6_ez", group_field = "f_h_3d77_l"
+cc 89372be753b1d3ebcc82f42b144c719d716a3a01e9178f5e38efb637ce11134e # shrinks to table_name = "bvu4l63pw_czy5w2nz8lc_aqg9xewyn", sum_field = "k9gp", where_field = "d_0__p_q__kid1", where_value = 757
+cc d729e8ee28be7b31348de85175054dcd995264215a9593ff50f72449ec4ba99f # shrinks to base_table = "b8858w_to_lusq_qw4_k__0ay_x", join_table = "oa4___rpp__n0__7m8j", base_alias = "drx", join_alias = "umz78j"
+cc d628997056397b58b8dc95f598abaf018360472e9680e63e63cf21a1c3085887 # shrinks to op = "O#V9m"
+cc 50a504759e774cfe3185f8a8667b501fee1b672caffef2164f297a1663747c49 # shrinks to op = "%&VK5*&&"
+cc 301eb5fb611b9bfae3f3ddcd3b73937abb2cd5ffaff3712a9d9d6863fd495bc7 # shrinks to table_name = "d2w_4__9e_x6__845", sum_field = "sf_2z4__", where_field = "af607b", where_value = 223
+cc 181ae9399be8b50641fa447a076e73723f4930156bb6382bca797d7c706ee1ba # shrinks to table_name = "gpz", field = "xlj1e_9_9rktd70hl0jo_ar3c_vuph7", malicious_values = ["\u{3}x%\r/\u{202e}\u{1077fd}_\u{8}\r\u{6}\t¥{'\u{202e}\u{e43c1}\u{4885d}\u{b}\\\u{e7088}B\u{ec030}\u{e9f05}🕴<c🕴\u{7f}ð\0{W\\", "{?\u{2}�\u{7f}=$¥a𩛿v=\u{202e}\u{86af7}9m'&\u{7f}/-/'&{&𗲐J\u{bb717}\u{c0a14}k\"\u{4}\"%e\u{1b}¥\"S`\u{c3b7b}:W\rl\u{eb719}n?\u{48db5}V", "\u{b}$?&\u{e2f58}¥\u{d7bfa}m\u{d4812}P'", "\u{4a008}𨗋h1<&\u{1b}�\u{9b8b2}l7Ⱥ{¥'\\?Ѩ(C𲾦,\u{729cb}\u{7f}Ѩ\u{7f}\u{52c5c}ë'\\\u{1b}.$\u{feff}\u{6c0c3}\u{b50df}\u{5914c}\u{338ea}èh\"^\"D\u{5419e}í瘹"]
+cc b4e8acb5fba01a9b64672b9d7118dd6b791a579a3948558d42dd6b84e4b94c6f # shrinks to table_name = "u32jusm", field = "ju2qnlz8_x_0z_tvd_7y__69___6", value = -194255198
+cc 9621c8b30df65093483650d3a7eaf9a1b40315df16bc30d8078aaa01e9e07d08 # shrinks to table_name = "i_5____5_o__mj89", field = "g873u9063_gf_tyr7uvfnph1e4_x0"
+cc 7d14902f06bcf83c36982fb5f3e45d64079498c3dbd7ec3e4a2af54e135ac70d # shrinks to table_name = "i6_qm_f3w9____0y__5pm8_h", field = "x119awey3_p__"
+cc e6bf73abf71938447c309a5e10acaf5d2301dd8fc56d5916edde5ece79e825c3 # shrinks to table_name = "m68vu_7044m_y4_rp8_92a79_0v_", fields = ["w__w8qduq8__18z3_3n_d4x_57rh5", "ow", "of__1_4qnb_9zpa4_o6_7lr0"], use_distinct = false, limit_opt = None, offset_opt = None
+cc 2d9e9272f29dc9e8302c1547abd9b2bd7d86fb3c0d32c86b3f7ab88a6f79bcd9 # shrinks to table_name = "s______2x_3___2___", field = "e5", malicious_input = "t.p\u{102c82}\u{e75d2}U{\u{607c3}Ѩ{%\u{53bb2}'1$*'¥\u{993ce}¥Ѩ\u{6}?\u{b}\u{7522f}\0\u{99}\t\u{1}🕴\t(🕴\u{1b}\u{6c7f3}*\u{feff}`"
+cc a2ff1abf9c6ce325578a138d76ccb3a6a7983ea17607f61ca6f1a6b3b8b5fa87 # shrinks to table_name = "u__s7q29__fx9iwa2l_____7j_", field = "e2_e7p_1___3t1614ga4448__3ka3", malicious_input = "\u{7c04b}?¥&&`\0\u{f67fa}EK¥--\u{b543f}{"
+cc 2d2018a536b482db3a06933e8687b58ee712b94a15b3a239d9c4131e9412427f # shrinks to table_name = "w_", field = "w_53", malicious_start = "Ѩ\u{10c75e}\u{1b}?\u{80d93};\r�.`FT\rO\u{aa6dd}!\\Ѩ/\u{3de0f}\u{1b}\u{6ed39}^\u{69bc9}Y\u{ae86a}\u{3}\r\\\u{5c23e}\u{6fb72}\r\u{cda23}🕴", malicious_end = "bF;\u{7b1d9}\u{7f}\u{1b}"
+cc 04bcd6c33ff81c18dd5cacbc79a38e1270d53a56e0af9c97596de64c58ab71fb # shrinks to table_name = "ts__xlwj_4129"
+cc 6441efcac9a6ebbef4fc82a13b509db50cef135fd8c35e1a16afa14d45fd7d93 # shrinks to table_name = "z5ua__x9a_sk_9w___4v02_u_", field = "d4_70__6k1", malicious_input = "\u{4}%fѨ*{_³\u{9ee6d})𬅶<\u{640f1}\u{ed3fe}t\u{4}&\0\u{fed13}L\0숒\0\0!\u{a3580}`:*;ȺȺ.:\u{2}\u{80598}�u䩮\u{b}\\\u{1b}\u{d2dfe}?\u{1b}¥\u{94173}\u{8}B\u{f8ffc}f:\u{6}\tÌ\u{9c}\u{b9c59}W$\0\\?"
+cc ab66ae1925336c349beb8aae737921e1935524fed95864b4ef7a6258b21adcde # shrinks to table_name = "q3840_009j4o__g481", field = "t8_049j2v__2_lw8e7a_w935s1u_"
+cc 0fd25b77cea57a4974a3e47b102a5ee8dfca25b1847ef0f1a743a60e0d1172f5 # shrinks to table_name = "u_848d4m2f__g__", field = "g_0q_7_i62__39s7_3y__m8h"
+cc 44ba92793709329d24c4dcaf09c3cec730481a3e3ee00410369770f93064ceca # shrinks to table_name = "s_na3h46_55k_28zw5", field = "mus3_0xtz03__x"
+cc 2307c01cc9f241ff205d4bc33f6bfee5452734c99a6753655d0c80c5fdfbffcf # shrinks to table_name = "t__1f_", field = "ya2_tuw1x902_n7__l_ybw", malicious_values = [".\u{10cbdf}\u{823d8}\u{87811}<\0#\u{9dbb8}L\u{feff}\t\u{a565a}\u{3ef40}\u{b169b}?<:\\\"Ѩ'\u{5601b}&1\t\u{10e30c}kD?:.Oµ<%\u{7f}Ä.\u{10a7e9}\u{7f}*$\u{a7ce3}\u{3bff4}", "\\\u{68812}y?=\u{10fe98}?.\u{feff}<:Ⱥ=.\u{7f}\u{90f5f}\\w.$b.\u{b}\t*\u{8}Q\u{202e}%\u{ca80c}\u{92646}'&~3\u{b}1:�?C`/$B\u{f4d76}Ⱥ\r𩆟*`\u{7f}+", "/\u{95468};<'\u{e216a}\u{40341}\u{feff}j?�{.\u{1}\u{202e}"]
+cc 7f7c257da21b1cb3ce49e88eddff218c2dae5394c21ec43acb7ba146ef240018 # shrinks to table_name = "scr320u6egud1t_p09_n3_7_12o0w__", field = "rid_02a__u", malicious_input = "lj7y6o\"md4d4up;7si29i"
+cc 810698ab7083907f18fcfee1e139408f32c9c40d66fed2670af3fae0f9dc106f # shrinks to table_name = "p64pct_w", field = "z9__x95b_7k8za6hu_7_", malicious_pattern = "愋{\u{66d6f}u\u{96b5e}\u{4}$\u{3dc90}&=\u{6}\u{feff}L.\u{b6774}\u{5}\u{cabf7}'\u{feff}$\u{feff}h\u{4e3b8}\u{e325f}%{8O/\r\0\u{feff}¥\u{86172}\u{95f8f}\0\r/M.W𜵢@@�\u{edb0}\u{6}/"
+cc d26a0f82bff8f52ad274704acf388d9a05a6657def74f3dc98897c4b0a2677ce # shrinks to table_name1 = "tlt592pd___76_qmj_", table_name2 = "rkj__f82l_g_338a0lb80_70cj4i"
+cc 10c7c0fb8a05102dfc2b3dbeae50f5c4bf9d7e7d5d1a63113f399c9f77faec38 # shrinks to table_name = "h__p_wn_z2myf4jz_c", field = "pwh92_uqa0____z", malicious_input = "\u{feff}\0:uѨ}'?\u{366f1}n�🕴v\u{c2992}-w<\u{56f3d}{\u{d1a47}:S\u{7}<\u{5f4e1}𗺾GȺ;<\u{feff}:N\u{7}🕴É\u{6}\u{202e}"
+cc 1d14afb77e9a5e06643d2a9dc93367dc8ca4bd7b55db65791794bd7d10de2a5e # shrinks to table_name = "v9tl91_38v_42c03", order_field = "qj_28z__5q", group_field = "m__9st_8p8bha_k_h_4f5z_e", asc = true
+cc 94fc14b4b99d9b21ab7b84bc5c7868729bfaaa4ae6f48e2ea6678ebdc31d5b02 # shrinks to table_name = "t695z__3_j04", join_table = "y0vc255x_1_t__6s_z9k2e0smw_9", on_field1 = "kh5nu5j2u__by809bvre", on_field2 = "r25_9tx0gi__ubw6h_3pf"
+cc ac3be5a574da1a8a8ca074d6600ce2ce52dc75013593ecaaff21c81d7d7cc4dd # shrinks to table_name = "p7__1_68_smww__6__tq1_", field = "qsuutt6i_u0ih_____5_q7n8_1vv_", value1 = 1226306409, value2 = -1054750594
+cc 19001431859fa6acaaa2192569d79fa952635dc8be399f9e1e9bd5cdbd8454f4 # shrinks to table_name = "kch_", field = "n_z_z_4l_62j45___3gv_", value = 1807099919
+cc 8bb4891933e8e37e37c291bf99131a6033ebe20518158279278b5ea65daa2ef2 # shrinks to table_name = "q_bo7cw98c_8d", fields = [], use_distinct = true, limit_opt = None, offset_opt = None
+cc 1a2737552271bd3d7bb44e9958983347f5a52a25f3898098eba7c50de22ab405 # shrinks to table_name = "b_kyu425_9_s__d_88ke06", field = "cfw__2___1odc9_m_3_6p4_g_6fr", malicious_values = ["\\H\u{eb07f}`\u{53253}\u{1b}\u{202e}🕴&\u{7}\u{9d}1.8\"..d\t$'\r\"qt\r\u{363ec}\u{feff}\u{8a7a0};=\u{a25dd}'$U\u{7f}!\u{dd6b8}*\u{202e}\\k\u{87f1b}&\u{202e}%s*\u{feff}\u{7f}\u{10d584}\u{51746}\u{9900c}&𣂓\u{ccd63}`\r/E"]
+cc db416c7ed4271e1c5660f45ee7b55dabae0c1a9764e8b7e9ada929aa195ce92b # shrinks to table_name = "bt_j_ljj1796sd1z14_5wifzyl04p", field = "zcoj_g__o_uuy__", malicious_input = "rtqdc401dwpujpo650w5us5g73m34a'j36szqducae49l240q0hzehotlpd39g1\"765ge3n471u3pwaf3d5d1476"
+cc 24cc82c5a31231e52b8a111bd89561dee6a11170a75f5fa4f43deceda01d0adb # shrinks to table_name = "b58_x1odn21_5___se_clnkaxlei", sum_field = "m_955d_74_h_", where_field = "hc6k", where_value = 674
+cc 0d351cae59a76e34ebc0af391029cb591e8bdc282f41a31543c2e4f5cb9e72cc # shrinks to table_name = "d406_", field = "in630e5_"
+cc 547b2b0a8767ad1fde5c36e3df78a450c3ed6e16dc4cb2e236443fd2be3ee5c9 # shrinks to table_name = "f93j_h__5t34ov0c_30ij_w68_2250_", field = "q1__df_7au__p0"
+cc 80e18e2069a2f49153c09ed565bfe9ee02a6dac1ae7595d1ac5668dcb5088461 # shrinks to table_name = "gj56j1s_____", sum_field = "y95vzsmcx9n_cly_blcbvu_5_r", where_field1 = "qhk548a_1wz34l_o09_", where_field2 = "wqaicdh8_a72_m4__sif2zi__h", value1 = 908, value2 = 121
+cc a88a299525094dbbb04f499426323ab60b1abfdd95259eaea2533bac36333c52 # shrinks to table_name = "l_"
+cc 02f7bb327ec6a38c9713b178bfe13f4b5515f885b1402f6964848ea43986e557 # shrinks to table_name = "m__032m0x____jm9uo", field = "p_e9ay_vo", malicious_pattern = "-_%''🕴c�&%eJ\0/𭿏\u{2}\u{55105}\u{1b}V\u{202e}!=?🕴\u{50b64};Na\u{b}𪉕"
+cc 44fd332765d787d830eab016c9c2b72157855eeed4451075b1a6ffd8763c0274 # shrinks to table_name = "yclph__1_8tb", field = "c__6__", malicious_input = "&�:\u{449c7}^5/'v\u{a67c5};\\"
