@@ -12,8 +12,9 @@ yang-db/
 │   ├── lib.rs              # crate-level re-exports + Result<T>
 │   ├── error.rs            # DbError conversions
 │   ├── isolation.rs        # IsolationLevel enum (NG-2)
+│   ├── dialect.rs          # SQL 方言抽象：引号/占位符风格 + 条件树共享渲染（crate 内部）
 │   ├── mysql/
-│   │   ├── query_builder.rs # 5.5k-line SQL builder hotspot
+│   │   ├── query_builder/  # SQL builder（mod.rs 定义类型，impl 按职责分散于 generator/builder/render/read/aggregate/write/predicate/bind）
 │   │   ├── condition.rs     # Condition / SqlValue / SQL conversion
 │   │   ├── database.rs      # sqlx MySQL pool wrapper
 │   │   ├── transaction.rs   # MySQL transaction wrapper
@@ -42,7 +43,7 @@ yang-db/
 | Task | Location | Notes |
 |------|----------|-------|
 | MySQL connection/raw SQL | `src/mysql/database.rs` | `Database::connect`, `table`, `query`, `execute`, params helpers |
-| Query building | `src/mysql/query_builder.rs` | select/find/value/count/sum/avg/min/max/insert/update/delete/upsert/batch |
+| Query building | `src/mysql/query_builder/` | select/find/value/count/sum/avg/min/max/insert/update/delete/upsert/batch；类型在 `mod.rs`，执行逻辑分属 `read.rs`/`aggregate.rs`/`write.rs` |
 | Conditions | `src/mysql/condition.rs` | `Condition`, `SqlValue`, `condition_to_sql(_owned)` |
 | Transactions | `src/mysql/transaction.rs` | `Transaction`, `TransactionQueryBuilder` |
 | Redis operations | `src/redis/client.rs` | string/hash/list/set/zset/key/pubsub/lua/scan/health |
@@ -63,7 +64,7 @@ yang-db/
 | Symbol | Location | Role |
 |--------|----------|------|
 | `Database` | `src/mysql/database.rs` | MySQL pool and raw query entry |
-| `QueryBuilder` | `src/mysql/query_builder.rs` | main chainable SQL builder |
+| `QueryBuilder` | `src/mysql/query_builder/mod.rs` | main chainable SQL builder（impl 分散在同目录各职责文件中） |
 | `Condition` | `src/mysql/condition.rs` | nested boolean condition tree |
 | `SqlValue` | `src/mysql/condition.rs` | bind parameter representation |
 | `SqlExpr` | `src/reference.rs` | 受控服务端标量表达式白名单（UNIX_TIMESTAMP 系列），渲染固定片段+绑定参数 |
@@ -80,6 +81,7 @@ yang-db/
 | `PgFieldType` | `src/postgres/field.rs` | PostgreSQL field type markers |
 | `PoolStatus` | `src/redis/client.rs` | Redis pool health snapshot |
 | `IsolationLevel` | `src/isolation.rs` | SQL标准四级事务隔离 |
+| `Dialect` / `CondNode` / `render_condition` | `src/dialect.rs` | crate 内部方言抽象；mysql/postgres 的 identifier/condition 为其薄封装 |
 
 ## CONVENTIONS
 - Public API is re-exported from `src/lib.rs`; downstream crates often import directly from `yang_db`.
@@ -91,7 +93,7 @@ yang-db/
 - Redis scripts use `redis::Script`; pipeline/transaction wrappers already build on `redis::pipe()`.
 
 ## HOTSPOTS
-- `src/mysql/query_builder.rs`: 5.5k lines, largest file; touches almost every SQL behavior.
+- `src/mysql/query_builder/`: 原 6.4k 行单文件已按职责拆分（generator/builder/render/read/aggregate/write/predicate/bind），耦合仍高，跨文件改动保持谨慎。
 - `src/redis/client.rs`: 2.2k lines, large Redis operation surface.
 - `src/postgres/query_builder.rs`: 2.1k lines, PostgreSQL SQL builder.
 - `src/mysql/condition.rs`: complex expression tree and SQL conversion.
