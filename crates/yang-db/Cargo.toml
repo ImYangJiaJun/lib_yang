@@ -13,11 +13,6 @@ readme = "README.md"
 keywords = ["mysql", "redis", "database", "sqlx", "query-builder"]
 categories = ["database"]
 
-#排除文件
-exclude = [
-    "INSTALL.md",
-]
-
 [features]
 default = ["mysql", "postgres", "redis"]
 mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/derive"]

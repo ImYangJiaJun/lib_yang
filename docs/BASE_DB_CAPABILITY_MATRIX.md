@@ -2,7 +2,7 @@
 
 **基线日期**：2026-07-16
 
-**开发版本**：yang-base 0.2.0 / yang-db 0.1.4
+**开发版本**：yang-base 0.2.1 / yang-db 0.1.5
 
 本矩阵是公开能力边界的简表；精确签名以 rustdoc 和源码为准，逐点验收证据见 `YANG_BASE_DB_COMPLETENESS_PLAN.md` 与 `PRODUCTION_READINESS_LOG.md`。
 

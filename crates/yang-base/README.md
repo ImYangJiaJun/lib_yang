@@ -1,6 +1,6 @@
 # yang-base
 
-`yang-base` 0.2.0 是 YANG 后端基础库，提供构建期定义内核（Addon/Module/Action/fields/params → 冻结 Catalog + Registry）、类型化 Action、显式资源所有权（`Tools`）、schema-first 数据表、HTTP 客户端、JWT Token 管理和可选 Axum HTTP 传输。
+`yang-base` 0.2.1 是 YANG 后端基础库，提供构建期定义内核（Addon/Module/Action/fields/params → 冻结 Catalog + Registry）、类型化 Action、显式资源所有权（`Tools`）、schema-first 数据表、HTTP 客户端、JWT Token 管理和可选 Axum HTTP 传输。
 
 当前应用侧的核心链路是：
 
@@ -36,7 +36,7 @@ fields! / params! / #[derive(Action)]
 
 ```toml
 [dependencies]
-yang-base = "0.2.0"
+yang-base = "0.2.1"
 ```
 
 同一 workspace 联调：
@@ -50,13 +50,13 @@ yang-base = { path = "../yang-base" }
 
 ```toml
 # 仅核心模型
-yang-base = { version = "0.2.0", default-features = false }
+yang-base = { version = "0.2.1", default-features = false }
 
 # 核心模型 + MySQL
-yang-base = { version = "0.2.0", default-features = false, features = ["mysql"] }
+yang-base = { version = "0.2.1", default-features = false, features = ["mysql"] }
 
 # 核心模型 + Redis
-yang-base = { version = "0.2.0", default-features = false, features = ["redis"] }
+yang-base = { version = "0.2.1", default-features = false, features = ["redis"] }
 ```
 
 ## 快速开始：定义表并注册 CRUD
@@ -189,7 +189,7 @@ let nickname: Option<String> = row.optional("nickname").expect("nickname 类型�
 启用默认 feature 后，MySQL/Redis 客户端经 `ToolsBuilder` 注册进应用资源并由每个 `BuiltApp` 显式持有（无进程级全局单例）。初始化配置类型来自 `yang-db`；直接构造这些客户端的应用还需声明匹配的依赖：
 
 ```toml
-yang-db = { version = "0.1.4", default-features = false, features = ["mysql", "redis"] }
+yang-db = { version = "0.1.5", default-features = false, features = ["mysql", "redis"] }
 ```
 
 初始化示例：
