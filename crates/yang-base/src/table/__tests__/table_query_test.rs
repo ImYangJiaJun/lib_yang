@@ -6,8 +6,10 @@
 //! - 错误情况处理
 
 use crate::error::BaseError;
+use crate::table::table_query::SqlParam;
 use crate::table::{col, Field, SortOrder, Table, TableConfig, TableQuery, Tables};
 use serde_json::json;
+use serde_json::Value;
 use std::sync::Arc;
 
 fn build_config(table: Table) -> Arc<TableConfig> {
@@ -1632,5 +1634,286 @@ async fn test_slow_query_warn_fires() {
         output.contains("test_operation"),
         "warn 应包含操作名，输出: {:?}",
         output
+    );
+}
+
+// ==================== 原 table_query.rs 内联测试 ====================
+
+fn test_config(table: crate::table::Table) -> Arc<TableConfig> {
+    table.build().expect("测试表定义应有效").shared_config()
+}
+
+fn test_query() -> TableQuery {
+    let config = test_config(
+        crate::table::Table::new("users")
+            .fields([crate::table::Field::integer("id").required().primary_key()]),
+    );
+    let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+    TableQuery::new(config, roles, None)
+}
+
+#[test]
+fn test_insert_omits_database_generated_auto_increment_field() {
+    let config = test_config(crate::table::Table::new("accounts").fields([
+        crate::table::Field::id("id"),
+        crate::table::Field::string("username", 64).required(),
+    ]));
+    let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+    let query = TableQuery::new(config, roles, None);
+    let data = std::collections::HashMap::from([(
+        "username".to_string(),
+        Value::String("alice".to_string()),
+    )]);
+
+    let prepared = query
+        .prepare_and_validate_insert(data)
+        .expect("数据库生成的自增主键不应要求调用方提供");
+
+    assert!(!prepared.contains_key("id"));
+
+    let data_with_null_id = std::collections::HashMap::from([
+        ("id".to_string(), Value::Null),
+        ("username".to_string(), Value::String("bob".to_string())),
+    ]);
+    let prepared = query
+        .prepare_and_validate_insert(data_with_null_id)
+        .expect("null 自增主键应等价于未提供");
+
+    assert!(!prepared.contains_key("id"));
+}
+
+#[test]
+fn tenant_scope_is_fail_closed_for_query_and_writes() {
+    let config = test_config(
+        crate::table::Table::new("tenant_rows").fields([
+            crate::table::Field::id("id"),
+            crate::table::Field::bigint("org_id")
+                .required()
+                .tenant_key(),
+            crate::table::Field::string("name", 64).required(),
+        ]),
+    );
+    let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+    let query = TableQuery::new(config, roles, None)
+        .scope_tenant("org_id", serde_json::json!(7))
+        .expect("tenant scope 应有效");
+
+    let (sql, params) = query.build_select_sql(None).expect("租户查询 SQL 应可构建");
+    assert!(sql.contains("`org_id` = ?"));
+    assert!(params.contains(&SqlParam::Int(7)));
+
+    let prepared = query
+        .prepare_and_validate_insert(
+            [("name".to_string(), serde_json::json!("row"))]
+                .into_iter()
+                .collect(),
+        )
+        .expect("租户字段应由上下文注入");
+    assert_eq!(prepared.get("org_id"), Some(&serde_json::json!(7)));
+
+    let explicit_tenant = query.prepare_and_validate_insert(
+        [
+            ("name".to_string(), serde_json::json!("row")),
+            ("org_id".to_string(), serde_json::json!(9)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert!(matches!(
+        explicit_tenant,
+        Err(BaseError::PermissionDenied(_))
+    ));
+}
+
+#[test]
+fn test_insert_rejects_explicit_null_for_non_writable_field() {
+    let config = test_config(crate::table::Table::new("accounts").fields([
+        crate::table::Field::id("id"),
+        crate::table::Field::string("username", 64).required(),
+        crate::table::Field::string("internal_note", 255).not_writable(),
+    ]));
+    let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+    let query = TableQuery::new(config, roles, None);
+    let data = std::collections::HashMap::from([
+        ("username".to_string(), Value::String("alice".to_string())),
+        ("internal_note".to_string(), Value::Null),
+    ]);
+
+    let error = query
+        .prepare_and_validate_insert(data)
+        .expect_err("显式提交只读字段时，即使值为 null 也必须拒绝");
+
+    assert!(matches!(
+        error,
+        BaseError::FieldPermissionDenied(table, field, _)
+            if table == "accounts" && field == "internal_note"
+    ));
+}
+
+#[test]
+fn test_page_rejects_page_size_above_production_limit() {
+    let err = test_query()
+        .page(1, 101)
+        .expect_err("page_size 超过 100 应被拒绝");
+
+    assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "page_size"));
+}
+
+#[test]
+fn trusted_prefetch_limit_reaches_sql_without_public_page_cap() {
+    let query = test_query()
+        .prefetch_limit(10_001)
+        .expect("可信树上限应允许 max_nodes + 1 探针");
+    let (sql, _) = query.build_select_sql(None).expect("有界预取 SQL 应可构建");
+
+    assert!(sql.ends_with("LIMIT 10001 OFFSET 0"), "实际 SQL: {sql}");
+}
+
+#[test]
+fn test_default_order_rejects_unsortable_field() {
+    let config = test_config(
+        crate::table::Table::new("users")
+            .fields([
+                crate::table::Field::id("id"),
+                crate::table::Field::integer("secret_rank").not_sortable(),
+            ])
+            .default_order(crate::table::col("secret_rank").desc()),
+    );
+    let roles: Arc<[String]> = Arc::from(Vec::<String>::new());
+    let query = TableQuery::new(config, roles, None);
+
+    let err = query
+        .build_select_sql(None)
+        .expect_err("默认排序不应绕过 sortable(false)");
+
+    assert!(
+        matches!(err, BaseError::FieldPermissionDenied(table, field, _) if table == "users" && field == "secret_rank")
+    );
+}
+
+#[test]
+fn test_default_projection_excludes_unreadable_and_secret_fields() {
+    let config = test_config(
+        crate::table::Table::new("users").fields([
+            crate::table::Field::integer("id").required().primary_key(),
+            crate::table::Field::string("name", 64),
+            crate::table::Field::string("restricted", 64).readable_by(["admin"]),
+            crate::table::Field::string("password_hash", 255)
+                .secret()
+                .readable_by(["user"]),
+        ]),
+    );
+    let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
+    let query = TableQuery::new(config, roles, None);
+
+    query
+        .ensure_readable_projection()
+        .expect("存在可读且非 secret 字段时默认投影应可用");
+    let (sql, _) = query
+        .build_select_sql(None)
+        .expect("默认查询应只投影当前角色可读且非 secret 的字段");
+
+    assert_eq!(sql, "SELECT `id`, `name` FROM `users`");
+    assert!(!sql.contains("restricted"));
+    assert!(!sql.contains("password_hash"));
+}
+
+#[test]
+fn test_select_projection_permission_matrix() {
+    let all_readable = test_config(crate::table::Table::new("public_rows").fields([
+        crate::table::Field::integer("id").required().primary_key(),
+        crate::table::Field::string("name", 64),
+    ]));
+    let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
+    let (sql, _) = TableQuery::new(all_readable, Arc::clone(&roles), None)
+        .build_select_sql(None)
+        .expect("全部字段可读时默认投影应成功");
+    assert_eq!(sql, "SELECT `id`, `name` FROM `public_rows`");
+
+    let partially_readable = test_config(
+        crate::table::Table::new("mixed_rows").fields([
+            crate::table::Field::integer("id").required().primary_key(),
+            crate::table::Field::string("restricted", 64).readable_by(["admin"]),
+            crate::table::Field::string("password_hash", 255)
+                .secret()
+                .readable_by(["user"]),
+        ]),
+    );
+    let (partial_sql, _) =
+        TableQuery::new(Arc::clone(&partially_readable), Arc::clone(&roles), None)
+            .build_select_sql(None)
+            .expect("部分字段受限时默认投影应保留可读字段");
+    assert_eq!(partial_sql, "SELECT `id` FROM `mixed_rows`");
+
+    let explicit_err = TableQuery::new(partially_readable, Arc::clone(&roles), None)
+        .select_fields(&["id", "restricted"])
+        .expect_err("显式请求受限字段应被拒绝");
+    assert!(
+        matches!(explicit_err, BaseError::FieldPermissionDenied(table, field, _) if table == "mixed_rows" && field == "restricted")
+    );
+
+    let none_readable = test_config(
+        crate::table::Table::new("private_rows").fields([
+            crate::table::Field::integer("alpha")
+                .required()
+                .primary_key()
+                .readable_by(["admin"]),
+            crate::table::Field::integer("beta").readable_by(["admin"]),
+        ]),
+    );
+    let none_err = TableQuery::new(none_readable, roles, None)
+        .build_select_sql(None)
+        .expect_err("零字段可读时默认投影应 fail-closed");
+    assert!(matches!(
+        none_err,
+        BaseError::FieldPermissionDenied(table, field, _) if table == "private_rows" && field == "*"
+    ));
+}
+
+#[test]
+fn test_default_projection_is_deterministic_and_excludes_hidden_fields() {
+    for _ in 0..64 {
+        let config = test_config(
+            crate::table::Table::new("secrets").fields([
+                crate::table::Field::id("id"),
+                crate::table::Field::integer("z_secret").readable_by(["admin"]),
+                crate::table::Field::integer("a_secret").readable_by(["admin"]),
+                crate::table::Field::integer("m_secret")
+                    .secret()
+                    .readable_by(["user"]),
+            ]),
+        );
+        let roles: Arc<[String]> = Arc::from(vec!["user".to_string()]);
+        let query = TableQuery::new(config, roles, None);
+
+        let (sql, _) = query
+            .build_select_sql(None)
+            .expect("默认投影应保留公开字段");
+        assert_eq!(sql, "SELECT `id` FROM `secrets`");
+    }
+}
+
+#[test]
+fn test_effective_pagination_applies_default_limit_to_data_query_sql() {
+    let (query, page, page_size) = test_query()
+        .with_effective_pagination()
+        .expect("默认分页参数应合法");
+
+    assert_eq!(page, 1);
+    assert_eq!(
+        page_size,
+        crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE
+    );
+
+    let (sql, _) = query
+        .build_select_sql(None)
+        .expect("默认分页后的 SELECT SQL 应可构建");
+
+    assert!(
+        sql.contains(&format!(
+            " LIMIT {} OFFSET 0",
+            crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE
+        )),
+        "分页数据查询必须包含默认 LIMIT，实际 SQL: {sql}"
     );
 }
