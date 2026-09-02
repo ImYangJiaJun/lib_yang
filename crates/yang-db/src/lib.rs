@@ -20,6 +20,10 @@ mod row_lock;
 
 mod reference;
 
+// SQL 方言抽象（crate 内部）：标识符引号、占位符风格与条件渲染的共享实现
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+mod dialect;
+
 // MySQL 数据库模块
 #[cfg(feature = "mysql")]
 pub mod mysql;
