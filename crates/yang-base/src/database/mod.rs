@@ -17,12 +17,12 @@
 //! initializer.sync_tables(&table_definitions).await?;
 //! ```
 
+#[cfg(test)]
+mod __tests__;
 #[cfg(feature = "mysql")]
 mod initializer;
 #[cfg(feature = "mysql")]
 mod schema_sync;
-#[cfg(all(test, feature = "mysql"))]
-mod schema_sync_tests;
 
 #[cfg(feature = "mysql")]
 pub use initializer::DatabaseInitializer;

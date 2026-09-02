@@ -14,9 +14,9 @@ yang-base/
 │   ├── lifecycle.rs     # 优雅停机（插件 → Tools 逆序）
 │   ├── observability.rs # ObservabilityConfig 纯数据（经 Tools config 槽注册；无全局单例）
 │   ├── tools.rs         # ToolsBuilder/Tools：mysql/cache/token/http + 类型化 extension/config
-│   ├── database/        # DatabaseInitializer（迁移治理 + additive schema 同步）
-│   ├── definition/      # 定义内核：AppBuilder/BuiltApp/Catalog/Registry/Spec/字段与参数定义
-│   ├── plugin/          # 旧代插件生命周期（新链路以 definition Addon 组织业务）
+│   ├── database/        # DatabaseInitializer + schema_sync/（additive schema 同步，按 model/render/inspect/plan/preflight/sync 拆分；测试在 __tests__/）
+│   ├── definition/      # 定义内核：AppBuilder/BuiltApp/Catalog/Registry/Spec/字段与参数定义；builder/ 已按职责拆分（app/catalog/compile/handle/project/registry/validate）
+│   ├── plugin/          # 旧代插件生命周期（新链路以 definition Addon 组织业务）；已拆分：traits.rs 接口 + manager.rs + builder.rs + registry.rs
 │   ├── action/          # child AGENTS.md: Action(业务 trait)/TypedHandler/TypedAction/DynAction；auth/ 内含认证通用机制
 │   ├── table/           # child AGENTS.md: Table/Field/TableDefinition/Record/TableQuery
 │   ├── router/          # 洋葱中间件（RequestId/authz 等）
@@ -33,13 +33,13 @@ yang-base/
 | Task | Location | Notes |
 |------|----------|-------|
 | 资源组装 | `src/tools.rs` | `ToolsBuilder` 仅启动期可变 → `Tools` 冻结只读；重复注册构建期报错；health_check/幂等 close |
-| 定义与组装应用 | `src/definition/builder.rs` | `AppBuilder::build` 全量交叉校验 → `BuiltApp`（catalog/registry/tools/table_definitions/compiled_views） |
+| 定义与组装应用 | `src/definition/builder/` | `AppBuilder::build` 全量交叉校验 → `BuiltApp`（catalog/registry/tools/table_definitions/compiled_views）；mod.rs 持 re-export 与 schema 二进制字段扫描，其余 impl/函数分散于同目录职责文件 |
 | Action 定义 | `src/action/typed.rs` + `#[derive(Action)]` | 业务实现 `Action::index`；宏生成 `TypedAction`；blanket 桥接 `DynAction`。函数式通道：`ModuleSpec::action_fn`（`src/definition/interface.rs` + `src/action/functional.rs`），普通 async fn 直接注册 |
 | 输入声明 | `yang_base::params!` / `src/definition/param.rs` | body/query/path/header 合并一次反序列化 |
 | 文件/重定向响应 | `src/action/response.rs` | `ResponseBody::download/preview/redirect` → `ApiResponse::attachment`（JSON 线格式不变） |
 | HTTP 服务 | `src/transport/axum.rs` | `router()`/`serve()` + `AxumTransportConfig`/`CorsConfig`；CORS 白名单、超时、压缩、`/health/live|ready`、x-request-id 透传 |
 | DB/Redis bootstrap | `src/database/initializer.rs` | initialization/migration ordering |
-| Plugin management | `src/plugin/mod.rs` | 旧代 `Plugin`/`PluginManager`/`PluginRegistry`（新链路不用于业务组织） |
+| Plugin management | `src/plugin/` | 旧代插件生命周期：`traits.rs`（Plugin trait/PluginError/PluginLifecycleStage）、`manager.rs`（PluginManager）、`builder.rs`（PluginManagerBuilder）、`registry.rs`（PluginRegistry）（新链路不用于业务组织） |
 | Table definitions | `src/table/definition.rs` | public schema-first `Table` / `Field` builders and immutable `TableDefinition` |
 | HTTP client | `src/http/` | `ToolsBuilder::http(...)` 注册，`Tools::http()`/`ctx.http()?` 获取；无全局单例 |
 | Token generation | `src/token/manager.rs` | feature-gated JWT generation/validation/refresh |
@@ -48,8 +48,8 @@ yang-base/
 ## CODE MAP
 | Symbol | Location | Role |
 |--------|----------|------|
-| `AppBuilder` / `BuiltApp` | `src/definition/builder.rs` | 构建期组装/校验 → 冻结运行时 |
-| `Registry` / `ActionLink` | `src/definition/builder.rs`, `src/definition/plugins.rs` | slot 预解析 dispatch；强类型内部调用 |
+| `AppBuilder` / `BuiltApp` | `src/definition/builder/`（app.rs；mod.rs re-export） | 构建期组装/校验 → 冻结运行时 |
+| `Registry` / `ActionLink` | `src/definition/builder/registry.rs`, `src/definition/plugins.rs` | slot 预解析 dispatch；强类型内部调用 |
 | `ToolsBuilder` / `Tools` | `src/tools.rs` | 应用资源显式所有权（替代已删除的 GlobalDatabase/GlobalRedis） |
 | `Action`（业务 trait） | `src/action/typed.rs` | 用户唯一手写接口：Input/Output + `index` |
 | `TypedHandler` / `TypedAction` / `DynAction` | `src/action/typed.rs` | 三层桥接与擦除 dispatch |
@@ -57,7 +57,7 @@ yang-base/
 | `ActionContext` | `src/action/context.rs` | request/user/tools/table context；`ctx.http()?` 等快捷入口 |
 | `Table` / `Field` | `src/table/definition.rs` | application-facing schema builders |
 | `TableDefinition` | `src/table/definition.rs` | immutable runtime schema, permissions and JSON Schema source |
-| `TableQuery` | `src/table/table_query.rs` | table-aware SQL query builder/executor |
+| `TableQuery` | `src/table/table_query/mod.rs` | table-aware SQL query builder/executor（impl 按职责分散于同目录 build/filters/validation/plan/read/write） |
 | `TokenManager` | `src/token/manager.rs` | JWT encode/decode/refresh |
 | `HttpClient` | `src/http/client.rs` | reqwest client wrapper（Tools http 槽） |
 | `router` / `serve` / `AxumTransportConfig` | `src/transport/axum.rs` | Axum 0.8 传输适配器 |
@@ -94,7 +94,7 @@ Default = `token`, `http`, `mysql`, `redis`, `validator`, `plugin-schema`（`tra
 ## ANTI-PATTERNS
 - Builtin actions are non-generic typed handlers over runtime `TableDefinition`: add/get/select use `Record`, dynamic primary keys live inside typed DTOs. Custom actions implement the business `Action` trait（`index` + 强类型 Input/Output），由 `actions!`/`ModuleSpec::native_action` 原子注册；do not use a bare `serde_json::Value` as the whole input/output contract.
 - 不要把 Action 定义与路由注册拆成两步；`#[derive(Action)]` 的 route/params/权限与 Handler 必须同源。函数式通道同样满足同源约定：`ModuleSpec::action_fn` 返回终结式 `ActionFnBuilder`，一次调用链同时给出 spec 与 handler，由 `.register()` 原子完成注册。
-- Plugin code is a 1.4k-line single file with existing unwraps; avoid adding new panic paths.
+- Plugin 模块已按职责拆分为 `plugin/` 目录多文件（原 1.6k 行单文件）；avoid adding new panic paths.
 - Do not bypass `TableQuery`/`FieldPermissions` when handling user-selected fields.
 - Do not add hardcoded production credentials; test/default Docker credentials belong only in test docs/examples.
 - Token system supports revocation via Redis-based blacklist (`TokenManager::revoke_token` / `is_revoked` / `verify_token_checked` in `token/revocation.rs`). For auth paths that need logout/revoke support, use `verify_token_checked` instead of bare `verify_token` (which skips the blacklist check).

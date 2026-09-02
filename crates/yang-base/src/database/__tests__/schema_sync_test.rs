@@ -1,5 +1,5 @@
-use super::schema_sync::{plan_table_sync, ExistingIndex, ExistingTableSchema};
-use super::{DatabaseInitializer, SchemaSyncChangeKind, SchemaSyncReport};
+use super::super::schema_sync::{plan_table_sync, ExistingIndex, ExistingTableSchema};
+use super::super::{DatabaseInitializer, SchemaSyncChangeKind, SchemaSyncReport};
 use crate::definition::{
     AddonName, AddonSpec, AppBuilder, FieldKind, FieldName, FieldSpec, ModuleName, ModuleSpec,
     TableName, TableSpec,
@@ -38,7 +38,7 @@ async fn public_schema_plan_api_typechecks(
 async fn public_schema_preflight_api_typechecks(
     initializer: &DatabaseInitializer,
     definitions: &[&TableDefinition],
-) -> Result<super::SchemaPreflightReport, BaseError> {
+) -> Result<super::super::SchemaPreflightReport, BaseError> {
     initializer.preflight_table_definitions(definitions).await
 }
 
