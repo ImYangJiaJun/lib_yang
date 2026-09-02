@@ -1,6 +1,6 @@
 [package]
 name = "yang-base"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -57,7 +57,7 @@ transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencod
 
 [dependencies]
 # 内部依赖
-yang-db = { path = "../yang-db", version = "0.1.5", default-features = false }
+yang-db = { path = "../yang-db", version = "0.1.6", default-features = false }
 yang-base-derive = { path = "../yang-base-derive", version = "0.2.1" }
 
 # 异步运行时
