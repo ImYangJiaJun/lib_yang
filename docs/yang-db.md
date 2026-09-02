@@ -1,6 +1,6 @@
 # yang-db — 数据库基础库文档
 
-版本：0.1.4 | 许可：MIT OR Apache-2.0
+版本：0.1.5 | 许可：MIT OR Apache-2.0
 
 ## 概述
 
@@ -35,7 +35,7 @@ yang-db
 └── base64 (BLOB 编解码)
 ```
 
-### 0.1.4 查询能力摘要
+### 0.1.5 查询能力摘要
 
 - MySQL 8 与 PostgreSQL 16 均提供受控 `Subquery`（EXISTS/NOT EXISTS/IN）、`UNION`/`UNION ALL` 和显式 `RowLock`。
 - `increment`/`decrement` 使用绑定的 `i64` 数值完成原子字段更新，并复用写操作的 WHERE 防护。

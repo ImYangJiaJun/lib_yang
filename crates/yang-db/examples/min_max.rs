@@ -1,5 +1,5 @@
-// MIN 和 MAX 聚合函数手动测试
-// 任务 8.2: 实现 MIN 和 MAX 聚合函数
+// MIN 和 MAX 聚合函数示例
+// 需要本地 MySQL（Docker 测试库）：mysql://root:111111@localhost:3306/test
 
 use serde_json::json;
 use yang_db::Database;
