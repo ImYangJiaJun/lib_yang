@@ -246,17 +246,6 @@ where
     }
 }
 
-/// 压入一个参数并返回其 PostgreSQL 占位符编号（1 基）
-///
-/// PostgreSQL 使用编号占位符 `$1`、`$2` ……，编号由参数在最终绑定列表中的
-/// 位置决定。本函数压入 `value` 后，返回 `params.len()` 作为编号，
-/// 保证占位符编号与绑定顺序严格一致。调用方自行拼接 `$N` 到输出字符串，
-/// 避免每次调用 `format!("${}", len)` 产生短命 String（PERF-9）。
-fn push_placeholder(params: &mut Vec<SqlValue>, value: SqlValue, parameter_offset: usize) -> usize {
-    params.push(value);
-    parameter_offset + params.len()
-}
-
 /// 将条件转换为 SQL 字符串和参数列表（借用版本）
 ///
 /// # 参数
@@ -308,210 +297,51 @@ pub(crate) fn render_condition_checked(
     condition: Condition,
     parameter_offset: usize,
 ) -> Result<crate::sql_types::RenderedCondition<SqlValue>, DbError> {
-    let mut rendered = crate::sql_types::RenderedCondition {
-        sql: String::new(),
-        params: Vec::new(),
-    };
-    write_condition_to_sql_owned_checked(
-        condition,
-        &mut rendered.sql,
-        &mut rendered.params,
+    // 渲染逻辑按方言共享于 crate::dialect；这里只做公开条件树 → 内部树的转换。
+    // `parameter_offset` 保证 `$N` 编号接续调用方参数列表的既有长度。
+    crate::dialect::render_condition(
+        crate::dialect::POSTGRES,
+        into_node(condition),
         parameter_offset,
-    )?;
-    Ok(rendered)
+    )
 }
 
-/// checked 版本的内部写入逻辑，使用 `quote_identifier(...)?` 传播错误。
-fn write_condition_to_sql_owned_checked(
-    condition: Condition,
-    out: &mut String,
-    params: &mut Vec<SqlValue>,
-    parameter_offset: usize,
-) -> Result<(), DbError> {
-    let quote_identifier = super::identifier::quote_qualified;
+/// 将公开条件树转换为方言无关的内部渲染树（值原样移动，不复制）。
+fn into_node(condition: Condition) -> crate::dialect::CondNode<SqlValue> {
+    use crate::dialect::CondNode as Node;
     match condition {
-        Condition::Eq(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} = ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::Ne(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} != ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::Gt(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} > ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::Lt(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} < ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::Gte(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} >= ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::Lte(field, value) => {
-            let idx = push_placeholder(params, value, parameter_offset);
-            out.push_str(&format!("{} <= ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::In(field, values) => {
-            if values.is_empty() {
-                return Err(DbError::InvalidArgument(format!(
-                    "IN 条件 `{field}` 的值列表不能为空"
-                )));
-            }
-            out.push_str(&format!("{} IN (", quote_identifier(&field)?));
-            for (i, v) in values.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                let idx = push_placeholder(params, v, parameter_offset);
-                out.push_str(&format!("${}", idx));
-            }
-            out.push(')');
-            Ok(())
-        }
-        Condition::NotIn(field, values) => {
-            if values.is_empty() {
-                return Err(DbError::InvalidArgument(format!(
-                    "NOT IN 条件 `{field}` 的值列表不能为空"
-                )));
-            }
-            out.push_str(&format!("{} NOT IN (", quote_identifier(&field)?));
-            for (index, value) in values.into_iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
-                }
-                let placeholder = push_placeholder(params, value, parameter_offset);
-                out.push_str(&format!("${placeholder}"));
-            }
-            out.push(')');
-            Ok(())
-        }
-        Condition::Between(field, start, end) => {
-            let idx_start = push_placeholder(params, start, parameter_offset);
-            let idx_end = push_placeholder(params, end, parameter_offset);
-            out.push_str(&format!(
-                "{} BETWEEN ${} AND ${}",
-                quote_identifier(&field)?,
-                idx_start,
-                idx_end
-            ));
-            Ok(())
-        }
-        Condition::Like(field, pattern) => {
-            let idx = push_placeholder(params, SqlValue::String(pattern), parameter_offset);
-            out.push_str(&format!("{} LIKE ${}", quote_identifier(&field)?, idx));
-            Ok(())
-        }
-        Condition::IsNull(field) => {
-            out.push_str(&format!("{} IS NULL", quote_identifier(&field)?));
-            Ok(())
-        }
-        Condition::IsNotNull(field) => {
-            out.push_str(&format!("{} IS NOT NULL", quote_identifier(&field)?));
-            Ok(())
-        }
+        Condition::Eq(field, value) => Node::Eq(field, value),
+        Condition::Ne(field, value) => Node::Ne(field, value),
+        Condition::Gt(field, value) => Node::Gt(field, value),
+        Condition::Lt(field, value) => Node::Lt(field, value),
+        Condition::Gte(field, value) => Node::Gte(field, value),
+        Condition::Lte(field, value) => Node::Lte(field, value),
+        Condition::In(field, values) => Node::In(field, values),
+        Condition::NotIn(field, values) => Node::NotIn(field, values),
+        Condition::Between(field, start, end) => Node::Between(field, start, end),
+        Condition::Like(field, pattern) => Node::Like(field, SqlValue::String(pattern)),
+        Condition::IsNull(field) => Node::IsNull(field),
+        Condition::IsNotNull(field) => Node::IsNotNull(field),
         Condition::ColumnComparison(left, op, right) => {
-            out.push_str(&format!(
-                "{} {} {}",
-                quote_identifier(&left)?,
-                op.as_sql(),
-                quote_identifier(&right)?
-            ));
-            Ok(())
+            Node::ColumnComparison(left, op.as_sql(), right)
         }
-        Condition::Exists(subquery) => {
-            out.push_str("EXISTS (");
-            write_subquery(*subquery, out, params, parameter_offset)?;
-            out.push(')');
-            Ok(())
-        }
-        Condition::NotExists(subquery) => {
-            out.push_str("NOT EXISTS (");
-            write_subquery(*subquery, out, params, parameter_offset)?;
-            out.push(')');
-            Ok(())
-        }
+        Condition::Exists(subquery) => Node::Exists(Box::new(into_subquery_node(*subquery))),
+        Condition::NotExists(subquery) => Node::NotExists(Box::new(into_subquery_node(*subquery))),
         Condition::InSubquery(field, subquery) => {
-            out.push_str(&format!("{} IN (", quote_identifier(&field)?));
-            write_subquery(*subquery, out, params, parameter_offset)?;
-            out.push(')');
-            Ok(())
+            Node::InSubquery(field, Box::new(into_subquery_node(*subquery)))
         }
-        Condition::And(mut conditions) => {
-            if conditions.is_empty() {
-                return Err(DbError::InvalidArgument("AND 条件组不能为空".to_string()));
-            }
-            if conditions.len() == 1 {
-                return write_condition_to_sql_owned_checked(
-                    conditions.remove(0),
-                    out,
-                    params,
-                    parameter_offset,
-                );
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" AND ");
-                }
-                write_condition_to_sql_owned_checked(c, out, params, parameter_offset)?;
-            }
-            out.push(')');
-            Ok(())
-        }
-        Condition::Or(mut conditions) => {
-            if conditions.is_empty() {
-                return Err(DbError::InvalidArgument("OR 条件组不能为空".to_string()));
-            }
-            if conditions.len() == 1 {
-                return write_condition_to_sql_owned_checked(
-                    conditions.remove(0),
-                    out,
-                    params,
-                    parameter_offset,
-                );
-            }
-            out.push('(');
-            for (i, c) in conditions.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" OR ");
-                }
-                write_condition_to_sql_owned_checked(c, out, params, parameter_offset)?;
-            }
-            out.push(')');
-            Ok(())
-        }
+        Condition::And(conditions) => Node::And(conditions.into_iter().map(into_node).collect()),
+        Condition::Or(conditions) => Node::Or(conditions.into_iter().map(into_node).collect()),
     }
 }
 
-fn write_subquery(
-    subquery: Subquery,
-    out: &mut String,
-    params: &mut Vec<SqlValue>,
-    parameter_offset: usize,
-) -> Result<(), DbError> {
-    out.push_str("SELECT ");
-    out.push_str(&super::identifier::quote_qualified(&subquery.field)?);
-    out.push_str(" FROM ");
-    out.push_str(&super::identifier::quote_identifier(&subquery.table)?);
-    if !subquery.conditions.is_empty() {
-        out.push_str(" WHERE ");
-        for (index, condition) in subquery.conditions.into_iter().enumerate() {
-            if index > 0 {
-                out.push_str(" AND ");
-            }
-            write_condition_to_sql_owned_checked(condition, out, params, parameter_offset)?;
-        }
+/// 将受控子查询转换为内部渲染节点。
+fn into_subquery_node(subquery: Subquery) -> crate::dialect::SubqueryNode<SqlValue> {
+    crate::dialect::SubqueryNode {
+        table: subquery.table,
+        field: subquery.field,
+        conditions: subquery.conditions.into_iter().map(into_node).collect(),
     }
-    Ok(())
 }
 
 #[cfg(test)]
