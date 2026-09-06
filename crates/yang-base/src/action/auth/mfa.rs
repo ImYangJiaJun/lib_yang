@@ -69,12 +69,8 @@ impl TotpLiteVerifier {
 
     fn code_matches(&self, secret: &str, code: &str, timestamp_secs: u64) -> bool {
         let decoded = base32_decode(secret);
-        let current = totp_lite::totp_custom::<Sha256>(
-            self.window_seconds,
-            6,
-            &decoded,
-            timestamp_secs,
-        );
+        let current =
+            totp_lite::totp_custom::<Sha256>(self.window_seconds, 6, &decoded, timestamp_secs);
         if constant_time_eq(current.as_bytes(), code.as_bytes()) {
             return true;
         }
