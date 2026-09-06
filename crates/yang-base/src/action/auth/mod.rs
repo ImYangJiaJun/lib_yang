@@ -52,6 +52,7 @@ mod email_verification;
 mod login;
 mod logout;
 mod middleware;
+mod mfa;
 mod password;
 mod rate_limit;
 mod refresh;
@@ -68,6 +69,7 @@ pub use email_verification::{
 };
 pub use login::{CredentialVerifier, LoginAction};
 pub use logout::LogoutAction;
+pub use mfa::{TotpLiteVerifier, TotpVerifier};
 pub use middleware::{
     IntoUserProjection, NoopTokenClaimsValidator, TokenAuthMiddleware, TokenClaimsValidator,
 };

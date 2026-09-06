@@ -26,7 +26,7 @@ workspace = true
 default = ["token", "http", "mysql", "redis", "validator", "plugin-schema"]
 
 # JWT Token 管理功能（含认证通用机制：密码哈希、原子限流、邮箱验证码、浏览器会话 Cookie）
-token = ["dep:jsonwebtoken", "dep:uuid", "redis", "dep:argon2", "dep:rand_core", "dep:hmac", "dep:http-uri"]
+token = ["dep:jsonwebtoken", "dep:uuid", "redis", "dep:argon2", "dep:rand_core", "dep:hmac", "dep:http-uri", "dep:totp-lite"]
 
 # HTTP 客户端功能
 http = ["dep:reqwest", "dep:serde_urlencoded"]
@@ -138,6 +138,9 @@ hmac = { version = "0.12.1", optional = true }
 
 # 浏览器会话同源校验的 URI 解析（可选，通过 "token" feature 启用；别名避免与 http feature 重名）
 http-uri = { package = "http", version = "1.3.1", optional = true }
+
+# TOTP 第二因子（可选，通过 "token" feature 启用；totp-lite 提供 RFC 6238 算法）
+totp-lite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

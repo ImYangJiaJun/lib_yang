@@ -30,6 +30,9 @@ base64 = "0.22"
 # Step-up 资源绑定指纹
 sha2 = "0.10"
 
+# TOTP 第二因子（RFC 6238；禁止自写 HOTP/TOTP 算法）
+totp-lite = "2.0.1"
+
 # 错误处理
 anyhow = "1.0"
 thiserror = "2.0.18"
