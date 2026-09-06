@@ -157,6 +157,25 @@ impl TokenManager {
         Ok(())
     }
 
+    /// 按 jti 直接写入撤销黑名单（按给定 TTL 保留）。
+    ///
+    /// 用于「踢出单个会话」等场景：调用方已知会话的当前 refresh jti，
+    /// 但手上没有完整 claims（无法计算 exp）。TTL 由调用方提供，
+    /// 应覆盖对应 refresh token 的剩余有效期（保守取完整 refresh TTL）。
+    pub async fn revoke_by_jti_with_ttl(
+        &self,
+        jti: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), BaseError> {
+        let ttl = i64::try_from(ttl_seconds)
+            .map_err(|_| BaseError::ConfigError("jti 黑名单 TTL 超出 i64 范围".to_string()))?;
+        self.revocation_cache()?
+            .setex(blacklist_key(jti), ttl, "1")
+            .await
+            .map_err(BaseError::RedisOperationFailed)?;
+        Ok(())
+    }
+
     /// 查询某个 `jti` 是否已被撤销。
     ///
     /// # 参数

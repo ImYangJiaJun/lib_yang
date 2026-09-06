@@ -144,6 +144,27 @@ pub struct ActionContext {
     tenant_access: TenantAccess,
 }
 
+impl Clone for ActionContext {
+    fn clone(&self) -> Self {
+        // RequestContext 含 `Box<dyn Any>` 不可 Clone；克隆副本重建空的
+        // 请求扩展集合——扩展值只属于原始请求生命周期，副本按无扩展降级。
+        Self {
+            request: self.request.clone(),
+            request_meta: self.request_meta.clone(),
+            user: self.user.clone(),
+            tools: Arc::clone(&self.tools),
+            registry: self.registry.clone(),
+            table_definition: self.table_definition.clone(),
+            request_id: self.request_id,
+            module: self.module.clone(),
+            action: self.action.clone(),
+            cached_roles: Arc::clone(&self.cached_roles),
+            request_context: RequestContext::default(),
+            tenant_access: self.tenant_access.clone(),
+        }
+    }
+}
+
 impl ActionContext {
     /// 创建新的上下文
     pub fn new(request: Request, tools: Arc<Tools>) -> Self {
