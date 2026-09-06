@@ -275,7 +275,15 @@ pub struct RegistrationEmailVerification<'a> {
 impl<'a> RegistrationEmailVerification<'a> {
     /// 从 Action 上下文的 `Tools` config 槽读取 [`EmailVerificationConfig`] 构建引擎。
     pub fn from_context(ctx: &'a ActionContext) -> Result<Self, BaseError> {
-        let config = ctx.tools().config::<EmailVerificationConfig>()?;
+        Self::from_config(ctx.tools().config::<EmailVerificationConfig>()?)
+    }
+
+    /// 从显式配置构建引擎。
+    ///
+    /// 用于同一 `Tools` 中需要第二套验证码 key 域的场景（如邮箱换绑验证码，
+    /// 与注册验证码的 Redis key 前缀和密钥隔离）。调用方保证该配置来自
+    /// 独立注入的 config 槽，且与注册验证码的密钥不冲突。
+    pub fn from_config(config: &'a EmailVerificationConfig) -> Result<Self, BaseError> {
         if !(1..=9).contains(&config.code_digits) {
             return Err(BaseError::ConfigError(
                 "邮箱验证码位数必须在 1..=9 范围内".to_string(),
