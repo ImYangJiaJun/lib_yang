@@ -82,6 +82,10 @@ pub enum AuthOperation {
     Register,
     /// 完成 Step-up 重认证（按用户名计数）。
     StepUpComplete,
+    /// 校验 TOTP 第二因子码（按用户名计数；凭据猜测的在线入口）。
+    TotpVerify,
+    /// 生成/激活 TOTP 配置（按用户名计数；激活码重试入口）。
+    TotpSetup,
 }
 
 impl AuthOperation {
@@ -93,6 +97,8 @@ impl AuthOperation {
             Self::Login => "login",
             Self::Register => "register",
             Self::StepUpComplete => "step-up-complete",
+            Self::TotpVerify => "totp-verify",
+            Self::TotpSetup => "totp-setup",
         }
     }
 
@@ -101,7 +107,11 @@ impl AuthOperation {
             Self::ChangePassword => "user",
             Self::PasswordResetCreate => "actor-target",
             Self::PasswordResetConsume => "fingerprint",
-            Self::Login | Self::Register | Self::StepUpComplete => "username",
+            Self::Login
+            | Self::Register
+            | Self::StepUpComplete
+            | Self::TotpVerify
+            | Self::TotpSetup => "username",
         }
     }
 }
