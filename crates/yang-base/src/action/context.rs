@@ -160,7 +160,7 @@ impl Clone for ActionContext {
             action: self.action.clone(),
             cached_roles: Arc::clone(&self.cached_roles),
             request_context: RequestContext::default(),
-            tenant_access: self.tenant_access.clone(),
+            tenant_access: self.tenant_access,
         }
     }
 }
