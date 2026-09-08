@@ -318,6 +318,13 @@ pub enum BaseError {
         retry_after_seconds: u64,
     },
 
+    /// 第一因子已通过，需要第二因子（TOTP 动态码或恢复码）才能完成认证。
+    ///
+    /// 仅在密码校验通过后返回：客户端据此进入第二因子输入阶段
+    /// （两段式登录：账号密码 → 动态码），与 `InvalidPassword` 语义区分。
+    #[error("需要输入双重验证码")]
+    SecondFactorRequired,
+
     /// 记录未找到
     #[error("记录未找到: {0}")]
     RecordNotFound(String),
@@ -615,6 +622,7 @@ impl BaseError {
             #[cfg(feature = "token")]
             BaseError::StepUpRequired(_) => 700010,
             BaseError::RateLimitExceeded { .. } => 700011,
+            BaseError::SecondFactorRequired => 700012,
 
             // ==================== 通用错误 (9xxxxx) ====================
             BaseError::ConfigError(_) => 900001,
@@ -706,6 +714,7 @@ impl BaseError {
             #[cfg(feature = "token")]
             BaseError::StepUpRequired(_) => "700010",
             BaseError::RateLimitExceeded { .. } => "700011",
+            BaseError::SecondFactorRequired => "700012",
             // 通用错误 (9xxxxx)
             BaseError::ConfigError(_) => "900001",
             BaseError::IoError(_) => "900002",
@@ -793,7 +802,9 @@ impl BaseError {
             | BaseError::FieldPermissionDenied(_, _, _) => C::Client,
             BaseError::FieldNotFound(_, _) => C::NotFound,
             // Action 系统错误
-            BaseError::Unauthorized(_) | BaseError::PermissionDenied(_) => C::Auth,
+            BaseError::Unauthorized(_)
+            | BaseError::PermissionDenied(_)
+            | BaseError::SecondFactorRequired => C::Auth,
             BaseError::ParamMissing(_)
             | BaseError::ParamInvalid(_, _)
             | BaseError::RateLimitExceeded { .. } => C::Client,
@@ -1045,6 +1056,8 @@ mod tests {
             .code(),
             700011
         );
+        assert_eq!(BaseError::SecondFactorRequired.code(), 700012);
+        assert_eq!(BaseError::SecondFactorRequired.code_str(), "700012");
     }
 
     #[test]
@@ -1175,6 +1188,7 @@ mod tests {
             BaseError::RateLimitExceeded {
                 retry_after_seconds: 30,
             },
+            BaseError::SecondFactorRequired,
             BaseError::ConfigError("c".into()),
             BaseError::Unknown("u".into()),
         ];
@@ -1211,6 +1225,10 @@ mod tests {
         );
         assert_eq!(BaseError::TokenExpired.category(), ErrorCategory::Auth);
         assert_eq!(BaseError::InvalidPassword.category(), ErrorCategory::Auth);
+        assert_eq!(
+            BaseError::SecondFactorRequired.category(),
+            ErrorCategory::Auth
+        );
         // NotFound
         assert_eq!(
             BaseError::RecordNotFound("r".into()).category(),
