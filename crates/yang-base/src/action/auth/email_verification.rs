@@ -166,6 +166,61 @@ impl fmt::Debug for RegistrationEmailSenderHandle {
     }
 }
 
+/// 通用一次性验证码投递接口（注册之外的场景，如登录 MFA 备用邮箱验证码）。
+///
+/// 与 [`RegistrationEmailSender`] 语义相同但类型独立：注册场景的邮件文案
+/// （「注册验证码」）不应出现在其他业务场景的投递中。实现方不得记录
+/// `recipient` 或 `code` 原文。
+#[async_trait]
+pub trait VerificationCodeSender: Send + Sync + 'static {
+    /// 投递一枚短期验证码。
+    async fn send_verification_code(
+        &self,
+        recipient: &str,
+        code: &str,
+        expires_in_seconds: u64,
+    ) -> Result<(), EmailDeliveryError>;
+}
+
+/// 可放入 `Tools` 扩展槽的类型擦除投递句柄（[`VerificationCodeSender`]）。
+#[derive(Clone)]
+pub struct VerificationCodeSenderHandle(Arc<dyn VerificationCodeSender>);
+
+impl VerificationCodeSenderHandle {
+    /// 用业务投递器创建句柄。
+    pub fn new<T>(sender: T) -> Self
+    where
+        T: VerificationCodeSender,
+    {
+        Self(Arc::new(sender))
+    }
+
+    /// 从已共享的投递器创建句柄。
+    pub fn from_arc(sender: Arc<dyn VerificationCodeSender>) -> Self {
+        Self(sender)
+    }
+
+    /// 投递一枚短期验证码。
+    pub async fn send_verification_code(
+        &self,
+        recipient: &str,
+        code: &str,
+        expires_in_seconds: u64,
+    ) -> Result<(), EmailDeliveryError> {
+        self.0
+            .send_verification_code(recipient, code, expires_in_seconds)
+            .await
+    }
+}
+
+impl fmt::Debug for VerificationCodeSenderHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerificationCodeSenderHandle")
+            .finish_non_exhaustive()
+    }
+}
+
 /// [`RegistrationEmailVerification`] 的独立参数结构。
 #[derive(Clone)]
 pub struct EmailVerificationConfig {
@@ -302,6 +357,31 @@ impl<'a> RegistrationEmailVerification<'a> {
         email: &str,
         deliver: bool,
     ) -> Result<RegistrationEmailCodeAccepted, BaseError> {
+        self.request_inner(ctx, email, deliver, None).await
+    }
+
+    /// 与 [`Self::request`] 相同，但验证码经显式传入的投递器发送。
+    ///
+    /// 用于注册之外的验证码场景（如登录 MFA 备用邮箱验证码）：邮件文案由
+    /// 业务侧 [`VerificationCodeSender`] 决定，与注册投递器解耦；存储、限流、
+    /// 冷却与防枚举语义与 [`Self::request`] 完全一致。
+    pub async fn request_via(
+        &self,
+        ctx: &ActionContext,
+        email: &str,
+        deliver: bool,
+        sender: &VerificationCodeSenderHandle,
+    ) -> Result<RegistrationEmailCodeAccepted, BaseError> {
+        self.request_inner(ctx, email, deliver, Some(sender)).await
+    }
+
+    async fn request_inner(
+        &self,
+        ctx: &ActionContext,
+        email: &str,
+        deliver: bool,
+        sender: Option<&VerificationCodeSenderHandle>,
+    ) -> Result<RegistrationEmailCodeAccepted, BaseError> {
         let fingerprint = email_fingerprint(&self.config.secret, email);
         let prefix = self.key_prefix();
         let keys = [
@@ -355,12 +435,20 @@ impl<'a> RegistrationEmailVerification<'a> {
             )
             .await?;
 
-        let sender = ctx.tools().extension::<RegistrationEmailSenderHandle>()?;
-        if sender
-            .send_registration_code(email, &code, self.config.ttl_seconds)
-            .await
-            .is_err()
-        {
+        let send_result = match sender {
+            Some(sender) => {
+                sender
+                    .send_verification_code(email, &code, self.config.ttl_seconds)
+                    .await
+            }
+            None => {
+                ctx.tools()
+                    .extension::<RegistrationEmailSenderHandle>()?
+                    .send_registration_code(email, &code, self.config.ttl_seconds)
+                    .await
+            }
+        };
+        if send_result.is_err() {
             let _: i64 = cache
                 .eval_script(
                     &cache.script(DELETE_IF_CURRENT_SCRIPT),

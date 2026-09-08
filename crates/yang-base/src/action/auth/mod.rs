@@ -66,6 +66,7 @@ pub use dto::{
 pub use email_verification::{
     normalize_email, EmailDeliveryError, EmailVerificationConfig, RegistrationEmailCodeAccepted,
     RegistrationEmailSender, RegistrationEmailSenderHandle, RegistrationEmailVerification,
+    VerificationCodeSender, VerificationCodeSenderHandle,
 };
 pub use login::{CredentialVerifier, LoginAction};
 pub use logout::LogoutAction;
