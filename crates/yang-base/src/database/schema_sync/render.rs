@@ -150,8 +150,17 @@ pub(super) fn normalize_check_expression(expression: &str) -> String {
         .flat_map(char::to_lowercase)
         .collect::<String>()
         .replace("_utf8mb4", "")
-        .replace("_utf8", "")
-        .replace("\\'", "'");
+        .replace("_utf8", "");
+    // MySQL 读回 CHECK 表达式时会对字符串字面量叠加多层转义（层数随版本与
+    // 元数据路径不同，如 information_schema 中 `\.` 可读回为 `\\\\.`），
+    // 循环解码反斜杠转义直到收敛，保证同一约束的声明侧与读回侧归一。
+    loop {
+        let decoded = normalized.replace("\\\\", "\\").replace("\\'", "'");
+        if decoded == normalized {
+            break;
+        }
+        normalized = decoded;
+    }
     while has_redundant_outer_parentheses(&normalized) {
         normalized = normalized[1..normalized.len() - 1].to_string();
     }
