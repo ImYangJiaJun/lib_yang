@@ -62,7 +62,7 @@ yang-base/
 | `HttpClient` | `src/http/client.rs` | reqwest client wrapper（Tools http 槽） |
 | `router` / `serve` / `AxumTransportConfig` | `src/transport/axum.rs` | Axum 0.8 传输适配器 |
 | `BaseError` | `src/error/mod.rs` | crate-wide structured errors |
-| `PasswordEngine` | `src/action/auth/password.rs` | Argon2 密码哈希/校验，spawn_blocking + Semaphore 并发上限（参数注入） |
+| `PasswordEngine` | `src/action/auth/password.rs` | Argon2 密码哈希/校验，spawn_blocking + Semaphore 并发上限（参数注入）；`verify_or_dummy` 等时校验端口（None 时对内置 dummy 哈希拉齐耗时） |
 | `AuthRateLimiter` / `AuthRateLimitConfig` / `AuthOperation` | `src/action/auth/rate_limit.rs` | 认证入口 Redis 原子限流与失败计数（IP+身份双维度） |
 | `RegistrationEmailVerification` / `EmailVerificationConfig` / `RegistrationEmailSender(Handle)` | `src/action/auth/email_verification.rs` | 一次性验证码：摘要存储、防枚举、原子单次消费；投递经 trait 注入 |
 | `BrowserSession` | `src/action/auth/browser_session.rs` | 刷新会话 Cookie 签发/清除 + Same-Origin 校验（cookie 名/Path 参数化） |
