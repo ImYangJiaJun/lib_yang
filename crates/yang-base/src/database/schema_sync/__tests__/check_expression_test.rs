@@ -15,3 +15,20 @@ fn internal_parentheses_remain_semantically_significant() {
         normalize_check_expression("(`a` AND `b`) OR `c`")
     );
 }
+
+#[test]
+fn multi_layer_backslash_escapes_converge() {
+    // MySQL 各元数据路径对 CHECK 字符串字面量叠加不同层数的反斜杠转义，
+    // 声明侧（2 层）与 information_schema 读回侧（4/8 层）必须归一相等。
+    let declared = normalize_check_expression(
+        "regexp_like(`permission`, '^[a-z][a-z0-9_]*(\\\\.[a-z][a-z0-9_]*)+$')",
+    );
+    let read_back_4 = normalize_check_expression(
+        "regexp_like(`permission`,_utf8mb4\\'^[a-z][a-z0-9_]*(\\\\\\\\.[a-z][a-z0-9_]*)+$\\')",
+    );
+    let read_back_8 = normalize_check_expression(
+        "regexp_like(`permission`,_utf8mb4\\\\'^[a-z][a-z0-9_]*(\\\\\\\\\\\\\\\\.[a-z][a-z0-9_]*)+$\\\\')",
+    );
+    assert_eq!(declared, read_back_4);
+    assert_eq!(declared, read_back_8);
+}
