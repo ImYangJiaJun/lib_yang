@@ -20,7 +20,7 @@ action/
 │   ├── refresh.rs      # RefreshClaimsResolver/DefaultRefreshClaims + RefreshAction（Token Rotation）
 │   ├── logout.rs       # LogoutAction（AUTH-4 所有权校验 + subject 水位线撤销）
 │   ├── middleware.rs   # TokenAuthMiddleware + TokenClaimsValidator/IntoUserProjection
-│   ├── password.rs     # PasswordEngine：Argon2 + spawn_blocking + 并发上限
+│   ├── password.rs     # PasswordEngine：Argon2 + spawn_blocking + 并发上限；verify_or_dummy 等时校验端口
 │   ├── rate_limit.rs   # AuthRateLimiter/AuthOperation：Redis 原子限流与失败计数
 │   ├── email_verification.rs # 一次性邮箱验证码（摘要存储/防枚举/原子消费，投递 trait 注入）
 │   ├── browser_session.rs    # BrowserSession：会话 Cookie 签发/清除 + 同源校验
