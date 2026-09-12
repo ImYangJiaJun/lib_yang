@@ -4,7 +4,7 @@
 
 **开发版本**：yang-base 0.2.2 / yang-db 0.1.6
 
-本矩阵是公开能力边界的简表；精确签名以 rustdoc 和源码为准，逐点验收证据见 `YANG_BASE_DB_COMPLETENESS_PLAN.md` 与 `PRODUCTION_READINESS_LOG.md`。
+本矩阵是公开能力边界的简表；精确签名以 rustdoc 和源码为准，逐点验收证据见 `docs/plans/YANG_BASE_DB_COMPLETENESS_PLAN.md` 与 `docs/audit/PRODUCTION_READINESS_LOG.md`。
 
 ## 支持矩阵
 

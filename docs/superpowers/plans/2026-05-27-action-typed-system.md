@@ -56,7 +56,7 @@
 | `crates/yang-base/src/table/table_query.rs` | 补缺失的 `where_lt`/`where_lte`/`where_gt`/`where_gte`/`where_ne`/`where_between`/`where_null`/`where_not_null` 方法；新增 `count(self)` |
 | `crates/yang-base/src/error/mod.rs` | 不动（沿用既有 `ParamInvalid` 等） |
 | `docs/BACKLOG.md` | 步骤 8 末尾把 H-1 状态从 ⏳ 改为 ✅ |
-| `docs/yang-base.md`、`crates/yang-base/AGENTS.md` | 步骤 8 更新到新 API |
+| `docs/reference/yang-base.md`、`crates/yang-base/AGENTS.md` | 步骤 8 更新到新 API |
 
 ---
 
@@ -2227,7 +2227,7 @@ git commit -m "feat(yang-base): ModuleRouter 接入类型化 Action 系统
 - Create: `crates/yang-base/tests/typed_action_integration.rs`
 - Modify: `crates/yang-base/src/action/action_trait.rs`（删除 LegacyAction、清理）
 - Modify: `docs/BACKLOG.md`
-- Modify: `crates/yang-base/AGENTS.md`、`docs/yang-base.md`
+- Modify: `crates/yang-base/AGENTS.md`、`docs/reference/yang-base.md`
 
 - [ ] **Step 8.1：dev-dep**
 
@@ -2517,14 +2517,14 @@ cargo doc --workspace --no-deps
 - 在该节内顶部加一行：`**状态**：✅ 已完成。Action 系统已重构为 TypedHandler + #[derive(TableEntity)] + #[derive(Action)] 的端到端类型化方案，详见 docs/superpowers/specs/2026-05-27-action-typed-system-design.md。`
 - 汇总表里 H-1 状态从 ⏳ 改为 ✅
 
-- [ ] **Step 8.12：更新 AGENTS.md / yang-base.md**
+- [ ] **Step 8.12：更新 AGENTS.md / docs/reference/yang-base.md**
 
 修改 `crates/yang-base/AGENTS.md`：
 
 - 找到 Action 系统相关章节，替换为新 API 的简短描述（`TypedHandler` / `#[derive(Action)]` / `#[derive(TableEntity)]` / `table_typed::<T>()`）
 - 列出 spec 路径供未来 agent 查阅
 
-修改 `docs/yang-base.md`：
+修改 `docs/reference/yang-base.md`：
 
 - "Action 系统" 一节整体改写
 - 主要变更：
@@ -2556,7 +2556,7 @@ git commit -m "feat(yang-base): H-1 类型化 Action 系统完成
 - 2 个 insta schema 快照（实体 / SelectQuery）
 - 端到端集成测试 add → get → put → select → del → table
 - 删除 LegacyAction、清理 register_builtin_actions
-- 更新 BACKLOG / AGENTS / yang-base.md
+- 更新 BACKLOG / AGENTS / docs/reference/yang-base.md
 
 完整设计见 docs/superpowers/specs/2026-05-27-action-typed-system-design.md"
 ```
@@ -2653,7 +2653,7 @@ git commit -m "feat(yang-base): H-1 类型化 Action 系统完成
 | Task | 概要 |
 |---|---|
 | Task 7 — ModuleRouter 集成 + `table_typed::<T>()` | 把 `DynAction` 重命名为 `Action`；`actions` 存 `Arc<dyn Action>`；新增 `table_typed::<T>()` 一行注册全套；`dispatch` 改为读 `ActionMeta` |
-| Task 8 — trybuild + 快照 + 集成测试 + 文档收尾 | 4 个 compile_fail 用例、insta 快照、testcontainers 端到端测试、删除 LegacyAction、更新 BACKLOG/AGENTS/yang-base.md |
+| Task 8 — trybuild + 快照 + 集成测试 + 文档收尾 | 4 个 compile_fail 用例、insta 快照、testcontainers 端到端测试、删除 LegacyAction、更新 BACKLOG/AGENTS/docs/reference/yang-base.md |
 
 ### 续作提示
 

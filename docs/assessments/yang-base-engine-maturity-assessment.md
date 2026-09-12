@@ -203,7 +203,7 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 |---|---|---|---|
 | 「游标 / keyset 分页」列在「写路径与统计完备（底层 yang-db 都有，未桥接）」小节下（第 99/102/143 行） | **分类错误**：与批量/UPSERT/聚合不同，游标分页 yang-db 底层**也没有**，只有 LIMIT/OFFSET。条目正文「仅 LIMIT/OFFSET」已自承，但小标题「都有」与路线图第 6 步「桥接到既有能力」会误导——这是真·新建工作量，非桥接 | 从「底层都有」小节移出，标注 yang-db 与 yang-base 双层都缺，需在 query_builder 新建 seek 分页 | `mysql/query_builder.rs:1255/1261`、`postgres/query_builder.rs:1149/1155`；全仓无 keyset/seek/cursor SQL 分页 |
 | 「MySQL 侧仅 health_check」「MySQL pool_status：Redis 侧已有」（第 107 行） | **归属含糊**：在 yang-base 层（GlobalDatabase）字面成立；但若读作 yang-db 层则不准——yang-db 的 `mysql::Database` **既无 health_check 也无 pool_status**，health_check 是 yang-base 用 `SELECT 1` 实现的 | 注明 health_check 属 yang-base `global.rs:349`；yang-db 的 MySQL Database 两者皆缺，补 pool_status 时需同时补 health_check（可包 `pool.size()/num_idle()`） | `mysql/database.rs:79-281`（无两方法）、`yang-base global.rs:349`、`redis/client.rs:1730/1742` |
-| `docs/yang-db.md:276-277` 称 yang-db 用 `quote_identifier()`/`is_valid_identifier()` 转义/校验标识符 | **不实**（旁证，非本文档错）：这两个函数只在 yang-base `table_query.rs:140/167`，yang-db crate 内零命中。直接消费 yang-db 者会误以为标识符已自动转义 | 修正 `yang-db.md` 注入防护小节：yang-db 仅对**值**参数化，标识符安全由调用方/上层保证 | `yang-base table_query.rs:140/167`；yang-db 内零命中 |
+| `docs/reference/yang-db.md:276-277` 称 yang-db 用 `quote_identifier()`/`is_valid_identifier()` 转义/校验标识符 | **不实**（旁证，非本文档错）：这两个函数只在 yang-base `table_query.rs:140/167`，yang-db crate 内零命中。直接消费 yang-db 者会误以为标识符已自动转义 | 修正 `docs/reference/yang-db.md` 注入防护小节：yang-db 仅对**值**参数化，标识符安全由调用方/上层保证 | `yang-base table_query.rs:140/167`；yang-db 内零命中 |
 | health_check 文档声明可返回 `Err(DbError): 无法获取连接`（Redis） | **不实**：实现 `Err(_) => Ok(false)` 吞掉全部错误，Err 分支不可达，恒返回 Ok | 修文档：任何异常都返回 `Ok(false)` 不返回 Err；或修代码区分「PING 失败」与「连不上」 | `redis/client.rs:1726-1736` |
 
 > **被否决（1 条）**：有审查臂提出「文档 12 操作符清单含 yang-db 不存在的 NotIn」属 doc-inaccuracy，经复核**否决**——文档第 28 行的操作符清单是对 yang-base 受保护层的论断，`WhereOp::NotIn` 在 yang-base `entity.rs:101` 真实存在且全参数化（`table_query.rs:1219-1231`），不经 yang-db 的 Condition 枚举。文档此处准确。
@@ -323,7 +323,7 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 |----|------|------|------|
 | DOC-1 | 「游标/keyset 分页」移出「底层都有」小节，标注双层都缺 | ✅ | 本文第五节已拆分「写路径需新建」小节 + 路线图第 6 步措辞 |
 | DOC-2 | 注明 MySQL health_check 属 yang-base，db 的 Database 两者皆缺 | ✅ | 本文第五节「观测细项」pool_status 条已补归属澄清 |
-| DOC-3 | 修正 `docs/yang-db.md` 关于 quote/校验的归属 | ✅ | yang-db.md 注入防护小节已重写（值参数化 vs 标识符由上层保证） |
+| DOC-3 | 修正 `docs/reference/yang-db.md` 关于 quote/校验的归属 | ✅ | docs/reference/yang-db.md 注入防护小节已重写（值参数化 vs 标识符由上层保证） |
 | DOC-4 | 修正 Redis `health_check` 文档（恒返回 Ok，不返回 Err） | ✅ | `redis/client.rs:1722-1729` doc 注释已删除不可达 Err 行 |
 
 ### 11.5 深度复核新增缺口（第 10.4 节）
@@ -389,7 +389,7 @@ C6 是横切所有改动的承重项：补 `#[tokio::test(flavor = "multi_thread
 | DB-13（表/§12.9） | `mysql/query_builder.rs:939-942`、`transaction.rs:279-282/278` | MySQL `query_builder.rs:936-942`(format@941) 与 1000-1004(format@1004)；PG `postgres/transaction.rs:292-297`(format@296) |
 | NG-2（表） | `mysql/database.rs:149` | 真正 `pool.begin()` 在 `mysql/database.rs:181`（:149 现为 health_check 的 SELECT 1）；PG `postgres/database.rs:148` 仍准 |
 | NG-4（表） | `table_query.rs:2318-2321` | from_json 错误路径在 `table_query.rs:2794-2797`（from_json 整体 2774-2800）；where_eq 入口 1357（旧引 2318-2321 实为 UPDATE 写权限校验，无关） |
-| DOC-3（yang-db.md:277 内嵌） | `table/table_query.rs:140/167` | `is_valid_identifier:151`、`quote_identifier:178`（assessment.md:202/277 亦沿用旧 140/167，待同步） |
+| DOC-3（docs/reference/yang-db.md:277 内嵌） | `table/table_query.rs:140/167` | `is_valid_identifier:151`、`quote_identifier:178`（assessment.md:202/277 亦沿用旧 140/167，待同步） |
 
 ## 十二、优雅解决方案设计
 

@@ -35,7 +35,7 @@
 
 ## 2026-07-15 完成度对账
 
-本节只对账，不重写下方历史审计。判定来源为 `docs/YANG_BASE_DB_COMPLETENESS_PLAN.md` 与对应实现/测试提交，日期均为 2026-07-15。
+本节只对账，不重写下方历史审计。判定来源为 `docs/plans/YANG_BASE_DB_COMPLETENESS_PLAN.md` 与对应实现/测试提交，日期均为 2026-07-15。
 
 - [已完成] NEW-35、NEW-36、NEW-37、NEW-38、NEW-39、NEW-40、NEW-41、NEW-42、NEW-43、NEW-44：已分别由安全边界、错误链、敏感信息脱敏、方言对称性、feature/MSRV/CI 门禁及设计约束条目覆盖。
 - [已完成] yang-base/yang-db 完整度计划 P0-01 至 P5-01：以计划内逐点 `DONE` 状态、对抗性测试和独立 Git 提交为准。
@@ -686,7 +686,7 @@ FieldType::Date => {
 | L-1 | ✅ 已完成 | 🟢 Low | yang-base | database/global.rs | GlobalDatabase 缺少参数化查询快捷方法 | — |
 | L-2 | ✅ 已完成 | 🟢 Low | yang-base | action/auth.rs | 认证内置 Action（login/refresh/logout） | — |
 | L-3 | ✅ 已完成 | 🟢 Low | yang-base | table/field_type.rs | Date/DateTime/Timestamp 字段类型未实现 validate | — |
-| L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 | docs/yang-base.md 中 circuit_breaker 字段未同步文档（文档 stale）|
+| L-4 | ✅ 已完成 | 🟢 Low | yang-base | http/{client,request,circuit_breaker}.rs | 重试+退避+超时已有，本次补手写按-host 三态熔断器 | docs/reference/yang-base.md 中 circuit_breaker 字段未同步文档（文档 stale）|
 | L-5 | ✅ 已完成 | 🟢 Low | 文档 | AGENTS.md | NOTES 节 Edition 描述与 CONVENTIONS 节矛盾 | — |
 | NEW-20 | ⏳ 待处理 | 🔴 Critical | yang-pcg | rng.rs / digest.rs | DefaultHasher 跨 Rust 版本不稳定，确定性契约漏洞 | — |
 | NEW-21 | ⏳ 待处理 | 🔴 Critical | yang-pcg | （全量 pub enum/struct） | 零处 #[non_exhaustive]，SemVer 兼容性债 | — |

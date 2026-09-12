@@ -56,8 +56,8 @@
 
 ### 2.3 API 稳定 —— 中上（3.5/5）
 
-- 有 `VERSIONING.md` 版本兼容策略、API 契约文档、宏级编译期校验（`table!`/`field!`/`action!` 等 9 个宏）——方向正确。
-- 不能声称稳定的部分（尚不能宣称）：0.1.x/0.2.x 阶段本就允许 breaking；无 CHANGELOG 机械化校验；文档版本漂移实测存在（`docs/yang-db.md` 标 0.1.4 vs Cargo.toml 0.1.5，`docs/yang-base.md`/README 标 0.2.0 vs 0.2.1），契约测试未卡住版本号一致性。
+- 有 `docs/reference/VERSIONING.md` 版本兼容策略、API 契约文档、宏级编译期校验（`table!`/`field!`/`action!` 等 9 个宏）——方向正确。
+- 不能声称稳定的部分（尚不能宣称）：0.1.x/0.2.x 阶段本就允许 breaking；无 CHANGELOG 机械化校验；文档版本漂移实测存在（`docs/reference/yang-db.md` 标 0.1.4 vs Cargo.toml 0.1.5，`docs/reference/yang-base.md`/README 标 0.2.0 vs 0.2.1），契约测试未卡住版本号一致性。
 - 评分低于 07-26 基线预期的部分即文档同步纪律。
 
 ### 2.4 运维可见 —— 良好（4.0/5）
@@ -130,7 +130,7 @@ br 生态实证（`scs/scs-api`，~15.7 万行 Rust）：自研 `br-web-server`/
 
 - `INSTALL.md.md`（扩展名重复，且 exclude 规则写成 `INSTALL.md` 匹配不上）。
 - `examples/` 中 `test_min_max.rs` 命名像测试混入 examples。
-- 文档版本漂移（docs/yang-db.md 0.1.4 vs 实际 0.1.5 等）——建议契约测试加版本号一致性断言。
+- 文档版本漂移（docs/reference/yang-db.md 0.1.4 vs 实际 0.1.5 等）——建议契约测试加版本号一致性断言。
 - BACKLOG.md 状态表与 2026-07-15 对账节矛盾，引用前需对账。
 
 ## 5. 优化路径（按投入产出排序）

@@ -1085,7 +1085,7 @@ async fn full_crud_cycle() {
 
 ### 步骤 8：文档与示例更新
 
-- 更新 `crates/yang-base/AGENTS.md`、`docs/yang-base.md`
+- 更新 `crates/yang-base/AGENTS.md`、`docs/reference/yang-base.md`
 - 更新所有现有示例代码到新 API
 - 更新 `docs/BACKLOG.md`：H-1 状态改为 ✅ 已完成
 
@@ -1126,5 +1126,5 @@ async fn full_crud_cycle() {
 - [ ] 一个完整集成测试：`add → get → put → select → del → table` 全部走 typed 路径
 - [ ] 至少 4 个 trybuild `compile_fail` 用例覆盖字段名错误、类型错误、Like 限制、`primary_key` 缺失
 - [ ] Schema 快照已建立并 commit
-- [ ] `docs/yang-base.md` 与 `crates/yang-base/AGENTS.md` 已更新到新 API
+- [ ] `docs/reference/yang-base.md` 与 `crates/yang-base/AGENTS.md` 已更新到新 API
 - [ ] `docs/BACKLOG.md` H-1 状态 → ✅

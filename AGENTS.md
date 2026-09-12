@@ -25,7 +25,7 @@ lib_yang/
 │   ├── verify_ci_contract.py / verify_feature_isolation.py
 │   ├── verify_dependency_policy.py   # supply-chain job 契约
 │   └── run_performance_shadow.py     # performance-shadow job
-└── docs/                     # BACKLOG.md + superpowers/{specs,plans,baselines}；根目录散落的历史 md 多为工作日志
+└── docs/                     # BACKLOG.md + reference/（API/能力参考）+ plans/ + assessments/ + audit/ + exam/ + performance/ + superpowers/{specs,plans,baselines}
 ```
 
 ## COMMANDS
@@ -69,18 +69,18 @@ cargo run --example <name> -p <crate> --locked
 | Redis 操作 | `crates/yang-db/src/redis/` | `client.rs` 是主 API |
 | 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`；Global 单例已删除 |
 | 定义内核 | `crates/yang-base/src/definition/` | `builder/` 子模块化（app/catalog/compile/handle/project/registry/validate） |
-| Action 系统 | `crates/yang-base/src/action/` | child AGENTS.md；`auth/` 子模块化（login/refresh/password/middleware…） |
+| Action 系统 | `crates/yang-base/src/action/` | child AGENTS.md；请求链路：`ModuleRouter::dispatch` → middleware 洋葱链 → `authorize_and_dispatch` 鉴权派发；`auth/` 子模块化（login/refresh/password/middleware…） |
 | auth/认证 | `crates/yang-base/src/action/auth/` | browser_session/email_verification/rate_limit/audit 等子模块 |
 | HTTP 传输 | `crates/yang-base/src/transport/` | transport-axum feature：`axum.rs`（router 入口）+ client_ip.rs |
 | HTTP 客户端 | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
 | Table 系统 | `crates/yang-base/src/table/` | child AGENTS.md；`table_query/` 子模块化（build/read/write/filters/plan/validation…） |
 | definition ui | `crates/yang-base/src/definition/ui/` | 已拆 action/catalog/demo/hints/module/table |
 | schema 同步 | `crates/yang-base/src/database/schema_sync/` | inspect/model/plan/preflight/render/sync 子模块 |
-| Tokens | `crates/yang-base/src/token/` | JWT TokenManager, feature-gated |
+| Tokens | `crates/yang-base/src/token/` | JWT TokenManager, feature-gated；鉴权路径必须用 `verify_token_checked`（`verify_token` 不查 Redis 撤销黑名单） |
 | 基础系统联调 | `project/yang-system/` | 独立嵌套仓库（相对路径依赖 ../../crates 联调本地库）；进入该目录独立跑 Cargo |
 | PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |
 | PCG terrain | `crates/yang-pcg/src/terrain/` | child AGENTS.md；`pcg 全部测试放 auxiliary 组跑 --all-targets` |
-| Specs/backlog | `docs/BACKLOG.md`, `docs/superpowers/` | requirements/design/tasks；根目录散落 summary md 多为历史日志 |
+| Specs/backlog | `docs/BACKLOG.md`, `docs/superpowers/` | requirements/design/tasks；散落 summary 日志已归档至 docs/audit/ 等子目录 |
 
 ## CODE MAP
 | Symbol | Type | Location | Role |
@@ -108,7 +108,7 @@ cargo run --example <name> -p <crate> --locked
 
 ## CONVENTIONS
 - edition `2021`（各 crate `edition.workspace = true`）；`project/yang-system` 从根 workspace 排除，Cargo 命令须进该目录跑。
-- Comments/public docs/commit 中文风格；`yang-base` `#![warn(missing_docs)]`。
+- 面向用户的对话、comments/public docs/commit message 一律中文（工具调用参数可用英文）；`yang-base` `#![warn(missing_docs)]`。
 - Unit tests colocated 在 `__tests__/`；integration tests 在 crate `tests/`；`yang-pcg` 另有 `tests_task26/`、`tests_task27/`、`chunked_tests.rs`。
 - 需求追踪注释用 `验证需求: X.Y` 前缀。
 - Docker tests `#[ignore]`、单线程跑；`proptest-regressions/` 是 `yang-db`/`yang-pcg` 的意图性保留。
@@ -117,7 +117,7 @@ cargo run --example <name> -p <crate> --locked
 - 不新增生产 `unwrap()`/`expect()`，即使 crate lint 允许（现热点：`mysql/query_builder/`、`plugin/`、`validation.rs`、`grammar/selector.rs`）。
 - 不用 `_unchecked` 查询助手，除非调用方已验证运算符；优先 `having_cond`/`where_and`/`where_or` Result 返回 API。
 - 资源一律经 `ToolsBuilder` 注册、`Tools` 获取；禁止在 yang-base 新增进程级全局单例（`static OnceLock`/`lazy_static`）。
-- 不删/弱化 `yang-pcg` 忽略的属性测试（文档化算法缺口）。
+- 不删/弱化 `yang-pcg` 的 property test 与 `validate` 硬校验——守护的是真不变量（早期是已知算法缺口，经 `0ff2979`/`3650a4d`/`f2aef14` 构造性修复后 6 个 property test 已全部解除 `#[ignore]`）。
 - 不硬编码凭据；用 `MYSQL_TEST_PASSWORD` 或本地忽略配置。
 - 不把 `RedisConfig` pool 参数 / `insert_batch` 自动批处理写成坏的（当前已生效，`insert_batch` 默认 500 行批处理）。
 - Builtin actions 部分路径仍用 `serde_json::Value`；未经类型安全决策不扩大该模式。
@@ -128,4 +128,5 @@ cargo run --example <name> -p <crate> --locked
 - 根 `rust-toolchain.toml` 固定 1.97.1；CI 的 `msrv` job 用 `+1.80.0` check——两件事不是一回事。
 - CI 跑在 `.github/workflows/ci.yml`；`deny.toml` 驱动 supply-chain job；`benchmarks/runtime-shadow.toml` 驱动 performance-shadow。
 - `.gitignore` 含 `*/tests/`（对 Rust 反常），reasoning about tracked integration tests 时要小心。
+- 仓库已建 `.codegraph/` 索引；结构性问题（X 在哪/谁调用 X/改 X 影响什么）优先用 codegraph MCP 工具，纯文本内容搜索才用 grep/read。
 - 每个 crate 根与部分子模块（`yang-base/src/action|table`、`yang-pcg/src/terrain`）各有一份 AGENTS.md；**动手前先读目标模块的 AGENTS.md**。

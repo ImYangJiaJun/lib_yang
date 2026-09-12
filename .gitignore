@@ -5,4 +5,8 @@
 /scs/
 .mcp.json
 .mcp.local.json
+.idea/
+.claude/
+.codex/
+.codegraph/
 */tests/

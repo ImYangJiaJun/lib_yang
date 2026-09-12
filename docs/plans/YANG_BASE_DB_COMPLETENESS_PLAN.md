@@ -11,7 +11,7 @@
 **目标：** 把当前“主体功能可用但门禁和系统集成不完整”的基础库，推进为可稳定支撑个人基础系统的生产级底座。
 
 > 本文是本轮完善工作的执行基线。`docs/audit/` 保留历史事实，
-> `docs/PRODUCTION_READINESS_LOG.md` 记录已经完成并验证的修复；历史文档中的评分、
+> `docs/audit/PRODUCTION_READINESS_LOG.md` 记录已经完成并验证的修复；历史文档中的评分、
 > 行号和开放项不能直接当作当前事实，实施每一点前都必须重新核对源码和测试。
 
 ## 1. 结论先行
@@ -226,7 +226,7 @@ MySQL/PostgreSQL 对同一语义提供一致入口，但允许返回 `Unsupporte
 ## 7. 分阶段实施计划
 
 状态取值：`PENDING`、`IN_PROGRESS`、`DONE`、`DEFERRED`。每个工作包完成后更新本节状态，
-并在 `docs/PRODUCTION_READINESS_LOG.md` 追加真实验证命令。
+并在 `docs/audit/PRODUCTION_READINESS_LOG.md` 追加真实验证命令。
 
 ### Phase 0：恢复可信基线
 
@@ -473,7 +473,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 
 #### P5-02 文档统一 — `DONE` — effort M
 
-- README、`docs/yang-base.md`、`docs/yang-db.md`、示例和 feature 表与代码同步。
+- README、`docs/reference/yang-base.md`、`docs/reference/yang-db.md`、示例和 feature 表与代码同步。
 - `docs/BACKLOG.md` 中已完成或已失效条目标记来源和日期，不重写历史审计。
 - 增加“支持能力矩阵”和“与 br-addon/br-db 的设计差异”，说明哪些缺口是明确 non-goal。
 
@@ -494,7 +494,7 @@ ApiCatalog/OpenAPI。该测试不需要真实数据库；数据库执行另由�
 4. 只实现关闭该失败模式所需的最小改动。
 5. 运行窄 GREEN 测试和一个邻近回归切片。
 6. 到达阶段边界时运行完整验证矩阵。
-7. 更新本文状态和 `docs/PRODUCTION_READINESS_LOG.md`，记录实际命令与结果。
+7. 更新本文状态和 `docs/audit/PRODUCTION_READINESS_LOG.md`，记录实际命令与结果。
 8. 每个完成点单独创建本地提交，不混入无关格式化或其他工作树改动。
 
 如果一个工作包连续三种修补方案都不能关闭同一失败模式，应停止打补丁，回到 ADR/架构层重新评估。
