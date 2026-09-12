@@ -92,13 +92,15 @@ jobs:
       - name: Verify performance collector contract
         run: python scripts/run_performance_shadow.py --self-test
       - name: Collect repeated runtime measurements
-        run: python scripts/run_performance_shadow.py --output target/performance-shadow
+        # 输出放在 runner.temp：rust-cache 会跨运行恢复并裁剪 target/，
+        # 残留的 performance-shadow 空目录会触发采集器"拒绝覆盖历史数据"保护。
+        run: python scripts/run_performance_shadow.py --output "${{ runner.temp }}/performance-shadow"
       - name: Upload raw performance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: performance-shadow-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: target/performance-shadow
+          path: ${{ runner.temp }}/performance-shadow
           if-no-files-found: error
           retention-days: 30
 
