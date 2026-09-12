@@ -3,7 +3,7 @@
 **日期：** 2026-07-19  
 **状态：** 已完成  
 **工作方式：** 用户确认直接在当前工作区修改，不创建 worktree  
-**事实源：** `docs/FRONTEND_FIRST_PRINCIPLES.md`、当前 `yang-base`、独立应用 `project/yang-system`、运行态 HTTP 与浏览器行为
+**事实源：** `docs/reference/FRONTEND_FIRST_PRINCIPLES.md`、当前 `yang-base`、独立应用 `project/yang-system`、运行态 HTTP 与浏览器行为
 
 ## 1. 最终验收目标
 
@@ -92,7 +92,7 @@ WebSocket 明确不在本轮范围内。
 - [x] 标准 View 自动渲染且租户/权限由服务端 fail-closed。
 - [x] 自定义页面覆盖与两级安全降级通过。
 - [x] multipart 与附件响应通过真实浏览器验证。
-- [x] `docs/FRONTEND_FIRST_PRINCIPLES.md` 与实现、BACKLOG、验收证据一致。
+- [x] `docs/reference/FRONTEND_FIRST_PRINCIPLES.md` 与实现、BACKLOG、验收证据一致。
 
 ## 7. 执行日志
 

@@ -17,7 +17,7 @@
 | **性能** | 5.0/10 | 中等偏下 | Redis recycle=5s 是功能性 bug（连接池形同虚设）。大量 unnecessary clone、SQL 生成+绑定双重 clone、HashMap clone、base64 编码膨胀。SqlGenerator 预分配合理。 |
 | **逻辑正确性** | 4.5/10 | 中等偏下 | Transaction 缺少 Drop 回滚日志；PluginManager TOCTOU 竞态；RedisTransaction 重试复用死连接；graceful_shutdown 被 mysql feature 绑死。Token 撤销两次 Redis 查询非原子。3 个 ErrorCategory 映射错误。 |
 | **API/架构** | 5.0/10 | 中等 | MySQL/PG 完全平行复制无共享抽象；query_builder.rs 5484 行最大瓶颈；RedisConfig 位置参数 vs DatabaseConfig Builder 不一致。 |
-| **文档** | 3.5/10 | 严重不足 | AGENTS.md 多处描述已删除的旧 Action trait；BACKLOG M-1 严重低报（"20+" vs 实际 ~870+）；yang-base.md 漏掉撤销/中间件/熔断器。 |
+| **文档** | 3.5/10 | 严重不足 | AGENTS.md 多处描述已删除的旧 Action trait；BACKLOG M-1 严重低报（"20+" vs 实际 ~870+）；docs/reference/yang-base.md 漏掉撤销/中间件/熔断器。 |
 | **综合加权** | **4.5/10** | **不建议直接生产部署** | 约 20 个 CRITICAL/HIGH 需先关闭。预估 7 个工作日可达到可部署水平。 |
 
 ### 生产就绪度判断
@@ -746,30 +746,30 @@
 - **文件**: `crates/yang-db/AGENTS.md:9-59`
 - **修复**: 补全 postgres/ 子树和 isolation.rs。
 
-### D-H8. docs/yang-base.md Action 模块仍描述已删除的旧 Action trait
-- **文件**: `docs/yang-base.md:782-957`
+### D-H8. docs/reference/yang-base.md Action 模块仍描述已删除的旧 Action trait
+- **文件**: `docs/reference/yang-base.md:782-957`
 - **修复**: 全节重写为类型化 Action 系统。
 
 ## MEDIUM (12项)
 
-### D-M1. docs/yang-base.md ModuleRouter 使用不存在的 register_builtin_actions()
-- **文件**: `docs/yang-base.md:973`
+### D-M1. docs/reference/yang-base.md ModuleRouter 使用不存在的 register_builtin_actions()
+- **文件**: `docs/reference/yang-base.md:973`
 - **修复**: 替换为 `table_typed::<T>()?`；新增中间件小节。
 
-### D-M2. docs/yang-base.md Token 模块完全遗漏撤销/黑名单机制
-- **文件**: `docs/yang-base.md:327-414`
+### D-M2. docs/reference/yang-base.md Token 模块完全遗漏撤销/黑名单机制
+- **文件**: `docs/reference/yang-base.md:327-414`
 - **修复**: 新增撤销机制小节。
 
-### D-M3. docs/yang-base.md HTTP 模块遗漏熔断器和重试配置
-- **文件**: `docs/yang-base.md:417-503`
+### D-M3. docs/reference/yang-base.md HTTP 模块遗漏熔断器和重试配置
+- **文件**: `docs/reference/yang-base.md:417-503`
 - **修复**: 新增韧性小节。
 
-### D-M4. docs/yang-base.md Database 模块遗漏 DatabaseBundle 统一初始化入口
-- **文件**: `docs/yang-base.md:187-323`
+### D-M4. docs/reference/yang-base.md Database 模块遗漏 DatabaseBundle 统一初始化入口
+- **文件**: `docs/reference/yang-base.md:187-323`
 - **修复**: 新增 DatabaseBundle 小节。
 
-### D-M5. docs/yang-base.md 错误码表遗漏 15+ 个新增错误码
-- **文件**: `docs/yang-base.md:57-68`
+### D-M5. docs/reference/yang-base.md 错误码表遗漏 15+ 个新增错误码
+- **文件**: `docs/reference/yang-base.md:57-68`
 - **修复**: 从 error/mod.rs 的 code() 方法中提取完整列表。
 
 ### D-M6. action/AGENTS.md STRUCTURE 树缺少 5 个关键文件
@@ -801,8 +801,8 @@
 
 ## LOW (22项)
 
-### D-L1. docs/yang-base.md Feature 列表遗漏 metrics feature
-### D-L2. docs/yang-base.md 模块依赖图遗漏 middleware 子模块
+### D-L1. docs/reference/yang-base.md Feature 列表遗漏 metrics feature
+### D-L2. docs/reference/yang-base.md 模块依赖图遗漏 middleware 子模块
 ### D-L3. yang-db/AGENTS.md HOTSPOTS 文件行数过时（4.8k→5.5k, 2k→2.2k）
 ### D-L4. yang-db/AGENTS.md WHERE TO LOOK 缺少 Redis PoolStatus
 ### D-L5. yang-base/AGENTS.md plugin/mod.rs 行数略有过时（1.1k→1.4k）
@@ -863,7 +863,7 @@
 | P1-13 | **HashMap clone 推迟**：build_update_sql_impl 条件判断前不 clone | P-H3 | 0.5h |
 | P1-14 | **expect 消除**：hash_condition_renderer table_query expect 用 ok_or_else 替代 | L-M2 | 0.5h |
 | P1-15 | **循环依赖修复**：提取 Middleware/Next 到独立基础模块 | L-H5 | 2h |
-| P1-16 | **文档修复 P0**：action/AGENTS.md + yang-base/AGENTS.md + yang-base.md Action 章节重写 | D-H1~H8 | 6h |
+| P1-16 | **文档修复 P0**：action/AGENTS.md + yang-base/AGENTS.md + docs/reference/yang-base.md Action 章节重写 | D-H1~H8 | 6h |
 | P1-17 | **PG 镜像标识符转义修复**：PG condition_to_sql_owned/build_select/build_order_by/build_group_by/build_joins 对标 MySQL 修复 | S-NEW-SQL-5~11 | 3h |
 | P1-18 | **认证中间件启动期检查**：debug 断言或启动日志警告缺少认证中间件的路由器 | S-NEW-AUTH-2 | 1h |
 | P1-19 | **with_user() 权限边界文档**：标明仅供中间件/内部使用；考虑 user 字段改为 pub(crate) | S-NEW-AUTH-3 | 0.5h |
@@ -880,7 +880,7 @@
 
 | 编号 | 任务 | 关联发现 | 预估 |
 |------|------|---------|------|
-| P2-1 | **docs/yang-base.md 全面更新**：补全撤销/中间件/熔断器/DatabaseBundle/错误码表/Feature 表 | D-H8, D-M1~M5 | 4h |
+| P2-1 | **docs/reference/yang-base.md 全面更新**：补全撤销/中间件/熔断器/DatabaseBundle/错误码表/Feature 表 | D-H8, D-M1~M5 | 4h |
 | P2-2 | **yang-db/AGENTS.md 更新**：补充 postgres 模块、isolation.rs、identifier.rs；更新行数 | D-H7, D-M10, D-L3 | 1h |
 | P2-3 | **BACKLOG.md 更新**：修正 M-1 计数、补充近期修复项、新增审计发现条目 | D-M11, D-M12 | 2h |
 | P2-4 | **cargo-audit 集成**：添加 pre-commit hook 或开发脚本 | S-H9 | 2h |

@@ -21,7 +21,7 @@
 
 ## 2026-07-15 - P5-03 发布候选验证
 
-- 范围：从 P5-02 的 clean checkout 执行 stable/MSRV、17 组 feature matrix、doc、Clippy、RustSec、三包 package 与 MySQL 8/PostgreSQL 16/Redis 7 真实集成，并新增 `docs/RELEASE_CANDIDATE_REPORT.md`。
+- 范围：从 P5-02 的 clean checkout 执行 stable/MSRV、17 组 feature matrix、doc、Clippy、RustSec、三包 package 与 MySQL 8/PostgreSQL 16/Redis 7 真实集成，并新增 `docs/audit/RELEASE_CANDIDATE_REPORT.md`。
 - RED：发布契约先以“报告不存在 + 计划仍含 PENDING”双重失败；强化 CI 契约后又准确拒绝缺失的 openapi 单 feature 行，补齐 workflow 后转绿。
 - 依赖审计：升级 rustls-webpki 0.103.12→0.103.13；rsa Marvin advisory 因上游无补丁且项目无私钥解密路径、time RFC2822 DoS 因修复版要求 Rust 1.88 且仓库无对应调用，均以具名理由显式豁免。审计为 0 个未豁免漏洞，并在报告保留 5 个上游 warning。
 - package：yang-base-derive/yang-db/yang-base 分别生成 9/84/144 files，workspace 多包临时 registry 按依赖顺序完成全部 verify；证明独立 base 需先发布内部依赖是顺序约束而非内容失败。
@@ -30,7 +30,7 @@
 
 ## 2026-07-15 - P5-02 文档统一
 
-- 范围：同步 yang-base 0.1.2/yang-db 0.1.4 的 crate README、API 总览、feature 表与 examples 编译契约；新增 `docs/BASE_DB_CAPABILITY_MATRIX.md`，并在 `docs/BACKLOG.md` 添加只追加、不改写历史审计的日期化完成度对账。
+- 范围：同步 yang-base 0.1.2/yang-db 0.1.4 的 crate README、API 总览、feature 表与 examples 编译契约；新增 `docs/reference/BASE_DB_CAPABILITY_MATRIX.md`，并在 `docs/BACKLOG.md` 添加只追加、不改写历史审计的日期化完成度对账。
 - RED：跨文档契约 3 项全失败，分别捕获能力矩阵缺失、两份 API 总览版本过期、yang-base README feature 缺失及 `v0.0.1` 仍被标为当前版本。
 - 纠偏：删除 yang-db 文档中已失效的 MySqlPool 裸指针 unsafe 描述；补齐 PostgreSQL、`BackendCapabilities`、Subquery/UNION/RowLock/原子更新，以及 `RequestMeta`、`ApiCatalog`、OpenAPI、迁移/schema 治理和后台元数据边界。
 - 设计差异：明确 br-addon/br-db 只作能力盘点参考；本项目按真实消费者与已验证风险演进，默认使用 checked identifier、绑定参数和受控 SQL，不承诺逐方法兼容。
@@ -39,7 +39,7 @@
 
 ## 2026-07-15 - P5-01 版本与兼容策略
 
-- 范围：发布版本提升为 yang-db 0.1.4/yang-base 0.1.2，公开 `VERSION` 常量，同步 README 依赖示例；新增 `docs/VERSIONING.md` 定义 0.1.x 兼容增强与 0.2.0 breaking 收口规则。
+- 范围：发布版本提升为 yang-db 0.1.4/yang-base 0.1.2，公开 `VERSION` 常量，同步 README 依赖示例；新增 `docs/reference/VERSIONING.md` 定义 0.1.x 兼容增强与 0.2.0 breaking 收口规则。
 - RED：兼容契约产生 3 个编译错误，确认两库缺版本常量，且 P4-01 曾把两参数 `record_migration` 破坏性改为四参数。
 - 兼容修复：恢复 `record_migration(module, version)` 为 deprecated 两参数入口；新 checksum/status 语义迁移到 `record_migration_with_checksum`，内部执行路径使用新 API。兼容测试只做类型检查，不需要数据库。
 - 迁移文档：为迁移记录、checked identifier/expr、`try_to_sql`、unchecked operator 和分号切割 init 提供替代示例；0.2.0 才删除 deprecated RAW/unchecked/init/无 checksum 入口并重新评估默认 feature。
@@ -60,7 +60,7 @@
 - RED：两项纯契约测试产生 3 个缺类型/方法错误；实现后覆盖缺列、VARCHAR 容量不足、必填列允许 NULL、宽类型兼容与数据库额外列忽略。
 - 关系边界：TableConfig 明确定义为运行期访问/校验/权限契约，不是 DDL 唯一真相；验证只检查声明字段能否由当前 schema 承载，不比较额外列、索引、默认值、触发器或存储选项，不生成 ALTER/回滚。
 - 对抗性验证：真实 MySQL 首轮暴露 information_schema 大写列标签，第二轮暴露元数据 BLOB 解码；通过显式稳定别名与 CAST 修复后，真实 schema 精确报告 3 个问题，且验证前后列数保持 3，证明零写入（1 passed）。
-- 文档：新增 `docs/TABLE_CONFIG_SCHEMA.md`，明确 ForeignKey 的可验证边界及自动 diff/ALTER 需独立 RFC 和灾难恢复设计。
+- 文档：新增 `docs/reference/TABLE_CONFIG_SCHEMA.md`，明确 ForeignKey 的可验证边界及自动 diff/ALTER 需独立 RFC 和灾难恢复设计。
 - 门禁：yang-base lib 481 passed/8 ignored，doctest 74 passed/148 ignored，all-target/all-feature Clippy `-D warnings` 通过。
 
 ## 2026-07-15 - P4-01 迁移可验证性
@@ -149,7 +149,7 @@
 
 ## 2026-07-15 - P1-04 后端能力与统一管理面契约
 
-- 范围：`yang-db` 的 MySQL/PostgreSQL QueryBuilder/Transaction/Redis 能力表、三后端 `capabilities/health_check/close/is_closed/pool_status` 管理面、`yang-base` Redis 停机编排，以及 `docs/BACKEND_CAPABILITIES.md`。
+- 范围：`yang-db` 的 MySQL/PostgreSQL QueryBuilder/Transaction/Redis 能力表、三后端 `capabilities/health_check/close/is_closed/pool_status` 管理面、`yang-base` Redis 停机编排，以及 `docs/reference/BACKEND_CAPABILITIES.md`。
 - 风险：后端能力只能靠实现细节推断，PostgreSQL 方言能力可能被误认为跨后端可用；SQL 健康检查返回 `Result<()>`，Redis 关闭为同步调用且健康检查把连接池/命令故障吞成 `Ok(false)`，导致统一编排和故障诊断失真。
 - RED：编译期管理面契约产生 6 个错误，确认三后端均缺少 `capabilities()`、MySQL/PostgreSQL `health_check` 返回类型不符、Redis `close` 不是 Future；关闭 Redis 池的对抗测试进一步确认旧实现会吞掉实际连接池错误。
 - 修复：新增可机读 `BackendCapabilities`、`BackendCapability`、`BackendKind`、`PlaceholderStyle`、`SafetyConstraint` 及三后端静态常量；显式区分 PostgreSQL `RETURNING`/冲突目标、MySQL 原生 upsert 和 Redis 原生 Pipeline/WATCH/Lua。三后端统一为 `health_check().await -> Result<bool, DbError>`、`close().await`、`is_closed() -> bool`、`pool_status() -> PoolStatus`，Redis 基础设施错误改为结构化传播。
@@ -425,7 +425,7 @@
 - 验证：`cargo test -p yang-base --lib register_tool`
 ## 2026-07-07 - yang-base AppRouter 重复模块注册 fail-fast
 
-- 范围：`crates/yang-base/src/router/app_router.rs`、`crates/yang-base/src/router/mod.rs`、`docs/yang-base.md`
+- 范围：`crates/yang-base/src/router/app_router.rs`、`crates/yang-base/src/router/mod.rs`、`docs/reference/yang-base.md`
 - 风险：`AppRouter::register_module()` 对同名模块静默覆盖，应用启动阶段的路由配置错误会被延迟到运行期表现为错误模块处理请求。
 - 修改：`register_module()` 改为返回 `Result<AppRouter, BaseError>`，重复模块名返回 `BaseError::ConfigError("模块已注册: ...")`，不覆盖已有模块；同步源码和 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理模块注册失败。
@@ -438,7 +438,7 @@
 - 验证：`cargo test -p yang-base --lib test_register_module_`
 ## 2026-07-07 - yang-base ModuleRouter 重复 Action 注册 fail-fast
 
-- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`docs/yang-base.md`
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`docs/reference/yang-base.md`
 - 风险：`ModuleRouter::register_action()` 对同名 Action 静默覆盖，路由启动配置错误会变成运行时 dispatch 到错误处理器。
 - 修改：`register_action()` 改为返回 `Result<ModuleRouter, BaseError>`，重复 Action 名返回 `BaseError::ConfigError("Action 已注册: ...")`；`table_typed()` 使用 `?` 串联六个内置 Action 注册；同步 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；自定义 Action 注册调用方现在必须处理注册失败。
@@ -451,7 +451,7 @@
 - 验证：`cargo test -p yang-base --lib register_action`
 ## 2026-07-07 - yang-base ActionContext 用户注入边界收紧
 
-- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`、`crates/yang-base/tests/typed_action_integration.rs`、`docs/yang-base.md`
+- 范围：`crates/yang-base/src/action/context.rs`、`crates/yang-base/src/action/__tests__/context_test.rs`、`crates/yang-base/tests/typed_action_integration.rs`、`docs/reference/yang-base.md`
 - 风险：`ActionContext::with_user()` 是公开方法，外部调用方可构造上下文并注入任意用户绕过 TokenAuthMiddleware，`ModuleRouter::authorize_and_dispatch()` 只检查上下文中是否已有用户。
 - 修改：将 `with_user()` 降为 `pub(crate)`，新增只读 `authenticated_user()`；外部 CRUD 集成测试改为通过真实 access token 和 `TokenAuthMiddleware` 建立登录态；API 文档移除手动注入用户示例。
 - 兼容：这是有意的破坏性 API 收紧；外部认证扩展不能再直接篡改 `ActionContext.user`，需走受控中间件路径。
@@ -465,7 +465,7 @@
 - 验证：`cargo test -p yang-base --lib register_action`
 ## 2026-07-07 - yang-base ModuleRouter 默认权限名非空校验
 
-- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`crates/yang-base/src/router/mod.rs`、`docs/yang-base.md`
+- 范围：`crates/yang-base/src/router/module_router.rs`、`crates/yang-base/src/router/__tests__/module_router_tests.rs`、`crates/yang-base/src/router/mod.rs`、`docs/reference/yang-base.md`
 - 风险：`ModuleRouter::default_permissions()` 允许空字符串或纯空白权限名进入模块默认权限列表，后续鉴权失败信息和配置排错都缺少稳定权限标识。
 - 修改：`default_permissions()` 改为返回 `Result<ModuleRouter, BaseError>`，配置阶段拒绝空白权限名并返回 `BaseError::ConfigError("默认权限名称不能为空")`；同步源码和 API 文档示例。
 - 兼容：这是有意的破坏性 API 收紧；调用方现在必须处理默认权限配置错误。

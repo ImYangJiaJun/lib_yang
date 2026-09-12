@@ -29,7 +29,7 @@
 | API / SemVer | 74 | 隔离级别可配、MySQL deprecated 完整；PG SqlValue 漏 non_exhaustive、PG execute 漏 deprecated、identifier 未重导出 |
 | 并发 | 74 | WATCH 修复+隔离级别+多线程功能测试；无压力/竞态回归，TOCTOU 窄窗口 |
 | 构建 / Lint 门禁 | 38 | clippy RED（修复回归）+ fmt RED + 无 cargo-audit |
-| 文档 | 64 | AGENTS.md/yang-db.md/yang-base.md 多处 stale |
+| 文档 | 64 | AGENTS.md/docs/reference/yang-db.md/docs/reference/yang-base.md 多处 stale |
 
 ## 三、构建 / 测试 / Lint 实测 ground truth
 

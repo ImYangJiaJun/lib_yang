@@ -2,11 +2,11 @@
 
 **日期:** 2026-07-17
 **基线:** a6165d6（HEAD，工作区未提交改动即修复内容）
-**来源:** 对 `992a783..a6165d6` 的六领域并行代码审查，对照 `docs/FRONTEND_FIRST_PRINCIPLES.md`
+**来源:** 对 `992a783..a6165d6` 的六领域并行代码审查，对照 `docs/reference/FRONTEND_FIRST_PRINCIPLES.md`
 
 ## 背景
 
-yang-base 按 FRONTEND_FIRST_PRINCIPLES.md 补全了 UI 目录、业务渲染投影、关系选项、租户中间件、step-up、multipart 上传六块能力。审查确认方向与主干达标，发现 2 个 Critical + 9 个 Important 问题。本计划按文件内聚性分为 8 个修复任务，串行执行，每个任务实现后接独立审查。
+yang-base 按 docs/reference/FRONTEND_FIRST_PRINCIPLES.md 补全了 UI 目录、业务渲染投影、关系选项、租户中间件、step-up、multipart 上传六块能力。审查确认方向与主干达标，发现 2 个 Critical + 9 个 Important 问题。本计划按文件内聚性分为 8 个修复任务，串行执行，每个任务实现后接独立审查。
 
 ## Global Constraints（每个任务都必须遵守）
 

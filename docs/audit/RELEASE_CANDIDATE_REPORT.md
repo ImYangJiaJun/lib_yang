@@ -6,7 +6,7 @@
 
 ## 结论
 
-`docs/YANG_BASE_DB_COMPLETENESS_PLAN.md` 的 23 个工作包均已完成逐点 RED/GREEN、adversarial 反例验证和独立 Git 提交。stable、MSRV 1.80、feature matrix、doc tests、真实数据库、dependency audit 与 cargo package 门禁均已执行；未发现未记录的发布阻塞。
+`docs/plans/YANG_BASE_DB_COMPLETENESS_PLAN.md` 的 23 个工作包均已完成逐点 RED/GREEN、adversarial 反例验证和独立 Git 提交。stable、MSRV 1.80、feature matrix、doc tests、真实数据库、dependency audit 与 cargo package 门禁均已执行；未发现未记录的发布阻塞。
 
 发布仍需遵守内部依赖顺序：先发布 `yang-base-derive`，再发布 `yang-db`，最后发布 `yang-base`。Cargo workspace 多包打包已用临时 registry 按该顺序完成三包 verify。
 

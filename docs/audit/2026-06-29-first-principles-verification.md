@@ -24,8 +24,8 @@
 
 | 文档 | 路径 | 条目类型 |
 |---|---|---|
-| yang-base / yang-db 优化对照指南 | `docs/yang-base-db-optimization-guide.md` | AUTH / LOGIC / QRY / ERR / PERF / API / PLUG / TEST / CONC / OVF / SUP / LEAK |
-| yang-pcg 优化对照指南 | `docs/yang-pcg-optimization-guide.md` | OPT-D / OPT-L / OPT-R / OPT-P / OPT-A / OPT-S / OPT-T / OPT-Q |
+| yang-base / yang-db 优化对照指南 | `docs/plans/yang-base-db-optimization-guide.md` | AUTH / LOGIC / QRY / ERR / PERF / API / PLUG / TEST / CONC / OVF / SUP / LEAK |
+| yang-pcg 优化对照指南 | `docs/plans/yang-pcg-optimization-guide.md` | OPT-D / OPT-L / OPT-R / OPT-P / OPT-A / OPT-S / OPT-T / OPT-Q |
 | yang-base + yang-db 再审报告 | `docs/audit/2026-06-27-yang-base-db-reaudit.md` | 评分 / FIXED / OPEN / NEW / REGRESSION |
 
 ---
