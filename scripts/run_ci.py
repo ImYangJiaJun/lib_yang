@@ -273,6 +273,21 @@ INTEGRATION_COMMANDS = (
         ),
     ),
     Command(
+        "Email verification integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-base",
+            "--test",
+            "email_verification_integration",
+            "--locked",
+            "--",
+            "--ignored",
+            "--test-threads=1",
+        ),
+    ),
+    Command(
         "Redis script integration",
         (
             "cargo",

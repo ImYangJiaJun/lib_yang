@@ -5,6 +5,8 @@
 //! - 验证码与邮箱均以 HMAC 摘要形式进入 Redis，不保存明文身份；
 //! - 请求侧按来源 IP、目标身份与全局容量三维度限流，并有重发冷却；
 //! - 校验侧用 Lua 脚本原子比对并单次消费，错误尝试有上限且用尽即销毁；
+//!   [`RegistrationEmailVerification::verify_only`] 提供只验不消费变体
+//!   （两段式登录第一段用），失败路径与消费共享错误计数与上限销毁语义；
 //! - 邮件投递经业务实现的 [`RegistrationEmailSender`] 注入（如 SMTP 适配器），
 //!   投递失败会原子回收未消费的验证码，不留下可用凭证。
 //!
@@ -91,6 +93,35 @@ if value and string.sub(value, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' the
     return redis.call('DEL', KEYS[1])
 end
 return 0
+"#;
+
+// 只验不消费脚本：与 VERIFY_AND_CONSUME_SCRIPT 共享错误计数与上限销毁
+// 语义（错 N 次照常销毁），区别仅在摘要比对通过时不删除验证码，
+// 留待 consume 原子消费；损坏值不在此处清理，统一交给 consume 回收。
+const VERIFY_ONLY_SCRIPT: &str = r#"
+local value = redis.call('GET', KEYS[1])
+if not value then
+    return 0
+end
+local separator = string.find(value, ':', 1, true)
+if not separator then
+    return 0
+end
+local expected = string.sub(value, 1, separator - 1)
+local attempts = tonumber(string.sub(value, separator + 1))
+if not attempts then
+    return 0
+end
+if expected == ARGV[1] then
+    return 1
+end
+attempts = attempts + 1
+if attempts >= tonumber(ARGV[2]) then
+    redis.call('DEL', KEYS[1])
+    return -2
+end
+redis.call('SET', KEYS[1], expected .. ':' .. attempts, 'KEEPTTL')
+return -1
 "#;
 
 /// 邮件投递失败的脱敏类别；不携带 SMTP 响应、收件人或凭据。
@@ -472,13 +503,7 @@ impl<'a> RegistrationEmailVerification<'a> {
         email: &str,
         code: &str,
     ) -> Result<(), BaseError> {
-        if code.len() != self.config.code_digits || !code.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(invalid_code());
-        }
-        let fingerprint = email_fingerprint(&self.config.secret, email);
-        let key = format!("{}:code:{fingerprint}", self.key_prefix());
-        let digest = code_digest(&self.config.secret, email, code);
+        let (key, digest) = self.verify_material(email, code)?;
         let cache = ctx.tools().cache()?;
         let result: i64 = cache
             .eval_script(
@@ -495,6 +520,52 @@ impl<'a> RegistrationEmailVerification<'a> {
         #[cfg(feature = "metrics")]
         metrics::counter!(self.config.verify_metric_name, "result" => "consumed").increment(1);
         Ok(())
+    }
+
+    /// 只校验不消费一枚验证码；任何失败都返回统一的无效验证码错误。
+    ///
+    /// 供两段式登录的第一段使用：先确认验证码有效但不销毁，待第二因子
+    /// （如 TOTP）也通过后再由 [`Self::consume`] 完成原子消费。失败路径与
+    /// [`Self::consume`] 共享错误计数与上限销毁语义——错误尝试照常计数、
+    /// 达上限即销毁，不存在不计次的暴力枚举旁路。
+    ///
+    /// 本接口不构成最终持有证明：验证码在 TTL 内仍可被消费。调用方在签发
+    /// 任何凭据前必须以 [`Self::consume`] 完成原子消费。
+    pub async fn verify_only(
+        &self,
+        ctx: &ActionContext,
+        email: &str,
+        code: &str,
+    ) -> Result<(), BaseError> {
+        let (key, digest) = self.verify_material(email, code)?;
+        let cache = ctx.tools().cache()?;
+        let result: i64 = cache
+            .eval_script(
+                &cache.script(VERIFY_ONLY_SCRIPT),
+                &[key],
+                &[digest, self.config.max_attempts.to_string()],
+            )
+            .await?;
+        if result != 1 {
+            #[cfg(feature = "metrics")]
+            metrics::counter!(self.config.verify_metric_name, "result" => "denied").increment(1);
+            return Err(invalid_code());
+        }
+        #[cfg(feature = "metrics")]
+        metrics::counter!(self.config.verify_metric_name, "result" => "peeked").increment(1);
+        Ok(())
+    }
+
+    /// 校验侧的公共前置：验证码形态预检与 Redis key/摘要派生。
+    fn verify_material(&self, email: &str, code: &str) -> Result<(String, String), BaseError> {
+        if code.len() != self.config.code_digits || !code.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid_code());
+        }
+        let fingerprint = email_fingerprint(&self.config.secret, email);
+        let key = format!("{}:code:{fingerprint}", self.key_prefix());
+        let digest = code_digest(&self.config.secret, email, code);
+        Ok((key, digest))
     }
 
     fn key_prefix(&self) -> &str {
