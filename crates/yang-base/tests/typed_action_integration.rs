@@ -125,13 +125,14 @@ async fn setup() -> Option<(
         .ok()?;
 
     let token = TokenManager::new_symmetric(
-        "test_secret_key",
+        "test_secret_keyxxxxxxxxxxxxxxxxx",
         jsonwebtoken::Algorithm::HS256,
         "test_issuer".to_string(),
         "test_audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
     let tools = Arc::new(
         ToolsBuilder::new()
             .mysql(db)

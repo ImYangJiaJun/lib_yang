@@ -30,14 +30,17 @@ fn make_ctx(body: serde_json::Value) -> ActionContext {
     #[cfg(feature = "token")]
     let tools = Arc::new(
         ToolsBuilder::new()
-            .token(TokenManager::new_symmetric(
-                "test_secret_key",
-                Algorithm::HS256,
-                "test_issuer".to_string(),
-                "test_audience".to_string(),
-                3600,
-                86400,
-            ))
+            .token(
+                TokenManager::new_symmetric(
+                    "test_secret_keyxxxxxxxxxxxxxxxxx",
+                    Algorithm::HS256,
+                    "test_issuer".to_string(),
+                    "test_audience".to_string(),
+                    3600,
+                    86400,
+                )
+                .expect("测试 TokenManager 应构建成功"),
+            )
             .build()
             .expect("测试 Tools 应构建成功"),
     );

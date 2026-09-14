@@ -185,13 +185,12 @@ where
             }
         };
 
-        // 2. 签名 + 过期 + 黑名单三重校验（失败原样短路）
-        let claims = ctx.tools().token()?.verify_token_checked(&token).await?;
-
-        // 3. 校验 token_type 必须为 Access
-        if claims.token_type != crate::token::TokenType::Access {
-            return Err(BaseError::TokenTypeInvalid("期望 access token".into()));
-        }
+        // 2. 签名 + 过期 + 黑名单 + token_type 校验（失败原样短路）
+        let claims = ctx
+            .tools()
+            .token()?
+            .verify_token_checked(&token, crate::token::TokenType::Access)
+            .await?;
 
         // 4. 应用级事实校验仍位于唯一认证链内，不重复解析或验签 Token
         self.claims_validator.validate(&ctx, &claims).await?;

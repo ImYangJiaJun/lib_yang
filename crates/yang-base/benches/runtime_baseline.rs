@@ -59,13 +59,14 @@ impl ActionHandler for EchoAction {
 
 fn tools() -> Arc<Tools> {
     let manager = TokenManager::new_symmetric(
-        "runtime_baseline_secret",
+        "runtime_baseline_secretxxxxxxxxx",
         Algorithm::HS256,
         "benchmark".to_string(),
         "benchmark".to_string(),
         3_600,
         86_400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
     Arc::new(
         ToolsBuilder::new()
             .token(manager)
