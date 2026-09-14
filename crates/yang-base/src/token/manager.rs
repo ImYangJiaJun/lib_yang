@@ -884,6 +884,9 @@ impl TokenManager {
         let now = current_unix_timestamp()?;
         let ttl = old_claims.exp.saturating_sub(now);
         if !self.try_revoke_once(&old_claims.jti, ttl).await? {
+            // 复用检测：旧 Refresh Token 已被消费，说明可能被盗——撤销该用户全部
+            // 会话（写 subject 水位线使该用户此前签发的所有 Token 失效），并拒绝本次轮换。
+            self.revoke_by_subject(&old_claims.sub).await?;
             return Err(BaseError::TokenRevoked);
         }
 
