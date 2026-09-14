@@ -131,3 +131,75 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
         .expect("应能清理测试水位线");
     tools.close().await;
 }
+
+/// 复用检测（refresh token 家族撤销）：旧 Refresh Token 被重放时，
+/// 必须拒绝本次轮换并撤销该用户全部会话（水位线生效，重放前签发的
+/// access token 立即失效）。
+#[tokio::test]
+#[ignore = "需要 Docker 启动 Redis 7"]
+async fn refresh_token_replay_triggers_family_revocation() {
+    let (_container, cache) = redis_container().await;
+    let subject = "b02-replay-detection";
+    let manager = TokenManager::new_symmetric(
+        "b02_replay_detection_integration_secret",
+        Algorithm::HS256,
+        "b02-issuer".to_string(),
+        "b02-audience".to_string(),
+        3_600,
+        86_400,
+    )
+    .expect("测试 TokenManager 应构建成功");
+    let tools = ToolsBuilder::new()
+        .cache(cache.clone())
+        .token(manager)
+        .build()
+        .expect("TokenManager 与 Redis 应冻结为同一 Tools");
+    let token_manager = || tools.token().expect("Tools 应包含 TokenManager");
+
+    let (access_token, refresh_token) = token_manager()
+        .generate_token_pair(subject, json!({}))
+        .expect("应能生成 Token 对");
+
+    // 首次轮换：合法使用，必须成功
+    let (rotated_access, _rotated_refresh) = token_manager()
+        .rotate_refresh_token(&refresh_token, json!({}))
+        .await
+        .expect("首次轮换应成功");
+
+    // 重放同一个旧 Refresh Token：必须拒绝并触发家族撤销
+    let replay = token_manager()
+        .rotate_refresh_token(&refresh_token, json!({}))
+        .await;
+    assert!(
+        matches!(replay, Err(BaseError::TokenRevoked)),
+        "重放旧 Refresh Token 必须返回 TokenRevoked，实际: {replay:?}"
+    );
+
+    // 家族撤销生效：重放前签发的旧 access token 立即失效
+    let old_access = token_manager()
+        .verify_token_checked(&access_token, yang_base::token::TokenType::Access)
+        .await;
+    assert!(
+        matches!(old_access, Err(BaseError::TokenRevoked)),
+        "家族撤销后旧 access token 必须失效，实际: {old_access:?}"
+    );
+    // 含等号水位线（iat <= min_iat）的同秒连坐是刻意的安全取向（见
+    // rotate_refresh_token 文档「复用检测语义」）：同秒签发的新 Token 对一并失效。
+    let rotated_access_check = token_manager()
+        .verify_token_checked(&rotated_access, yang_base::token::TokenType::Access)
+        .await;
+    assert!(
+        matches!(rotated_access_check, Err(BaseError::TokenRevoked)),
+        "同秒签发的新 Token 对应被水位线一并撤销，实际: {rotated_access_check:?}"
+    );
+
+    let watermark_keys = cache
+        .keys("token:user:*:min_iat")
+        .await
+        .expect("应能定位隔离容器中的水位线 key");
+    cache
+        .del(&watermark_keys)
+        .await
+        .expect("应能清理测试水位线");
+    tools.close().await;
+}

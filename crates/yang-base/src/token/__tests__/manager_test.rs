@@ -249,7 +249,7 @@ fn keyring_fails_closed_for_missing_or_unknown_kid() {
     let legacy = TokenManager::new_symmetric(
         ACTIVE_SECRET,
         Algorithm::HS256,
-        "issuerxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string(),
+        "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
@@ -646,13 +646,9 @@ async fn test_refresh_access_token() {
 
 /// 测试使用 Access Token 刷新应该失败
 ///
-/// 此方法内部调用 `verify_token_checked`，需要 Redis 黑名单支持。
-/// 运行时需通过 `ToolsBuilder` 注入 Redis 撤销存储，并通过 `--ignored` 执行：
-/// ```bash
-/// cargo test --test '' test_refresh_with_access_token_should_fail -- --ignored --test-threads=1
-/// ```
+/// token_type 校验已下沉到 `verify_token_checked` 且发生在 Redis 访问之前，
+/// 因此本用例无需 Redis 即可运行。
 #[tokio::test]
-#[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
 async fn test_refresh_with_access_token_should_fail() {
     let manager = TokenManager::new_symmetric(
         "test_secretxxxxxxxxxxxxxxxxxxxxx",
@@ -672,12 +668,108 @@ async fn test_refresh_with_access_token_should_fail() {
     // 尝试使用 Access Token 刷新（应该失败）
     let result = manager.refresh_access_token(&access_token, json!({})).await;
 
-    assert!(result.is_err());
-
-    // 断言错误类型为 TokenTypeInvalid 且消息包含 "refresh"
+    // 断言错误类型为 TokenTypeInvalid（由 verify_token_checked 的类型下沉校验返回）
     assert!(
-        matches!(result, Err(BaseError::TokenTypeInvalid(ref msg)) if msg.contains("refresh")),
+        matches!(result, Err(BaseError::TokenTypeInvalid(_))),
         "期望 TokenTypeInvalid 错误，实际: {:?}",
+        result
+    );
+}
+
+/// 测试 verify_token_checked 的类型校验发生在 Redis 黑名单查询之前：
+/// 未注入撤销存储时，类型不匹配必须返回 TokenTypeInvalid 而非 RedisNotInitialized。
+#[tokio::test]
+async fn test_verify_token_checked_type_mismatch_fails_before_redis() {
+    let manager = TokenManager::new_symmetric(
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("测试 TokenManager 应构建成功");
+
+    let access_token = manager
+        .generate_access_token("user_test", json!({}))
+        .expect("生成 Access Token 失败");
+
+    let result = manager
+        .verify_token_checked(&access_token, crate::token::TokenType::Refresh)
+        .await;
+    assert!(
+        matches!(result, Err(BaseError::TokenTypeInvalid(_))),
+        "类型不匹配必须先于 Redis 查询被拒绝，实际: {:?}",
+        result
+    );
+}
+
+/// AUTH-9：new_symmetric 强制 HMAC 密钥至少 32 字节（按字节计，非字符数）。
+#[test]
+fn test_new_symmetric_enforces_hmac_secret_min_bytes() {
+    let build = |secret: &str| {
+        TokenManager::new_symmetric(
+            secret,
+            Algorithm::HS256,
+            "issuer".to_string(),
+            "audience".to_string(),
+            3600,
+            86400,
+        )
+    };
+
+    // 31 字节：拒绝
+    let err = build(&"x".repeat(31)).expect_err("31 字节密钥必须被拒绝");
+    assert!(
+        matches!(err, BaseError::TokenKeyInvalid(_)),
+        "弱密钥必须返回 TokenKeyInvalid，实际: {err:?}"
+    );
+    // 32 / 33 字节：下界与下界+1 放行
+    build(&"x".repeat(32)).expect("32 字节密钥应构建成功");
+    build(&"x".repeat(33)).expect("33 字节密钥应构建成功");
+    // 多字节字符按字节计数：10 个「中」= 30 字节拒绝，11 个 = 33 字节放行
+    assert!(build(&"中".repeat(10)).is_err(), "30 字节必须被拒绝");
+    build(&"中".repeat(11)).expect("33 字节（多字节字符）应构建成功");
+}
+
+/// 过期边界：旧 Refresh Token 在验证通过后才过期的，轮换必须返回 TokenExpired，
+/// 不得误判为「重放」而触发全账号家族撤销（revoke_by_subject）。
+/// 已过期时此路径不触碰 Redis，无需注入撤销存储即可验证。
+#[tokio::test]
+async fn test_rotate_expired_refresh_returns_expired_not_family_revocation() {
+    let manager = TokenManager::new_symmetric(
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("测试 TokenManager 应构建成功");
+
+    // 构造一个已过期的 Refresh claims（模拟验证通过后跨过过期秒的场景）
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时钟应正常")
+        .as_secs();
+    let expired_claims = crate::token::TokenClaims {
+        iss: "issuer".to_string(),
+        sub: "user_test".to_string(),
+        aud: "audience".to_string(),
+        exp: now.saturating_sub(1),
+        nbf: now.saturating_sub(3600),
+        iat: now.saturating_sub(3600),
+        jti: "expired-jti".to_string(),
+        token_type: crate::token::TokenType::Refresh,
+        custom: serde_json::Value::Null,
+    };
+
+    let result = manager
+        .rotate_refresh_token_from_claims(&expired_claims, json!({}))
+        .await;
+    assert!(
+        matches!(result, Err(BaseError::TokenExpired)),
+        "过期 Token 轮换必须返回 TokenExpired 而非触发家族撤销，实际: {:?}",
         result
     );
 }
