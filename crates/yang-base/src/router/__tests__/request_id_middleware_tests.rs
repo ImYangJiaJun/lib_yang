@@ -49,13 +49,14 @@ impl Middleware for CaptureMiddleware {
 /// 构造带 TokenManager 的 Tools（当前 feature 组合下的最小构造路径）。
 fn test_tools() -> Arc<Tools> {
     let tm = crate::token::TokenManager::new_symmetric(
-        "test_secret_for_request_id_test",
+        "test_secret_for_request_id_testx",
         jsonwebtoken::Algorithm::HS256,
         "test_iss".into(),
         "test_aud".into(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
     Arc::new(
         ToolsBuilder::new()
             .token(tm)
