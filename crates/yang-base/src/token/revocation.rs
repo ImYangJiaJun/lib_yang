@@ -17,7 +17,7 @@
 
 use crate::error::BaseError;
 use crate::token::manager::current_unix_timestamp;
-use crate::token::{TokenClaims, TokenManager};
+use crate::token::{TokenClaims, TokenManager, TokenType};
 use yang_db::RedisValue;
 
 /// Redis 黑名单 key 前缀。最终 key 形如 `token:blacklist:{jti}`。
@@ -296,8 +296,16 @@ impl TokenManager {
     /// - `Err(BaseError::TokenRevoked)`: Token 已被撤销（命中黑名单或不晚于用户水位线）
     /// - `Err(BaseError::RedisOperationFailed)`: 黑名单查询失败
     /// - `Err(BaseError::TokenRevocationStateInvalid)`: 撤销查询结果或水位线损坏
-    pub async fn verify_token_checked(&self, token: &str) -> Result<TokenClaims, BaseError> {
+    pub async fn verify_token_checked(
+        &self,
+        token: &str,
+        expected: TokenType,
+    ) -> Result<TokenClaims, BaseError> {
         let claims = self.verify_token(token)?;
+        // 下沉 token_type 校验：鉴权路径不再依赖调用点自行比对，防止遗漏。
+        if claims.token_type != expected {
+            return Err(BaseError::TokenTypeInvalid("Token 类型不匹配".to_string()));
+        }
 
         // PERF-2: 将两次 Redis 读（EXISTS + GET）合并为一条 pipeline，2 RTT → 1 RTT。
         // 对已黑名单 token 会失去短路（不再提前返回），但撤销场景罕见，可接受。

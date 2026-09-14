@@ -39,7 +39,7 @@ async fn assert_public_paths_fail_closed(
         tools
             .token()
             .expect("Tools 应包含 TokenManager")
-            .verify_token_checked(token)
+            .verify_token_checked(token, yang_base::token::TokenType::Access)
             .await
             .expect_err("鉴权路径必须拒绝损坏水位线"),
     ] {
@@ -119,7 +119,7 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
     let claims = tools
         .token()
         .expect("Tools 应包含 TokenManager")
-        .verify_token_checked(&token)
+        .verify_token_checked(&token, yang_base::token::TokenType::Access)
         .await
         .expect("合法且早于当前 Token 的水位线不应误杀");
     assert_eq!(claims.sub, subject);
