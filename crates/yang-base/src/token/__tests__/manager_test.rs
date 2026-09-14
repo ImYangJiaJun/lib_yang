@@ -13,13 +13,14 @@ const RETIRING_SECRET: &str = "retiring-secret-0123456789abcdef0123456789abcdef"
 fn test_symmetric_token_generation_and_verification() {
     // 创建对称加密的 Token 管理器
     let manager = TokenManager::new_symmetric(
-        "test_secret_key_12345",
+        "test_secret_key_12345xxxxxxxxxxx",
         Algorithm::HS256,
         "test-issuer".to_string(),
         "test-audience".to_string(),
         3600,  // 1 小时
         86400, // 1 天
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 生成 Access Token
     let custom_claims = json!({
@@ -58,13 +59,14 @@ fn test_symmetric_algorithms() {
 
     for algorithm in algorithms {
         let manager = TokenManager::new_symmetric(
-            "test_secret_key",
+            "test_secret_keyxxxxxxxxxxxxxxxxx",
             algorithm,
             "issuer".to_string(),
             "audience".to_string(),
             3600,
             86400,
-        );
+        )
+        .expect("测试 TokenManager 应构建成功");
 
         let token = manager
             .generate_access_token("user_test", json!({}))
@@ -80,13 +82,14 @@ fn test_symmetric_algorithms() {
 #[test]
 fn test_refresh_token_generation() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 生成 Refresh Token
     let refresh_token = manager
@@ -110,13 +113,14 @@ fn test_refresh_token_generation() {
 #[test]
 fn test_token_pair_generation() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let custom_claims = json!({"role": "user"});
 
@@ -245,11 +249,12 @@ fn keyring_fails_closed_for_missing_or_unknown_kid() {
     let legacy = TokenManager::new_symmetric(
         ACTIVE_SECRET,
         Algorithm::HS256,
-        "issuer".to_string(),
+        "issuerxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
     let unknown = TokenManager::new_symmetric_keyring(
         "unknown".to_string(),
         ACTIVE_SECRET,
@@ -344,13 +349,14 @@ fn keyring_debug_reports_shape_without_secret_material() {
 #[test]
 fn test_token_pair_with_distinct_claims() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let (access_token, refresh_token) = manager
         .generate_token_pair_with_refresh_claims(
@@ -385,13 +391,14 @@ fn test_token_pair_with_distinct_claims() {
 fn test_token_verification_with_wrong_secret() {
     // 使用密钥 A 生成 Token
     let manager_a = TokenManager::new_symmetric(
-        "secret_key_a",
+        "secret_key_axxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager_a
         .generate_access_token("user_test", json!({}))
@@ -399,13 +406,14 @@ fn test_token_verification_with_wrong_secret() {
 
     // 使用密钥 B 验证 Token（应该失败）
     let manager_b = TokenManager::new_symmetric(
-        "secret_key_b",
+        "secret_key_bxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let result = manager_b.verify_token(&token);
     assert!(result.is_err());
@@ -428,13 +436,14 @@ fn test_token_verification_with_wrong_secret() {
 fn test_token_verification_with_wrong_issuer() {
     // 使用签发者 A 生成 Token
     let manager_a = TokenManager::new_symmetric(
-        "secret_key",
+        "secret_keyxxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer_a".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager_a
         .generate_access_token("user_test", json!({}))
@@ -442,13 +451,14 @@ fn test_token_verification_with_wrong_issuer() {
 
     // 使用签发者 B 验证 Token（应该失败）
     let manager_b = TokenManager::new_symmetric(
-        "secret_key",
+        "secret_keyxxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer_b".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let result = manager_b.verify_token(&token);
     assert!(result.is_err());
@@ -459,13 +469,14 @@ fn test_token_verification_with_wrong_issuer() {
 fn test_token_verification_with_wrong_audience() {
     // 使用受众 A 生成 Token
     let manager_a = TokenManager::new_symmetric(
-        "secret_key",
+        "secret_keyxxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience_a".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager_a
         .generate_access_token("user_test", json!({}))
@@ -473,13 +484,14 @@ fn test_token_verification_with_wrong_audience() {
 
     // 使用受众 B 验证 Token（应该失败）
     let manager_b = TokenManager::new_symmetric(
-        "secret_key",
+        "secret_keyxxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience_b".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let result = manager_b.verify_token(&token);
     assert!(result.is_err());
@@ -491,13 +503,14 @@ fn test_token_verification_with_wrong_audience() {
 fn test_token_expiration() {
     // 创建一个 Token 有效期为 3 秒的管理器
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3, // 3 秒过期
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager
         .generate_access_token("user_test", json!({}))
@@ -531,13 +544,14 @@ fn test_token_expiration() {
 #[test]
 fn test_parse_token_unsafe() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3, // 3 秒过期
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let custom_claims = json!({"role": "admin"});
     let token = manager
@@ -565,13 +579,14 @@ fn test_parse_token_unsafe() {
 fn test_is_token_expiring_soon() {
     // 创建一个 Token 有效期为 10 秒的管理器
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         10, // 10 秒过期
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager
         .generate_access_token("user_test", json!({}))
@@ -599,13 +614,14 @@ fn test_is_token_expiring_soon() {
 #[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
 async fn test_refresh_access_token() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 生成 Refresh Token
     let refresh_token = manager
@@ -639,13 +655,14 @@ async fn test_refresh_access_token() {
 #[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
 async fn test_refresh_with_access_token_should_fail() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 生成 Access Token
     let access_token = manager
@@ -669,13 +686,14 @@ async fn test_refresh_with_access_token_should_fail() {
 #[test]
 fn test_custom_claims_serialization() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 创建复杂的自定义声明
     let custom_claims = json!({
@@ -723,13 +741,14 @@ fn test_custom_claims_serialization() {
 #[test]
 fn test_empty_custom_claims() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     let token = manager
         .generate_access_token("user_test", json!({}))
@@ -745,13 +764,14 @@ fn test_empty_custom_claims() {
 #[test]
 fn test_jti_uniqueness() {
     let manager = TokenManager::new_symmetric(
-        "test_secret",
+        "test_secretxxxxxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "issuer".to_string(),
         "audience".to_string(),
         3600,
         86400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
 
     // 生成多个 Token
     let token1 = manager

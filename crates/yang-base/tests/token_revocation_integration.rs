@@ -71,7 +71,8 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
         "b02-audience".to_string(),
         3_600,
         86_400,
-    );
+    )
+    .expect("测试 TokenManager 应构建成功");
     let tools = ToolsBuilder::new()
         .cache(cache.clone())
         .token(manager)

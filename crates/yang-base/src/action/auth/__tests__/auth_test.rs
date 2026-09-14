@@ -236,6 +236,7 @@ mod tests {
             3600,
             7200,
         )
+        .expect("测试 TokenManager 应构建成功")
     }
 
     fn test_tools() -> Arc<crate::tools::Tools> {

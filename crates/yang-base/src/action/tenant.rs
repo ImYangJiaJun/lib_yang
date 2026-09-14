@@ -412,14 +412,17 @@ mod tests {
         fn chain_tools() -> Arc<crate::tools::Tools> {
             Arc::new(
                 ToolsBuilder::new()
-                    .token(crate::token::TokenManager::new_symmetric(
-                        "tenant-chain-test-secret",
-                        jsonwebtoken::Algorithm::HS256,
-                        "test-issuer".to_string(),
-                        "test-audience".to_string(),
-                        3600,
-                        7200,
-                    ))
+                    .token(
+                        crate::token::TokenManager::new_symmetric(
+                            "tenant-chain-test-secretxxxxxxxx",
+                            jsonwebtoken::Algorithm::HS256,
+                            "test-issuer".to_string(),
+                            "test-audience".to_string(),
+                            3600,
+                            7200,
+                        )
+                        .expect("测试 TokenManager 应构建成功"),
+                    )
                     .build()
                     .expect("测试 Tools 应构建成功"),
             )

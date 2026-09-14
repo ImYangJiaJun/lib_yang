@@ -217,7 +217,7 @@ impl TokenManager {
         audience: String,
         access_token_expiry: u64,
         refresh_token_expiry: u64,
-    ) -> Self {
+    ) -> Result<Self, BaseError> {
         // AUTH-8: 白名单拦截非对称算法，避免构造后首次签发才失败
         matches!(
             algorithm,
@@ -225,11 +225,13 @@ impl TokenManager {
         )
         .then_some(())
         .expect("new_symmetric 仅支持 HMAC 算法 (HS256/HS384/HS512)，请使用 new_asymmetric 处理非对称算法");
+        // AUTH-9: 强制 HMAC 密钥至少 32 字节，与 new_symmetric_keyring 一致。
+        validate_hmac_secret(secret)?;
 
         let mut jwt_header = Header::new(algorithm);
         jwt_header.typ = Some("JWT".to_string());
 
-        Self {
+        Ok(Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             verification_keys: VerificationKeys::Single(DecodingKey::from_secret(
                 secret.as_bytes(),
@@ -242,7 +244,7 @@ impl TokenManager {
             refresh_token_expiry,
             jwt_header,
             revocation_cache: None,
-        }
+        })
     }
 
     /// 创建带稳定 `kid` 的对称 Token keyring。

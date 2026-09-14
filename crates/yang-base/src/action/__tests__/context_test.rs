@@ -29,13 +29,14 @@ fn tenant_table() -> crate::table::TableDefinition {
 /// 创建测试用的 TokenManager
 fn create_test_token_manager() -> TokenManager {
     TokenManager::new_symmetric(
-        "test_secret_key",
+        "test_secret_keyxxxxxxxxxxxxxxxxx",
         Algorithm::HS256,
         "test_issuer".to_string(),
         "test_audience".to_string(),
         3600,
         86400,
     )
+    .expect("测试 TokenManager 应构建成功")
 }
 
 /// 创建测试用的 Tools
