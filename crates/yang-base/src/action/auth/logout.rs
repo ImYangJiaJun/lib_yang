@@ -74,7 +74,9 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
             // 若请求携带 Bearer Token，校验其 sub 与待撤销 Token 的 sub 一致
             if let Some(bearer_token) = ctx.request.token() {
                 // Bearer Token 需完整验证（含黑名单），确保调用者身份有效
-                let caller_claims = manager.verify_token_checked(bearer_token).await?;
+                let caller_claims = manager
+                    .verify_token_checked(bearer_token, crate::token::TokenType::Access)
+                    .await?;
                 if caller_claims.sub != target_claims.sub {
                     return Err(BaseError::PermissionDenied(
                         "只能撤销自己的 Token".to_string(),

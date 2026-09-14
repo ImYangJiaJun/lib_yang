@@ -749,7 +749,9 @@ impl TokenManager {
         custom_claims: serde_json::Value,
     ) -> Result<String, BaseError> {
         // 验证 Refresh Token（含黑名单检查，阻止已撤销的 Token 获取新 Access Token）
-        let claims = self.verify_token_checked(refresh_token).await?;
+        let claims = self
+            .verify_token_checked(refresh_token, crate::token::TokenType::Refresh)
+            .await?;
 
         // 检查 Token 类型
         if claims.token_type != crate::token::TokenType::Refresh {
@@ -817,7 +819,9 @@ impl TokenManager {
         refresh_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
         // 1. 验证旧 Refresh Token 且确认未被撤销
-        let old_claims = self.verify_token_checked(old_refresh).await?;
+        let old_claims = self
+            .verify_token_checked(old_refresh, crate::token::TokenType::Refresh)
+            .await?;
 
         // 2~4：委托已验证 claims 的版本，避免重复逻辑
         self.rotate_refresh_token_from_claims_with_refresh_claims(
