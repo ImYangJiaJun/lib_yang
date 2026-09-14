@@ -132,9 +132,13 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
     tools.close().await;
 }
 
-/// 复用检测（refresh token 家族撤销）：旧 Refresh Token 被重放时，
-/// 必须拒绝本次轮换并撤销该用户全部会话（水位线生效，重放前签发的
-/// access token 立即失效）。
+/// 复用检测（refresh token 家族撤销）：覆盖两条重放防线。
+///
+/// 1. 轮换完成后重放旧 Refresh Token：jti 已在黑名单，`verify_token_checked`
+///    直接拒绝（第一道防线）。
+/// 2. 并发竞态：请求 A 已通过验证（持有 claims），请求 B 抢先完成轮换；
+///    A 走到 `SET NX` 时落败，复用检测判定旧 Token 被重放，撤销该用户
+///    全部会话（水位线生效，此前签发的 access token 立即失效）。
 #[tokio::test]
 #[ignore = "需要 Docker 启动 Redis 7"]
 async fn refresh_token_replay_triggers_family_revocation() {
@@ -160,19 +164,35 @@ async fn refresh_token_replay_triggers_family_revocation() {
         .generate_token_pair(subject, json!({}))
         .expect("应能生成 Token 对");
 
-    // 首次轮换：合法使用，必须成功
+    // 模拟并发请求 A：在轮换发生前已通过验证（verify_token 不查黑名单，
+    // 等价于 verify_token_checked 在黑名单写入前完成的竞态窗口）
+    let inflight_claims = token_manager()
+        .verify_token(&refresh_token)
+        .expect("轮换前旧 Refresh Token 应验证通过");
+
+    // 请求 B 抢先完成轮换：合法使用，必须成功（旧 jti 随之进黑名单）
     let (rotated_access, _rotated_refresh) = token_manager()
         .rotate_refresh_token(&refresh_token, json!({}))
         .await
         .expect("首次轮换应成功");
 
-    // 重放同一个旧 Refresh Token：必须拒绝并触发家族撤销
+    // 防线一：轮换完成后重放旧 Refresh Token，黑名单直接拒绝
     let replay = token_manager()
         .rotate_refresh_token(&refresh_token, json!({}))
         .await;
     assert!(
         matches!(replay, Err(BaseError::TokenRevoked)),
         "重放旧 Refresh Token 必须返回 TokenRevoked，实际: {replay:?}"
+    );
+
+    // 防线二（复用检测）：请求 A 持轮换前验证的 claims 到达 SET NX，落败
+    // 即判定重放 → 撤销该用户全部会话
+    let loser = token_manager()
+        .rotate_refresh_token_from_claims(&inflight_claims, json!({}))
+        .await;
+    assert!(
+        matches!(loser, Err(BaseError::TokenRevoked)),
+        "SET NX 落败必须返回 TokenRevoked，实际: {loser:?}"
     );
 
     // 家族撤销生效：重放前签发的旧 access token 立即失效
