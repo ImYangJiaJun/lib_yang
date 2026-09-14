@@ -167,12 +167,9 @@ impl<R: RefreshClaimsResolver, A: AuthAuditHook> TypedHandler for RefreshAction<
 
         let run = async {
             // 先验证旧 Token 以获取 subject（供业务解析器确定新声明）
-            let claims = manager.verify_token_checked(&input.refresh_token).await?;
-            if claims.token_type != crate::token::TokenType::Refresh {
-                return Err(BaseError::TokenTypeInvalid(
-                    "期望 refresh token".to_string(),
-                ));
-            }
+            let claims = manager
+                .verify_token_checked(&input.refresh_token, crate::token::TokenType::Refresh)
+                .await?;
             // 先由业务解析器校验旧 Refresh 完整声明并决定新 Token 声明；失败不消费旧 JTI
             let custom_claims = self
                 .resolver

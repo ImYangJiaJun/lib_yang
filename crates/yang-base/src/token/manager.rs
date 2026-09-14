@@ -193,7 +193,13 @@ impl TokenManager {
     ///
     /// # 返回
     ///
-    /// - `TokenManager`: Token 管理器实例
+    /// - `Ok(TokenManager)`: Token 管理器实例
+    /// - `Err(BaseError::TokenKeyInvalid)`: 密钥少于 32 字节（AUTH-9）
+    ///
+    /// # Panics
+    ///
+    /// 算法不是 HS256/HS384/HS512 时 panic（AUTH-8）；非对称算法请使用
+    /// [`TokenManager::new_asymmetric`]。
     ///
     /// # 示例
     ///
@@ -202,13 +208,14 @@ impl TokenManager {
     /// use jsonwebtoken::Algorithm;
     ///
     /// let manager = TokenManager::new_symmetric(
-    ///     "my_secret_key",
+    ///     "my_secret_key_0123456789abcdef0123",
     ///     Algorithm::HS256,
     ///     "my_app".to_string(),
     ///     "my_users".to_string(),
     ///     3600,
     ///     86400,
-    /// );
+    /// )
+    /// .expect("不少于 32 字节的密钥应构建成功");
     /// ```
     pub fn new_symmetric(
         secret: &str,
@@ -217,7 +224,7 @@ impl TokenManager {
         audience: String,
         access_token_expiry: u64,
         refresh_token_expiry: u64,
-    ) -> Self {
+    ) -> Result<Self, BaseError> {
         // AUTH-8: 白名单拦截非对称算法，避免构造后首次签发才失败
         matches!(
             algorithm,
@@ -225,11 +232,13 @@ impl TokenManager {
         )
         .then_some(())
         .expect("new_symmetric 仅支持 HMAC 算法 (HS256/HS384/HS512)，请使用 new_asymmetric 处理非对称算法");
+        // AUTH-9: 强制 HMAC 密钥至少 32 字节，与 new_symmetric_keyring 一致。
+        validate_hmac_secret(secret)?;
 
         let mut jwt_header = Header::new(algorithm);
         jwt_header.typ = Some("JWT".to_string());
 
-        Self {
+        Ok(Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             verification_keys: VerificationKeys::Single(DecodingKey::from_secret(
                 secret.as_bytes(),
@@ -242,7 +251,7 @@ impl TokenManager {
             refresh_token_expiry,
             jwt_header,
             revocation_cache: None,
-        }
+        })
     }
 
     /// 创建带稳定 `kid` 的对称 Token keyring。
@@ -748,15 +757,11 @@ impl TokenManager {
         refresh_token: &str,
         custom_claims: serde_json::Value,
     ) -> Result<String, BaseError> {
-        // 验证 Refresh Token（含黑名单检查，阻止已撤销的 Token 获取新 Access Token）
-        let claims = self.verify_token_checked(refresh_token).await?;
-
-        // 检查 Token 类型
-        if claims.token_type != crate::token::TokenType::Refresh {
-            return Err(BaseError::TokenTypeInvalid(
-                "期望 refresh token".to_string(),
-            ));
-        }
+        // 验证 Refresh Token（含黑名单检查，阻止已撤销的 Token 获取新 Access Token）；
+        // token_type 校验已由 verify_token_checked 下沉完成。
+        let claims = self
+            .verify_token_checked(refresh_token, crate::token::TokenType::Refresh)
+            .await?;
 
         // 生成新的 Access Token
         self.generate_access_token(&claims.sub, custom_claims)
@@ -775,8 +780,18 @@ impl TokenManager {
     /// 1. [`TokenManager::verify_token_checked`] 验证旧 Refresh Token 且确认未被撤销；
     /// 2. 校验其 `token_type` 必须为 `"refresh"`；
     /// 3. `TokenManager::try_revoke_once` 原子写入黑名单（SET NX EX）；
-    ///    若返回 false（竞态中落败）则返回 [`BaseError::TokenRevoked`]；
+    ///    若返回 false（竞态中落败）则触发复用检测并返回 [`BaseError::TokenRevoked`]；
     /// 4. [`TokenManager::generate_token_pair`] 以原 `sub` 与新的自定义声明签发新 Token 对。
+    ///
+    /// # 复用检测语义
+    ///
+    /// 旧 Refresh Token 被重放（`SET NX` 落败）视为泄露信号：撤销该用户**全部**
+    /// 会话（写 subject 水位线）并拒绝本次轮换。注意水位线判定含等号
+    /// （`iat <= min_iat`，NEW-6）：两个并发合法刷新同秒完成时，落败方触发的
+    /// 家族撤销会使获胜方刚签发的新 Token 对一并失效。因此客户端必须串行化
+    /// 刷新（单飞/去重），不得对同一 Refresh Token 并发发起多次轮换。
+    /// 已过期的旧 Token 不算重放，直接返回 [`BaseError::TokenExpired`]，
+    /// 不触发家族撤销。
     ///
     /// # 参数
     ///
@@ -817,7 +832,9 @@ impl TokenManager {
         refresh_claims: serde_json::Value,
     ) -> Result<(String, String), BaseError> {
         // 1. 验证旧 Refresh Token 且确认未被撤销
-        let old_claims = self.verify_token_checked(old_refresh).await?;
+        let old_claims = self
+            .verify_token_checked(old_refresh, crate::token::TokenType::Refresh)
+            .await?;
 
         // 2~4：委托已验证 claims 的版本，避免重复逻辑
         self.rotate_refresh_token_from_claims_with_refresh_claims(
@@ -878,8 +895,18 @@ impl TokenManager {
 
         // 2. 原子拉黑旧 Refresh Token（SET NX EX），防止并发双重使用
         let now = current_unix_timestamp()?;
-        let ttl = old_claims.exp.saturating_sub(now);
+        // 过期边界：外部验证（verify_token_checked）通过到此处之间若跨过过期秒，
+        // ttl 会归零，而 try_revoke_once 对 ttl==0 也返回 false，会被误判为
+        // 「重放」。已过期属于正常生命周期而非复用信号，必须走 TokenExpired，
+        // 避免误触发针对全账号的家族撤销（revoke_by_subject）。
+        if old_claims.exp <= now {
+            return Err(BaseError::TokenExpired);
+        }
+        let ttl = old_claims.exp - now;
         if !self.try_revoke_once(&old_claims.jti, ttl).await? {
+            // 复用检测：旧 Refresh Token 已被消费，说明可能被盗——撤销该用户全部
+            // 会话（写 subject 水位线使该用户此前签发的所有 Token 失效），并拒绝本次轮换。
+            self.revoke_by_subject(&old_claims.sub).await?;
             return Err(BaseError::TokenRevoked);
         }
 
