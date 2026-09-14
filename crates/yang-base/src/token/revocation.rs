@@ -260,7 +260,9 @@ impl TokenManager {
     ///
     /// - `jti`: Token 唯一标识
     /// - `ttl`: 黑名单过期时间（秒），源自 Token 剩余有效期。为 `0` 时直接返回
-    ///   `false`，避免向 Redis 发送 `EX 0`（非法参数）
+    ///   `false`，避免向 Redis 发送 `EX 0`（非法参数）。
+    ///   注意：调用方若需要区分「Token 已过期」与「jti 已被消费（重放）」，
+    ///   必须在调用前自行判断 `exp`，本方法对两者统一返回 `false`。
     ///
     /// # 返回
     ///
@@ -288,11 +290,14 @@ impl TokenManager {
     /// # 参数
     ///
     /// - `token`: 待验证的 Token 字符串
+    /// - `expected`: 期望的 Token 类型（下沉校验：签名验证通过后、Redis 查询之前
+    ///   比对 `token_type`，鉴权路径不再依赖调用点自行比对）
     ///
     /// # 返回
     ///
     /// - `Ok(TokenClaims)`: 验证通过且未被撤销
     /// - `Err(BaseError::TokenVerifyFailed)`: 签名/过期/声明校验失败
+    /// - `Err(BaseError::TokenTypeInvalid)`: Token 类型与 `expected` 不匹配
     /// - `Err(BaseError::TokenRevoked)`: Token 已被撤销（命中黑名单或不晚于用户水位线）
     /// - `Err(BaseError::RedisOperationFailed)`: 黑名单查询失败
     /// - `Err(BaseError::TokenRevocationStateInvalid)`: 撤销查询结果或水位线损坏
