@@ -172,7 +172,7 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let serde_unknown = deny_unknown.then(|| quote!(#[serde(deny_unknown_fields)]));
     Ok(quote! {
         #(#attrs)*
-        #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
+        #[derive(::yang_base::__private::serde::Deserialize, ::yang_base::__private::schemars::JsonSchema)]
         #serde_unknown
         #visibility struct #name {
             #(#struct_fields,)*
@@ -192,8 +192,8 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
             ) -> ::core::result::Result<Self, ::yang_base::error::BaseError> {
                 let mut object = if #has_body {
                     match ::core::mem::take(&mut request.body) {
-                        ::serde_json::Value::Object(values) => values,
-                        ::serde_json::Value::Null => ::serde_json::Map::new(),
+                        ::yang_base::__private::serde_json::Value::Object(values) => values,
+                        ::yang_base::__private::serde_json::Value::Null => ::yang_base::__private::serde_json::Map::new(),
                         _ => return ::core::result::Result::Err(
                             ::yang_base::error::BaseError::ParamInvalid(
                                 "body".to_string(),
@@ -202,10 +202,10 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
                         ),
                     }
                 } else {
-                    ::serde_json::Map::new()
+                    ::yang_base::__private::serde_json::Map::new()
                 };
                 #(#external_fields)*
-                ::serde_json::from_value(::serde_json::Value::Object(object)).map_err(|error| {
+                ::yang_base::__private::serde_json::from_value(::yang_base::__private::serde_json::Value::Object(object)).map_err(|error| {
                     ::yang_base::error::BaseError::ParamInvalid("input".to_string(), error.to_string())
                 })
             }
@@ -255,28 +255,28 @@ fn source_token(source: Source) -> TokenStream {
 fn external_value(builder: &Ident, raw: TokenStream, value_type: &TokenStream) -> TokenStream {
     match builder.to_string().as_str() {
         "Str" | "Text" | "Decimal" | "Password" => {
-            quote!(::core::result::Result::<::serde_json::Value, ::std::string::String>::Ok(
-                ::serde_json::Value::String(#raw.clone())
+            quote!(::core::result::Result::<::yang_base::__private::serde_json::Value, ::std::string::String>::Ok(
+                ::yang_base::__private::serde_json::Value::String(#raw.clone())
             ))
         }
         "Key" | "Int" | "Table" | "Tree" | "Timestamp" => quote! {
             #raw.parse::<i64>()
-                .map(::serde_json::Value::from)
+                .map(::yang_base::__private::serde_json::Value::from)
                 .map_err(|error| error.to_string())
         },
         "Switch" => quote! {
             #raw.parse::<bool>()
-                .map(::serde_json::Value::from)
+                .map(::yang_base::__private::serde_json::Value::from)
                 .map_err(|error| error.to_string())
         },
         "Radio" => quote! {
-            ::serde_json::from_str::<#value_type>(#raw)
-                .and_then(::serde_json::to_value)
+            ::yang_base::__private::serde_json::from_str::<#value_type>(#raw)
+                .and_then(::yang_base::__private::serde_json::to_value)
                 .or_else(|_| {
                     ::core::result::Result::<
-                        ::serde_json::Value,
-                        ::serde_json::Error,
-                    >::Ok(::serde_json::Value::String(#raw.clone()))
+                        ::yang_base::__private::serde_json::Value,
+                        ::yang_base::__private::serde_json::Error,
+                    >::Ok(::yang_base::__private::serde_json::Value::String(#raw.clone()))
                 })
                 .map_err(|error| error.to_string())
         },
