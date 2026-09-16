@@ -242,10 +242,18 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     };
     let perms: Vec<String> = opts.permissions.unwrap_or_default().0;
 
-    // 解析 permission_mode：支持 "all" / "any"，默认 "all"
+    // 解析 permission_mode：仅接受 "all" / "any"，缺省 "all"；其余取值必须编译期报错，
+    // 否则拼写错误（如 "Any"）会静默退化为 All，使 Any 的 OR 语义丢失并让合法调用方 403。
     let perm_mode = match opts.permission_mode.as_deref() {
+        None | Some("all") => quote! { ::yang_base::action::PermissionMode::All },
         Some("any") => quote! { ::yang_base::action::PermissionMode::Any },
-        _ => quote! { ::yang_base::action::PermissionMode::All },
+        Some(other) => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                format!("action permission_mode 必须是 all/any，收到 {other:?}"),
+            )
+            .into_compile_error()
+        }
     };
 
     let perm_consts: Vec<TokenStream> = perms

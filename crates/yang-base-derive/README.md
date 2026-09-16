@@ -26,7 +26,7 @@
 - `description = "..."`：简介，默认空字符串。
 - `public`：公开 Action，默认关闭。
 - `permissions("a", "b")`：权限列表。
-- `permission_mode = "all" | "any"`：权限组合模式，默认 `all`。
+- `permission_mode = "all" | "any"`：权限组合模式，默认 `all`；其它取值编译期报错。
 
 ## 使用示例
 
