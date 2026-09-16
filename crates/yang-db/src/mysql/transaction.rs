@@ -297,15 +297,12 @@ fn bind_json_param_tx<'q>(
 ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
     match param {
         serde_json::Value::String(value) => query.bind(value.clone()),
-        serde_json::Value::Number(value) => {
-            if let Some(integer) = value.as_i64() {
-                query.bind(integer)
-            } else if let Some(float) = value.as_f64() {
-                query.bind(float.to_string())
-            } else {
-                query.bind(Option::<String>::None)
-            }
-        }
+        serde_json::Value::Number(value) => match crate::json_param::classify_json_number(value) {
+            Some(crate::json_param::JsonNumber::Int(i)) => query.bind(i),
+            Some(crate::json_param::JsonNumber::Uint(u)) => query.bind(u.to_string()),
+            Some(crate::json_param::JsonNumber::Float(f)) => query.bind(f.to_string()),
+            None => query.bind(Option::<String>::None),
+        },
         serde_json::Value::Bool(value) => query.bind(*value),
         serde_json::Value::Null => query.bind(Option::<String>::None),
         other => query.bind(other.to_string()),
@@ -321,15 +318,12 @@ where
 {
     match param {
         serde_json::Value::String(value) => query.bind(value.clone()),
-        serde_json::Value::Number(value) => {
-            if let Some(integer) = value.as_i64() {
-                query.bind(integer)
-            } else if let Some(float) = value.as_f64() {
-                query.bind(float.to_string())
-            } else {
-                query.bind(Option::<String>::None)
-            }
-        }
+        serde_json::Value::Number(value) => match crate::json_param::classify_json_number(value) {
+            Some(crate::json_param::JsonNumber::Int(i)) => query.bind(i),
+            Some(crate::json_param::JsonNumber::Uint(u)) => query.bind(u.to_string()),
+            Some(crate::json_param::JsonNumber::Float(f)) => query.bind(f.to_string()),
+            None => query.bind(Option::<String>::None),
+        },
         serde_json::Value::Bool(value) => query.bind(*value),
         serde_json::Value::Null => query.bind(Option::<String>::None),
         other => query.bind(other.to_string()),

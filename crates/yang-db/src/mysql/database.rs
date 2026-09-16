@@ -526,17 +526,14 @@ macro_rules! bind_json_value {
         match $param {
             // 字符串类型直接绑定
             serde_json::Value::String(s) => $query.bind(s.clone()),
-            // 数字类型转为 i64 绑定
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    $query.bind(i)
-                } else if let Some(f) = n.as_f64() {
-                    // 浮点数转为字符串绑定，避免精度丢失
-                    $query.bind(f.to_string())
-                } else {
-                    $query.bind(Option::<String>::None)
-                }
-            }
+            // 数字类型按 i64 → u64 顶半区 → f64 分类绑定
+            serde_json::Value::Number(n) => match crate::json_param::classify_json_number(n) {
+                Some(crate::json_param::JsonNumber::Int(i)) => $query.bind(i),
+                // u64 顶半区：i64 装不下、f64 会丢精度；十进制字符串由 MySQL 隐式转换为数值列
+                Some(crate::json_param::JsonNumber::Uint(u)) => $query.bind(u.to_string()),
+                Some(crate::json_param::JsonNumber::Float(f)) => $query.bind(f.to_string()),
+                None => $query.bind(Option::<String>::None),
+            },
             // 布尔类型绑定
             serde_json::Value::Bool(b) => $query.bind(*b),
             // NULL 类型绑定为 None
