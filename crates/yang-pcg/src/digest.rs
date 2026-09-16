@@ -175,9 +175,22 @@ impl<'de> Deserialize<'de> for ConfigDigest {
     }
 }
 
-impl From<&GenerationConfig> for ConfigDigest {
-    fn from(config: &GenerationConfig) -> Self {
-        Self::from_config(config).expect("默认配置生成摘要不应失败")
+impl TryFrom<&GenerationConfig> for ConfigDigest {
+    type Error = Box<PcgError>;
+
+    /// 从配置生成摘要（可失败版本）。
+    ///
+    /// 与 [`ConfigDigest::from_config`] 完全等价。`From` 是无失败签名的 trait，
+    /// 无法表达 NaN / 序列化失败，只能靠 `expect` 兜底（生产 panic，违反
+    /// 「不新增生产 expect()」反模式）；这里改用 `TryFrom` 暴露同一失败语义，
+    /// 调用方用 `?` 传播。
+    ///
+    /// # 错误
+    ///
+    /// 同 [`ConfigDigest::from_config`](Self::from_config)：配置含 NaN 的 f32 字段
+    /// 或序列化失败时返回 `PcgError::Config`。
+    fn try_from(config: &GenerationConfig) -> Result<Self, Self::Error> {
+        Self::from_config(config)
     }
 }
 
@@ -272,8 +285,8 @@ mod tests {
     fn test_digest_conversions() {
         let config = GenerationConfig::default();
 
-        // From &GenerationConfig
-        let digest1: ConfigDigest = (&config).into();
+        // From &GenerationConfig（TryFrom）
+        let digest1 = ConfigDigest::try_from(&config).expect("默认配置应可序列化");
 
         // From String
         let digest2: ConfigDigest = digest1.as_str().to_string().into();
@@ -283,6 +296,16 @@ mod tests {
 
         assert_eq!(digest1, digest2);
         assert_eq!(digest2, digest3);
+    }
+
+    #[test]
+    fn test_digest_try_from_config_rejects_nan() {
+        let mut config = GenerationConfig::default();
+        config.terrain.obstacle_density = f32::NAN;
+
+        // 不再 panic，而是返回 Config 错误
+        let err = ConfigDigest::try_from(&config).expect_err("NaN 配置应返回错误");
+        assert_eq!(err.error_code(), "PCG-CONFIG-001");
     }
 
     #[test]
