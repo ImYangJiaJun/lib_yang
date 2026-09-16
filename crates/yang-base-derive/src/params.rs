@@ -27,6 +27,18 @@ enum Source {
     Header,
 }
 
+/// params! 字段仅支持 `#[param(...)]` 与文档注释；外部 key 恒等于字段名。
+fn is_supported_field_attr(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("param") || attribute.path().is_ident("doc")
+}
+
+/// 容器属性白名单：文档注释、deny_unknown_fields、以及透传的 derive/cfg/allow。
+fn is_supported_item_attr(attribute: &Attribute) -> bool {
+    ["doc", "derive", "cfg", "allow", "deny_unknown_fields"]
+        .iter()
+        .any(|name| attribute.path().is_ident(name))
+}
+
 impl Parse for ParamsInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let attrs = Attribute::parse_outer(input)?;
@@ -68,6 +80,13 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let deny_unknown = attrs
         .iter()
         .any(|attribute| attribute.path().is_ident("deny_unknown_fields"));
+    if let Some(attribute) = attrs.iter().find(|attribute| !is_supported_item_attr(attribute)) {
+        return Err(Error::new_spanned(
+            attribute,
+            "params! 容器仅支持 #[deny_unknown_fields] 与文档注释；\
+             #[serde(rename_all/...)] 会割裂外部 key 与 serde 期望键，故被拒绝",
+        ));
+    }
     let attrs = attrs
         .into_iter()
         .filter(|attribute| !attribute.path().is_ident("deny_unknown_fields"));
@@ -78,6 +97,16 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let mut external_fields = Vec::new();
     let mut has_body = false;
     for field in fields {
+        for attribute in &field.attrs {
+            if !is_supported_field_attr(attribute) {
+                return Err(Error::new_spanned(
+                    attribute,
+                    "params! 字段仅支持 #[param(...)] 与文档注释；\
+                     参数外部 key 恒等于字段名（query/path/header 同源），\
+                     不支持 #[serde(rename/rename_all/...)]，请改字段名或改用手写 Input",
+                ));
+            }
+        }
         let field_name = field.name;
         let (builder_name, radio_type) = builder_kind(&field.builder)?;
         let value_type = rust_type(&builder_name, radio_type)?;
