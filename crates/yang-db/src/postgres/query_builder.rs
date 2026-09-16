@@ -54,6 +54,30 @@ const INSERT_BATCH_SIZE: usize = 500;
 /// 批量更新的默认批次大小
 const UPDATE_BATCH_SIZE: usize = 1000;
 
+/// 协议层单语句绑定占位符上限。
+///
+/// MySQL 二进制协议预编译语句占位符上限为 2^16-1；PostgreSQL Bind 消息的
+/// 参数计数同为 Int16，上限一致。
+const MAX_BIND_PARAMS: usize = 65_535;
+
+/// 由「非主键列数」推导 CASE WHEN 批量更新的安全批大小（与 MySQL 侧同口径）。
+fn derive_update_batch_size(field_count: usize, requested: usize) -> usize {
+    let per_record = field_count.saturating_mul(2).saturating_add(1);
+    if per_record == 0 {
+        return requested;
+    }
+    (MAX_BIND_PARAMS / per_record).max(1).min(requested)
+}
+
+/// 取首条记录的「非主键列数」，与 build_update_batch 的 update_fields 口径一致。
+fn update_field_count(records: &[serde_json::Value], where_field: &str) -> usize {
+    records
+        .first()
+        .and_then(|r| r.as_object())
+        .map(|obj| obj.keys().filter(|k| k.as_str() != where_field).count())
+        .unwrap_or(0)
+}
+
 /// 压入一个参数并返回其 PostgreSQL 占位符（`$N`，1 基）
 ///
 /// PostgreSQL 使用编号占位符，编号由参数压入后的 `params.len()` 决定，
@@ -2151,8 +2175,8 @@ impl<'a> QueryBuilder<'a> {
     /// 批量更新记录
     ///
     /// 使用 CASE WHEN 策略在单次查询中更新多条记录，自动分批（每批
-    /// [`UPDATE_BATCH_SIZE`]，1000），所有批次在同一事务中执行保证原子性。
-    /// 返回总受影响行数。
+    /// [`UPDATE_BATCH_SIZE`]，1000；宽表按列数自动缩小），所有批次在同一事务中
+    /// 执行保证原子性。返回总受影响行数。
     #[tracing::instrument(
         name = "db.query",
         skip_all,
@@ -2166,6 +2190,34 @@ impl<'a> QueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
+        self.update_batch_with_size(records, where_field, UPDATE_BATCH_SIZE)
+            .await
+    }
+
+    /// 批量更新记录（自定义批次大小）
+    ///
+    /// 与 [`QueryBuilder::update_batch`] 相同，但允许调用方自定义每批最大记录数；
+    /// 宽表会自动按列数缩小批大小，避免超出协议占位符上限。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn update_batch_with_size<T>(
+        self,
+        records: &[T],
+        where_field: &crate::FieldRef,
+        batch_size: usize,
+    ) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        if batch_size == 0 {
+            return Err(crate::error::DbError::SerializationError(
+                "batch_size 不能为 0".to_string(),
+            ));
+        }
+
         if records.is_empty() {
             return Err(crate::error::DbError::SerializationError(
                 "批量更新数据不能为空".to_string(),
@@ -2181,11 +2233,21 @@ impl<'a> QueryBuilder<'a> {
             })
             .collect::<Result<_, _>>()?;
 
+        // 按「非主键列数」推导安全批大小：宽表单条占位符可能超协议上限，需按列缩小
+        let field_count = update_field_count(&json_records, where_field.as_str());
+        let per_record = field_count.saturating_mul(2).saturating_add(1);
+        if per_record > MAX_BIND_PARAMS {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "批量更新单行需要 {per_record} 个占位符，超过协议上限 {MAX_BIND_PARAMS}，请减少更新列数"
+            )));
+        }
+        let batch_size = derive_update_batch_size(field_count, batch_size);
+
         let mut total = 0u64;
         match self.executor {
             QueryExecutor::Pool(pool) => {
                 let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
-                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                for chunk in json_records.chunks(batch_size) {
                     total += execute_update_chunk(
                         &mut transaction,
                         &self.table,
@@ -2204,7 +2266,7 @@ impl<'a> QueryBuilder<'a> {
                 let connection = transaction.executor().ok_or_else(|| {
                     crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
                 })?;
-                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                for chunk in json_records.chunks(batch_size) {
                     total += execute_update_chunk(
                         &mut *connection,
                         &self.table,
