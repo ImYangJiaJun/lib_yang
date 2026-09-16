@@ -66,6 +66,9 @@ pub struct RuntimeMetricNames {
     pub readiness_ready: &'static str,
     pub readiness_resource_healthy: &'static str,
     pub resource_pool_connections: &'static str,
+    pub shutdown_started: &'static str,
+    pub shutdown_phase: &'static str,
+    pub shutdown_phase_duration: &'static str,
 }
 
 impl RuntimeMetricNames {
@@ -79,6 +82,9 @@ impl RuntimeMetricNames {
         readiness_ready: &'static str,
         readiness_resource_healthy: &'static str,
         resource_pool_connections: &'static str,
+        shutdown_started: &'static str,
+        shutdown_phase: &'static str,
+        shutdown_phase_duration: &'static str,
     ) -> Self {
         Self {
             action_requests,
@@ -89,6 +95,9 @@ impl RuntimeMetricNames {
             readiness_ready,
             readiness_resource_healthy,
             resource_pool_connections,
+            shutdown_started,
+            shutdown_phase,
+            shutdown_phase_duration,
         }
     }
 }
@@ -104,6 +113,9 @@ impl Default for RuntimeMetricNames {
             "yang_runtime_readiness_ready",
             "yang_runtime_readiness_resource_healthy",
             "yang_runtime_resource_pool_connections",
+            "yang_runtime_shutdown_started_total",
+            "yang_runtime_shutdown_phase_total",
+            "yang_runtime_shutdown_phase_duration_seconds",
         )
     }
 }
