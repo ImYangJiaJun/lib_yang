@@ -13,12 +13,11 @@ use crate::layout::{self, LayoutOutput};
 use crate::model::request::Constraint;
 use crate::model::result::GenerationResult;
 use crate::model::room::{DoorAnchor, Room, RoomGraph};
-use crate::model::spawn::SpawnPoint;
 use crate::model::terrain::Terrain;
 use crate::rng::StableRng;
 use crate::spawn::{self, SpawnOutput, SpawnOutputWithDebug};
 use crate::validation::{
-    validate_no_overlap, validate_reachability, validate_result, validate_spawn_spacing,
+    validate_no_overlap, validate_reachability, validate_result, validate_spawn_spacing_iter,
     validate_terrain_connectivity,
 };
 use crate::{spawn::min_cross_type_spacing, terrain};
@@ -79,12 +78,8 @@ impl PipelineBackend for TopDownBackend {
         // 取交互物/敌人最小间距的较小者。
         let min_spacing = i32::from(min_cross_type_spacing(&config.config));
 
-        let all_spawns: Vec<SpawnPoint> = result
-            .item_spawns
-            .iter()
-            .chain(result.enemy_spawns.iter())
-            .cloned()
-            .collect();
+        // 闭包每次产出新迭代器，避免深拷贝 Vec<SpawnPoint>
+        let spawns = || result.item_spawns.iter().chain(result.enemy_spawns.iter());
 
         match scope {
             ValidationScope::FullFloor => {
@@ -93,14 +88,14 @@ impl PipelineBackend for TopDownBackend {
                 validate_reachability(&result.topology)?;
                 validate_no_overlap(&result.rooms)?;
                 validate_terrain_connectivity(&result.terrains)?;
-                validate_spawn_spacing(&all_spawns, constraints, Some(min_spacing))?;
+                validate_spawn_spacing_iter(spawns(), constraints, Some(min_spacing))?;
             }
             ValidationScope::Chunk => {
                 // 分块部分结果：跳过整图结构计数与整图可达性，
                 // 仅保留对任意子集成立的局部不变量。
                 validate_no_overlap(&result.rooms)?;
                 validate_terrain_connectivity(&result.terrains)?;
-                validate_spawn_spacing(&all_spawns, constraints, Some(min_spacing))?;
+                validate_spawn_spacing_iter(spawns(), constraints, Some(min_spacing))?;
             }
         }
 
