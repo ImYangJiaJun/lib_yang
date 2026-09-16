@@ -6,7 +6,8 @@
 //!
 //! - [`is_valid_identifier`]：仅允许 `[A-Za-z_][A-Za-z0-9_]*`，杜绝含空格/引号/分号/
 //!   括号等的注入载荷或表达式。
-//! - [`quote_identifier`]：校验后用反引号包裹并对内部反引号做加倍转义（MySQL 方言）。
+//! - [`quote_identifier`]：校验后仅用反引号包裹；含反引号等非 `[A-Za-z_][A-Za-z0-9_]*`
+//!   字符的输入一律拒绝（[`DbError::InvalidArgument`]），**不做**内部反引号加倍转义。
 //! - [`quote_qualified`]：支持 `表.列` 限定名，逐段校验并各自加引号。
 //!
 //! **使用边界**：写入路径（INSERT/UPDATE/UPSERT 的列名、各 DML 的表名）的标识符来自
@@ -28,13 +29,13 @@ pub fn is_valid_identifier(s: &str) -> bool {
 
 /// 校验并用反引号转义一个标识符（MySQL 方言）。
 ///
-/// 合法标识符返回 `` `ident` ``（内部反引号加倍）；非法返回
-/// [`DbError::InvalidArgument`]。
+/// 合法标识符返回 `` `ident` ``；含内部反引号或其它非法字符时返回
+/// [`DbError::InvalidArgument`]（拒绝而非转义）。
 pub fn quote_identifier(ident: &str) -> Result<String, DbError> {
     dialect::quote_identifier(dialect::MYSQL, ident)
 }
 
-/// 校验并转义可能带限定前缀的标识符：`列` → `` `列` ``，`表.列` → `` `表`.`列` ``。
+/// 校验并转义可能带限定前缀的标识符：`name` → `` `name` ``，`users.name` → `` `users`.`name` ``。
 ///
 /// 各段分别校验并加引号；段数超过 2 或任一段非法返回 [`DbError::InvalidArgument`]。
 pub fn quote_qualified(ident: &str) -> Result<String, DbError> {

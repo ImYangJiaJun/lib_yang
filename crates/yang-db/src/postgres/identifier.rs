@@ -1,6 +1,7 @@
 //! SQL 标识符校验与转义（DB-1，PostgreSQL 方言）。
 //!
-//! 与 MySQL 版同构，区别仅在转义字符：PostgreSQL 标识符用双引号包裹、内部双引号加倍。
+//! 与 MySQL 版同构，区别仅在引号字符：PostgreSQL 标识符用双引号包裹；
+//! 内部双引号与非 `[A-Za-z_][A-Za-z0-9_]*` 字符一律拒绝（不做加倍转义）。
 //! 详见 `crate::mysql::identifier` 的模块说明与使用边界。
 
 use crate::dialect;
@@ -13,12 +14,12 @@ pub fn is_valid_identifier(s: &str) -> bool {
 
 /// 校验并用双引号转义一个标识符（PostgreSQL 方言）。
 ///
-/// 合法标识符返回 `"ident"`（内部双引号加倍）；非法返回 [`DbError::InvalidArgument`]。
+/// 合法标识符返回 `"ident"`；含内部双引号或其它非法字符时返回 [`DbError::InvalidArgument`]。
 pub fn quote_identifier(ident: &str) -> Result<String, DbError> {
     dialect::quote_identifier(dialect::POSTGRES, ident)
 }
 
-/// 校验并转义可能带限定前缀的标识符：`列` → `"列"`，`表.列` → `"表"."列"`。
+/// 校验并转义可能带限定前缀的标识符：`name` → `"name"`，`users.name` → `"users"."name"`。
 pub fn quote_qualified(ident: &str) -> Result<String, DbError> {
     dialect::quote_qualified(dialect::POSTGRES, ident)
 }
