@@ -539,7 +539,7 @@ impl<'a> QueryBuilder<'a> {
     /// });
     ///
     /// let rows_affected = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)?
     ///     .update(&update_data)
     ///     .await?;
     ///
@@ -703,7 +703,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 删除指定用户
     /// let rows_affected = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)?
     ///     .delete()
     ///     .await?;
     ///

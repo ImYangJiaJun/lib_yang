@@ -198,7 +198,7 @@ async fn test_locked_select_with_expr_projection_collects_params_in_order() {
             SqlExpr::unix_timestamp_add(600),
         )
         .unwrap()
-        .where_and(&field("consumed"), CompareOp::Eq, false);
+        .where_and(&field("consumed"), CompareOp::Eq, false).expect("固定受控条件应合法");
 
     let (sql, params) = builder
         .render_for_transaction(Some(crate::RowLock::ForUpdate))

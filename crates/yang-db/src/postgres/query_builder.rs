@@ -1207,8 +1207,14 @@ impl<'a> QueryBuilder<'a> {
 
     /// 添加 AND 条件
     ///
-    /// 比较操作符由封闭的 [`CompareOp`](crate::CompareOp) 表达。
-    pub fn where_and<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    /// 比较操作符由封闭的 [`CompareOp`](crate::CompareOp) 表达。LIKE 仅接受字符串模式，
+    /// 其它类型返回 `Err(DbError::UnsupportedOperator)`。
+    pub fn where_and<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<SqlValue>,
     {
@@ -1221,22 +1227,28 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                SqlValue::String(value) => Condition::Like(field, value),
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
         self.conditions.push(condition);
-        self
+        Ok(self)
     }
 
     /// 添加 OR 条件
     ///
-    /// 遇到不支持的操作符时返回 `Err(DbError::UnsupportedOperator)`。
-    pub fn where_or<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    /// 遇到不支持的操作符或 LIKE 收到非字符串模式时返回 `Err(DbError::UnsupportedOperator)`。
+    pub fn where_or<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<SqlValue>,
     {
@@ -1249,13 +1261,14 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                SqlValue::String(value) => Condition::Like(field, value),
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
 
         if !self.conditions.is_empty() {
@@ -1272,7 +1285,7 @@ impl<'a> QueryBuilder<'a> {
             self.conditions.push(condition);
         }
 
-        self
+        Ok(self)
     }
 
     /// 添加 IN 条件
@@ -1349,7 +1362,12 @@ impl<'a> QueryBuilder<'a> {
     }
 
     /// 添加 HAVING 条件（仅支持 6 个比较操作符）
-    pub fn having_cond<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    pub fn having_cond<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<SqlValue>,
     {
@@ -1362,16 +1380,17 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                SqlValue::String(value) => Condition::Like(field, value),
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
         self.having_clause.push(condition);
-        self
+        Ok(self)
     }
 
     /// 使用可信表/ON 表达式的 INNER JOIN。
@@ -2604,6 +2623,7 @@ mod tests {
                 yang_db::CompareOp::Eq,
                 7,
             )
+            .expect("固定受控条件应合法")
             .where_exists(paid_order)
             .where_in_subquery(yang_db::field!("users.id"), active_user)
             .where_not_exists(banned_user);
@@ -2657,12 +2677,14 @@ mod tests {
             .field(yang_db::field!("id"))
             .field(yang_db::field!("kind"))
             .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 8)
+            .expect("固定受控条件应合法")
             .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
             .limit(2);
         let builder = QueryBuilder::new(pool, "users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("kind"))
             .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+            .expect("固定受控条件应合法")
             .union_all(branch)
             .expect("输出列数一致")
             .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
@@ -2710,6 +2732,7 @@ mod tests {
         let builder = QueryBuilder::new(make_sync_test_pool(), "accounts", false)
             .field(yang_db::field!("balance"))
             .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 42)
+            .expect("固定受控条件应合法")
             .limit(1);
         let (sql, params) = builder
             .render_for_transaction(Some(crate::RowLock::ForUpdate))
@@ -2845,12 +2868,14 @@ mod tests {
                 yang_db::CompareOp::Eq,
                 1i64,
             )
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("users.id"))
             .having_cond(
                 yang_db::field!("users.score"),
                 yang_db::CompareOp::Gt,
                 10i64,
-            );
+            )
+            .expect("固定受控条件应合法");
 
         let sql = builder
             .try_to_sql()
@@ -2885,7 +2910,8 @@ mod tests {
             yang_db::field!("cnt"),
             yang_db::CompareOp::Gt,
             5i64,
-        );
+        )
+        .expect("固定受控条件应合法");
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));
@@ -3094,6 +3120,7 @@ mod tests {
         let pool = make_sync_test_pool();
         let sql = QueryBuilder::new(pool, "users", false)
             .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .to_sql();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
     }

@@ -128,7 +128,7 @@ async fn test_pg_transaction_concurrent_isolation() {
 
             // UPDATE value=2（在事务内）
             tx.table(&tbl)
-                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64)
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64).expect("固定受控条件应合法")
                 .update(&json!({"value": 2}))
                 .await
                 .expect("task1: UPDATE 失败");
@@ -196,7 +196,7 @@ async fn test_pg_transaction_concurrent_isolation() {
 
             // UPDATE value=3 并 commit
             tx.table(&tbl)
-                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64)
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1i64).expect("固定受控条件应合法")
                 .update(&json!({"value": 3}))
                 .await
                 .expect("task2: UPDATE 失败");

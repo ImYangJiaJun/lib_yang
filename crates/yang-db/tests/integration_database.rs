@@ -312,7 +312,7 @@ async fn test_transaction_update() {
                 yang_db::field!("id"),
                 yang_db::CompareOp::Eq,
                 user_id as i64,
-            )
+            ).expect("固定受控条件应合法")
             .update(&update_data)
             .await;
 
@@ -381,7 +381,7 @@ async fn test_transaction_delete() {
                 yang_db::field!("id"),
                 yang_db::CompareOp::Eq,
                 user_id as i64,
-            )
+            ).expect("固定受控条件应合法")
             .delete()
             .await;
 
@@ -551,7 +551,7 @@ async fn test_transaction_multiple_operations() {
                 yang_db::field!("id"),
                 yang_db::CompareOp::Eq,
                 user1_id as i64,
-            )
+            ).expect("固定受控条件应合法")
             .update(&update_data)
             .await
             .expect("更新用户1失败");

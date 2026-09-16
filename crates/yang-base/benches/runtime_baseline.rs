@@ -190,7 +190,7 @@ fn runtime_baseline(criterion: &mut Criterion) {
                 .table(&controlled_table)
                 .field(&controlled_id)
                 .field(&controlled_username)
-                .where_and(&controlled_status, CompareOp::Eq, 1_i64)
+                .where_and(&controlled_status, CompareOp::Eq, 1_i64).expect("固定受控条件应合法")
                 .order(&controlled_username, DbSortOrder::Asc)
                 .limit(20)
                 .try_to_sql()

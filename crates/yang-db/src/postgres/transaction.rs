@@ -247,7 +247,7 @@ impl Transaction {
     /// // 在事务中更新数据
     /// let update_data = json!({"status": 1});
     /// tx.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, user_id)
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, user_id)?
     ///     .update(&update_data)
     ///     .await?;
     ///

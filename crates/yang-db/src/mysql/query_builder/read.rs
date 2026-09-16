@@ -30,7 +30,7 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// let user: Option<User> = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)?
     ///     .find()
     ///     .await?;
     ///
@@ -128,7 +128,7 @@ impl<'a> QueryBuilder<'a> {
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// let db = Database::connect("mysql://root:password@localhost/test").await?;
     /// let users: Vec<User> = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)?
     ///     .order(yang_db::field!("name"), yang_db::SortOrder::Asc)
     ///     .select()
     ///     .await?;
@@ -277,7 +277,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询用户名
     /// let name: Option<String> = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)?
     ///     .value(yang_db::field!("name"))
     ///     .await?;
     ///
@@ -288,7 +288,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询用户 ID
     /// let user_id: Option<i64> = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)?
     ///     .value(yang_db::field!("id"))
     ///     .await?;
     ///

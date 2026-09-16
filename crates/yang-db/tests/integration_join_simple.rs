@@ -162,7 +162,7 @@ async fn test_join_with_where() {
                 yang_db::field!("orders.amount"),
                 yang_db::CompareOp::Gt,
                 100.0,
-            )
+            ).expect("固定受控条件应合法")
             .to_sql();
 
         println!("生成的 JOIN + WHERE SQL: {}", sql);
@@ -302,12 +302,12 @@ async fn test_complex_join_query() {
                 yang_db::field!("users.status"),
                 yang_db::CompareOp::Eq,
                 "active",
-            )
+            ).expect("固定受控条件应合法")
             .where_and(
                 yang_db::field!("orders.amount"),
                 yang_db::CompareOp::Gt,
                 50.0,
-            )
+            ).expect("固定受控条件应合法")
             .order(
                 yang_db::field!("orders.created_at"),
                 yang_db::SortOrder::Desc,

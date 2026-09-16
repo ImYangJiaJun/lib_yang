@@ -470,6 +470,7 @@ mod tests {
             .table(&table)
             .field(&username)
             .where_and(&username, CompareOp::Eq, "alice")
+            .expect("固定受控条件应合法")
             .order(&username, SortOrder::Asc)
             .try_to_sql()
             .expect("受控 MySQL 查询应生成 SQL");
@@ -495,6 +496,7 @@ mod tests {
             .table(&table)
             .field(&username)
             .where_and(&username, CompareOp::Eq, "alice")
+            .expect("固定受控条件应合法")
             .order(&username, SortOrder::Desc)
             .try_to_sql()
             .expect("受控 PostgreSQL 查询应生成 SQL");

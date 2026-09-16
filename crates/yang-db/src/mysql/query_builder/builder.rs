@@ -154,8 +154,13 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
-    /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_and<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中，或 LIKE 收到非字符串模式
+    pub fn where_and<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
@@ -170,16 +175,18 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                SqlValue::String(pattern) => Condition::Like(field, pattern),
+                // 不把值 Debug 回显，避免把调用方数据带进错误日志/响应
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
         self.conditions.push(condition);
-        self
+        Ok(self)
     }
 
     /// 添加 OR 条件
@@ -194,8 +201,13 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// # 返回
     /// - `Ok(Self)`: 操作符合法，条件已添加
-    /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中
-    pub fn where_or<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    /// - `Err(DbError::UnsupportedOperator)`: 操作符不在支持集合中，或 LIKE 收到非字符串模式
+    pub fn where_or<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
@@ -210,13 +222,14 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                SqlValue::String(pattern) => Condition::Like(field, pattern),
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
 
         // 如果已有条件，将新条件与现有条件用 OR 组合
@@ -235,7 +248,7 @@ impl<'a> QueryBuilder<'a> {
             self.conditions.push(condition);
         }
 
-        self
+        Ok(self)
     }
 
     /// 添加 IN 条件
@@ -394,13 +407,18 @@ impl<'a> QueryBuilder<'a> {
     ///     .field(yang_db::field!("user_id"))
     ///     .expr(yang_db::SelectExpr::count_all().alias(yang_db::field!("cnt")))
     ///     .group(yang_db::field!("user_id"))
-    ///     .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+    ///     .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)?
     ///     .select::<OrderSummary>()
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn having_cond<V>(mut self, field: &crate::FieldRef, op: crate::CompareOp, value: V) -> Self
+    pub fn having_cond<V>(
+        mut self,
+        field: &crate::FieldRef,
+        op: crate::CompareOp,
+        value: V,
+    ) -> Result<Self, crate::error::DbError>
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
@@ -413,16 +431,17 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => Condition::Lt(field, value),
             crate::CompareOp::Gte => Condition::Gte(field, value),
             crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => Condition::Like(
-                field,
-                match value {
-                    crate::mysql::condition::SqlValue::String(value) => value,
-                    other => format!("{other:?}"),
-                },
-            ),
+            crate::CompareOp::Like => match value {
+                crate::mysql::condition::SqlValue::String(value) => Condition::Like(field, value),
+                _ => {
+                    return Err(crate::error::DbError::UnsupportedOperator(
+                        "LIKE 仅支持字符串模式值".to_string(),
+                    ))
+                }
+            },
         };
         self.having_clause.push(condition);
-        self
+        Ok(self)
     }
 
     /// 使用可信表/ON 表达式的 INNER JOIN。

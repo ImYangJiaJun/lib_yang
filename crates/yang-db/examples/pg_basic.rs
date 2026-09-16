@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .field(yang_db::field!("id"))
         .field(yang_db::field!("name"))
         .field(yang_db::field!("age"))
-        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18)
+        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18)?
         .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
         .limit(10)
         .select()

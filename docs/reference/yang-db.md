@@ -198,15 +198,10 @@ pub enum SqlValue {
 #### WHERE 条件
 
 ```rust
-// 检查版本：操作符不合法时返回 Err(DbError::UnsupportedOperator)
+// 返回 Result：LIKE 收到非字符串模式或操作符非法时返回 Err(DbError::UnsupportedOperator)
 .where_and(field, op, value)  -> Result<Self>
 .where_or(field, op, value)   -> Result<Self>
 .having_cond(field, op, value) -> Result<Self>
-
-// 非检查版本：操作符不合法时 panic
-.where_and_unchecked(field, op, value) -> Self
-.where_or_unchecked(field, op, value)  -> Self
-.having_cond_unchecked(field, op, value) -> Self
 ```
 
 **支持的操作符**：`=`、`!=`、`>`、`<`、`>=`、`<=`、`like`/`LIKE`
@@ -542,5 +537,5 @@ let results: Vec<RedisValue> = tx.execute().await?;
 | 问题 | 影响 | 状态 |
 |------|------|------|
 | `insert_batch` 无自动分批（**已修复**，现有 `insert_batch_with_size`） | 大数据集可能超过 max_allowed_packet | 已修复 |
-| `having_cond` 中操作符验证 | `having_cond_unchecked` 不检查操作符合法性 | 低优先级 |
+| `where_and`/`where_or`/`having_cond` 操作符与 LIKE 类型验证 | 非字符串 LIKE 与非法操作符返回 `UnsupportedOperator`（已无 `_unchecked` 变体） | 已修复 |
 | 原生 SQL 逃生舱 | 调用方必须自行保证 SQL 来源可信并完成审计 | 明确边界 |
