@@ -44,6 +44,16 @@ crate::params! {
     }
 }
 
+crate::params! {
+    #[deny_unknown_fields]
+    RadioQueryInput {
+        #[param(source = query)]
+        status: Radio::<String>::new().require(true).options([("active", "启用")]),
+        #[param(source = query)]
+        level: Radio::<i8>::new().require(true).options([(1, "启用"), (0, "禁用")]),
+    }
+}
+
 /// 含二进制文件字段的上传输入；`format: binary` 是构建期媒体类型校验的判据。
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -428,6 +438,26 @@ fn params_macro_decodes_body_query_path_and_header_from_one_definition() {
     assert_eq!(params.as_slice()[1].source, ParamSource::Query);
     assert_eq!(params.as_slice()[2].source, ParamSource::Path);
     assert_eq!(params.as_slice()[3].source, ParamSource::Header);
+}
+
+#[test]
+fn params_macro_decodes_radio_string_and_numeric_from_query() {
+    // Radio::<String> 的 query 值未经 JSON 引号，必须走字符串兜底；Radio::<i8> 走 JSON 解析。
+    let mut request = crate::action::Request::new(serde_json::json!({}))
+        .query("status", "active")
+        .query("level", "5");
+
+    let input = <RadioQueryInput as ParamInput>::decode(&mut request)
+        .expect("Radio query 值应成功解码");
+    assert_eq!(input.status, "active".to_string());
+    assert_eq!(input.level, 5);
+
+    // 非法数字 query 值必须报错（i8 不能解析）
+    let mut bad = crate::action::Request::new(serde_json::json!({})).query("level", "abc");
+    assert!(matches!(
+        <RadioQueryInput as ParamInput>::decode(&mut bad),
+        Err(BaseError::ParamInvalid(_, _))
+    ));
 }
 
 fn get_action(name: &str, path: &str, operation_id: &str) -> ActionSpec {
