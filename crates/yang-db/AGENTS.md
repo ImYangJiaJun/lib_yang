@@ -102,7 +102,7 @@ yang-db/
 
 ## ANTI-PATTERNS
 - Do not add new production `unwrap()`/`expect()` just because crate lints allow them.
-- Avoid `_unchecked` query helpers unless the operator was already validated; `having_cond_unchecked` can panic.
+- 不重新引入按字符串传操作符的 `_unchecked` 助手（现有 API 用 `CompareOp`/`SqlExpr` 白名单，`where_and`/`where_or`/`having_cond` 已无 unchecked 变体）。
 - Do not reintroduce stale docs claiming `RedisConfig` pool params are unused; `connect_with_config` applies pool/timeouts now.
 - Do not reintroduce stale docs claiming `insert_batch` lacks batching; it defaults to 500-row batches now.
 - Do not hardcode `root:111111` outside local Docker/test examples.

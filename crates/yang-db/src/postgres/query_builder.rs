@@ -1375,7 +1375,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// 使用可信表/ON 表达式的 INNER JOIN。
     ///
-    /// 外部标识符的等值连接请使用 [`Self::join_on_identifiers`]。
+    /// 外部表名/列名请先用 [`crate::postgres::identifier::quote_identifier`] /
+    /// [`crate::postgres::identifier::quote_qualified`] 校验后再拼入表达式。
     pub fn join(
         mut self,
         table: &crate::TableRef,
@@ -1423,7 +1424,8 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    /// 按可信 SQL 表达式排序；外部列名请使用 [`Self::order_identifier`]。
+    /// 按可信 SQL 表达式排序；外部列名请先用 [`crate::postgres::identifier::quote_identifier`]
+    /// 校验后再拼入表达式。
     pub fn order(mut self, field: &crate::FieldRef, order: crate::SortOrder) -> Self {
         self.order_by.push(OrderClause {
             field: field.postgres_quoted().to_string(),
@@ -1432,7 +1434,8 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    /// 按可信 SQL 表达式分组；外部列名请使用 [`Self::group_identifier`]。
+    /// 按可信 SQL 表达式分组；外部列名请先用 [`crate::postgres::identifier::quote_identifier`]
+    /// 校验后再拼入表达式。
     pub fn group(mut self, field: &crate::FieldRef) -> Self {
         self.group_by.push(field.postgres_quoted().to_string());
         self

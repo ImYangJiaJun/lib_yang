@@ -427,7 +427,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// 使用可信表/ON 表达式的 INNER JOIN。
     ///
-    /// 外部标识符的等值连接请使用 [`Self::join_on_identifiers`]。
+    /// 外部表名/列名请先用 [`crate::mysql::identifier::quote_identifier`] /
+    /// [`crate::mysql::identifier::quote_qualified`] 校验后再拼入表达式。
     pub fn join(
         mut self,
         table: &crate::TableRef,
@@ -478,7 +479,8 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    /// 按可信 SQL 表达式排序；外部列名请使用 [`Self::order_identifier`]。
+    /// 按可信 SQL 表达式排序；外部列名请先用 [`crate::mysql::identifier::quote_identifier`]
+    /// 校验后再拼入表达式。
     pub fn order(mut self, field: &crate::FieldRef, order: crate::SortOrder) -> Self {
         use crate::mysql::field::OrderClause;
 
@@ -489,7 +491,8 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    /// 按可信 SQL 表达式分组；外部列名请使用 [`Self::group_identifier`]。
+    /// 按可信 SQL 表达式分组；外部列名请先用 [`crate::mysql::identifier::quote_identifier`]
+    /// 校验后再拼入表达式。
     pub fn group(mut self, field: &crate::FieldRef) -> Self {
         self.group_by.push(field.mysql_quoted().to_string());
         self
