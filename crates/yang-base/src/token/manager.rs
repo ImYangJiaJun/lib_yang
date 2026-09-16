@@ -569,14 +569,6 @@ impl TokenManager {
             .map_err(BaseError::TokenGenerateFailed)
     }
 
-    /// 返回 Refresh Token 的有效期（秒）。
-    ///
-    /// 供同 crate 的撤销层（`revocation`）复用：按用户批量撤销时以此作为
-    /// `min_iat` 标记的 TTL，避免标记无限增长。
-    pub(crate) fn refresh_token_expiry(&self) -> u64 {
-        self.refresh_token_expiry
-    }
-
     /// 返回 subject 撤销水位线应使用的 TTL（秒）。
     ///
     /// 取 Access / Refresh 有效期的较大值：水位线必须至少覆盖「撤销前签发的
@@ -735,6 +727,12 @@ impl TokenManager {
     ///
     /// 此方法会检查 Redis 黑名单，已撤销的 Refresh Token 将被拒绝。
     ///
+    /// # 安全权衡
+    ///
+    /// 本方法**不轮换** Refresh Token（旧 token 在过期前始终可用，且不触发复用检测/
+    /// 家族撤销），会重新引入轮换刷新要堵的重放窗口。刷新请使用 [`RefreshAction`] 或
+    /// [`TokenManager::rotate_refresh_token`] / [`rotate_refresh_token_from_claims`]。
+    ///
     /// # 参数
     ///
     /// - `refresh_token`: Refresh Token 字符串
@@ -748,11 +746,15 @@ impl TokenManager {
     /// # 示例
     ///
     /// ```rust,ignore
-    /// let new_access_token = manager.refresh_access_token(
-    ///     &refresh_token,
-    ///     serde_json::json!({"role": "admin"}),
-    /// ).await?;
+    /// // 推荐：轮换刷新，旧 Refresh Token 立即失效，重放触发全账号撤销
+    /// let (access_token, refresh_token) = manager
+    ///     .rotate_refresh_token(&old_refresh_token, serde_json::json!({"role": "admin"}))
+    ///     .await?;
     /// ```
+    #[deprecated(
+        since = "0.1.0",
+        note = "此方法不轮换 Refresh Token（旧 token 在过期前始终可用，且不触发复用检测/家族撤销）。刷新请使用 RefreshAction，或 TokenManager::rotate_refresh_token / rotate_refresh_token_from_claims。"
+    )]
     pub async fn refresh_access_token(
         &self,
         refresh_token: &str,

@@ -612,6 +612,7 @@ fn test_is_token_expiring_soon() {
 /// ```
 #[tokio::test]
 #[ignore = "需要 Redis（verify_token_checked 依赖黑名单查询）"]
+#[allow(deprecated)]
 async fn test_refresh_access_token() {
     let manager = TokenManager::new_symmetric(
         "test_secretxxxxxxxxxxxxxxxxxxxxx",
@@ -649,6 +650,7 @@ async fn test_refresh_access_token() {
 /// token_type 校验已下沉到 `verify_token_checked` 且发生在 Redis 访问之前，
 /// 因此本用例无需 Redis 即可运行。
 #[tokio::test]
+#[allow(deprecated)]
 async fn test_refresh_with_access_token_should_fail() {
     let manager = TokenManager::new_symmetric(
         "test_secretxxxxxxxxxxxxxxxxxxxxx",
