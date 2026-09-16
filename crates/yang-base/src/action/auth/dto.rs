@@ -99,19 +99,13 @@ impl core::fmt::Debug for AccessTokenResponse {
 
 /// 登出输入。
 ///
-/// 终止会话时建议**同时**传入 Access Token 与 Refresh Token：仅撤销 Access Token
-/// 会让攻击者仍能用未失效的 Refresh Token 刷出新的 Access Token，会话并未真正结束。
+/// 撤销按 `sub`（用户主题）水位线一次性生效：该用户在此刻之前签发的**全部**
+/// Token（Access + Refresh）与后续任何已签发 Token 均立即失效，无需分别传入。
 #[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogoutInput {
     /// 待撤销的 Token（通常是 Access Token）
     pub token: String,
-    /// 待撤销的 Refresh Token（可选）
-    ///
-    /// 若提供，将与 `token` 一并写入黑名单，从而彻底终止整个会话；
-    /// 不提供时仅撤销 `token`。
-    #[serde(default)]
-    pub refresh_token: Option<String>,
 }
 
 // NEW-38: 手写 Debug 脱敏
@@ -119,13 +113,6 @@ impl core::fmt::Debug for LogoutInput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LogoutInput")
             .field("token", &format!("***({} chars)", self.token.len()))
-            .field(
-                "refresh_token",
-                &self
-                    .refresh_token
-                    .as_ref()
-                    .map(|s| format!("***({} chars)", s.len())),
-            )
             .finish()
     }
 }

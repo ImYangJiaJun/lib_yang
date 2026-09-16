@@ -11,12 +11,10 @@ use yang_base_derive::Action;
 // LogoutAction
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// 登出 Action：撤销 Token（写入 Redis 黑名单）。公开（凭 Token 自证）。
+/// 登出 Action：按用户水位线撤销该用户此前签发的全部 Token（写入 Redis）。
 ///
-/// 彻底终止会话需**同时**撤销 Access Token 与 Refresh Token：只撤 Access Token
-/// 时，攻击者仍可用未失效的 Refresh Token 刷出新的 Access Token。因此调用方应在
-/// `token` 传 Access Token 的同时，于 `refresh_token` 传入 Refresh Token，本 Action
-/// 会将二者一并拉黑。
+/// 通过 ``revoke_by_subject`` 写入 `sub` 的最小有效签发时间水位线，早于该时刻签发的
+/// Access 与 Refresh Token 一次性失效，因此无需另行传入 Refresh Token。
 ///
 /// # 所有权校验（AUTH-4）
 ///
