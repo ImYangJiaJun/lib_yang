@@ -1,0 +1,5 @@
+error: action permission_mode 必须是 all/any，收到 "Any"
+ --> trybuild/action_invalid_permission_mode.rs:5:8
+  |
+5 | struct BrokenAction;
+  |        ^^^^^^^^^^^^
