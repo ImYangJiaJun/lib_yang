@@ -272,6 +272,12 @@ fn external_value(builder: &Ident, raw: TokenStream, value_type: &TokenStream) -
         "Radio" => quote! {
             ::serde_json::from_str::<#value_type>(#raw)
                 .and_then(::serde_json::to_value)
+                .or_else(|_| {
+                    ::core::result::Result::<
+                        ::serde_json::Value,
+                        ::serde_json::Error,
+                    >::Ok(::serde_json::Value::String(#raw.clone()))
+                })
                 .map_err(|error| error.to_string())
         },
         _ => quote!(::core::result::Result::Err(
