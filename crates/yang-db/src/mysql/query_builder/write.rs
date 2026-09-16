@@ -16,6 +16,34 @@ const INSERT_BATCH_SIZE: usize = 500;
 /// 批量更新的默认批次大小
 const UPDATE_BATCH_SIZE: usize = 1000;
 
+/// 协议层单语句绑定占位符上限。
+///
+/// MySQL 二进制协议预编译语句占位符上限为 2^16-1；PostgreSQL Bind 消息的
+/// 参数计数同为 Int16，上限一致。
+const MAX_BIND_PARAMS: usize = 65_535;
+
+/// 由「非主键列数」推导 CASE WHEN 批量更新的安全批大小。
+///
+/// 单条 SQL 占位符数 = `records * (2 * field_count + 1)`：CASE WHEN 每
+/// (字段, 记录) 两个占位符，WHERE IN 每记录一个。返回不超过 `requested`
+/// 的最大安全记录数（至少 1）。
+fn derive_update_batch_size(field_count: usize, requested: usize) -> usize {
+    let per_record = field_count.saturating_mul(2).saturating_add(1);
+    if per_record == 0 {
+        return requested;
+    }
+    (MAX_BIND_PARAMS / per_record).max(1).min(requested)
+}
+
+/// 取首条记录的「非主键列数」，与 build_update_batch 的 update_fields 口径一致。
+fn update_field_count(records: &[serde_json::Value], where_field: &str) -> usize {
+    records
+        .first()
+        .and_then(|r| r.as_object())
+        .map(|obj| obj.keys().filter(|k| k.as_str() != where_field).count())
+        .unwrap_or(0)
+}
+
 impl<'a> QueryBuilder<'a> {
     /// 插入数据
     ///
@@ -748,8 +776,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// 批量更新记录
     ///
-    /// 使用 CASE WHEN 策略在单次查询中更新多条记录。自动分批处理（每批 1000 条），
-    /// 所有批次在同一事务中执行，保证原子性。
+    /// 使用 CASE WHEN 策略在单次查询中更新多条记录。自动分批处理（每批最多 1000 条，
+    /// 宽表按列数自动缩小以不超协议占位符上限），所有批次在同一事务中执行，保证原子性。
     ///
     /// # 参数
     /// - `records`: 要更新的记录列表（每条必须包含 where_field 字段）
@@ -788,6 +816,44 @@ impl<'a> QueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
+        self.update_batch_with_size(records, where_field, UPDATE_BATCH_SIZE)
+            .await
+    }
+
+    /// 批量更新记录（自定义批次大小）
+    ///
+    /// 与 [`QueryBuilder::update_batch`] 相同，但允许调用方自定义每批最大记录数。
+    /// 宽表（单条更新列数较多）会自动按列数缩小批大小，避免超出协议占位符上限。
+    ///
+    /// # 参数
+    /// - `records`: 要更新的记录列表（每条必须包含 where_field 字段）
+    /// - `where_field`: 主键字段名（如 `"id"`），用于匹配记录
+    /// - `batch_size`: 每批最多更新的记录数（必须 > 0）
+    ///
+    /// # 返回
+    /// - `Ok(u64)`: 总受影响行数
+    /// - `Err(DbError::SerializationError)`: batch_size 为 0 或记录为空时
+    /// - `Err(DbError::InvalidArgument)`: 单行更新列数过多，占位符超协议上限时
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "update", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn update_batch_with_size<T>(
+        self,
+        records: &[T],
+        where_field: &crate::FieldRef,
+        batch_size: usize,
+    ) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        if batch_size == 0 {
+            return Err(crate::error::DbError::SerializationError(
+                "batch_size 不能为 0".to_string(),
+            ));
+        }
+
         if records.is_empty() {
             return Err(crate::error::DbError::SerializationError(
                 "批量更新数据不能为空".to_string(),
@@ -810,11 +876,21 @@ impl<'a> QueryBuilder<'a> {
             })
             .collect::<Result<_, _>>()?;
 
+        // 按「非主键列数」推导安全批大小：宽表单条占位符可能超协议上限，需按列缩小
+        let field_count = update_field_count(&json_records, where_field.as_str());
+        let per_record = field_count.saturating_mul(2).saturating_add(1);
+        if per_record > MAX_BIND_PARAMS {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "批量更新单行需要 {per_record} 个占位符，超过协议上限 {MAX_BIND_PARAMS}，请减少更新列数"
+            )));
+        }
+        let batch_size = derive_update_batch_size(field_count, batch_size);
+
         let mut total = 0u64;
         match self.executor {
             QueryExecutor::Pool(pool) => {
                 let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
-                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                for chunk in json_records.chunks(batch_size) {
                     total += execute_update_chunk(
                         &mut transaction,
                         &self.table,
@@ -833,7 +909,7 @@ impl<'a> QueryBuilder<'a> {
                 let connection = transaction.executor().ok_or_else(|| {
                     crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
                 })?;
-                for chunk in json_records.chunks(UPDATE_BATCH_SIZE) {
+                for chunk in json_records.chunks(batch_size) {
                     total += execute_update_chunk(
                         &mut *connection,
                         &self.table,
@@ -971,4 +1047,34 @@ async fn execute_update_chunk(
         query = bind_execute_param(query, param);
     }
     Ok(query.execute(connection).await?.rows_affected())
+}
+
+#[cfg(test)]
+mod batch_size_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn derive_batch_size_narrow_table_keeps_requested() {
+        // 窄表（如 3 个非主键列）：per_record = 7，远低于上限，批大小保持不变
+        assert_eq!(derive_update_batch_size(3, 1000), 1000);
+    }
+
+    #[test]
+    fn derive_batch_size_wide_table_shrinks() {
+        // 33 个非主键列：per_record = 67，65535 / 67 = 978
+        assert_eq!(derive_update_batch_size(33, 1000), 978);
+        assert_eq!(978 * 67, 65526);
+    }
+
+    #[test]
+    fn derive_batch_size_never_zero() {
+        assert_eq!(derive_update_batch_size(usize::MAX, 1000), 1);
+    }
+
+    #[test]
+    fn update_field_count_excludes_where_field() {
+        let records = vec![serde_json::json!({"id": 1, "a": 1, "b": 2})];
+        assert_eq!(update_field_count(&records, "id"), 2);
+    }
 }
