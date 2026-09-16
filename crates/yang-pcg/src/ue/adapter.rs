@@ -1,11 +1,11 @@
 // UE5 适配器
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::error::PcgResult;
 use crate::model::geometry::{Bounds3, Transform3, WorldPoint};
 use crate::model::result::GenerationResult;
-use crate::model::room::CorridorPath;
+use crate::model::room::{CorridorPath, Room};
 use crate::model::terrain::TileKind;
 
 use super::channels::{ChannelKind, NamedChannel, Polyline3};
@@ -244,8 +244,16 @@ fn export_tile_channels(result: &GenerationResult) -> (NamedChannel, NamedChanne
     let mut floor_points = Vec::new();
     let mut wall_points = Vec::new();
 
+    // 构建 room_id -> room 索引，避免 O(terrains × rooms) 线性扫描
+    // （与 spawn/mod.rs 的 terrain_map 同一模式）
+    let room_index: HashMap<&str, &Room> = result
+        .rooms
+        .iter()
+        .map(|room| (room.id.as_str(), room))
+        .collect();
+
     for terrain in &result.terrains {
-        let Some(room) = result.rooms.iter().find(|room| room.id == terrain.room_id) else {
+        let Some(room) = room_index.get(terrain.room_id.as_str()).copied() else {
             continue;
         };
         let Some(bounds) = room.bounds else {
