@@ -291,8 +291,31 @@ impl<R> StepUpMiddleware<R>
 where
     R: StepUpResourceResolver,
 {
-    /// 绑定管理器、目标 Action 与服务端资源解析器。
-    pub fn new(manager: Arc<StepUpManager>, action: ActionRef, resolver: R) -> Self {
+    /// 绑定管理器、目标 Action、服务端资源解析器与一次性 proof 存储。
+    ///
+    /// proof 的一次性语义**完全**由该存储承担；[`StepUpManager::verify_proof`] 是无状态
+    /// 的，不查任何共享状态。多实例部署必须传入 [`RedisStepUpProofStore`]。
+    pub fn new<S>(manager: Arc<StepUpManager>, action: ActionRef, resolver: R, proof_store: S) -> Self
+    where
+        S: StepUpProofStore,
+    {
+        Self {
+            manager,
+            action,
+            resolver,
+            proof_store: Arc::new(proof_store),
+        }
+    }
+
+    /// 显式 opt-in 的进程内 proof 存储，仅适用于单实例部署与测试。
+    ///
+    /// 多实例部署使用本构造函数会把 proof 的一次性语义静默降级为「每实例一次」：
+    /// 实例 A 消费过的 proof 可在实例 B 重放。命名与日志都要求调用方显式承担该决定。
+    pub fn in_process(manager: Arc<StepUpManager>, action: ActionRef, resolver: R) -> Self {
+        tracing::warn!(
+            action = %action,
+            "StepUpMiddleware 使用进程内 proof 存储，多实例部署必须改用 RedisStepUpProofStore"
+        );
         Self {
             manager,
             action,
@@ -300,17 +323,16 @@ where
             proof_store: Arc::new(InMemoryStepUpProofStore::default()),
         }
     }
+}
 
-    /// 覆盖一次性 proof 存储。
-    ///
-    /// 多实例部署应传入 [`RedisStepUpProofStore`]，保证所有实例共享消费状态。
-    #[must_use]
-    pub fn with_proof_store<S>(mut self, proof_store: S) -> Self
-    where
-        S: StepUpProofStore,
-    {
-        self.proof_store = Arc::new(proof_store);
-        self
+/// 让调用方已持有的 `Arc<dyn StepUpProofStore>` 也能作为 proof 存储直接传入。
+#[async_trait]
+impl<T> StepUpProofStore for Arc<T>
+where
+    T: StepUpProofStore + ?Sized,
+{
+    async fn consume(&self, proof: &StepUpVerification) -> Result<bool, BaseError> {
+        (**self).consume(proof).await
     }
 }
 
@@ -931,7 +953,7 @@ mod tests {
     ) -> Result<crate::definition::BuiltApp, crate::definition::BuildError> {
         let module_name = ModuleName::new("org.user").expect("测试 Module 名称应有效");
         let module = ModuleSpec::new(module_name)
-            .middleware(StepUpMiddleware::new(manager, target, PathResourceResolver))
+            .middleware(StepUpMiddleware::in_process(manager, target, PathResourceResolver))
             .action(
                 ActionSpec::new(
                     ActionName::new("delete").expect("测试 Action 名称应有效"),
