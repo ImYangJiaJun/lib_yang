@@ -262,11 +262,10 @@ pub fn condition_to_sql(condition: &Condition, params: &mut Vec<SqlValue>) -> St
     condition_to_sql_owned(condition.clone(), params)
 }
 
-/// 以借用方式将条件树写入 SQL 字符串，仅在压参时 clone 单个 `SqlValue`
+/// 借用签名的兼容层，内部对整棵树 clone 一次后委托 `condition_to_sql_owned`
 ///
-/// 与 [`condition_to_sql_owned`] 不同，本函数遍历 `&Condition` 引用树，
-/// 避免对整棵树做一次性 `clone()`，仅在叶节点需要把 `SqlValue` 压入参数
-/// 列表时才 clone 单个值。对深层嵌套或大 IN 列表的场景可显著减少堆分配。
+/// 签名虽为借用，实现仍会对整棵条件树做一次 `clone()`（含 `Vec<SqlValue>` 与子查询），
+/// 不要指望它避免克隆。
 ///
 /// # 参数
 /// - `cond`: 要转换的条件引用

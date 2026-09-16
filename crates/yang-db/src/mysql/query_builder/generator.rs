@@ -214,8 +214,9 @@ impl SqlGenerator {
         if conditions.len() == 1 {
             self.append_condition(conditions[0].clone())?;
         } else {
-            // 内联拼接：逐条 condition_to_sql 直接写入 self.sql，
-            // 避免 to_vec() 克隆全部条件 + Condition::And 包装 + parts Vec 中间分配。
+            // 内联拼接：逐条 append_condition 直接写入 self.sql，省去 to_vec() 容器 +
+            // Condition::And 包装 + parts Vec；注意条件树仍按值消费，每个条件在
+            // append_condition 处 clone 一次（见 :215）。
             self.sql.push('(');
             for (i, cond) in conditions.iter().enumerate() {
                 if i > 0 {
@@ -294,7 +295,8 @@ impl SqlGenerator {
         if conditions.len() == 1 {
             self.append_condition(conditions[0].clone())?;
         } else {
-            // 与 build_where 多条件路径对齐：内联拼接避免 to_vec + And 包装 + parts Vec。
+            // 与 build_where 多条件路径对齐：内联拼接省去 to_vec + And 包装 + parts Vec；
+            // 条件树仍按值消费，每个条件在 append_condition 处 clone 一次（见 :295）。
             self.sql.push('(');
             for (i, cond) in conditions.iter().enumerate() {
                 if i > 0 {
