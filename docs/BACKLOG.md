@@ -52,7 +52,7 @@ yang-pcg 的 NEW-20~NEW-34 不属于本次 yang-base/yang-db 对账，状态保�
 
 **文件**：`crates/yang-db/src/redis/config.rs`、`crates/yang-db/src/redis/client.rs`
 
-**状态**：✅ 已完成。`RedisClient::connect_with_config()` 已将 `RedisConfig::max_connections`、`connect_timeout`、`wait_timeout` 写入 `deadpool_redis::PoolConfig`，并新增 `pool_status().max_size` 验证。
+**状态**：🟡 部分完成。`RedisClient::connect_with_config()` 已将 `max_connections`、`connect_timeout`、`wait_timeout` 映射进 `deadpool_redis::PoolConfig`，`idle_timeout` 映射为归还连接回收钩子（`recycle`）超时；但 `min_connections`/`max_lifetime`/`test_before_acquire` 仍不被 deadpool 0.12 支持（连接时显式 `log::warn!` 告警，不再静默）。
 
 **问题**：`RedisConfig` 中定义的 `pool_size`、`min_idle`、`idle_timeout` 等连接池参数在构建 `deadpool_redis::Pool` 时**未被读取**，实际连接池使用库默认值。用户配置了参数却完全不生效，属于静默失效（silent no-op）。
 

@@ -2,7 +2,7 @@ use crate::redis::{RedisPipeline, RedisTransaction};
 use crate::{
     BackendCapabilities, DbError, PoolStatus, RedisConfig, RedisValue, Result, REDIS_CAPABILITIES,
 };
-use deadpool_redis::{Config, Pool, PoolConfig, Runtime, Timeouts};
+use deadpool_redis::{Config, Pool, Runtime};
 
 /// Redis 客户端
 ///
@@ -70,21 +70,20 @@ impl RedisClient {
     /// ```
     pub async fn connect_with_config(url: impl Into<String>, config: RedisConfig) -> Result<Self> {
         config.validate()?;
+
+        // min_connections / max_lifetime / test_before_acquire 不被 deadpool 0.12 支持，
+        // 这里把「静默忽略」变成显式告警，避免调用方误以为已生效。
+        if config.min_connections != 0 || config.max_lifetime.is_some() || config.test_before_acquire {
+            log::warn!(
+                "RedisConfig 的 min_connections/max_lifetime/test_before_acquire 不被 deadpool 0.12 支持，将被忽略"
+            );
+        }
+
         let url_str = url.into();
 
         // 使用 from_url 创建配置，然后设置连接池参数
         let mut cfg = Config::from_url(url_str.clone());
-        cfg.pool = Some(PoolConfig {
-            max_size: config.max_connections,
-            timeouts: Timeouts {
-                wait: Some(config.wait_timeout_duration()),
-                create: Some(config.connect_timeout_duration()),
-                // 修复 P-H1: recycle 不应使用 connect_timeout(默认5s)，否则连接几乎立即被回收，连接池形同虚设。
-                // 改为 idle_timeout（默认 300s = 5 分钟），空闲超过此时间的连接才会被回收。
-                recycle: Some(config.idle_timeout_duration()),
-            },
-            ..Default::default()
-        });
+        cfg.pool = Some(config.build_pool_config());
 
         // 创建连接池
         let pool = cfg
@@ -2076,16 +2075,8 @@ mod tests {
             .with_wait_timeout(12)
             .with_enable_logging(true);
 
-        // 构建 PoolConfig
-        let pool_config = PoolConfig {
-            max_size: redis_config.max_connections,
-            timeouts: Timeouts {
-                wait: Some(Duration::from_secs(redis_config.wait_timeout)),
-                create: Some(Duration::from_secs(redis_config.connect_timeout)),
-                recycle: Some(Duration::from_secs(redis_config.connect_timeout)),
-            },
-            ..Default::default()
-        };
+        // 构建 PoolConfig（期望值来自同一映射 build_pool_config）
+        let pool_config = redis_config.build_pool_config();
 
         // 验证配置参数
         assert_eq!(pool_config.max_size, 25, "最大连接数应为 25");
@@ -2099,10 +2090,11 @@ mod tests {
             Some(Duration::from_secs(8)),
             "创建超时应为 8 秒"
         );
+        // recycle 是归还连接回收钩子超时，映射 idle_timeout（默认 300s），不是 connect_timeout
         assert_eq!(
             pool_config.timeouts.recycle,
-            Some(Duration::from_secs(8)),
-            "回收超时应为 8 秒"
+            Some(Duration::from_secs(300)),
+            "回收超时应为默认 idle_timeout 300 秒"
         );
     }
 
@@ -2111,15 +2103,7 @@ mod tests {
     fn test_default_pool_config_construction() {
         let redis_config = RedisConfig::default();
 
-        let pool_config = PoolConfig {
-            max_size: redis_config.max_connections,
-            timeouts: Timeouts {
-                wait: Some(Duration::from_secs(redis_config.wait_timeout)),
-                create: Some(Duration::from_secs(redis_config.connect_timeout)),
-                recycle: Some(Duration::from_secs(redis_config.connect_timeout)),
-            },
-            ..Default::default()
-        };
+        let pool_config = redis_config.build_pool_config();
 
         assert_eq!(pool_config.max_size, 10, "默认最大连接数应为 10");
         assert_eq!(
@@ -2142,15 +2126,7 @@ mod tests {
             .with_wait_timeout(12)
             .with_enable_logging(true);
         let mut pool_config = Config::from_url("redis://127.0.0.1:6379");
-        pool_config.pool = Some(PoolConfig {
-            max_size: config.max_connections,
-            timeouts: Timeouts {
-                wait: Some(Duration::from_secs(config.wait_timeout)),
-                create: Some(Duration::from_secs(config.connect_timeout)),
-                recycle: Some(Duration::from_secs(config.connect_timeout)),
-            },
-            ..Default::default()
-        });
+        pool_config.pool = Some(config.build_pool_config());
         let pool = pool_config
             .create_pool(Some(Runtime::Tokio1))
             .expect("无法创建测试连接池");

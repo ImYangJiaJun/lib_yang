@@ -119,7 +119,7 @@ cargo run --example <name> -p <crate> --locked
 - 资源一律经 `ToolsBuilder` 注册、`Tools` 获取；禁止在 yang-base 新增进程级全局单例（`static OnceLock`/`lazy_static`）。
 - 不删/弱化 `yang-pcg` 的 property test 与 `validate` 硬校验——守护的是真不变量（早期是已知算法缺口，经 `0ff2979`/`3650a4d`/`f2aef14` 构造性修复后 6 个 property test 已全部解除 `#[ignore]`）。
 - 不硬编码凭据；用 `MYSQL_TEST_PASSWORD` 或本地忽略配置。
-- 不把 `RedisConfig` pool 参数 / `insert_batch` 自动批处理写成坏的（当前已生效，`insert_batch` 默认 500 行批处理）。
+- 不把 `RedisConfig` pool 参数 / `insert_batch` 自动批处理写成坏的：`insert_batch` 默认 500 行批处理已生效；但 `RedisConfig` 仅 `max_connections`/`connect_timeout`/`wait_timeout`/`idle_timeout`（映射到 `recycle` 回收钩子超时）生效，`min_connections`/`max_lifetime`/`test_before_acquire` 不受 deadpool 0.12 支持。
 - Builtin actions 部分路径仍用 `serde_json::Value`；未经类型安全决策不扩大该模式。
 - 不新增进程级 `auth` 全局（auth 子模块化了；看 `action/AGENTS.md` 与 `action/auth/mod.rs` 约定）。
 

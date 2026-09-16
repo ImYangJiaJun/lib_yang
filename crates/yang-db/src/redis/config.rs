@@ -19,27 +19,29 @@ use std::time::Duration;
 pub struct RedisConfig {
     /// 最大连接数
     pub max_connections: usize,
-    /// 最小空闲连接数（连接池自愈参数）
+    /// 最小空闲连接数。
     ///
-    /// 连接池会尽量保持至少此数量的空闲连接。设为 0 表示不强制保持。
+    /// **当前不生效**：deadpool 0.12 无对应参数，仅保留配置兼容；连接池不会据此保持
+    /// 空闲连接。请忽略该字段。
     pub min_connections: usize,
     /// 连接超时时间（秒）
     pub connect_timeout: u64,
     /// 等待连接超时时间（秒）
     pub wait_timeout: u64,
-    /// 连接空闲回收超时时间（秒）
+    /// 归还连接时的回收钩子超时时间（秒）。
     ///
-    /// 连接池中空闲超过此时间的连接将被回收。
-    /// 此值应远大于 `connect_timeout`，否则连接池形同虚设。
+    /// deadpool-redis 在连接归还时执行 UNWATCH + PING 往返，此值是该钩子的超时；
+    /// deadpool 0.12 **没有**「空闲连接 TTL」概念，此值不控制空闲连接回收。
     pub idle_timeout: u64,
-    /// 连接最大生存时间（秒）
+    /// 连接最大生存时间（秒）。
     ///
-    /// 连接从创建到强制回收的最大时长。`None` 表示不限制。
+    /// **当前不生效**：deadpool 0.12 无对应参数，仅保留配置兼容；连接不会被据此强制
+    /// 回收。`None` 与 `Some(_)` 行为相同。
     pub max_lifetime: Option<u64>,
-    /// 是否在借出连接前进行健康检查
+    /// 是否在借出连接前进行健康检查。
     ///
-    /// 启用后每次获取连接前会执行快速探活，确保连接可用。
-    /// 会略微增加每次获取连接的延迟。
+    /// **当前不生效**：deadpool-redis 只在归还时做 PING，无借出前探活钩子；仅保留
+    /// 配置兼容。请忽略该字段。
     pub test_before_acquire: bool,
     /// 是否启用日志
     pub enable_logging: bool,
@@ -117,7 +119,9 @@ impl RedisConfig {
         self
     }
 
-    /// 设置最小空闲连接数（连接池自愈参数）
+    /// 设置最小空闲连接数。
+    ///
+    /// **当前不生效**（deadpool 0.12 无对应参数），仅保留配置兼容。
     pub fn with_min_connections(mut self, min: usize) -> Self {
         self.min_connections = min;
         self
@@ -135,23 +139,25 @@ impl RedisConfig {
         self
     }
 
-    /// 设置连接空闲回收超时时间（秒）
+    /// 设置归还连接时的回收钩子超时时间（秒）。
     ///
-    /// 此值应远大于 `connect_timeout`，否则连接池形同虚设。
+    /// 即 deadpool-redis 在归还时做 UNWATCH+PING 往返的超时；不是空闲连接 TTL。
     pub fn with_idle_timeout(mut self, secs: u64) -> Self {
         self.idle_timeout = secs;
         self
     }
 
-    /// 设置连接最大生存时间（秒）
+    /// 设置连接最大生存时间（秒）。
     ///
-    /// 传 `None` 表示不限制连接生存时间。
+    /// **当前不生效**（deadpool 0.12 无对应参数），仅保留配置兼容。
     pub fn with_max_lifetime(mut self, secs: Option<u64>) -> Self {
         self.max_lifetime = secs;
         self
     }
 
-    /// 设置是否在借出连接前进行健康检查
+    /// 设置是否在借出连接前进行健康检查。
+    ///
+    /// **当前不生效**（deadpool-redis 无借出前探活钩子），仅保留配置兼容。
     pub fn with_test_before_acquire(mut self, enable: bool) -> Self {
         self.test_before_acquire = enable;
         self
@@ -173,12 +179,6 @@ impl RedisConfig {
                 "Redis max_connections 必须大于 0".to_string(),
             ));
         }
-        if self.min_connections > self.max_connections {
-            return Err(crate::error::DbError::InvalidArgument(format!(
-                "Redis min_connections({}) 不能大于 max_connections({})",
-                self.min_connections, self.max_connections
-            )));
-        }
         if self.connect_timeout == 0 {
             return Err(crate::error::DbError::InvalidArgument(
                 "Redis connect_timeout 必须大于 0 秒".to_string(),
@@ -192,17 +192,6 @@ impl RedisConfig {
         if self.idle_timeout == 0 {
             return Err(crate::error::DbError::InvalidArgument(
                 "Redis idle_timeout 必须大于 0 秒".to_string(),
-            ));
-        }
-        if self.idle_timeout <= self.connect_timeout {
-            return Err(crate::error::DbError::InvalidArgument(format!(
-                "Redis idle_timeout({}) 必须大于 connect_timeout({})",
-                self.idle_timeout, self.connect_timeout
-            )));
-        }
-        if matches!(self.max_lifetime, Some(0)) {
-            return Err(crate::error::DbError::InvalidArgument(
-                "Redis max_lifetime 为 Some 时必须大于 0 秒".to_string(),
             ));
         }
         Ok(())
@@ -220,7 +209,7 @@ impl RedisConfig {
         Duration::from_secs(self.wait_timeout)
     }
 
-    /// 获取空闲回收超时 Duration
+    /// 获取归还连接回收钩子超时 Duration
     pub(crate) fn idle_timeout_duration(&self) -> Duration {
         Duration::from_secs(self.idle_timeout)
     }
@@ -229,6 +218,23 @@ impl RedisConfig {
     #[allow(dead_code)]
     pub(crate) fn max_lifetime_duration(&self) -> Option<Duration> {
         self.max_lifetime.map(Duration::from_secs)
+    }
+
+    /// 由本配置映射出 deadpool-redis 的连接池配置。
+    ///
+    /// deadpool 0.12 只有 `max_size` / `timeouts` / `queue_mode`；`recycle` 是归还连接时
+    /// 回收钩子（UNWATCH+PING）的超时，与 `connect_timeout` 同量级即可，**不是**空闲连接
+    /// TTL。`min_connections`/`max_lifetime`/`test_before_acquire` 无对应参数，不参与映射。
+    pub(crate) fn build_pool_config(&self) -> deadpool_redis::PoolConfig {
+        deadpool_redis::PoolConfig {
+            max_size: self.max_connections,
+            timeouts: deadpool_redis::Timeouts {
+                wait: Some(self.wait_timeout_duration()),
+                create: Some(self.connect_timeout_duration()),
+                recycle: Some(self.idle_timeout_duration()),
+            },
+            ..Default::default()
+        }
     }
 }
 
@@ -287,23 +293,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_min_connections_above_max() {
-        assert!(matches!(
-            RedisConfig::default()
-                .with_max_connections(2)
-                .with_min_connections(3)
-                .validate(),
-            Err(crate::DbError::InvalidArgument(_))
-        ));
-    }
-
-    #[test]
     fn test_validate_rejects_zero_timeouts() {
         for config in [
             RedisConfig::default().with_connect_timeout(0),
             RedisConfig::default().with_wait_timeout(0),
             RedisConfig::default().with_idle_timeout(0),
-            RedisConfig::default().with_max_lifetime(Some(0)),
         ] {
             assert!(matches!(
                 config.validate(),
@@ -313,14 +307,19 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_idle_timeout_not_greater_than_connect_timeout() {
-        assert!(matches!(
-            RedisConfig::default()
-                .with_connect_timeout(5)
-                .with_idle_timeout(5)
-                .validate(),
-            Err(crate::DbError::InvalidArgument(_))
-        ));
+    fn test_unsupported_pool_params_do_not_affect_pool_config() {
+        // min_connections / max_lifetime / test_before_acquire 不被 deadpool 0.12 支持，
+        // 变化它们不应改变映射出的 PoolConfig（只 max_size 与三个 timeouts 生效）。
+        let base = RedisConfig::default().build_pool_config();
+        let changed = RedisConfig::default()
+            .with_min_connections(8)
+            .with_max_lifetime(Some(3600))
+            .with_test_before_acquire(true)
+            .build_pool_config();
+        assert_eq!(base.max_size, changed.max_size);
+        assert_eq!(base.timeouts.wait, changed.timeouts.wait);
+        assert_eq!(base.timeouts.create, changed.timeouts.create);
+        assert_eq!(base.timeouts.recycle, changed.timeouts.recycle);
     }
 
     #[test]
