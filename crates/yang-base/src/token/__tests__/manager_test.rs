@@ -732,6 +732,23 @@ fn test_new_symmetric_enforces_hmac_secret_min_bytes() {
     build(&"中".repeat(11)).expect("33 字节（多字节字符）应构建成功");
 }
 
+#[test]
+fn test_new_symmetric_rejects_non_hmac_algorithm() {
+    // AUTH-8：非 HMAC 算法此前 expect 崩溃，改为返回 Err(TokenKeyInvalid)
+    let result = TokenManager::new_symmetric(
+        &"x".repeat(32),
+        Algorithm::RS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    );
+    assert!(
+        matches!(result, Err(BaseError::TokenKeyInvalid(_))),
+        "非 HMAC 算法必须返回 TokenKeyInvalid，实际: {result:?}"
+    );
+}
+
 /// 过期边界：旧 Refresh Token 在验证通过后才过期的，轮换必须返回 TokenExpired，
 /// 不得误判为「重放」而触发全账号家族撤销（revoke_by_subject）。
 /// 已过期时此路径不触碰 Redis，无需注入撤销存储即可验证。

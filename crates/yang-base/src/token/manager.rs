@@ -64,14 +64,14 @@ enum VerificationKeys {
     Keyring(HashMap<String, DecodingKey>),
 }
 
-fn validate_hmac_algorithm(algorithm: Algorithm) -> Result<(), BaseError> {
+fn validate_hmac_algorithm(algorithm: Algorithm, context: &str) -> Result<(), BaseError> {
     if !matches!(
         algorithm,
         Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
     ) {
-        return Err(BaseError::TokenKeyInvalid(
-            "对称 Token keyring 仅支持 HS256、HS384、HS512".to_string(),
-        ));
+        return Err(BaseError::TokenKeyInvalid(format!(
+            "{context} 仅支持 HS256、HS384、HS512"
+        )));
     }
     Ok(())
 }
@@ -194,12 +194,9 @@ impl TokenManager {
     /// # 返回
     ///
     /// - `Ok(TokenManager)`: Token 管理器实例
-    /// - `Err(BaseError::TokenKeyInvalid)`: 密钥少于 32 字节（AUTH-9）
-    ///
-    /// # Panics
-    ///
-    /// 算法不是 HS256/HS384/HS512 时 panic（AUTH-8）；非对称算法请使用
-    /// [`TokenManager::new_asymmetric`]。
+    /// - `Err(BaseError::TokenKeyInvalid)`: 密钥少于 32 字节（AUTH-9），或
+    ///   算法不是 HS256/HS384/HS512（AUTH-8；非对称算法请使用
+    ///   [`TokenManager::new_asymmetric`]）
     ///
     /// # 示例
     ///
@@ -225,13 +222,8 @@ impl TokenManager {
         access_token_expiry: u64,
         refresh_token_expiry: u64,
     ) -> Result<Self, BaseError> {
-        // AUTH-8: 白名单拦截非对称算法，避免构造后首次签发才失败
-        matches!(
-            algorithm,
-            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
-        )
-        .then_some(())
-        .expect("new_symmetric 仅支持 HMAC 算法 (HS256/HS384/HS512)，请使用 new_asymmetric 处理非对称算法");
+        // AUTH-8: 白名单拦截非对称算法，返回 Err 而非 panic。
+        validate_hmac_algorithm(algorithm, "new_symmetric")?;
         // AUTH-9: 强制 HMAC 密钥至少 32 字节，与 new_symmetric_keyring 一致。
         validate_hmac_secret(secret)?;
 
@@ -271,7 +263,7 @@ impl TokenManager {
         access_token_expiry: u64,
         refresh_token_expiry: u64,
     ) -> Result<Self, BaseError> {
-        validate_hmac_algorithm(algorithm)?;
+        validate_hmac_algorithm(algorithm, "对称 Token keyring")?;
         validate_key_id(&active_key_id)?;
         validate_hmac_secret(active_secret)?;
         if retiring_keys.len() + 1 > MAX_SYMMETRIC_KEYRING_KEYS {
