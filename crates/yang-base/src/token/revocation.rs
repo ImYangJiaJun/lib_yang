@@ -203,8 +203,8 @@ impl TokenManager {
     /// 会拒绝任何 `iat` 早于或等于该水位线的 Token，从而让此前签发的全部 Token 一次性失效。
     ///
     /// 适用于**改密、强制下线**等需要让某用户全部会话立即失效的场景。
-    /// 水位线 TTL 取 Refresh Token 有效期（`TokenManager::refresh_token_expiry`），
-    /// 因为更早签发的 Token 至此必然已过期，水位线无需再保留，避免无限增长。
+    /// 水位线 TTL 取 Access / Refresh 有效期的较大值（`TokenManager::revocation_watermark_ttl`），
+    /// 确保覆盖撤销前签发的最长寿命 Token，避免 key 过早过期导致已撤销会话「复活」。
     ///
     /// # 参数
     ///
@@ -220,7 +220,7 @@ impl TokenManager {
     /// 依赖 `ToolsBuilder` 已为 TokenManager 连接 Redis 撤销存储。
     pub async fn revoke_by_subject(&self, sub: &str) -> Result<(), BaseError> {
         let now = current_unix_timestamp()?;
-        let ttl = self.refresh_token_expiry();
+        let ttl = self.revocation_watermark_ttl();
         self.revocation_cache()?
             .setex(subject_min_iat_key(sub), ttl as i64, now.to_string())
             .await

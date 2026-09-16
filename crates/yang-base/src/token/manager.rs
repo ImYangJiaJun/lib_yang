@@ -577,6 +577,15 @@ impl TokenManager {
         self.refresh_token_expiry
     }
 
+    /// 返回 subject 撤销水位线应使用的 TTL（秒）。
+    ///
+    /// 取 Access / Refresh 有效期的较大值：水位线必须至少覆盖「撤销前签发的
+    /// 任一 Token 的最长剩余寿命」，否则 key 过期后已撤销的 Token 会重新通过
+    /// [`TokenManager::verify_token_checked`]（复活）。
+    pub(crate) fn revocation_watermark_ttl(&self) -> u64 {
+        self.refresh_token_expiry.max(self.access_token_expiry)
+    }
+
     /// 验证 Token
     ///
     /// 验证 Token 的签名、过期时间、签发者和受众。
