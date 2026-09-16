@@ -379,17 +379,23 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
     let mut enemy_spawns = Vec::new();
 
     for (idx, room) in target_rooms.iter().enumerate() {
-        // 检查时间预算
+        // 检查时间预算：超出即失败关闭，绝不静默返回截断结果
         if let Some(budget_ms) = time_budget_ms {
             if start_time.elapsed().as_millis() as u64 >= budget_ms {
-                break;
+                return Err(PcgError::budget_exhausted(
+                    "超出时间预算，分块生成中止",
+                    "time",
+                ));
             }
         }
 
-        // 检查迭代预算
+        // 检查迭代预算：超出即失败关闭
         if let Some(budget) = iteration_budget {
             if idx as u32 >= budget {
-                break;
+                return Err(PcgError::budget_exhausted(
+                    "超出迭代预算，分块生成中止",
+                    "iteration",
+                ));
             }
         }
 
