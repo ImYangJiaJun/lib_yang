@@ -312,6 +312,14 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
+        // set_expr 不被批量插入路径消费，存在表达式赋值时 fail-closed，不做静默丢弃
+        if !self.expr_assignments.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "insert_batch/insert_batch_with_size 不支持 set_expr；请改用 insert() 或 update()"
+                    .to_string(),
+            ));
+        }
+
         // 记录日志
         if self.enable_logging {
             log::debug!(
@@ -786,6 +794,13 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
+        // set_expr 不被批量更新路径消费，存在表达式赋值时 fail-closed，不做静默丢弃
+        if !self.expr_assignments.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "update_batch 不支持 set_expr；请改用 update() 逐行更新".to_string(),
+            ));
+        }
+
         let json_records: Vec<serde_json::Value> = records
             .iter()
             .map(|r| {
@@ -868,6 +883,13 @@ impl<'a> QueryBuilder<'a> {
     {
         if self.enable_logging {
             log::debug!("执行 upsert() 操作，表: {}", self.table);
+        }
+
+        // set_expr 不被 upsert 路径消费，存在表达式赋值时 fail-closed，不做静默丢弃
+        if !self.expr_assignments.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "upsert 不支持 set_expr；请改用 insert() 或 update()".to_string(),
+            ));
         }
 
         let json_data = serde_json::to_value(data).map_err(|e| {

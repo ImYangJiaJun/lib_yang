@@ -90,6 +90,7 @@ yang-db/
 - Use checked operator APIs (`where_and`, `where_or`, `having_cond`) for user input.
 - `insert_batch` auto-splits at 500 rows; use `insert_batch_with_size` for custom batch sizes.
 - 服务端时间用 `SqlExpr` 白名单（`unix_timestamp()`/`unix_timestamp_add(s)`），经 `set_expr`（INSERT VALUES / UPDATE SET）、`where_expr`（列↔表达式比较）、`select_expr`（投影+受控别名）接入构造器；`insert_returning_id` 显式返回自增主键。事务内行锁 SELECT 的构建器用 `QueryBuilder::from_pool(db.pool(), ...)` 创建后交给 `Transaction::select_for_update`。
+- `set_expr` 仅 `insert`/`insert_returning_id`/`update` 生效；`upsert`/`insert_batch`/`insert_batch_with_size`/`update_batch` 在存在表达式赋值时返回 `DbError::InvalidArgument`（fail-closed，不静默丢弃）。
 - Redis scripts use `redis::Script`; pipeline/transaction wrappers already build on `redis::pipe()`.
 
 ## HOTSPOTS

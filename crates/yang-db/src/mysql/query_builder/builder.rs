@@ -45,6 +45,10 @@ impl<'a> QueryBuilder<'a> {
     /// 与 JSON 数据列混用时表达式列追加在其后；表达式只能由 [`crate::SqlExpr`]
     /// 的白名单构造函数创建，动态部分一律走绑定参数，调用方无法注入 SQL 片段。
     /// `insert`/`update` 时若 JSON 数据为空对象但存在表达式赋值，语句仍然合法。
+    ///
+    /// **生效范围**：仅 `insert`/`insert_returning_id`/`update` 消费表达式赋值；
+    /// `upsert`/`insert_batch`/`insert_batch_with_size`/`update_batch` 在存在表达式
+    /// 赋值时返回 [`crate::DbError::InvalidArgument`]，不做静默丢弃。
     pub fn set_expr(mut self, field: &crate::FieldRef, expression: crate::SqlExpr) -> Self {
         self.expr_assignments
             .push((field.as_str().to_string(), expression));
