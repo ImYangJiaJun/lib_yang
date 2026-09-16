@@ -1,5 +1,6 @@
 //! 多阶段进程关闭的共享绝对截止时间。
 
+use crate::observability::RuntimeMetricNames;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub enum ShutdownError {
 pub struct ShutdownBudget {
     total: Duration,
     shared: Arc<SharedState>,
+    metric_names: RuntimeMetricNames,
 }
 
 struct SharedState {
@@ -45,7 +47,15 @@ impl ShutdownBudget {
                 window: Mutex::new(None),
                 started: Notify::new(),
             }),
+            metric_names: RuntimeMetricNames::default(),
         }
+    }
+
+    /// 覆盖关闭阶段使用的指标名前缀（与 `LogIdentity::with_metric_names` 同形）。
+    #[must_use]
+    pub fn with_metric_names(mut self, metric_names: RuntimeMetricNames) -> Self {
+        self.metric_names = metric_names;
+        self
     }
 
     pub async fn begin(&self, trigger: &'static str) -> Instant {
@@ -61,7 +71,7 @@ impl ShutdownBudget {
         });
         drop(guard);
         self.shared.started.notify_waiters();
-        metrics::counter!("yang_runtime_shutdown_started_total", "trigger" => trigger).increment(1);
+        metrics::counter!(self.metric_names.shutdown_started, "trigger" => trigger).increment(1);
         tracing::info!(
             trigger,
             total_budget_ms = self.total.as_millis() as u64,
@@ -104,18 +114,18 @@ impl ShutdownBudget {
         );
         match timeout_at(window.deadline, future).await {
             Ok(Ok(value)) => {
-                record_phase(phase, "success", phase_started, window.deadline);
+                record_phase(phase, "success", phase_started, window.deadline, self.metric_names);
                 Ok(value)
             }
             Ok(Err(source)) => {
-                record_phase(phase, "error", phase_started, window.deadline);
+                record_phase(phase, "error", phase_started, window.deadline, self.metric_names);
                 Err(ShutdownError::Phase {
                     phase,
                     source: source.into_boxed_dyn_error(),
                 })
             }
             Err(_) => {
-                record_phase(phase, "timeout", phase_started, window.deadline);
+                record_phase(phase, "timeout", phase_started, window.deadline, self.metric_names);
                 Err(ShutdownError::Timeout {
                     phase,
                     total_ms: self.total.as_millis(),
@@ -130,12 +140,13 @@ fn record_phase(
     result: &'static str,
     phase_started: Instant,
     deadline: Instant,
+    metric_names: RuntimeMetricNames,
 ) {
     let now = Instant::now();
     let elapsed = now.saturating_duration_since(phase_started);
-    metrics::counter!("yang_runtime_shutdown_phase_total", "phase" => phase, "result" => result)
+    metrics::counter!(metric_names.shutdown_phase, "phase" => phase, "result" => result)
         .increment(1);
-    metrics::histogram!("yang_runtime_shutdown_phase_duration_seconds", "phase" => phase)
+    metrics::histogram!(metric_names.shutdown_phase_duration, "phase" => phase)
         .record(elapsed.as_secs_f64());
     tracing::info!(
         phase,
