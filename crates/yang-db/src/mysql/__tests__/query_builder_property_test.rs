@@ -235,7 +235,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, value);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value).expect("固定受控条件应合法");
 
             // 验证条件已添加
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -250,8 +250,8 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_or(test_field!(&field), crate::CompareOp::Eq, value1)
-                .where_or(test_field!(&field), crate::CompareOp::Eq, value2);
+                .where_or(test_field!(&field), crate::CompareOp::Eq, value1).expect("固定受控条件应合法")
+                .where_or(test_field!(&field), crate::CompareOp::Eq, value2).expect("固定受控条件应合法");
 
             // where_or 会将条件组合，所以应该有 1 个条件（OR 组合）
             prop_assert_eq!(builder.conditions.len(), 1);
@@ -315,7 +315,7 @@ mod property_tests {
 
             // 添加多个 AND 条件
             for value in &values {
-                builder = builder.where_and(test_field!(&field), crate::CompareOp::Eq, *value);
+                builder = builder.where_and(test_field!(&field), crate::CompareOp::Eq, *value).expect("固定受控条件应合法");
             }
 
             // 验证所有条件都已添加
@@ -591,7 +591,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, value);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -686,7 +686,7 @@ mod property_tests {
             );
 
             // 添加 WHERE 条件
-            builder = builder.where_and(test_field!(&where_field), crate::CompareOp::Eq, 1);
+            builder = builder.where_and(test_field!(&where_field), crate::CompareOp::Eq, 1).expect("固定受控条件应合法");
 
             // 添加 ORDER BY
             builder = builder.order(test_field!(order_field), crate::SortOrder::Asc);
@@ -742,7 +742,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str()).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -765,7 +765,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str()).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -786,7 +786,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str()).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -807,7 +807,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "'; DROP TABLE users; --";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -832,7 +832,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "' UNION SELECT * FROM passwords --";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -858,7 +858,7 @@ mod property_tests {
             let pool = create_test_pool_sync();
             let malicious_input = "' OR '1'='1";
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input);
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -885,7 +885,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Eq, malicious_input.as_str()).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -935,7 +935,7 @@ mod property_tests {
         ) {
             let pool = create_test_pool_sync();
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field), crate::CompareOp::Like, malicious_pattern.as_str());
+                .where_and(test_field!(&field), crate::CompareOp::Like, malicious_pattern.as_str()).expect("固定受控条件应合法");
 
             let sql = builder.to_sql();
 
@@ -995,7 +995,7 @@ mod property_tests {
             // 创建一个带 WHERE 条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
                 .field(test_field!(field))
-                .where_and(test_field!(&field), crate::CompareOp::Eq, value)
+                .where_and(test_field!(&field), crate::CompareOp::Eq, value).expect("固定受控条件应合法")
                 .limit(1); // 模拟 find() 会添加的 LIMIT 1
 
             let sql = builder.to_sql();
@@ -1072,7 +1072,7 @@ mod property_tests {
 
             // 创建带条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&field_name), crate::CompareOp::Eq, field_value)
+                .where_and(test_field!(&field_name), crate::CompareOp::Eq, field_value).expect("固定受控条件应合法")
                 .expr(crate::SelectExpr::count_all());
 
             let sql = builder.to_sql();
@@ -1232,7 +1232,7 @@ mod property_tests {
 
             // 创建带条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&where_field), crate::CompareOp::Eq, where_value)
+                .where_and(test_field!(&where_field), crate::CompareOp::Eq, where_value).expect("固定受控条件应合法")
                 .expr(crate::SelectExpr::sum(test_field!(&sum_field)).cast_double());
 
             let sql = builder.to_sql();
@@ -1296,8 +1296,8 @@ mod property_tests {
 
             // 创建带多个条件的查询构建器
             let builder = QueryBuilder::new(&pool, &table_name, false)
-                .where_and(test_field!(&where_field1), crate::CompareOp::Eq, value1)
-                .where_and(test_field!(&where_field2), crate::CompareOp::Gt, value2)
+                .where_and(test_field!(&where_field1), crate::CompareOp::Eq, value1).expect("固定受控条件应合法")
+                .where_and(test_field!(&where_field2), crate::CompareOp::Gt, value2).expect("固定受控条件应合法")
                 .expr(crate::SelectExpr::sum(test_field!(&sum_field)).cast_double());
 
             let sql = builder.to_sql();
@@ -1344,26 +1344,39 @@ mod property_tests {
             crate::CompareOp::Lt,
             crate::CompareOp::Gte,
             crate::CompareOp::Lte,
-            crate::CompareOp::Like,
         ] {
             let builder = QueryBuilder::new(pool, "users", false).where_and(
                 yang_db::field!("age"),
                 operator,
                 18i64,
-            );
+            ).expect("固定受控条件应合法");
             assert_eq!(builder.conditions.len(), 1);
         }
+
+        // LIKE 仅接受字符串模式；字符串模式正常，非字符串 fail-closed（M33）
+        let like = QueryBuilder::new(pool, "users", false)
+            .where_and(yang_db::field!("name"), crate::CompareOp::Like, "%a%")
+            .expect("字符串 LIKE 模式应合法");
+        assert!(matches!(
+            like.conditions.as_slice(),
+            [crate::mysql::condition::Condition::Like(_, p)] if p == "%a%"
+        ));
+        assert!(matches!(
+            QueryBuilder::new(pool, "users", false)
+                .where_and(yang_db::field!("age"), crate::CompareOp::Like, 18i64),
+            Err(crate::DbError::UnsupportedOperator(_))
+        ));
     }
 
     #[test]
     fn typed_where_or_having_and_chaining_work() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and(yang_db::field!("age"), crate::CompareOp::Gt, 18i64)
-            .where_and(yang_db::field!("status"), crate::CompareOp::Eq, 1i64)
-            .where_or(yang_db::field!("status"), crate::CompareOp::Eq, 2i64)
+            .where_and(yang_db::field!("age"), crate::CompareOp::Gt, 18i64).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("status"), crate::CompareOp::Eq, 1i64).expect("固定受控条件应合法")
+            .where_or(yang_db::field!("status"), crate::CompareOp::Eq, 2i64).expect("固定受控条件应合法")
             .group(yang_db::field!("age"))
-            .having_cond(yang_db::field!("age"), crate::CompareOp::Gt, 0i64);
+            .having_cond(yang_db::field!("age"), crate::CompareOp::Gt, 0i64).expect("固定受控条件应合法");
         assert_eq!(builder.conditions.len(), 1);
         assert_eq!(builder.having_clause.len(), 1);
     }

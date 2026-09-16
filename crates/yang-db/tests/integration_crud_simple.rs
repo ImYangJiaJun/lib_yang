@@ -23,7 +23,7 @@ async fn test_crud_sql_generation() {
             .table(yang_db::table!("test_users"))
             .field(yang_db::field!("id"))
             .field(yang_db::field!("name"))
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active").expect("固定受控条件应合法")
             .to_sql();
         assert!(select_sql.contains("SELECT"), "应该包含 SELECT");
         assert!(select_sql.contains("WHERE"), "应该包含 WHERE");
@@ -35,7 +35,7 @@ async fn test_crud_sql_generation() {
             yang_db::field!("id"),
             yang_db::CompareOp::Eq,
             1,
-        );
+        ).expect("固定受控条件应合法");
         println!("✓ UPDATE 构建器创建成功");
 
         // 测试 DELETE SQL 生成
@@ -43,7 +43,7 @@ async fn test_crud_sql_generation() {
             yang_db::field!("id"),
             yang_db::CompareOp::Eq,
             1,
-        );
+        ).expect("固定受控条件应合法");
         println!("✓ DELETE 构建器创建成功");
 
         // 测试 COUNT SQL 生成
@@ -110,7 +110,7 @@ async fn test_crud_with_real_table() {
                 let update_data = json!({"age": 26});
                 let update_result = db
                     .table(table_name)
-                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64).expect("固定受控条件应合法")
                     .update(&update_data)
                     .await;
 
@@ -122,7 +122,7 @@ async fn test_crud_with_real_table() {
                 // 测试 DELETE
                 let delete_result = db
                     .table(table_name)
-                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64).expect("固定受控条件应合法")
                     .delete()
                     .await;
 
@@ -216,22 +216,22 @@ async fn test_where_conditions() {
         // 测试各种 WHERE 条件的 SQL 生成
         let sql1 = db
             .table(yang_db::table!("users"))
-            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18)
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18).expect("固定受控条件应合法")
             .to_sql();
         assert!(sql1.contains("WHERE"), "应该包含 WHERE");
         println!("✓ WHERE > 条件: {}", sql1);
 
         let sql2 = db
             .table(yang_db::table!("users"))
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
-            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18)
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active").expect("固定受控条件应合法")
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gte, 18).expect("固定受控条件应合法")
             .to_sql();
         assert!(sql2.contains("WHERE"), "应该包含 WHERE");
         println!("✓ 多个 WHERE 条件: {}", sql2);
 
         let sql3 = db
             .table(yang_db::table!("users"))
-            .where_and(yang_db::field!("name"), yang_db::CompareOp::Like, "%test%")
+            .where_and(yang_db::field!("name"), yang_db::CompareOp::Like, "%test%").expect("固定受控条件应合法")
             .to_sql();
         println!("✓ WHERE LIKE 条件: {}", sql3);
 

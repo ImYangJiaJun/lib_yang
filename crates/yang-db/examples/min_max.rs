@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试 MIN 与 WHERE 条件组合 ---");
     let min_price_filtered: Option<f64> = db
         .table(table_name)
-        .where_and(yang_db::field!("stock"), yang_db::CompareOp::Gt, 5)
+        .where_and(yang_db::field!("stock"), yang_db::CompareOp::Gt, 5)?
         .min(yang_db::field!("price"))
         .await?;
     println!("库存>5的最低价格: {:?}", min_price_filtered);
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试 MAX 与 WHERE 条件组合 ---");
     let max_rating_filtered: Option<f32> = db
         .table(table_name)
-        .where_and(yang_db::field!("price"), yang_db::CompareOp::Lt, 150.0)
+        .where_and(yang_db::field!("price"), yang_db::CompareOp::Lt, 150.0)?
         .max(yang_db::field!("rating"))
         .await?;
     println!("价格<150的最高评分: {:?}", max_rating_filtered);
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 测试空结果集 ---");
     let min_empty: Option<f64> = db
         .table(table_name)
-        .where_and(yang_db::field!("price"), yang_db::CompareOp::Gt, 1000.0)
+        .where_and(yang_db::field!("price"), yang_db::CompareOp::Gt, 1000.0)?
         .min(yang_db::field!("price"))
         .await?;
     println!("空结果集的 MIN: {:?}", min_empty);

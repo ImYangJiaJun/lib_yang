@@ -26,7 +26,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 统计活跃用户数量
     /// let active_users = db.table(yang_db::table!("users"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)?
     ///     .count()
     ///     .await?;
     /// println!("活跃用户数: {}", active_users);
@@ -86,7 +86,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 计算已完成订单的总金额
     /// let completed_amount = db.table(yang_db::table!("orders"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")?
     ///     .sum(yang_db::field!("amount"))
     ///     .await?;
     ///
@@ -157,7 +157,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 计算已完成订单的平均金额
     /// let avg_amount = db.table(yang_db::table!("orders"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "completed")?
     ///     .avg(yang_db::field!("amount"))
     ///     .await?;
     ///
@@ -233,7 +233,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询最小库存数量（整数）
     /// let min_stock: Option<i32> = db.table(yang_db::table!("products"))
-    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)?
     ///     .min(yang_db::field!("stock"))
     ///     .await?;
     ///
@@ -320,7 +320,7 @@ impl<'a> QueryBuilder<'a> {
     ///
     /// // 查询最高分数（整数）
     /// let max_score: Option<i32> = db.table(yang_db::table!("scores"))
-    ///     .where_and(yang_db::field!("exam_id"), yang_db::CompareOp::Eq, 1)
+    ///     .where_and(yang_db::field!("exam_id"), yang_db::CompareOp::Eq, 1)?
     ///     .max(yang_db::field!("score"))
     ///     .await?;
     ///

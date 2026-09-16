@@ -31,7 +31,7 @@ async fn test_crud_sql_generation() {
             .table(yang_db::table!("test_users"))
             .field(yang_db::field!("id"))
             .field(yang_db::field!("name"))
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active")
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, "active").expect("固定受控条件应合法")
             .to_sql();
         assert!(select_sql.contains("SELECT"), "应该包含 SELECT");
         assert!(select_sql.contains("WHERE"), "应该包含 WHERE");
@@ -96,7 +96,7 @@ async fn test_crud_with_real_table() {
                 let update_data = json!({"age": 26});
                 let update_result = db
                     .table(table_name)
-                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64).expect("固定受控条件应合法")
                     .update(&update_data)
                     .await;
                 if let Ok(affected) = update_result {
@@ -107,7 +107,7 @@ async fn test_crud_with_real_table() {
                 // 测试 DELETE
                 let delete_result = db
                     .table(table_name)
-                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64)
+                    .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, id as i64).expect("固定受控条件应合法")
                     .delete()
                     .await;
                 if let Ok(deleted) = delete_result {

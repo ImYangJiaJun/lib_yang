@@ -95,7 +95,7 @@ async fn server_time_expressions_drive_insert_update_and_locked_select() {
             SqlExpr::unix_timestamp(),
         )
         .expect("合法的列↔表达式比较")
-        .where_and(yang_db::field!("id"), CompareOp::Eq, id)
+        .where_and(yang_db::field!("id"), CompareOp::Eq, id).expect("固定受控条件应合法")
         .update(&json!({}))
         .await
         .expect("表达式更新");
@@ -121,7 +121,7 @@ async fn server_time_expressions_drive_insert_update_and_locked_select() {
             QueryBuilder::from_pool(database.pool(), yang_db::table!("yang_db_server_expr"))
                 .field(yang_db::field!("id"))
                 .select_expr(SqlExpr::unix_timestamp(), yang_db::field!("server_now"))
-                .where_and(yang_db::field!("id"), CompareOp::Eq, id),
+                .where_and(yang_db::field!("id"), CompareOp::Eq, id).expect("固定受控条件应合法"),
         )
         .await
         .expect("行锁查询");
