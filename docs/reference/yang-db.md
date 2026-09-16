@@ -338,17 +338,17 @@ tx.commit().await?;
 ```rust
 pub struct RedisConfig {
     pub max_connections: usize,      // 最大连接数
-    pub min_connections: usize,      // 最小连接数
+    pub min_connections: usize,      // 最小连接数（deadpool 0.12 不支持，忽略）
     pub connect_timeout: u64,        // 连接超时（秒）
     pub wait_timeout: u64,           // 等待可用连接超时（秒）
-    pub idle_timeout: u64,           // 空闲超时（秒）
-    pub max_lifetime: Option<u64>,   // 连接最大生命周期（秒），None=不限
-    pub test_before_acquire: bool,   // 获取连接前 PING 检测
+    pub idle_timeout: u64,           // 归还连接回收钩子超时（秒），非空闲 TTL
+    pub max_lifetime: Option<u64>,   // 连接最大生命周期（秒），deadpool 0.12 不支持
+    pub test_before_acquire: bool,   // 借出前 PING（deadpool 0.12 不支持，忽略）
     pub enable_logging: bool,        // 是否启用日志
 }
 ```
 
-各字段均可通过 Builder 方法（`with_max_connections`、`with_min_connections` 等）配置。注意：`connect_with_config` 当前仅将 `max_connections`/`wait_timeout`/`connect_timeout`/`idle_timeout`/`enable_logging` 五个字段应用到 deadpool 连接池；`min_connections`/`max_lifetime`/`test_before_acquire` 暂未被连接层消费（`max_lifetime_duration()` 标 `#[allow(dead_code)]`）。
+各字段均可通过 Builder 方法（`with_max_connections`、`with_min_connections` 等）配置。注意：`connect_with_config` 仅将 `max_connections`/`wait_timeout`/`connect_timeout` 三个字段应用到 deadpool 连接池，`idle_timeout` 映射为归还连接回收钩子（UNWATCH+PING）的 `recycle` 超时；`min_connections`/`max_lifetime`/`test_before_acquire` 不被 deadpool 0.12 支持，调用 `connect_with_config` 时会显式 `log::warn!` 告警。
 
 ### RedisClient（核心客户端）
 
