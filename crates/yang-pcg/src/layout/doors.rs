@@ -1,7 +1,8 @@
 // 门锚点生成
 
-use crate::model::geometry::{CardinalDir, GridPoint};
+use crate::model::geometry::{CardinalDir, GridPoint, RoomBounds};
 use crate::model::room::{DoorAnchor, Room, RoomEdge};
+use std::collections::HashMap;
 
 /// 根据房间边界和拓扑边生成门锚点。
 pub fn generate_door_anchors(
@@ -9,24 +10,25 @@ pub fn generate_door_anchors(
     edges: &[RoomEdge],
     width_tiles: u16,
 ) -> Vec<DoorAnchor> {
+    // 构建 room_id -> RoomBounds 索引，将每条边的 O(R) 线性查找降为 O(1)
+    // （与 corridors.rs 的 anchor_map 同一模式）
+    let bounds_map: HashMap<&str, RoomBounds> = rooms
+        .iter()
+        .filter_map(|room| room.bounds.map(|bounds| (room.id.as_str(), bounds)))
+        .collect();
+
     let mut anchors = Vec::with_capacity(edges.len() * 2);
 
     for (edge_index, edge) in edges.iter().enumerate() {
-        let from_room = rooms
-            .iter()
-            .find(|room| room.id == edge.from_room)
-            .and_then(|room| room.bounds.map(|bounds| (room.id.clone(), bounds)));
-        let to_room = rooms
-            .iter()
-            .find(|room| room.id == edge.to_room)
-            .and_then(|room| room.bounds.map(|bounds| (room.id.clone(), bounds)));
-
-        let Some((from_room_id, from_bounds)) = from_room else {
+        // 原语义：房间不存在或缺 bounds 即跳过该边，此处等价
+        let Some(&from_bounds) = bounds_map.get(edge.from_room.as_str()) else {
             continue;
         };
-        let Some((to_room_id, to_bounds)) = to_room else {
+        let Some(&to_bounds) = bounds_map.get(edge.to_room.as_str()) else {
             continue;
         };
+        let from_room_id = edge.from_room.clone();
+        let to_room_id = edge.to_room.clone();
 
         let from_center = from_bounds.center();
         let to_center = to_bounds.center();
