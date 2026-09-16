@@ -202,6 +202,21 @@ impl ApiResponse {
         }
     }
 
+    /// 创建携带诊断数据的失败响应。
+    ///
+    /// 与 [`ApiResponse::fail`]（`data` 恒为空）相对，保留 `data` 载荷，
+    /// 供就绪探针等需要自描述失败原因的端点使用。
+    pub fn fail_value(code: i32, data: serde_json::Value, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            data: Some(data),
+            attachment: None,
+            http_status: None,
+            headers: Vec::new(),
+        }
+    }
+
     /// 创建携带附件的成功响应
     ///
     /// 由派发边界在识别到 Action 返回 [`ResponseBody`] 时调用。`data` 为 None，
