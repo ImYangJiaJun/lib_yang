@@ -17,7 +17,10 @@ pub struct GenerationConfig {
     pub critical_path_length: RangeU16,
     /// 分支数量范围
     pub branch_count: RangeU16,
-    /// 死路数量范围
+    /// 死路数量范围。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段；修改它只会经
+    /// `ConfigDigest` 改变派生种子，不会按语义影响死路数量。
     pub dead_end_count: RangeU16,
     /// 房间尺寸配置
     pub room_size: RoomSizeConfig,
@@ -417,7 +420,9 @@ impl RoomSizeConfig {
 pub struct CorridorConfig {
     /// 走廊宽度（网格单位）
     pub width: u16,
-    /// 最大转折次数
+    /// 最大转折次数。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub max_turns: u16,
     /// 连接策略
     pub connection_strategy: ConnectionStrategy,
@@ -475,7 +480,9 @@ pub enum ConnectionStrategy {
 pub struct TerrainConfig {
     /// 障碍物密度（0.0 - 1.0）
     pub obstacle_density: f32,
-    /// 最小可通行面积比例（0.0 - 1.0）
+    /// 最小可通行面积比例（0.0 - 1.0）。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub min_walkable_ratio: f32,
 }
 
@@ -698,10 +705,14 @@ pub struct CapabilityFlags {
     /// 是否启用混合预计算
     #[serde(default)]
     pub hybrid_precompute: bool,
-    /// 是否启用 Grammar 兼容输出
+    /// 是否启用 Grammar 兼容输出。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     #[serde(default)]
     pub grammar_support: bool,
-    /// 是否启用调试输出
+    /// 是否启用调试输出。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     #[serde(default)]
     pub debug_output: bool,
 }

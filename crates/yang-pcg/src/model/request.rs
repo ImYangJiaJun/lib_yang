@@ -71,9 +71,13 @@ impl GenerationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RuntimeContext {
-    /// 关注位置(世界坐标)
+    /// 关注位置(世界坐标)。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub focus_position: Option<WorldPoint>,
-    /// 兴趣半径
+    /// 兴趣半径。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub interest_radius: Option<f32>,
     /// 请求的分块 ID 列表
     pub requested_chunks: Vec<ChunkId>,
@@ -106,7 +110,9 @@ pub struct AnchorConstraint {
     pub room_id: Option<String>,
     /// 指定房间类型（可选）
     pub room_type: Option<RoomType>,
-    /// 目标逻辑坐标（可选）
+    /// 目标逻辑坐标（可选）。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub target_grid_pos: Option<GridPoint>,
 }
 
