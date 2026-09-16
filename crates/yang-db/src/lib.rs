@@ -24,6 +24,10 @@ mod reference;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 mod dialect;
 
+// JSON 数字绑定分类（M29/NEW-11）：u64 顶半区在 raw-SQL 绑定时不落入 f64 丢精度
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+mod json_param;
+
 // MySQL 数据库模块
 #[cfg(feature = "mysql")]
 pub mod mysql;
