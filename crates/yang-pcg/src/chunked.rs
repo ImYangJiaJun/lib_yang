@@ -107,7 +107,7 @@ pub fn generate_topology_only(request: GenerationRequest) -> PcgResult<TopologyR
     validate_no_overlap(&layout_output.rooms)?;
 
     // 生成分块元数据
-    let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);
+    let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized)?;
 
     Ok(TopologyResult {
         seed,
@@ -324,7 +324,7 @@ pub fn generate_chunk(request: GenerationRequest) -> PcgResult<GenerationResult>
     let layout_output = backend.solve_layout(&graph, &normalized, &mut layout_rng)?;
 
     // 生成分块元数据
-    let all_chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);
+    let all_chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized)?;
 
     // 确定需要生成细节的分块
     let target_chunks: Vec<&Chunk> = if requested_chunks.is_empty() {
