@@ -53,7 +53,13 @@ impl TerrainStrategy for OpenArenaStrategy {
         let max_attempts = obstacle_budget * 10;
         let mut attempts = 0usize;
 
-        while placed < obstacle_budget && attempts < max_attempts {
+        // width/height <= 2 时 `random_range(1, width - 1)` 是空区间，rand 0.9 的
+        // `random_range` 会断言 panic（见 rng.rs 中该函数文档）；且该尺寸下不存在
+        // 「距墙 1~edge_margin 格」的边缘带。守卫形式与 carve.rs 的
+        // `place_obstacles_with_config`（`max_x > 1 && max_y > 1`）对齐。
+        let placeable = width > 2 && height > 2;
+
+        while placeable && placed < obstacle_budget && attempts < max_attempts {
             attempts += 1;
             let x = rng.random_range(1, width as i32 - 1);
             let y = rng.random_range(1, height as i32 - 1);
