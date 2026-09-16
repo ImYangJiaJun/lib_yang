@@ -132,7 +132,7 @@ impl MapGenerator {
         };
         let spawn_ms = spawn_start.map(elapsed_ms);
 
-        let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized);
+        let chunks = ue::streaming::build_chunks(&layout_output.rooms, &normalized)?;
 
         let debug = self.debug_enabled.then(|| {
             // 构建调试通道数据
