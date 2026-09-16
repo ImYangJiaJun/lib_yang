@@ -747,6 +747,22 @@ mod tests {
     }
 
     #[test]
+    fn test_join_rejects_invalid_table_identifier() {
+        // H5：JOIN 表名此前裸 `format!("`{}`", ...)` 拼接，含反引号的表名可注入任意 SQL。
+        // 现 JOIN 表名在渲染期经 quote_identifier 校验，非法标识符 fail-closed。
+        let pool = make_sync_test_pool();
+        let malicious = crate::TableRef::__from_validated_owned("orders` INNER JOIN secret --".into());
+        let builder = QueryBuilder::new(pool, "users", false).join(
+            &malicious,
+            yang_db::field!("users.id"),
+            yang_db::field!("orders.user_id"),
+        );
+
+        let result = builder.try_to_sql();
+        assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+    }
+
+    #[test]
     fn test_try_to_sql_rejects_invalid_condition_identifier() {
         assert!(crate::FieldRef::new("id;DROP").is_err());
     }

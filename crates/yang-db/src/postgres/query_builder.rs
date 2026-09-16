@@ -180,7 +180,7 @@ impl SqlGenerator {
 
         // JOIN 子句
         if !builder.joins.is_empty() {
-            self.build_joins(&builder.joins);
+            self.build_joins(&builder.joins)?;
         }
 
         // WHERE 子句
@@ -272,9 +272,9 @@ impl SqlGenerator {
     /// # 参数
     /// - joins: JOIN 子句列表
     ///
-    /// 注意：`join.table` 和 `join.on` 按设计接受原始 SQL 表达式（与 MySQL 设计一致），
-    /// 标识符转义由调用方负责。
-    fn build_joins(&mut self, joins: &[JoinClause]) {
+    /// 注意：`join.table` 是已校验的标识符原文（渲染期经 `quote_identifier` 校验+转义），
+    /// `join.on` 按设计接受原始 SQL 表达式。
+    fn build_joins(&mut self, joins: &[JoinClause]) -> Result<(), crate::error::DbError> {
         use crate::postgres::field::JoinType;
 
         for join in joins {
@@ -285,10 +285,12 @@ impl SqlGenerator {
             };
 
             self.append(join_type_str);
-            self.append(&join.table);
+            self.append(&super::identifier::quote_identifier(&join.table)?);
             self.append(" ON ");
             self.append(&join.on);
         }
+
+        Ok(())
     }
 
     /// 生成 ORDER BY 子句
@@ -1359,7 +1361,7 @@ impl<'a> QueryBuilder<'a> {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Inner,
-            table: format!("\"{}\"", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.postgres_quoted(), right.postgres_quoted()),
         });
         self
@@ -1375,7 +1377,7 @@ impl<'a> QueryBuilder<'a> {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Left,
-            table: format!("\"{}\"", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.postgres_quoted(), right.postgres_quoted()),
         });
         self
@@ -1391,7 +1393,7 @@ impl<'a> QueryBuilder<'a> {
         use crate::postgres::field::JoinType;
         self.joins.push(JoinClause {
             join_type: JoinType::Right,
-            table: format!("\"{}\"", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.postgres_quoted(), right.postgres_quoted()),
         });
         self
