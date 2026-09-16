@@ -387,7 +387,7 @@ async fn ready(State(state): State<HttpState>) -> Response {
         tracing::warn!(?health, "就绪检查失败");
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiResponse::fail(900001, "服务尚未就绪")),
+            Json(ApiResponse::fail(crate::error::NOT_READY_CODE, "服务尚未就绪")),
         )
             .into_response()
     }

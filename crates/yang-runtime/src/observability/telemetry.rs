@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use yang_base::action::ApiResponse;
 use yang_base::tools::{Tools, ToolsHealth};
 
 const HISTOGRAM_BUCKETS_SECONDS: &[f64] = &[
@@ -252,22 +253,21 @@ async fn readiness(State(state): State<ManagementState>) -> Response {
     if evaluation.result.is_ready() {
         (
             StatusCode::OK,
-            Json(json!({
-                "code": 0,
-                "message": "服务就绪",
-                "data": {"status": "ready"}
-            })),
+            Json(ApiResponse::success_value(
+                json!({"status": "ready"}),
+                "服务就绪",
+            )),
         )
             .into_response()
     } else {
         tracing::warn!(result, "管理面就绪检查失败");
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "code": 900001,
-                "message": "服务尚未就绪",
-                "data": {"status": "not_ready", "reason": result}
-            })),
+            Json(ApiResponse::fail_value(
+                yang_base::error::NOT_READY_CODE,
+                json!({"status": "not_ready", "reason": result}),
+                "服务尚未就绪",
+            )),
         )
             .into_response()
     }

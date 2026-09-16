@@ -509,6 +509,12 @@ pub enum ErrorCategory {
     Server,
 }
 
+/// 服务尚未就绪：传输层 `/health/ready` 与管理面就绪探针共用的错误码。
+///
+/// 取值沿用 `900001`（通用错误区间）以保持既有线格式不变；两处引用同一常量，
+/// 禁止再各自硬编码字面量。见 `test_not_ready_code_is_stable`。
+pub const NOT_READY_CODE: i32 = 900001;
+
 impl BaseError {
     /// 获取错误码
     ///
@@ -851,6 +857,11 @@ impl BaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_not_ready_code_is_stable() {
+        assert_eq!(NOT_READY_CODE, 900001);
+    }
 
     #[test]
     fn test_error_codes_plugin() {
