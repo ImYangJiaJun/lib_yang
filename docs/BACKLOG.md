@@ -19,7 +19,7 @@
 
 🟡 Medium
 - [已完成 2026-07-19] 内置 `StepUpCompleteAction<V>`（对称于 `LoginAction`）负责 challenge + `CredentialVerifier` 编排；失败计数与限流仍由业务 verifier 经共享存储实现，因为账号标识、客户端指纹与锁定策略不应由框架臆测。
-- [已完成 2026-07-19] step-up proof 一次性消费：`StepUpMiddleware` 在进入敏感 Action 前原子消费 proof ID；单实例默认 `InMemoryStepUpProofStore`，多实例使用 Redis `SET NX EX` 的 `RedisStepUpProofStore`，重放 fail-closed。
+- [已完成 2026-07-19] step-up proof 一次性消费：`StepUpMiddleware` 在进入敏感 Action 前原子消费 proof ID；proof 存储为必填构造参数，多实例须用 Redis `SET NX EX` 的 `RedisStepUpProofStore`，单实例/测试用 `in_process` 显式 opt-in `InMemoryStepUpProofStore`，重放 fail-closed。
 - derive 宏支持自定义 `max_text_field_bytes`：目前仅 builder 可设，宏声明的 multipart Action 只能使用 64 KiB 默认文本上限（需改 yang-base-derive）。
 - UI 投影性能：`ui_catalog` 每请求全量深克隆重建，可按（identity, generation）缓存；revision 可升级为 HTTP ETag/304 协商；`UiCatalog` 字段私有化防 revision 失效。
 
