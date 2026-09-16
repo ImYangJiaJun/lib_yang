@@ -749,6 +749,33 @@ fn test_new_symmetric_rejects_non_hmac_algorithm() {
     );
 }
 
+#[test]
+fn test_revocation_watermark_ttl_covers_longest_token_lifetime() {
+    // M2：水位线 TTL 必须覆盖 Access/Refresh 的较大者，否则 access>refresh 时
+    // 撤销前签发的 access token 会在 key 过期后「复活」。
+    let normal = TokenManager::new_symmetric(
+        &"x".repeat(32),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        86400,
+    )
+    .expect("正常配置应构建成功");
+    assert_eq!(normal.revocation_watermark_ttl(), 86400);
+
+    let access_longer = TokenManager::new_symmetric(
+        &"x".repeat(32),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        86400,
+        3600,
+    )
+    .expect("access>refresh 仍应构建成功");
+    assert_eq!(access_longer.revocation_watermark_ttl(), 86400);
+}
+
 /// 过期边界：旧 Refresh Token 在验证通过后才过期的，轮换必须返回 TokenExpired，
 /// 不得误判为「重放」而触发全账号家族撤销（revoke_by_subject）。
 /// 已过期时此路径不触碰 Redis，无需注入撤销存储即可验证。

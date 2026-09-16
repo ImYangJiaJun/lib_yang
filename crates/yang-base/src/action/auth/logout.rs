@@ -86,7 +86,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
 
             // CONC-1：用 subject 水位线一次性原子撤销该用户所有 Token
             //（Access + Refresh + 任何其他已签发 Token），避免双 revoke 非原子竞态。
-            // 水位线 TTL 取 Refresh Token 有效期，早于此时间签发的 Token 全部失效。
+            // 水位线 TTL 取 Access/Refresh 有效期较大值，早于此时间签发的 Token 全部失效。
             manager.revoke_by_subject(&target_claims.sub).await?;
             Ok::<(), BaseError>(())
         };
