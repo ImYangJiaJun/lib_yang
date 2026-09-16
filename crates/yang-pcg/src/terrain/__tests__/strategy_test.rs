@@ -338,6 +338,21 @@ fn test_open_arena_doorways_marked() {
     );
 }
 
+#[test]
+fn test_open_arena_tiny_room_does_not_panic() {
+    // 2 格维度（且面积使障碍预算 ≥ 1）曾使 random_range(1, width - 1) 落入空区间 panic
+    let room = make_test_room_with_bounds(RoomType::Boss, 2, 8, vec![]);
+    let anchors = make_test_anchors(&room.id, 2, 8);
+    let config = default_terrain_config();
+    let mut rng = StableRng::from_seed(7);
+
+    let terrain = OpenArenaStrategy
+        .generate(&room, &anchors, &config, &mut rng)
+        .expect("过小房间不应 panic，应产出退化地形");
+
+    assert_eq!(terrain.grid_size.width, 2);
+}
+
 // ============================================================
 // PillarStrategy 测试
 // ============================================================
