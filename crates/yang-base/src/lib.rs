@@ -82,6 +82,14 @@ pub use error::{BaseError, ErrorCategory, Result};
 // 重新导出派生宏
 pub use yang_base_derive::{params, Action};
 
+/// 派生宏展开所需的实现细节。**非公开 API**，业务代码禁止直接引用。
+#[doc(hidden)]
+pub mod __private {
+    pub use schemars;
+    pub use serde;
+    pub use serde_json;
+}
+
 /// 直接生成原生 [`definition::Fields`]；重复字段由临时结构体在编译期拒绝。
 #[macro_export]
 macro_rules! fields {

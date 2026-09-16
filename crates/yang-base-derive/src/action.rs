@@ -288,18 +288,18 @@ pub fn expand(input: DeriveInput) -> TokenStream {
 
             /// 框架内部使用，由 #[derive(Action)] 派生。
             #[doc(hidden)]
-            fn __action_input_schema_static() -> &'static ::schemars::schema::RootSchema {
-                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema>
+            fn __action_input_schema_static() -> &'static ::yang_base::__private::schemars::schema::RootSchema {
+                static S: ::std::sync::OnceLock<::yang_base::__private::schemars::schema::RootSchema>
                     = ::std::sync::OnceLock::new();
-                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Input))
+                S.get_or_init(|| ::yang_base::__private::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Input))
             }
 
             /// 框架内部使用，由 #[derive(Action)] 派生。
             #[doc(hidden)]
-            fn __action_output_schema_static() -> &'static ::schemars::schema::RootSchema {
-                static S: ::std::sync::OnceLock<::schemars::schema::RootSchema>
+            fn __action_output_schema_static() -> &'static ::yang_base::__private::schemars::schema::RootSchema {
+                static S: ::std::sync::OnceLock<::yang_base::__private::schemars::schema::RootSchema>
                     = ::std::sync::OnceLock::new();
-                S.get_or_init(|| ::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Output))
+                S.get_or_init(|| ::yang_base::__private::schemars::schema_for!(<Self as ::yang_base::action::TypedHandler>::Output))
             }
         }
 
@@ -319,11 +319,11 @@ pub fn expand(input: DeriveInput) -> TokenStream {
                 Self::__action_permissions_static()
             }
 
-            fn input_schema(&self) -> &'static ::schemars::schema::RootSchema {
+            fn input_schema(&self) -> &'static ::yang_base::__private::schemars::schema::RootSchema {
                 Self::__action_input_schema_static()
             }
 
-            fn output_schema(&self) -> &'static ::schemars::schema::RootSchema {
+            fn output_schema(&self) -> &'static ::yang_base::__private::schemars::schema::RootSchema {
                 Self::__action_output_schema_static()
             }
 
