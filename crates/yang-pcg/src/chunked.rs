@@ -21,7 +21,7 @@ use crate::rng::StableRng;
 use crate::terrain::strategy::TerrainStrategyKind;
 use crate::ue;
 use crate::validation::{
-    validate_no_overlap, validate_request, validate_spawn_spacing, validate_terrain_connectivity,
+    validate_no_overlap, validate_request, validate_spawn_spacing_iter, validate_terrain_connectivity,
 };
 use crate::{terrain, topology};
 
@@ -264,13 +264,12 @@ pub fn fill_chunk_details(
     // 分块硬校验（局部不变量，对任意子集成立）：地形连通 + 点位间距。
     // 不做整图结构/可达性校验（部分结果天然不满足）。
     validate_terrain_connectivity(&terrains)?;
-    let all_spawns: Vec<SpawnPoint> = item_spawns
-        .iter()
-        .chain(enemy_spawns.iter())
-        .cloned()
-        .collect();
     let min_spacing = i32::from(crate::spawn::min_cross_type_spacing(&normalized.config));
-    validate_spawn_spacing(&all_spawns, &topology_result.constraints, Some(min_spacing))?;
+    validate_spawn_spacing_iter(
+        item_spawns.iter().chain(enemy_spawns.iter()),
+        &topology_result.constraints,
+        Some(min_spacing),
+    )?;
 
     Ok(ChunkDetailResult {
         chunk_id: chunk_id.to_string(),

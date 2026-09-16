@@ -385,11 +385,24 @@ pub(crate) fn validate_spawn_spacing(
     constraints: &[Constraint],
     min_spacing: Option<i32>,
 ) -> PcgResult<()> {
+    validate_spawn_spacing_iter(spawns.iter(), constraints, min_spacing)
+}
+
+/// 迭代器入口：调用方拼接两个点位列表时无需深拷贝 `Vec<SpawnPoint>`。
+/// 需要两轮遍历（分组 + 排除区），故对迭代器本身 `clone`（零元素拷贝）。
+pub(crate) fn validate_spawn_spacing_iter<'a, I>(
+    spawns: I,
+    constraints: &[Constraint],
+    min_spacing: Option<i32>,
+) -> PcgResult<()>
+where
+    I: Iterator<Item = &'a SpawnPoint> + Clone,
+{
     let spacing = min_spacing.unwrap_or(DEFAULT_MIN_SPACING);
 
     // 1. 按房间分组点位
     let mut room_spawns: BTreeMap<&str, Vec<&SpawnPoint>> = BTreeMap::new();
-    for spawn in spawns {
+    for spawn in spawns.clone() {
         room_spawns
             .entry(spawn.room_id.as_str())
             .or_default()
