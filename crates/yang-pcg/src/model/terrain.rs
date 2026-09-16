@@ -174,9 +174,13 @@ pub struct ReservedZone {
     pub zone_type: String,
     /// 区域边界
     pub bounds: ReservedZoneBounds,
-    /// 是否允许放置交互物
+    /// 是否允许放置交互物。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub allow_items: bool,
-    /// 是否允许放置敌人
+    /// 是否允许放置敌人。
+    ///
+    /// **RESERVED（未接线）**：当前生成管线不读取该字段。
     pub allow_enemies: bool,
 }
 
