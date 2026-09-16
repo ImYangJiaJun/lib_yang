@@ -18,7 +18,7 @@ use super::key::CacheKey;
 /// use yang_pcg::cache::{CacheKey, ResultCache};
 ///
 /// let mut cache = ResultCache::new();
-/// let key = CacheKey::for_full_floor(&result);
+/// let key = CacheKey::for_full_floor(&result, &request.constraints)?;
 /// if let Some(cached) = cache.get(&key) {
 ///     // 命中缓存，直接使用
 /// } else {
@@ -85,7 +85,7 @@ mod tests {
             chunks: vec![],
             debug: Some(DebugBundle::default()),
         };
-        let key = CacheKey::for_full_floor(&result);
+        let key = CacheKey::for_full_floor(&result, &[]).expect("空约束摘要不应失败");
         cache.insert(key.clone(), result);
         assert!(cache.contains(&key));
         assert!(cache.get(&key).is_some());

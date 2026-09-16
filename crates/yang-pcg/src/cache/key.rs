@@ -1,5 +1,7 @@
 // 缓存键生成
 
+use crate::digest::ConstraintDigest;
+use crate::model::request::Constraint;
 use crate::model::result::GenerationResult;
 
 /// 缓存作用域。
@@ -13,10 +15,12 @@ pub enum CacheScope {
 
 /// 结果缓存键。
 ///
-/// 缓存键由 `schema_version`、`algorithm_version`、`seed`、`config_digest` 和 `scope` 组成。
+/// 缓存键由 `schema_version`、`algorithm_version`、`seed`、`config_digest`、
+/// `constraints_digest` 和 `scope` 组成。
 ///
 /// 注意：`trace_id` 故意不包含在缓存键中，因为相同的 seed + config 应该命中缓存，
 /// 不论调用方使用什么追踪标识。`trace_id` 仅用于日志串联和导出元数据关联。
+/// `constraints_digest` 必须参与键：constraints 会实质改变输出，缺失会导致键相同而地图不同。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct CacheKey {
@@ -24,18 +28,20 @@ pub struct CacheKey {
     pub algorithm_version: String,
     pub seed: u64,
     pub config_digest: String,
+    pub constraints_digest: String,
     pub scope: CacheScope,
 }
 
 impl CacheKey {
-    pub fn for_full_floor(result: &GenerationResult) -> Self {
-        Self {
+    pub fn for_full_floor(result: &GenerationResult, constraints: &[Constraint]) -> crate::error::PcgResult<Self> {
+        Ok(Self {
             schema_version: result.metadata.schema_version.clone(),
             algorithm_version: result.metadata.algorithm_version.clone(),
             seed: result.metadata.seed,
             config_digest: result.metadata.config_digest.clone(),
+            constraints_digest: ConstraintDigest::from_constraints(constraints)?.into_string(),
             scope: CacheScope::FullFloor,
-        }
+        })
     }
 
     pub fn as_string(&self) -> String {
@@ -45,8 +51,13 @@ impl CacheKey {
             CacheScope::Export(format_name) => format!("export:{format_name}"),
         };
         format!(
-            "{}:{}:{}:{}:{}",
-            self.schema_version, self.algorithm_version, self.seed, self.config_digest, scope
+            "{}:{}:{}:{}:{}:{}",
+            self.schema_version,
+            self.algorithm_version,
+            self.seed,
+            self.config_digest,
+            self.constraints_digest,
+            scope
         )
     }
 }
@@ -85,7 +96,7 @@ mod tests {
             debug: Some(DebugBundle::default()),
         };
 
-        let key = CacheKey::for_full_floor(&result);
+        let key = CacheKey::for_full_floor(&result, &[]).expect("空约束摘要不应失败");
         assert!(key.as_string().contains("full-floor"));
     }
 }

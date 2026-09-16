@@ -81,7 +81,7 @@ pub mod ue;
 // 重新导出常用类型
 pub use chunked::{ChunkDetailResult, TopologyResult};
 pub use config::{GenerationConfig, GenerationMode, NormalizedConfig};
-pub use digest::ConfigDigest;
+pub use digest::{ConfigDigest, ConstraintDigest};
 pub use error::{PcgError, PcgResult};
 pub use export::{
     export_binary, export_json, export_json_compact, import_binary, import_json,

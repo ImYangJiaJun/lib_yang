@@ -3,6 +3,7 @@
 
 use crate::config::GenerationConfig;
 use crate::error::{PcgError, PcgResult};
+use crate::model::request::Constraint;
 use crate::rng::fnv1a_64;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -156,6 +157,35 @@ impl ConfigDigest {
     }
 }
 
+/// 约束列表摘要（与 ConfigDigest 同一套稳定哈希：FNV-1a over serde_json）。
+///
+/// constraints 会实质改变输出（锚点改写 room_type → 地形策略/敌人预算；排除区删除点位），
+/// 必须参与缓存键，否则键相同而地图不同。
+/// 不做排序归一化：模板约束取「第一个匹配房间」，顺序本身是语义的一部分。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ConstraintDigest {
+    hash: String,
+}
+
+impl ConstraintDigest {
+    pub fn from_constraints(constraints: &[Constraint]) -> PcgResult<Self> {
+        let json = serde_json::to_string(constraints)
+            .map_err(|e| PcgError::config(format!("constraints 序列化失败: {}", e)))?;
+        Ok(Self {
+            hash: format!("{:016x}", fnv1a_64(json.as_bytes())),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.hash
+    }
+
+    pub fn into_string(self) -> String {
+        self.hash
+    }
+}
+
 impl std::fmt::Display for ConfigDigest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.hash)
@@ -306,6 +336,33 @@ mod tests {
         // 不再 panic，而是返回 Config 错误
         let err = ConfigDigest::try_from(&config).expect_err("NaN 配置应返回错误");
         assert_eq!(err.error_code(), "PCG-CONFIG-001");
+    }
+
+    #[test]
+    fn test_constraint_digest_differs_by_constraints() {
+        use crate::model::request::ExclusionZoneConstraint;
+
+        let empty = ConstraintDigest::from_constraints(&[]).expect("空约束应可序列化");
+        let with_zone = ConstraintDigest::from_constraints(&[Constraint::ExclusionZone(
+            ExclusionZoneConstraint {
+                label: "zone".to_string(),
+                min: crate::model::geometry::GridPoint { x: 0, y: 0 },
+                max: crate::model::geometry::GridPoint { x: 5, y: 5 },
+                exclude_rooms: false,
+                exclude_spawns: true,
+            },
+        )])
+        .expect("约束应可序列化");
+
+        // 相同输入确定性
+        assert_eq!(
+            empty.as_str(),
+            ConstraintDigest::from_constraints(&[])
+                .expect("空约束应可序列化")
+                .as_str()
+        );
+        // 不同约束 → 不同摘要
+        assert_ne!(empty.as_str(), with_zone.as_str());
     }
 
     #[test]
