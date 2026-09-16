@@ -214,3 +214,38 @@ async fn test_locked_select_with_expr_projection_collects_params_in_order() {
     assert!(matches!(params[0], SqlValue::Int(600)));
     assert!(matches!(params[1], SqlValue::Bool(false)));
 }
+
+// M31：set_expr 不被批量/upsert 路径消费，存在表达式赋值时必须 fail-closed。
+
+#[tokio::test]
+async fn test_upsert_rejects_set_expr() {
+    let pool = lazy_pool();
+    let data = serde_json::json!({"id": 1});
+    let result = QueryBuilder::from_pool(&pool, &table("password_reset"))
+        .set_expr(&field("consumed_at"), SqlExpr::unix_timestamp())
+        .upsert(&data)
+        .await;
+    assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+}
+
+#[tokio::test]
+async fn test_insert_batch_rejects_set_expr() {
+    let pool = lazy_pool();
+    let rows = vec![serde_json::json!({"id": 1})];
+    let result = QueryBuilder::from_pool(&pool, &table("password_reset"))
+        .set_expr(&field("consumed_at"), SqlExpr::unix_timestamp())
+        .insert_batch(&rows)
+        .await;
+    assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+}
+
+#[tokio::test]
+async fn test_update_batch_rejects_set_expr() {
+    let pool = lazy_pool();
+    let rows = vec![serde_json::json!({"id": 1, "consumed": false})];
+    let result = QueryBuilder::from_pool(&pool, &table("password_reset"))
+        .set_expr(&field("consumed_at"), SqlExpr::unix_timestamp())
+        .update_batch(&rows, &field("id"))
+        .await;
+    assert!(matches!(result, Err(crate::DbError::InvalidArgument(_))));
+}

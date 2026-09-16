@@ -81,7 +81,8 @@ pub struct QueryBuilder<'a> {
     pub(crate) distinct: bool,
     unions: Vec<(UnionOperator, Box<QueryBuilder<'a>>)>,
     pub(crate) field_types: HashMap<String, FieldType>,
-    /// 受控服务端表达式写入值（UPDATE 的 SET 与 INSERT 的 VALUES 共用）。
+    /// 受控服务端表达式写入值（UPDATE 的 SET 与 INSERT 的 VALUES 共用；
+    /// 批量/upsert 路径不支持，存在时 fail-closed）。
     expr_assignments: Vec<(String, crate::SqlExpr)>,
     /// SELECT 投影中的受控服务端标量表达式及其输出别名。
     select_exprs: Vec<(crate::SqlExpr, String)>,
