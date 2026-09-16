@@ -145,7 +145,7 @@ impl SqlGenerator {
 
         // JOIN 子句
         if !builder.joins.is_empty() {
-            self.build_joins(&builder.joins);
+            self.build_joins(&builder.joins)?;
         }
 
         // WHERE 子句
@@ -233,7 +233,7 @@ impl SqlGenerator {
     ///
     /// # 参数
     /// - joins: JOIN 子句列表
-    fn build_joins(&mut self, joins: &[JoinClause]) {
+    fn build_joins(&mut self, joins: &[JoinClause]) -> Result<(), crate::error::DbError> {
         use crate::mysql::field::JoinType;
 
         for join in joins {
@@ -244,10 +244,12 @@ impl SqlGenerator {
             };
 
             self.append(join_type_str);
-            self.append(&join.table);
+            self.append(&crate::mysql::identifier::quote_identifier(&join.table)?);
             self.append(" ON ");
             self.append(&join.on);
         }
+
+        Ok(())
     }
 
     /// 生成 ORDER BY 子句

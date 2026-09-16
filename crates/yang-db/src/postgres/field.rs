@@ -35,7 +35,7 @@ pub enum JoinType {
 pub struct JoinClause {
     /// JOIN 类型
     pub join_type: JoinType,
-    /// 连接的表名
+    /// 连接的表名（已校验的标识符原文，未加引号；渲染期经 `quote_identifier` 校验+转义）
     pub table: String,
     /// ON 条件
     pub on: String,

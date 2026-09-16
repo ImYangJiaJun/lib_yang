@@ -434,7 +434,7 @@ impl<'a> QueryBuilder<'a> {
 
         self.joins.push(JoinClause {
             join_type: JoinType::Inner,
-            table: format!("`{}`", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
@@ -451,7 +451,7 @@ impl<'a> QueryBuilder<'a> {
 
         self.joins.push(JoinClause {
             join_type: JoinType::Left,
-            table: format!("`{}`", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
@@ -468,7 +468,7 @@ impl<'a> QueryBuilder<'a> {
 
         self.joins.push(JoinClause {
             join_type: JoinType::Right,
-            table: format!("`{}`", table.as_str()),
+            table: table.as_str().to_string(),
             on: format!("{} = {}", left.mysql_quoted(), right.mysql_quoted()),
         });
         self
