@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::NormalizedConfig;
 use crate::error::{PcgError, PcgResult};
-use crate::model::geometry::GridPoint;
+use crate::model::geometry::{GridPoint, RoomBounds};
 use crate::model::request::{Constraint, ExclusionZoneConstraint, GenerationRequest};
 use crate::model::result::GenerationResult;
 use crate::model::room::{Room, RoomGraph, RoomType};
@@ -142,53 +142,59 @@ pub(crate) fn validate_reachability(graph: &RoomGraph) -> PcgResult<()> {
 /// - 需求 4.7: 房间边界不重叠
 /// - 需求 18.3: 验证布局不变量
 pub(crate) fn validate_no_overlap(rooms: &[Room]) -> PcgResult<()> {
-    // 收集所有冲突房间对
-    let mut conflicts: Vec<(String, String)> = Vec::new();
+    // 仅对有边界的房间做碰撞检测；携带原始下标以便恢复稳定输出顺序
+    let mut indexed: Vec<(usize, &RoomBounds)> = rooms
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, room)| room.bounds.as_ref().map(|b| (idx, b)))
+        .collect();
 
-    for i in 0..rooms.len() {
-        // 跳过没有边界的房间
-        let bounds_a = match &rooms[i].bounds {
-            Some(b) => b,
-            None => continue,
-        };
+    // 按 min.x 排序：候选重叠对只可能出现在 min.x 已开始且未超过对方 max.x 的窗口内
+    indexed.sort_by_key(|(_, b)| (b.min.x, b.min.y));
 
-        for j in (i + 1)..rooms.len() {
-            // 跳过没有边界的房间
-            let bounds_b = match &rooms[j].bounds {
-                Some(b) => b,
-                None => continue,
-            };
-
-            // 使用 AABB 碰撞检测
+    let mut conflict_indices: Vec<(usize, usize)> = Vec::new();
+    for a in 0..indexed.len() {
+        let (idx_a, bounds_a) = indexed[a];
+        for &(idx_b, bounds_b) in &indexed[a + 1..] {
+            // 已按 min.x 升序，后续房间 min.x 只会更大，可安全提前终止
+            if bounds_b.min.x >= bounds_a.max.x {
+                break;
+            }
             if bounds_a.intersects(bounds_b) {
-                conflicts.push((rooms[i].id.clone(), rooms[j].id.clone()));
+                conflict_indices.push(if idx_a < idx_b {
+                    (idx_a, idx_b)
+                } else {
+                    (idx_b, idx_a)
+                });
             }
         }
     }
 
-    if conflicts.is_empty() {
-        Ok(())
-    } else {
-        // 构建冲突详情字符串
-        let conflict_details: Vec<String> = conflicts
-            .iter()
-            .map(|(a, b)| format!("({}, {})", a, b))
-            .collect();
-        let details_str = conflict_details.join(", ");
-
-        Err(Box::new(PcgError::Layout {
-            message: format!(
-                "检测到 {} 对房间边界重叠: [{}]",
-                conflicts.len(),
-                details_str
-            ),
-            stage: Some("validation".to_string()),
-            seed: None,
-            trace_id: None,
-            room_id: None,
-            collision_details: Some(details_str),
-        }))
+    if conflict_indices.is_empty() {
+        return Ok(());
     }
+
+    // 恢复原始数组序，保证错误信息与重构前一致（按 (i, j) 升序）
+    conflict_indices.sort_unstable();
+
+    let conflict_details: Vec<String> = conflict_indices
+        .iter()
+        .map(|&(i, j)| format!("({}, {})", rooms[i].id, rooms[j].id))
+        .collect();
+    let details_str = conflict_details.join(", ");
+
+    Err(Box::new(PcgError::Layout {
+        message: format!(
+            "检测到 {} 对房间边界重叠: [{}]",
+            conflict_indices.len(),
+            details_str
+        ),
+        stage: Some("validation".to_string()),
+        seed: None,
+        trace_id: None,
+        room_id: None,
+        collision_details: Some(details_str),
+    }))
 }
 
 /// 验证地形连通性（BFS 验证所有门口瓦片互相可达）
