@@ -986,11 +986,18 @@ enum Disposition<'a> {
 async fn file_response(path: &std::path::Path, disposition: Disposition<'_>) -> Response {
     let bytes = match tokio::fs::read(path).await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                BaseError::RecordNotFound(format!("文件不存在: {}", path.display())),
-            )
+        Err(error) => {
+            // 4xx 的 message 会原样回给客户端，绝对路径只进日志、不进响应体
+            tracing::warn!(path = %path.display(), error = %error, "附件文件读取失败");
+            return if error.kind() == std::io::ErrorKind::NotFound {
+                error_response(
+                    StatusCode::NOT_FOUND,
+                    BaseError::RecordNotFound("文件不存在".to_string()),
+                )
+            } else {
+                // 5xx 由 error_response 统一遮蔽为「服务器内部错误」
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, BaseError::from(error))
+            };
         }
     };
 

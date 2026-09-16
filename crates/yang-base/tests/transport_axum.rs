@@ -1289,12 +1289,12 @@ async fn missing_file_returns_404_structured_error() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let json = body_json(response).await;
     assert_eq!(json["code"], 700006);
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(message.contains("文件不存在"), "404 message 应说明文件不存在: {json}");
+    // H4：404 message 不得泄露服务器绝对路径
     assert!(
-        json["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("文件不存在"),
-        "404 message 应说明文件不存在: {json}"
+        !message.contains('/') && !message.contains('\\'),
+        "404 message 不得泄露服务器路径: {json}"
     );
 }
 
