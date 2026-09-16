@@ -147,7 +147,10 @@ pub struct ExclusionZoneConstraint {
     pub min: GridPoint,
     /// 最大网格坐标（不包含）
     pub max: GridPoint,
-    /// 是否排除房间
+    /// 是否排除房间。
+    ///
+    /// **当前未实现**：房间级排除尚未接线，该取值会被忽略；请保持 `false`，
+    /// 置 `true` 会在 `validate_constraints` 阶段返回 `PcgError::Constraint`（fail-closed）。
     pub exclude_rooms: bool,
     /// 是否排除点位
     pub exclude_spawns: bool,
@@ -159,7 +162,7 @@ impl ExclusionZoneConstraint {
             label: label.into(),
             min,
             max,
-            exclude_rooms: true,
+            exclude_rooms: false,
             exclude_spawns: true,
         }
     }

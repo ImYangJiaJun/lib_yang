@@ -13,6 +13,11 @@ pub fn validate_exclusion_constraints(constraints: &[Constraint]) -> crate::erro
         if exclusion.min.x >= exclusion.max.x || exclusion.min.y >= exclusion.max.y {
             return Err(crate::error::PcgError::constraint("排除区范围非法"));
         }
+        if exclusion.exclude_rooms {
+            return Err(crate::error::PcgError::constraint(
+                "排除区约束 exclude_rooms 尚未实现：请置为 false（房间级排除将在布局阶段接线后提供）",
+            ));
+        }
     }
     Ok(())
 }

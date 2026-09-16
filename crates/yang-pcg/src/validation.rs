@@ -1467,7 +1467,7 @@ mod tests {
             label: "room-only-zone".to_string(),
             min: GridPoint { x: 0, y: 0 },
             max: GridPoint { x: 5, y: 5 },
-            exclude_rooms: true,
+            exclude_rooms: false,
             exclude_spawns: false,
         })];
 
@@ -1476,6 +1476,31 @@ mod tests {
             result.is_ok(),
             "exclude_spawns 为 false 的排除区不应影响点位验证"
         );
+    }
+
+    #[test]
+    fn test_exclusion_zone_exclude_rooms_fails_closed() {
+        // 排除区房间级排除尚未接线，置 true 必须在约束校验阶段 fail-closed
+        let constraints = vec![Constraint::ExclusionZone(ExclusionZoneConstraint {
+            label: "room-exclude".to_string(),
+            min: GridPoint { x: 0, y: 0 },
+            max: GridPoint { x: 5, y: 5 },
+            exclude_rooms: true,
+            exclude_spawns: false,
+        })];
+        let err = crate::constraint::validate_constraints(&constraints).unwrap_err();
+        assert_eq!(err.error_code(), "PCG-CONSTRAINT-001");
+
+        // 默认值路径（exclude_rooms: false）应通过
+        let default_zone = ExclusionZoneConstraint::new(
+            "default",
+            GridPoint { x: 0, y: 0 },
+            GridPoint { x: 5, y: 5 },
+        );
+        let ok = crate::constraint::validate_constraints(&[Constraint::ExclusionZone(
+            default_zone,
+        )]);
+        assert!(ok.is_ok(), "exclude_rooms 为 false 的默认排除区应通过约束校验");
     }
 
     #[test]
