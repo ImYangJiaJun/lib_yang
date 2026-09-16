@@ -216,6 +216,15 @@ fn connect_doorways_to_maze(
                 if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                     continue;
                 }
+                // 与 generate_maze_recursive_backtrack 一致：只在内部格展开，
+                // 绝不进入外墙环，避免回溯时把环上 Wall 凿穿
+                if nx < 1
+                    || ny < 1
+                    || nx >= width as i32 - 1
+                    || ny >= height as i32 - 1
+                {
+                    continue;
+                }
                 let ni = (ny as u32 * width + nx as u32) as usize;
                 if visited[ni] {
                     continue;
@@ -231,10 +240,14 @@ fn connect_doorways_to_maze(
         if let Some(end) = target {
             let mut current = end;
             while current != *doorway {
-                if let Some(tile) = tiles.get(current.x, current.y).copied() {
-                    if tile == TileKind::Wall {
-                        tiles.set(current.x, current.y, TileKind::Floor);
-                    }
+                // 纵深防御：绝不把外墙环上的 Wall 凿穿
+                if current.x > 0
+                    && current.y > 0
+                    && current.x < width as i32 - 1
+                    && current.y < height as i32 - 1
+                    && tiles.get(current.x, current.y).copied() == Some(TileKind::Wall)
+                {
+                    tiles.set(current.x, current.y, TileKind::Floor);
                 }
                 let ci = (current.y as u32 * width + current.x as u32) as usize;
                 if let Some(prev) = parent[ci] {

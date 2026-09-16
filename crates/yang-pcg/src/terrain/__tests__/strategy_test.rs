@@ -475,6 +475,22 @@ fn test_maze_border_integrity() {
 }
 
 #[test]
+fn test_maze_border_integrity_odd_center() {
+    // floor(W/2) 为奇数时（W ≡ 2,3 mod 4），北/南门口落在奇 x，
+    // 旧实现的 BFS 会沿外墙环回溯并凿穿边框
+    for (w, h) in [(10u32, 10u32), (14, 14), (15, 15), (18, 18)] {
+        for seed in [42u64, 88, 300, 999, 12345] {
+            let room = make_test_room_with_bounds(RoomType::Puzzle, w, h, vec!["maze"]);
+            let anchors = make_test_anchors(&room.id, w, h);
+            let mut rng = StableRng::from_seed(seed);
+            let terrain = MazeStrategy.generate(&room, &anchors, &default_terrain_config(), &mut rng)
+                .expect("MazeStrategy 生成失败");
+            assert_border_integrity(&terrain, &format!("maze({}x{},seed={})", w, h, seed));
+        }
+    }
+}
+
+#[test]
 fn test_maze_doorways_marked() {
     // 验证迷宫策略正确标记所有门口
     let room = make_test_room_with_bounds(RoomType::Puzzle, 15, 15, vec!["maze"]);
