@@ -9,6 +9,22 @@ use reqwest::{Client, Method};
 use serde::Serialize;
 use std::time::Duration;
 
+/// 判断 HTTP 方法是否幂等（可默认安全重试）。
+///
+/// 依据 RFC 9110：GET/HEAD/OPTIONS/TRACE 为安全方法，PUT/DELETE 幂等；
+/// POST/PATCH 非幂等，重复发送可能造成重复写入（重复扣款、重复插入等）。
+///
+/// `reqwest::Method` 的 `PartialEq` 是手写实现，故这里用常量相等比较，
+/// 不使用 `matches!` 的结构性常量模式匹配。
+fn is_idempotent_method(method: &Method) -> bool {
+    *method == Method::GET
+        || *method == Method::HEAD
+        || *method == Method::OPTIONS
+        || *method == Method::TRACE
+        || *method == Method::PUT
+        || *method == Method::DELETE
+}
+
 fn redact_url_for_log(url: &str) -> String {
     let Ok(mut parsed_url) = reqwest::Url::parse(url) else {
         return "<invalid-url>".to_string();
@@ -33,6 +49,10 @@ fn redact_url_for_log(url: &str) -> String {
 /// 注意：当前仅实现「重试 + 指数退避」。熔断（circuit breaker）尚未实现，
 /// 如需熔断请在调用方或网关层处理。
 ///
+/// 非幂等方法（POST/PATCH）默认不参与重试——即使启用了重试也只发送一次；
+/// 需要重试时须显式设置 [`RetryConfig::retry_non_idempotent`] 为 `true`，
+/// 由调用方自行承担重复写入（重复扣款/重复插入）的风险。
+///
 /// # 示例
 ///
 /// ```rust,ignore
@@ -42,6 +62,7 @@ fn redact_url_for_log(url: &str) -> String {
 ///     max_retries: 3,
 ///     retry_on: vec![502, 503, 504],
 ///     backoff_ms: 100, // 第 n 次重试前等待 backoff_ms * 2^(n-1) 毫秒
+///     retry_non_idempotent: false, // POST/PATCH 不重试
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -52,6 +73,12 @@ pub struct RetryConfig {
     pub retry_on: Vec<u16>,
     /// 初始退避毫秒数，按 `backoff_ms * 2^attempt` 指数增长。
     pub backoff_ms: u64,
+    /// 是否允许非幂等方法（POST/PATCH）重试。默认 `false`。
+    ///
+    /// 默认关闭时，非幂等请求即使启用了重试也只发送一次，避免
+    /// 「服务端已处理但响应超时/连接中断」时重复扣款、重复插入。
+    /// 仅当调用方确认接口幂等（如带幂等键）时才可置为 `true`。
+    pub retry_non_idempotent: bool,
 }
 
 impl Default for RetryConfig {
@@ -60,6 +87,7 @@ impl Default for RetryConfig {
             max_retries: 3,
             retry_on: vec![502, 503, 504],
             backoff_ms: 100,
+            retry_non_idempotent: false,
         }
     }
 }
@@ -553,6 +581,9 @@ impl RequestBuilder {
     ///
     /// 默认不重试。启用后，对连接错误与命中 `retry_on` 的状态码按指数退避重试。
     ///
+    /// 非幂等方法（POST/PATCH）默认不参与重试，需
+    /// [`RetryConfig::retry_non_idempotent`] 置为 `true` 才显式承担重复写风险。
+    ///
     /// # 参数
     ///
     /// - `config`: 重试策略
@@ -655,6 +686,13 @@ impl RequestBuilder {
         let Some(retry) = retry else {
             return self.send_guarded(host.as_deref()).await;
         };
+
+        // 非幂等方法未显式 opt-in：退化为单次发送。
+        // 该闸门同时覆盖状态码重试分支与传输错误重试分支——POST/PATCH 一旦命中
+        // `retry_on` 或连接中断同样会重放已生效的写入，须一并拦截。
+        if !is_idempotent_method(&self.method) && !retry.retry_non_idempotent {
+            return self.send_guarded(host.as_deref()).await;
+        }
 
         // 有重试策略：最多发送 1 + max_retries 次
         let mut attempt: u32 = 0;
@@ -779,6 +817,7 @@ impl RequestBuilder {
 #[cfg(test)]
 mod retry_config_tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_redact_url_for_log_removes_query_and_userinfo() {
@@ -937,5 +976,117 @@ mod retry_config_tests {
 
             assert!(matches!(err, BaseError::ParamInvalid(field, _) if field == "url"));
         }
+    }
+
+    #[test]
+    fn test_is_idempotent_method_classification() {
+        // 安全/幂等方法：默认允许重试
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::OPTIONS,
+            Method::TRACE,
+            Method::PUT,
+            Method::DELETE,
+        ] {
+            assert!(
+                is_idempotent_method(&method),
+                "{method} 应被判定为幂等/安全方法"
+            );
+        }
+
+        // 非幂等方法：默认不参与重试
+        for method in [Method::POST, Method::PATCH] {
+            assert!(
+                !is_idempotent_method(&method),
+                "{method} 不应被判定为幂等方法"
+            );
+        }
+    }
+
+    /// 起一个只计数、读完即断开的本地监听器，用于统计实际发起的请求次数。
+    ///
+    /// 返回 `(监听地址, 连接计数)`；监听线程随测试结束由进程回收。
+    fn spawn_closing_listener() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("本地监听端口应可绑定");
+        let addr = listener.local_addr().expect("应能取得监听地址");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_thread = Arc::clone(&counter);
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                counter_for_thread.fetch_add(1, Ordering::SeqCst);
+                // 读走请求后直接关闭连接，制造传输错误（而非可重试状态码）
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+            }
+        });
+
+        (addr, counter)
+    }
+
+    /// 非幂等的 POST 未 opt-in 时，即使启用了重试也只发送一次。
+    /// 标记 ignore：发起真实连接，依赖网络栈行为，默认跳过。
+    #[tokio::test]
+    #[ignore = "依赖网络栈行为，发起真实连接；默认跳过"]
+    async fn test_post_not_retried_without_opt_in() {
+        let (addr, counter) = spawn_closing_listener();
+        let client = crate::http::HttpClient::new(1).expect("HTTP client should be valid");
+
+        let result = client
+            .post(&format!("http://{addr}/never"))
+            .retry(RetryConfig {
+                max_retries: 3,
+                retry_on: vec![503],
+                backoff_ms: 1,
+                retry_non_idempotent: false,
+            })
+            .send()
+            .await;
+
+        assert!(result.is_err(), "监听器直接断开，应返回传输错误");
+        // 给监听线程留出计数落定的时间
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "非幂等 POST 未 opt-in 时只应发送一次"
+        );
+    }
+
+    /// 非幂等的 POST 显式 opt-in 后，重试仍然生效（耗尽 max_retries）。
+    /// 标记 ignore：发起真实连接，依赖网络栈行为，默认跳过。
+    #[tokio::test]
+    #[ignore = "依赖网络栈行为，发起真实连接；默认跳过"]
+    async fn test_post_retried_when_opted_in() {
+        let (addr, counter) = spawn_closing_listener();
+        let client = crate::http::HttpClient::new(1).expect("HTTP client should be valid");
+
+        let result = client
+            .post(&format!("http://{addr}/never"))
+            .retry(RetryConfig {
+                max_retries: 3,
+                retry_on: vec![503],
+                backoff_ms: 1,
+                retry_non_idempotent: true,
+            })
+            .send()
+            .await;
+
+        assert!(result.is_err(), "监听器直接断开，应返回传输错误");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            4,
+            "opt-in 后应发送 1 + max_retries 次"
+        );
     }
 }
