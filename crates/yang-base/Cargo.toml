@@ -53,7 +53,7 @@ openapi = []
 admin-metadata = []
 
 # Axum 0.8 HTTP 传输适配器（默认关闭；只拉入 axum/tower-http，不涉及 sqlx/reqwest）
-transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile", "dep:tokio-util"]
+transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile", "dep:tokio-util", "dep:http-body-util"]
 
 [dependencies]
 # 内部依赖
@@ -130,6 +130,9 @@ tempfile = { workspace = true, optional = true }
 # 附件响应流式读取（可选，通过 "transport-axum" feature 启用）
 tokio-util = { workspace = true, optional = true }
 
+# 请求体上限错误识别（可选，通过 "transport-axum" feature 启用）
+http-body-util = { workspace = true, optional = true }
+
 # Argon2 密码哈希（可选，通过 "token" feature 启用，用于 action::auth 密码能力）
 argon2 = { version = "0.5.3", optional = true }
 
@@ -147,6 +150,9 @@ totp-lite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+# transport-axum 读体失败回归用例：手写失败 body 需命名 http_body::Frame
+# （axum 只再导出 Body trait，不再导出 Frame）。与 axum 0.8.9 统一到 1.0.1。
+http-body = "1"
 testcontainers = "=0.22.0"
 env_logger = "0.11.10"
 insta = { workspace = true }

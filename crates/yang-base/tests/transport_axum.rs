@@ -760,6 +760,26 @@ async fn body_bytes(response: Response) -> Vec<u8> {
         .to_vec()
 }
 
+/// 底层 body 流失败的请求体：首个帧即返回 IO 错误。
+///
+/// 用于区分「真正超出 max_body_bytes」（`LengthLimitError`，413）与
+/// 「连接中止 / chunked 分帧损坏 / hyper IO 错误」（400）——后者不得冒充 413。
+struct FailingBody;
+
+impl axum::body::HttpBody for FailingBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::BoxError;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::task::Poll::Ready(Some(Err(
+            std::io::Error::other("body stream aborted").into()
+        )))
+    }
+}
+
 fn default_router() -> Router {
     router(build_app(), AxumTransportConfig::default()).expect("Router 应构建成功")
 }
@@ -1041,6 +1061,37 @@ async fn oversized_body_returns_413() {
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let json = body_json(response).await;
     assert_eq!(json["code"], 700005);
+}
+
+/// 读体失败（底层流错误，非长度超限）必须报 400，不得冒充 413。
+///
+/// 回归守卫：413 只能由 `http_body_util::LengthLimitError` 触发，其余 body 流错误
+/// 归 400，避免把连接中止 / 分帧损坏误报成「请求体过大」。
+#[tokio::test]
+async fn aborted_body_returns_400_not_413() {
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/api/test/echo")
+        .header("content-type", "application/json")
+        .body(Body::new(FailingBody))
+        .expect("测试请求应构建成功");
+    let response = oneshot(default_router(), request).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "body 流失败的请求不得返回 413"
+    );
+    let json = body_json(response).await;
+    assert_eq!(json["code"], 700005);
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("请求体读取失败"),
+        "读体失败应给出通用文案: {json}"
+    );
+    assert!(
+        !message.contains("请求体过大"),
+        "读体失败不得冒充 413: {json}"
+    );
 }
 
 #[test]

@@ -4457,6 +4457,8 @@ dependencies = [
  "env_logger",
  "hmac",
  "http",
+ "http-body",
+ "http-body-util",
  "insta",
  "jsonschema",
  "jsonwebtoken",
