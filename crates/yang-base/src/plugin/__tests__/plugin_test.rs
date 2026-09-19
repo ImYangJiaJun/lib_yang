@@ -398,6 +398,80 @@ async fn test_shutdown_calls_in_reverse_topological_order() {
     );
 }
 
+/// 验证需求: M27 - `PluginManager` 在插件名带边界空格时，shutdown 仍按逆拓扑顺序关闭
+///
+/// `SpacedShutdownA` 的 `name()` 返回 `" plugin_a "`（注册 key 归一化为 `"plugin_a"`），
+/// `ShutdownB` 依赖 `"plugin_a"`、`ShutdownC` 依赖 `"plugin_b"`。
+/// 拓扑排序必须把节点名按注册 key、依赖名按 `normalize_plugin_name` 归一化后再建边，
+/// 否则 `"plugin_a"` 这条边断掉，`plugin_b`/`plugin_c` 会被误判为环并按随机序降级，
+/// 导致 shutdown 逆序（C → B → A）无法保证。
+#[tokio::test]
+async fn test_manager_shutdown_reverse_order_with_spaced_name() {
+    use std::sync::Mutex;
+
+    static SHUTDOWN_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    SHUTDOWN_ORDER.lock().unwrap().clear();
+
+    /// 名称带边界空格的插件 A（无依赖，最先被依赖）
+    struct SpacedShutdownA;
+    #[async_trait]
+    impl Plugin for SpacedShutdownA {
+        fn name(&self) -> &str {
+            " plugin_a "
+        }
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            SHUTDOWN_ORDER.lock().unwrap().push("plugin_a".to_string());
+            Ok(())
+        }
+    }
+
+    /// 依赖 plugin_a 的插件 B
+    struct ShutdownB;
+    #[async_trait]
+    impl Plugin for ShutdownB {
+        fn name(&self) -> &str {
+            "plugin_b"
+        }
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_a"]
+        }
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            SHUTDOWN_ORDER.lock().unwrap().push("plugin_b".to_string());
+            Ok(())
+        }
+    }
+
+    /// 依赖 plugin_b 的插件 C（最顶层依赖者）
+    struct ShutdownC;
+    #[async_trait]
+    impl Plugin for ShutdownC {
+        fn name(&self) -> &str {
+            "plugin_c"
+        }
+        fn dependencies(&self) -> &[&str] {
+            &["plugin_b"]
+        }
+        async fn on_shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            SHUTDOWN_ORDER.lock().unwrap().push("plugin_c".to_string());
+            Ok(())
+        }
+    }
+
+    let manager = PluginManager::new();
+    manager.register(SpacedShutdownA).await.unwrap();
+    manager.register(ShutdownB).await.unwrap();
+    manager.register(ShutdownC).await.unwrap();
+
+    manager.shutdown().await.expect("shutdown 应成功执行");
+
+    let order = SHUTDOWN_ORDER.lock().unwrap().clone();
+    assert_eq!(
+        order,
+        vec!["plugin_c", "plugin_b", "plugin_a"],
+        "shutdown 应按逆拓扑顺序关闭：C (依赖B) → B (依赖A) → A"
+    );
+}
+
 /// 验证需求: 9.1/9.2 - PluginManagerBuilder::new() 创建空构建器
 #[tokio::test]
 async fn test_builder_new_creates_empty_builder() {

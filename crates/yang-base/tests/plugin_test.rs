@@ -59,6 +59,16 @@ impl Plugin for PluginC {
     }
 }
 
+/// 名称带边界空格的插件（`name()` 返回 `" plugin_a "`，注册 key 归一化为 `"plugin_a"`）
+struct SpacedNamePluginA;
+
+#[async_trait]
+impl Plugin for SpacedNamePluginA {
+    fn name(&self) -> &str {
+        " plugin_a "
+    }
+}
+
 /// 带配置 Schema 的插件
 struct ConfigurablePlugin;
 
@@ -231,6 +241,36 @@ async fn test_topological_sort() {
     assert_eq!(plugins[0].name(), "plugin_a", "plugin_a 应该排在第一位");
     assert_eq!(plugins[1].name(), "plugin_b", "plugin_b 应该排在第二位");
     assert_eq!(plugins[2].name(), "plugin_c", "plugin_c 应该排在第三位");
+}
+
+/// 测试插件名带边界空格时拓扑排序仍按归一化 key 建边（M27 回归）
+///
+/// `SpacedNamePluginA` 的 `name()` 返回 `" plugin_a "`，注册时 key 归一化为
+/// `"plugin_a"`；`PluginB` 依赖 `"plugin_a"`、`PluginC` 依赖 `"plugin_b"`。
+/// 排序必须把节点名按注册 key、依赖名按 `normalize_plugin_name` 归一化后再建边，
+/// 否则 `"plugin_a"` 这条依赖边会与带空格的节点名失配（断边），
+/// 使 `plugin_b`/`plugin_c` 被误判为环并按 HashMap 随机序降级。
+#[tokio::test]
+async fn test_topological_sort_normalizes_spaced_names() {
+    let manager = PluginManager::new();
+
+    manager.register(SpacedNamePluginA).await.unwrap();
+    manager.register(PluginB).await.unwrap();
+    manager.register(PluginC).await.unwrap();
+
+    let plugins = manager.get_all().await;
+    assert_eq!(plugins.len(), 3, "应该有 3 个插件");
+
+    // HashMap 顺序随机，只断言相对次序，不写死下标
+    let pos_a = plugins
+        .iter()
+        .position(|p| p.name() == " plugin_a ")
+        .unwrap();
+    let pos_b = plugins.iter().position(|p| p.name() == "plugin_b").unwrap();
+    let pos_c = plugins.iter().position(|p| p.name() == "plugin_c").unwrap();
+
+    assert!(pos_a < pos_b, "plugin_a（被依赖）应在 plugin_b 之前");
+    assert!(pos_b < pos_c, "plugin_b（被依赖）应在 plugin_c 之前");
 }
 
 /// 测试复杂依赖关系
