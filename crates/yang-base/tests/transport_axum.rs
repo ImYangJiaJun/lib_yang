@@ -1264,6 +1264,60 @@ async fn preview_serves_file_inline_with_mime() {
 }
 
 #[tokio::test]
+async fn download_serves_file_with_content_length_matching_disk_size() {
+    let expected: &[u8] = b"hello-download-bytes";
+    let response = oneshot(
+        default_router(),
+        json_request("GET", "/api/test/download", ""),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_length = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    assert_eq!(
+        content_length,
+        Some(expected.len() as u64),
+        "Content-Length 应等于磁盘字节数"
+    );
+    assert_eq!(body_bytes(response).await, expected);
+}
+
+#[tokio::test]
+async fn attachment_over_size_limit_returns_413() {
+    // 128 字节的附件，上限设为 64 字节：metadata 预检即 413，不进入流式读取。
+    let path = temp_file("big.bin", &[b'x'; 128]);
+    let module = ModuleSpec::new(ModuleName::new("test.attach").expect("模块名应有效"))
+        .native_action(DownloadAction { path });
+    let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
+    let app = Arc::new(
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(AddonName::new("test").expect("Addon 名应有效")).module(module),
+            )
+            .build(tools)
+            .expect("测试应用应构建成功"),
+    );
+    let config = AxumTransportConfig {
+        max_attachment_bytes: Some(64),
+        ..AxumTransportConfig::default()
+    };
+    let router = router(app, config).expect("Router 应构建成功");
+    let response = oneshot(router, json_request("GET", "/api/test/download", "")).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let json = body_json(response).await;
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("附件超过大小上限"),
+        "413 message 应说明附件超上限: {json}"
+    );
+}
+
+#[tokio::test]
 async fn redirect_returns_302_with_location() {
     let response = oneshot(
         default_router(),

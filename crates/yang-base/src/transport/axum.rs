@@ -54,6 +54,9 @@ use tower_http::trace::TraceLayer;
 /// 默认请求体上限：2 MiB。
 const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// 默认单附件响应字节上限：64 MiB。
+const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 /// CORS 配置（显式白名单语义）。
 ///
 /// 安全约束在构建期强制：`origins` 含 `"*"` 时禁止同时开启 `credentials`
@@ -111,6 +114,8 @@ pub struct AxumTransportConfig {
     pub max_concurrency: Option<usize>,
     /// 是否按 `Accept-Encoding` 协商压缩响应。默认开启。
     pub compression: bool,
+    /// 单个附件响应的字节上限；超过返回 413。`None` 表示不限制。
+    pub max_attachment_bytes: Option<u64>,
 }
 
 impl Default for AxumTransportConfig {
@@ -121,6 +126,7 @@ impl Default for AxumTransportConfig {
             request_timeout: None,
             max_concurrency: None,
             compression: true,
+            max_attachment_bytes: Some(DEFAULT_MAX_ATTACHMENT_BYTES),
         }
     }
 }
@@ -132,6 +138,7 @@ struct HttpState {
     /// 实际监听地址（`serve` 填入；`router` 单独构建时为 None）。
     local_addr: Option<SocketAddr>,
     max_body_bytes: usize,
+    max_attachment_bytes: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -213,6 +220,7 @@ fn router_with_addr(
         app,
         local_addr,
         max_body_bytes: config.max_body_bytes,
+        max_attachment_bytes: config.max_attachment_bytes,
     };
 
     let mut router = Router::new()
@@ -476,7 +484,7 @@ async fn dispatch_request(
                 .unwrap_or_else(|| StatusCode::from_u16(success_status).unwrap_or(StatusCode::OK));
             let response_headers = response.response_headers().to_vec();
             let mut http_response = match response.attachment.clone() {
-                Some(attachment) => attachment_response(attachment).await,
+                Some(attachment) => attachment_response(attachment, state.max_attachment_bytes).await,
                 None => (status, Json(response)).into_response(),
             };
             if let Err(error) =
@@ -959,7 +967,10 @@ fn multipart_error(status: StatusCode, field: &str, message: &str) -> (StatusCod
 }
 
 /// 把附件响应映射为真实 HTTP 响应。
-async fn attachment_response(attachment: ResponseAttachment) -> Response {
+async fn attachment_response(
+    attachment: ResponseAttachment,
+    max_attachment_bytes: Option<u64>,
+) -> Response {
     match attachment {
         ResponseAttachment::Redirect { url } => match HeaderValue::from_str(&url) {
             Ok(location) => (StatusCode::FOUND, [(header::LOCATION, location)]).into_response(),
@@ -969,9 +980,11 @@ async fn attachment_response(attachment: ResponseAttachment) -> Response {
             ),
         },
         ResponseAttachment::Download { path, filename } => {
-            file_response(&path, Disposition::Attachment(&filename)).await
+            file_response(&path, Disposition::Attachment(&filename), max_attachment_bytes).await
         }
-        ResponseAttachment::Preview { path } => file_response(&path, Disposition::Inline).await,
+        ResponseAttachment::Preview { path } => {
+            file_response(&path, Disposition::Inline, max_attachment_bytes).await
+        }
     }
 }
 
@@ -983,25 +996,54 @@ enum Disposition<'a> {
     Inline,
 }
 
-async fn file_response(path: &std::path::Path, disposition: Disposition<'_>) -> Response {
-    let bytes = match tokio::fs::read(path).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
+async fn file_response(
+    path: &std::path::Path,
+    disposition: Disposition<'_>,
+    max_attachment_bytes: Option<u64>,
+) -> Response {
+    // 先取元数据拿长度：既做 Content-Length，也在打开前做大小上限的快速失败。
+    let len = match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        _ => {
             // 4xx 的 message 会原样回给客户端，绝对路径只进日志、不进响应体
-            tracing::warn!(path = %path.display(), error = %error, "附件文件读取失败");
+            tracing::warn!(path = %path.display(), "附件文件不存在或不可读");
+            return error_response(
+                StatusCode::NOT_FOUND,
+                BaseError::RecordNotFound("文件不存在".to_string()),
+            );
+        }
+    };
+
+    if let Some(max_bytes) = max_attachment_bytes {
+        if len > max_bytes {
+            return error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                BaseError::ParamInvalid("attachment".to_string(), "附件超过大小上限".to_string()),
+            );
+        }
+    }
+
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "附件文件打开失败");
             return if error.kind() == std::io::ErrorKind::NotFound {
                 error_response(
                     StatusCode::NOT_FOUND,
                     BaseError::RecordNotFound("文件不存在".to_string()),
                 )
             } else {
-                // 5xx 由 error_response 统一遮蔽为「服务器内部错误」
                 error_response(StatusCode::INTERNAL_SERVER_ERROR, BaseError::from(error))
             };
         }
     };
 
-    let mut response = Response::new(Body::from(bytes));
+    // 流式返回：避免把整个附件一次读入内存（H3）。
+    let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+    let mut response = Response::new(Body::from_stream(stream));
+    if let Ok(value) = HeaderValue::from_str(&len.to_string()) {
+        response.headers_mut().insert(header::CONTENT_LENGTH, value);
+    }
     let headers = response.headers_mut();
     match disposition {
         Disposition::Attachment(filename) => {

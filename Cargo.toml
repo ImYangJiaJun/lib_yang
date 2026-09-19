@@ -16,6 +16,7 @@ repository = "https://github.com/ImYangJiaJun/lib_yang"
 [workspace.dependencies]
 # 异步运行时
 tokio = { version = "1.52.1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1.89"
 
 # 序列化
