@@ -4476,6 +4476,7 @@ dependencies = [
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "totp-lite",
  "tower",
  "tower-http 0.7.0",

@@ -53,7 +53,7 @@ openapi = []
 admin-metadata = []
 
 # Axum 0.8 HTTP 传输适配器（默认关闭；只拉入 axum/tower-http，不涉及 sqlx/reqwest）
-transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile"]
+transport-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde_urlencoded", "dep:tempfile", "dep:tokio-util"]
 
 [dependencies]
 # 内部依赖
@@ -126,6 +126,9 @@ tower-http = { workspace = true, optional = true }
 
 # 请求作用域上传临时目录（可选，通过 "transport-axum" feature 启用）
 tempfile = { workspace = true, optional = true }
+
+# 附件响应流式读取（可选，通过 "transport-axum" feature 启用）
+tokio-util = { workspace = true, optional = true }
 
 # Argon2 密码哈希（可选，通过 "token" feature 启用，用于 action::auth 密码能力）
 argon2 = { version = "0.5.3", optional = true }
