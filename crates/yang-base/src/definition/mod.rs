@@ -21,6 +21,9 @@ mod view;
 /// 传输层（transport-axum）复用的二进制字段子树扫描；无该 feature 时不导出以避免未使用告警
 #[cfg(feature = "transport-axum")]
 pub(crate) use builder::schema_subtree_contains_binary;
+/// 传输层（transport-axum）注册框架保留路由时复用的唯一事实源；无该 feature 时不导出以避免未使用告警
+#[cfg(feature = "transport-axum")]
+pub(crate) use builder::RESERVED_FRAMEWORK_ROUTES;
 pub use builder::{
     ActionHandle, AppBuilder, BuiltApp, DefinitionCatalog, Registry, TypedActionHandle,
 };

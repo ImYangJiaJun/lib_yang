@@ -114,18 +114,36 @@ impl ShutdownBudget {
         );
         match timeout_at(window.deadline, future).await {
             Ok(Ok(value)) => {
-                record_phase(phase, "success", phase_started, window.deadline, self.metric_names);
+                record_phase(
+                    phase,
+                    "success",
+                    phase_started,
+                    window.deadline,
+                    self.metric_names,
+                );
                 Ok(value)
             }
             Ok(Err(source)) => {
-                record_phase(phase, "error", phase_started, window.deadline, self.metric_names);
+                record_phase(
+                    phase,
+                    "error",
+                    phase_started,
+                    window.deadline,
+                    self.metric_names,
+                );
                 Err(ShutdownError::Phase {
                     phase,
                     source: source.into_boxed_dyn_error(),
                 })
             }
             Err(_) => {
-                record_phase(phase, "timeout", phase_started, window.deadline, self.metric_names);
+                record_phase(
+                    phase,
+                    "timeout",
+                    phase_started,
+                    window.deadline,
+                    self.metric_names,
+                );
                 Err(ShutdownError::Timeout {
                     phase,
                     total_ms: self.total.as_millis(),

@@ -1294,9 +1294,7 @@ async fn attachment_over_size_limit_returns_413() {
     let tools = Arc::new(ToolsBuilder::new().build().expect("空 Tools 应构建成功"));
     let app = Arc::new(
         AppBuilder::new()
-            .addon(
-                AddonSpec::new(AddonName::new("test").expect("Addon 名应有效")).module(module),
-            )
+            .addon(AddonSpec::new(AddonName::new("test").expect("Addon 名应有效")).module(module))
             .build(tools)
             .expect("测试应用应构建成功"),
     );
@@ -1344,7 +1342,10 @@ async fn missing_file_returns_404_structured_error() {
     let json = body_json(response).await;
     assert_eq!(json["code"], 700006);
     let message = json["message"].as_str().unwrap_or_default();
-    assert!(message.contains("文件不存在"), "404 message 应说明文件不存在: {json}");
+    assert!(
+        message.contains("文件不存在"),
+        "404 message 应说明文件不存在: {json}"
+    );
     // H4：404 message 不得泄露服务器绝对路径
     assert!(
         !message.contains('/') && !message.contains('\\'),

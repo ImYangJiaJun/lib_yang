@@ -21,7 +21,8 @@ use crate::rng::StableRng;
 use crate::terrain::strategy::TerrainStrategyKind;
 use crate::ue;
 use crate::validation::{
-    validate_no_overlap, validate_request, validate_spawn_spacing_iter, validate_terrain_connectivity,
+    validate_no_overlap, validate_request, validate_spawn_spacing_iter,
+    validate_terrain_connectivity,
 };
 use crate::{terrain, topology};
 

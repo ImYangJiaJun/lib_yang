@@ -218,11 +218,7 @@ fn connect_doorways_to_maze(
                 }
                 // 与 generate_maze_recursive_backtrack 一致：只在内部格展开，
                 // 绝不进入外墙环，避免回溯时把环上 Wall 凿穿
-                if nx < 1
-                    || ny < 1
-                    || nx >= width as i32 - 1
-                    || ny >= height as i32 - 1
-                {
+                if nx < 1 || ny < 1 || nx >= width as i32 - 1 || ny >= height as i32 - 1 {
                     continue;
                 }
                 let ni = (ny as u32 * width + nx as u32) as usize;

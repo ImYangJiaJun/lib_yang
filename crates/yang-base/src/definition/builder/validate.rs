@@ -601,7 +601,18 @@ impl RouteRegistry {
             if methods.insert(method) {
                 return Ok(());
             }
-            return Err(route_conflict(method, path, String::new()));
+            let detail =
+                if RESERVED_FRAMEWORK_ROUTES
+                    .iter()
+                    .any(|(reserved_method, reserved_path)| {
+                        *reserved_method == method && *reserved_path == path
+                    })
+                {
+                    " (框架保留路由，Action 不可占用)".to_string()
+                } else {
+                    String::new()
+                };
+            return Err(route_conflict(method, path, detail));
         }
         self.matcher
             .insert(path.to_string(), ())
@@ -650,8 +661,19 @@ fn route_conflict(method: &str, path: &str, detail: String) -> BuildError {
     }
 }
 
+/// 传输层无条件注册的框架路由 `(method, path)`。Action 若声明同一 method+path，
+/// `axum::Router::route` 会直接 panic（不返回 Result），故必须在构建期拒绝。
+/// 该常量是唯一事实源，`transport/axum.rs` 注册健康端点时必须与本表一致。
+pub(crate) const RESERVED_FRAMEWORK_ROUTES: &[(&str, &str)] =
+    &[("GET", "/health/live"), ("GET", "/health/ready")];
+
 pub(super) fn validate_routes(addons: &[AddonSpec]) -> Result<(), BuildError> {
     let mut routes = RouteRegistry::default();
+    // 框架保留路由先占座：与 axum 的注册顺序一致（框架路由先于 Action），
+    // 使冲突在构建期以 RouteConflict 暴露，而不是留到 router() 里由 axum panic。
+    for &(method, path) in RESERVED_FRAMEWORK_ROUTES {
+        routes.insert(method, path)?;
+    }
     for action in addons
         .iter()
         .flat_map(|addon| &addon.modules)

@@ -73,7 +73,10 @@ impl RedisClient {
 
         // min_connections / max_lifetime / test_before_acquire 不被 deadpool 0.12 支持，
         // 这里把「静默忽略」变成显式告警，避免调用方误以为已生效。
-        if config.min_connections != 0 || config.max_lifetime.is_some() || config.test_before_acquire {
+        if config.min_connections != 0
+            || config.max_lifetime.is_some()
+            || config.test_before_acquire
+        {
             log::warn!(
                 "RedisConfig 的 min_connections/max_lifetime/test_before_acquire 不被 deadpool 0.12 支持，将被忽略"
             );

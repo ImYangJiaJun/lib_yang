@@ -171,7 +171,8 @@ async fn test_avg_with_where() {
     // 测试：计算 status=1 的用户平均年龄
     let avg_age = db
         .table(yang_db::table!("users"))
-        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+        .expect("固定受控条件应合法")
         .avg(yang_db::field!("age"))
         .await
         .unwrap();
@@ -211,7 +212,8 @@ async fn test_min_with_where() {
             yang_db::field!("status"),
             yang_db::CompareOp::Eq,
             "completed",
-        ).expect("固定受控条件应合法")
+        )
+        .expect("固定受控条件应合法")
         .expr(
             yang_db::SelectExpr::min(yang_db::field!("amount"))
                 .cast_double()
@@ -257,7 +259,8 @@ async fn test_max_with_where() {
             yang_db::field!("status"),
             yang_db::CompareOp::Eq,
             "completed",
-        ).expect("固定受控条件应合法")
+        )
+        .expect("固定受控条件应合法")
         .expr(
             yang_db::SelectExpr::max(yang_db::field!("amount"))
                 .cast_double()
@@ -355,7 +358,8 @@ async fn test_multiple_aggregates() {
             yang_db::field!("status"),
             yang_db::CompareOp::Eq,
             "completed",
-        ).expect("固定受控条件应合法")
+        )
+        .expect("固定受控条件应合法")
         .expr(
             yang_db::SelectExpr::avg(yang_db::field!("amount"))
                 .cast_double()
@@ -401,8 +405,10 @@ async fn test_sql_order_with_aggregates() {
     // 测试：验证 WHERE 在聚合函数之前
     let avg_age = db
         .table(yang_db::table!("users"))
-        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
-        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 25).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+        .expect("固定受控条件应合法")
+        .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 25)
+        .expect("固定受控条件应合法")
         .avg(yang_db::field!("age"))
         .await
         .unwrap();

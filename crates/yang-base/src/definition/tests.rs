@@ -447,8 +447,8 @@ fn params_macro_decodes_radio_string_and_numeric_from_query() {
         .query("status", "active")
         .query("level", "5");
 
-    let input = <RadioQueryInput as ParamInput>::decode(&mut request)
-        .expect("Radio query 值应成功解码");
+    let input =
+        <RadioQueryInput as ParamInput>::decode(&mut request).expect("Radio query 值应成功解码");
     assert_eq!(input.status, "active".to_string());
     assert_eq!(input.level, 5);
 
@@ -1175,6 +1175,60 @@ fn route_conflicts_fail_but_different_methods_share_exact_path() {
         )
         .build(test_tools());
     assert!(shared_path.is_ok());
+}
+
+#[test]
+fn action_route_cannot_shadow_framework_health_endpoints() {
+    let result = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("ops")).module(ModuleSpec::new(module("ops.health")).action(
+                get_action("live", "/health/live", "ops.health.live"),
+                NoopAction,
+            )),
+        )
+        .build(test_tools());
+    assert!(
+        matches!(result, Err(BuildError::RouteConflict { .. })),
+        "与框架 /health/live 冲突必须在构建期报 RouteConflict: {result:?}"
+    );
+
+    let ready = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("ops")).module(ModuleSpec::new(module("ops.ready")).action(
+                get_action("ready", "/health/ready", "ops.health.ready"),
+                NoopAction,
+            )),
+        )
+        .build(test_tools());
+    assert!(
+        matches!(ready, Err(BuildError::RouteConflict { .. })),
+        "与框架 /health/ready 冲突必须在构建期报 RouteConflict: {ready:?}"
+    );
+
+    // 相同 method+path 之外不得误伤：其他 method 或子路径仍可正常声明。
+    let allowed = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("ops")).module(
+                ModuleSpec::new(module("ops.health"))
+                    .action(
+                        get_action("detail", "/health/live/detail", "ops.health.detail"),
+                        NoopAction,
+                    )
+                    .action(
+                        ActionSpec::new(
+                            action("probe"),
+                            RouteSpec::new(HttpMethod::Post, "/health/live", "ops.health.probe"),
+                        ),
+                        NoopAction,
+                    ),
+            ),
+        )
+        .build(test_tools());
+    assert!(
+        allowed.is_ok(),
+        "非同一 method 或非保留路径不应被拒绝: {:?}",
+        allowed.err()
+    );
 }
 
 #[test]

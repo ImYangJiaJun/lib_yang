@@ -33,7 +33,10 @@ pub struct CacheKey {
 }
 
 impl CacheKey {
-    pub fn for_full_floor(result: &GenerationResult, constraints: &[Constraint]) -> crate::error::PcgResult<Self> {
+    pub fn for_full_floor(
+        result: &GenerationResult,
+        constraints: &[Constraint],
+    ) -> crate::error::PcgResult<Self> {
         Ok(Self {
             schema_version: result.metadata.schema_version.clone(),
             algorithm_version: result.metadata.algorithm_version.clone(),

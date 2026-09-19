@@ -15,6 +15,11 @@ pub use catalog::DefinitionCatalog;
 pub use handle::{ActionHandle, TypedActionHandle};
 pub use registry::Registry;
 
+/// 框架保留路由表在 crate 内的唯一事实源；传输层注册健康端点时复用该常量，
+/// 避免两处硬编码漂移。无该 feature 时不导出以避免未使用告警。
+#[cfg(feature = "transport-axum")]
+pub(crate) use validate::RESERVED_FRAMEWORK_ROUTES;
+
 /// 递归检测 JSON Schema 是否声明二进制文件字段（`format: "binary"`，
 /// 即 `UploadedFile` 经 schemars 生成的形态；`$ref`/`anyOf`/`items` 递归覆盖）。
 pub(crate) fn schema_contains_binary_field(schema: &serde_json::Value) -> bool {
