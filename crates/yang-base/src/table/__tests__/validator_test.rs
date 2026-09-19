@@ -1,7 +1,9 @@
 //! Validator 验证器单元测试
 
 use crate::error::BaseError;
-use crate::table::{RegexCache, Validator};
+#[cfg(feature = "validator")]
+use crate::table::RegexCache;
+use crate::table::Validator;
 use serde_json::json;
 use std::sync::Arc;
 
