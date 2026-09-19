@@ -752,6 +752,7 @@ pub(super) fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildErro
         handlers,
         table_views: Vec::new(),
         modules: Vec::new(),
+        views_by_module: BTreeMap::new(),
     })
 }
 
