@@ -10,6 +10,7 @@ fn cb(failure_threshold: u32, cooldown_secs: u64, success_threshold: u32) -> Cir
         failure_threshold,
         cooldown_secs,
         success_threshold,
+        ..CircuitBreakerConfig::default()
     })
     .expect("测试熔断器配置应合法")
 }
@@ -20,6 +21,8 @@ fn default_config_values() {
     assert_eq!(c.failure_threshold, 5);
     assert_eq!(c.cooldown_secs, 30);
     assert_eq!(c.success_threshold, 1);
+    assert_eq!(c.max_tracked_hosts, 1024);
+    assert_eq!(c.host_idle_ttl_secs, 600);
 }
 
 #[test]
@@ -125,4 +128,45 @@ fn shared_state_across_clones() {
     b2.on_failure("h"); // clone 共享状态，累计到 2 → 打开
     assert!(!b.allow("h"));
     assert!(!b2.allow("h"));
+}
+
+#[test]
+fn host_map_caps_tracked_hosts() {
+    let b = CircuitBreaker::new(CircuitBreakerConfig {
+        max_tracked_hosts: 4,
+        ..CircuitBreakerConfig::default()
+    })
+    .expect("测试熔断器配置应合法");
+
+    let t0 = Instant::now();
+    for i in 0..64u64 {
+        b.on_failure_at(&format!("host-{i}"), t0 + Duration::from_secs(i));
+    }
+
+    assert!(
+        b.tracked_host_count() <= 4,
+        "状态 map 不应超过 max_tracked_hosts 上限，实际为 {}",
+        b.tracked_host_count()
+    );
+}
+
+#[test]
+fn idle_host_entries_are_reclaimed() {
+    let b = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 1,
+        ..CircuitBreakerConfig::default()
+    })
+    .expect("测试熔断器配置应合法");
+
+    let t0 = Instant::now();
+    b.on_failure_at("stale.example.com", t0); // 阈值 1 → 立即 Open
+    assert!(!b.allow_at("stale.example.com", t0), "打开后应拒绝");
+
+    // 601s 后注入新 host 触发回收：陈旧条目（含已打开熔断）空闲超过 TTL 600s 被遗忘。
+    b.on_failure_at("fresh.example.com", t0 + Duration::from_secs(601));
+
+    assert!(
+        b.allow("stale.example.com"),
+        "陈旧条目含已打开熔断被遗忘后应回到健康（可放行）"
+    );
 }
