@@ -8,11 +8,13 @@
 //!
 //! | MySQL 类型 | JSON 类型 |
 //! |-----------|----------|
-//! | INT / BIGINT | Number (i64) |
+//! | INT / BIGINT / MEDIUMINT / SMALLINT | Number (i64) |
+//! | TINYINT | Number (i8) |
+//! | TINYINT UNSIGNED | Number (u8) |
 //! | FLOAT / DOUBLE | Number (f64) |
 //! | DECIMAL / NUMERIC | String（保留精度，NEWDECIMAL 协议本就是字符串编码） |
 //! | VARCHAR / TEXT / CHAR | String |
-//! | BOOLEAN / TINYINT(1) | Bool |
+//! | BOOLEAN（即 TINYINT(1)，sqlx 归一化） | Bool |
 //! | DATE / DATETIME / TIMESTAMP | String (ISO 8601) |
 //! | NULL | Null |
 //! | BLOB / BINARY | String (Base64) |
@@ -168,11 +170,13 @@ impl From<Record> for serde_json::Value {
 /// 实现 sqlx::FromRow，支持从 MySQL 查询结果动态解码
 ///
 /// 按 MySQL 列类型将值映射到对应的 JSON 类型：
-/// - INT/BIGINT → i64
+/// - INT/BIGINT/MEDIUMINT/SMALLINT → i64
+/// - TINYINT → i8
+/// - TINYINT UNSIGNED → u8
 /// - FLOAT/DOUBLE → f64
 /// - DECIMAL/NUMERIC → String（保留精度）
 /// - VARCHAR/TEXT/CHAR → String
-/// - BOOLEAN/TINYINT(1) → Bool
+/// - BOOLEAN（即 TINYINT(1)）→ Bool
 /// - DATE/DATETIME/TIMESTAMP → ISO 8601 字符串
 /// - NULL → Null
 /// - BLOB/BINARY → Base64 字符串
@@ -213,6 +217,42 @@ impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for Record {
     }
 }
 
+/// MySQL 整数族列在解码时的语义分类。
+///
+/// sqlx 会把 `tinyint(1)` 归一化为 `BOOLEAN`（列宽 == 1），其余 tinyint 保持数值语义。
+/// 抽出纯函数便于在无 MySQL 环境下单测「列名 → 解码分支」的映射，防止
+/// BOOLEAN / TINYINT / TINYINT UNSIGNED 之间的语义再次漂移（验证需求: M24）。
+#[cfg(feature = "mysql")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MysqlIntegerKind {
+    /// 常规整数（INT/BIGINT/MEDIUMINT/SMALLINT 及其无符号变体），解码为 i64。
+    Int64,
+    /// tinyint(1)（sqlx 归一化为 BOOLEAN），解码为 bool。
+    Boolean,
+    /// 普通 tinyint，保持数值语义，解码为 i8。
+    TinyInt,
+    /// 无符号 tinyint，解码为 u8。
+    TinyIntUnsigned,
+    /// 非整数族类型，交由后续分支按字符串/浮点/日期等处理。
+    Other,
+}
+
+/// 判定 MySQL 列类型名对应的整数族解码分支。
+#[cfg(feature = "mysql")]
+fn mysql_integer_kind(type_name: &str) -> MysqlIntegerKind {
+    // 整数类型：INT、BIGINT、MEDIUMINT、SMALLINT（含 UNSIGNED 变体）
+    if type_name.contains("INT") && !type_name.contains("TINYINT") {
+        return MysqlIntegerKind::Int64;
+    }
+    match type_name {
+        // tinyint(1) 在 MySQL 协议中被 sqlx 归一化为 BOOLEAN（列宽 == 1）
+        "BOOLEAN" => MysqlIntegerKind::Boolean,
+        "TINYINT" => MysqlIntegerKind::TinyInt,
+        "TINYINT UNSIGNED" => MysqlIntegerKind::TinyIntUnsigned,
+        _ => MysqlIntegerKind::Other,
+    }
+}
+
 /// 根据 MySQL 列类型解码列值为 JSON 值
 ///
 /// # 参数
@@ -234,17 +274,29 @@ fn decode_mysql_column(
     use base64::Engine;
     use sqlx::Row;
 
-    // 整数类型：INT、BIGINT、MEDIUMINT、SMALLINT
-    if type_name.contains("INT") && !type_name.contains("TINYINT") {
-        let val: i64 = row.try_get(ordinal)?;
-        return Ok(serde_json::Value::Number(val.into()));
-    }
-
-    // TINYINT(1) 通常用作 BOOLEAN，但 MySQL 中 BOOLEAN 实际上是 TINYINT
-    // 按照 MySQL 约定，TINYINT 映射为 bool（0 = false，非 0 = true）
-    if type_name == "BOOLEAN" || type_name == "TINYINT" {
-        let val: i8 = row.try_get(ordinal)?;
-        return Ok(serde_json::Value::Bool(val != 0));
+    match mysql_integer_kind(type_name) {
+        // 整数类型：INT、BIGINT、MEDIUMINT、SMALLINT（含 UNSIGNED 变体）
+        MysqlIntegerKind::Int64 => {
+            let val: i64 = row.try_get(ordinal)?;
+            return Ok(serde_json::Value::Number(val.into()));
+        }
+        // tinyint(1) 在 MySQL 协议中被 sqlx 归一化为 BOOLEAN（列宽 == 1）；
+        // 仅该形态映射为 bool，其余 tinyint 保持数值语义，避免与 FieldType::Integer 声明冲突。
+        MysqlIntegerKind::Boolean => {
+            let val: i8 = row.try_get(ordinal)?;
+            return Ok(serde_json::Value::Bool(val != 0));
+        }
+        // 普通 tinyint 保持数值语义，不再映射为 bool。
+        MysqlIntegerKind::TinyInt => {
+            let val: i8 = row.try_get(ordinal)?;
+            return Ok(serde_json::Value::Number(i64::from(val).into()));
+        }
+        // 无符号 tinyint 此前落到字符串兜底，try_get::<String> 因类型不兼容必然 Err。
+        MysqlIntegerKind::TinyIntUnsigned => {
+            let val: u8 = row.try_get(ordinal)?;
+            return Ok(serde_json::Value::Number(u64::from(val).into()));
+        }
+        MysqlIntegerKind::Other => {}
     }
 
     // 定点类型：DECIMAL、NUMERIC
@@ -342,5 +394,23 @@ mod tests {
         assert_eq!(row.require::<i64>("id").expect("id 应为整数"), 7);
         assert!(row.require::<String>("id").is_err());
         assert!(row.require::<String>("missing").is_err());
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn mysql_integer_kind_distinguishes_boolean_tinyint_and_unsigned() {
+        // 只有 tinyint(1)（sqlx 归一化为 BOOLEAN）才映射 bool，其余保持数值语义。
+        assert_eq!(mysql_integer_kind("BOOLEAN"), MysqlIntegerKind::Boolean);
+        assert_eq!(mysql_integer_kind("TINYINT"), MysqlIntegerKind::TinyInt);
+        assert_eq!(
+            mysql_integer_kind("TINYINT UNSIGNED"),
+            MysqlIntegerKind::TinyIntUnsigned
+        );
+        assert_eq!(mysql_integer_kind("INT"), MysqlIntegerKind::Int64);
+        assert_eq!(mysql_integer_kind("INT UNSIGNED"), MysqlIntegerKind::Int64);
+        assert_eq!(mysql_integer_kind("BIGINT"), MysqlIntegerKind::Int64);
+        assert_eq!(mysql_integer_kind("MEDIUMINT"), MysqlIntegerKind::Int64);
+        assert_eq!(mysql_integer_kind("SMALLINT"), MysqlIntegerKind::Int64);
+        assert_eq!(mysql_integer_kind("VARCHAR"), MysqlIntegerKind::Other);
     }
 }

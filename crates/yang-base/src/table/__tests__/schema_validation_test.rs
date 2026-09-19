@@ -82,6 +82,27 @@ fn schema_validation_compares_nullability_in_both_directions() {
 }
 
 #[test]
+fn integer_field_rejects_tinyint_storage_as_incompatible() {
+    let table = Table::new("flags")
+        .fields([Field::id("id"), Field::integer("flag").required()])
+        .build()
+        .expect("测试表定义应有效");
+    let columns = vec![
+        SchemaColumn::new("id", "bigint", "bigint", false, None, None).with_auto_increment(true),
+        SchemaColumn::new("flag", "tinyint", "tinyint", false, None, None),
+    ];
+
+    let report = table.validate_schema(&columns);
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.field == "flag" && issue.kind == SchemaIssueKind::IncompatibleType
+        }),
+        "声明 integer、库里 tinyint 必须产出 IncompatibleType 而非静默接受: {:?}",
+        report.issues
+    );
+}
+
+#[test]
 fn schema_validation_requires_exact_storage_types_and_enum_candidates() {
     let table = Table::new("articles")
         .fields([
