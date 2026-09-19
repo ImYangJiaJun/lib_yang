@@ -1710,6 +1710,23 @@ fn tree_view_max_nodes_defaults_overrides_and_validates() {
         "max_nodes 为 0 必须构建期拒绝: {:?}",
         rejected.err()
     );
+
+    // H7：硬天花板本身可接受，超过即拒绝，避免 View 把树查询 LIMIT 抬成无界。
+    build(tree_spec().max_nodes(crate::table::DEFAULT_TREE_MAX_NODES))
+        .expect("max_nodes 等于硬天花板应构建成功");
+
+    let rejected = build(tree_spec().max_nodes(crate::table::DEFAULT_TREE_MAX_NODES + 1));
+    assert!(
+        matches!(
+            rejected,
+            Err(BuildError::InvalidReference {
+                kind: "Tree View",
+                ..
+            })
+        ),
+        "max_nodes 超过硬天花板必须构建期拒绝: {:?}",
+        rejected.err()
+    );
 }
 
 /// ValidationSpec.minimum/maximum 必须映射为 table 层服务端强制边界（Min/Max validator），
