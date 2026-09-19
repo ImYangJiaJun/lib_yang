@@ -1711,3 +1711,69 @@ fn tree_view_max_nodes_defaults_overrides_and_validates() {
         rejected.err()
     );
 }
+
+/// ValidationSpec.minimum/maximum 必须映射为 table 层服务端强制边界（Min/Max validator），
+/// 而不是仅停留在 UI 预校验提示；Decimal 字段携带的十进制字符串由 Min/Max 数值提取兜底。
+#[test]
+fn validation_min_max_map_to_server_enforced_bounds_on_decimal_write() {
+    let mut score = FieldSpec::new(field("score"), FieldKind::Decimal);
+    score.validation.minimum = Some("0".into());
+    score.validation.maximum = Some("100".into());
+
+    let spec = TableSpec::new(table("scores"))
+        .field(FieldSpec::new(field("id"), FieldKind::Key))
+        .field(score);
+    let definition = spec
+        .table_definition()
+        .expect("Decimal 数值边界声明应编译成功");
+    let config = definition.shared_config();
+    let score = config.get_field("score").expect("score 字段应存在");
+    let cache = crate::table::RegexCache::default();
+
+    // 字符串形态的越界值必须被 Min 验证器拒绝（Decimal 合法携带十进制字符串）。
+    assert!(matches!(
+        score.validate(&serde_json::json!("-1"), &cache),
+        Err(BaseError::ValidationFailed(_, _))
+    ));
+    assert!(matches!(
+        score.validate(&serde_json::json!("-0.5"), &cache),
+        Err(BaseError::ValidationFailed(_, _))
+    ));
+    // 字符串形态的合规值必须通过，防止 Decimal 被 Min/Max 误伤。
+    assert!(score.validate(&serde_json::json!("10.5"), &cache).is_ok());
+    assert!(score.validate(&serde_json::json!("100"), &cache).is_ok());
+    // 数值形态仍走同一 validator。
+    assert!(matches!(
+        score.validate(&serde_json::json!(101), &cache),
+        Err(BaseError::ValidationFailed(_, _))
+    ));
+}
+
+/// 数值边界声明不合法时必须在构建期 fail-closed：非数值字段声明 min/max 报 ConfigError，
+/// min > max 报"数值下限不能大于上限"。
+#[test]
+fn validation_min_max_reject_incompatible_field_and_reversed_bounds() {
+    let mut name = FieldSpec::new(field("name"), FieldKind::Str);
+    name.validation.minimum = Some("0".into());
+    let incompatible = TableSpec::new(table("rejected"))
+        .field(FieldSpec::new(field("id"), FieldKind::Key))
+        .field(name);
+    assert!(
+        matches!(
+            incompatible.table_definition(),
+            Err(BaseError::ConfigError(_))
+        ),
+        "Str 字段声明 minimum 必须在构建期报 ConfigError"
+    );
+
+    let mut reversed = FieldSpec::new(field("score"), FieldKind::Decimal);
+    reversed.validation.minimum = Some("10".into());
+    reversed.validation.maximum = Some("1".into());
+    let reversed_range = TableSpec::new(table("reversed"))
+        .field(FieldSpec::new(field("id"), FieldKind::Key))
+        .field(reversed);
+    assert!(matches!(
+        reversed_range.table_definition(),
+        Err(BaseError::ConfigError(message)) if message.contains("数值下限不能大于上限")
+    ));
+}

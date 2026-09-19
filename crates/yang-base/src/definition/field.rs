@@ -291,6 +291,12 @@ impl FieldSpec {
         if let Some(pattern) = self.validation.pattern {
             field = field.regex(pattern);
         }
+        if let Some(value) = self.validation.minimum.as_deref() {
+            field = field.min(parse_numeric_bound(self.name.as_str(), "minimum", value)?);
+        }
+        if let Some(value) = self.validation.maximum.as_deref() {
+            field = field.max(parse_numeric_bound(self.name.as_str(), "maximum", value)?);
+        }
         if self.access.secret {
             field = field.secret();
         }
@@ -348,6 +354,19 @@ fn apply_write_rule(field: Field, rule: AccessRule) -> Field {
         AccessRule::Nobody => field.not_writable(),
         AccessRule::Roles(roles) => field.writable_by(roles),
     }
+}
+
+/// 把十进制文本边界解析为有限 f64；与 table 层数值校验器同语义。
+fn parse_numeric_bound(name: &str, label: &str, raw: &str) -> Result<f64, BaseError> {
+    let parsed = raw.trim().parse::<f64>().map_err(|_| {
+        BaseError::ConfigError(format!("字段 {name} 的 {label} 必须是十进制数值: {raw:?}"))
+    })?;
+    if !parsed.is_finite() {
+        return Err(BaseError::ConfigError(format!(
+            "字段 {name} 的 {label} 必须是有限数值"
+        )));
+    }
+    Ok(parsed)
 }
 
 /// 有序、强类型字段集合。
