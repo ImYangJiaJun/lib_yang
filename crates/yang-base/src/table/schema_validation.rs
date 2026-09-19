@@ -195,7 +195,7 @@ fn is_type_compatible(field_type: &FieldType, column: &SchemaColumn) -> bool {
         }
         FieldType::Integer => matches!(
             data_type,
-            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
+            "smallint" | "mediumint" | "int" | "integer" | "bigint"
         ),
         FieldType::BigInt => data_type == "bigint",
         FieldType::Float => matches!(data_type, "float" | "double" | "decimal"),
