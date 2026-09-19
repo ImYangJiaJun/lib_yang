@@ -32,3 +32,19 @@ fn multi_layer_backslash_escapes_converge() {
     assert_eq!(declared, read_back_4);
     assert_eq!(declared, read_back_8);
 }
+
+#[test]
+fn string_literal_content_is_not_normalized() {
+    assert_ne!(
+        normalize_check_expression("`a` <> ' '"),
+        normalize_check_expression("`a` <> ''")
+    );
+    assert_ne!(
+        normalize_check_expression("`a` = 'x y'"),
+        normalize_check_expression("`a` = 'xy'")
+    );
+    assert_ne!(
+        normalize_check_expression("regexp_like(`p`, '^a b$')"),
+        normalize_check_expression("regexp_like(`p`, '^ab$')")
+    );
+}
