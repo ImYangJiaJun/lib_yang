@@ -284,6 +284,19 @@ fn build_rejects_invalid_validator_configuration() {
 }
 
 #[test]
+fn build_rejects_varchar_over_mysql_limit() {
+    let over = Table::new("documents")
+        .fields([Field::id("id"), Field::string("body", 16_384)])
+        .build();
+    assert!(over.is_err());
+
+    let at_limit = Table::new("documents")
+        .fields([Field::id("id"), Field::string("body", 16_383)])
+        .build();
+    assert!(at_limit.is_ok());
+}
+
+#[test]
 fn build_rejects_defaults_schema_sync_cannot_render() {
     let result = Table::new("documents")
         .fields([Field::id("id"), Field::text("body").default("empty")])

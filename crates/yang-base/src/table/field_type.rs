@@ -2,6 +2,12 @@
 //!
 //! 提供数据表字段的类型系统，支持基本类型、时间类型、复杂类型和关联类型。
 
+/// MySQL utf8mb4 下 `VARCHAR` 的最大字符数（行上限 65535 字节 ÷ 4 字节/字符）。
+///
+/// 构建期（[`crate::table::Field::string`]）与渲染期
+/// （`schema_sync::render::render_column`）共用同一常量，避免两处上界漂移。
+pub const MAX_VARCHAR_LENGTH: usize = 16_383;
+
 use crate::error::BaseError;
 use serde::{Deserialize, Serialize};
 
