@@ -559,11 +559,29 @@ async fn decode_request_body(
         RequestDecoder::Json => {
             let body = to_bytes(request.into_body(), state.max_body_bytes)
                 .await
-                .map_err(|_| {
-                    (
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        BaseError::ParamInvalid("body".to_string(), "请求体过大".to_string()),
-                    )
+                .map_err(|error| {
+                    // to_bytes 内部有限性判定基于 http_body_util::Limited：只有真正超出
+                    // max_body_bytes 时错误源才是 LengthLimitError（见 axum::body::to_bytes
+                    // 文档）；其余为底层 body 流失败（连接中止 / chunked 分帧损坏 / hyper IO 错误），
+                    // 与 multipart 分支一致归入 400，不能冒充 413。
+                    let limit_hit = std::error::Error::source(&error)
+                        .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
+                    if limit_hit {
+                        (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            BaseError::ParamInvalid("body".to_string(), "请求体过大".to_string()),
+                        )
+                    } else {
+                        // 原始错误只进日志，不进响应体（400 的 message 会原样回给客户端）
+                        tracing::warn!(error = %error, "读取请求体失败");
+                        (
+                            StatusCode::BAD_REQUEST,
+                            BaseError::ParamInvalid(
+                                "body".to_string(),
+                                "请求体读取失败".to_string(),
+                            ),
+                        )
+                    }
                 })?;
             let value = if body.is_empty() {
                 json!({})

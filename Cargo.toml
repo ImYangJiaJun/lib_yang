@@ -94,6 +94,11 @@ tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compr
 # tower Service 工具（测试 oneshot）
 tower = { version = "0.5", features = ["util", "limit"] }
 
+# 请求体上限错误识别（可选；yang-base transport-axum feature 使用）。
+# 版本必须与 axum 0.8.9 依赖的 http-body-util 统一到 Cargo.lock 已锁定的 0.1.3，
+# 否则 downcast 恒为 false，413 会静默退化为 400。
+http-body-util = "0.1"
+
 # 请求作用域上传临时目录（仅 transport-axum 启用）；3.24+ 的依赖链不兼容 Cargo 1.80
 tempfile = "=3.23.0"
 
