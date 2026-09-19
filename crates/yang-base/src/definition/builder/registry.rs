@@ -23,6 +23,9 @@ pub struct Registry {
     pub(super) handlers: Vec<RuntimeAction>,
     pub(super) table_views: Vec<RuntimeTableView>,
     pub(super) modules: Vec<RuntimeModule>,
+    /// `module_id` → `table_views` 下标（升序）。构建期一次性预索引，
+    /// 使 Module→View 投影从请求期 O(M×V) 全扫降为 O(M + 命中数) 查表。
+    pub(super) views_by_module: BTreeMap<String, Vec<usize>>,
 }
 
 #[derive(Clone)]
@@ -148,6 +151,18 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))
     }
 
+    /// 为 Module→View 投影预建立 `module_id` 索引（HashSet 的可见性过滤仍留在请求期）。
+    ///
+    /// 必须在 `table_views` 冻结之后调用；按下标升序 push，保证每模块内 view
+    /// 顺序与旧的请求期全扫实现逐位一致。
+    pub(super) fn reindex_views_by_module(&mut self) {
+        let mut index: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (position, view) in self.table_views.iter().enumerate() {
+            index.entry(view.module.clone()).or_default().push(position);
+        }
+        self.views_by_module = index;
+    }
+
     pub(crate) fn ui_catalog(
         &self,
         context: &ActionContext,
@@ -242,9 +257,11 @@ impl Registry {
                 })
                 .collect::<Vec<_>>();
             let views = self
-                .table_views
-                .iter()
-                .filter(|view| view.module == module.module_id)
+                .views_by_module
+                .get(&module.module_id)
+                .into_iter()
+                .flatten()
+                .map(|position| &self.table_views[*position])
                 .filter(|view| visible_views.contains(&view.view_id))
                 .map(|view| view.view_id.clone())
                 .collect::<Vec<_>>();
@@ -281,9 +298,7 @@ impl Registry {
                 views,
             })
         });
-        crate::definition::UiCatalog::new(actions)?
-            .with_table_views(table_views)?
-            .with_modules(modules)
+        crate::definition::UiCatalog::from_parts(actions, table_views, modules)
     }
 
     /// 通过构建期 handle 执行唯一预绑定 Handler。

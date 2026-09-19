@@ -32,39 +32,38 @@ impl UiCatalog {
     where
         I: IntoIterator<Item = ActionDemoSchema>,
     {
+        Self::from_parts(actions, Vec::new(), Vec::new())
+    }
+
+    /// 从三段已过滤投影一次性构造目录：逐段排序后只序列化并哈希一次 revision。
+    ///
+    /// 三段各自按稳定键（operation id / view id / module id）排序，最终的
+    /// revision 与逐段 `refresh_revision` 的结果逐字节一致，ETag 不失效。
+    pub(crate) fn from_parts<A, V, M>(
+        actions: A,
+        views: V,
+        modules: M,
+    ) -> Result<Self, crate::error::BaseError>
+    where
+        A: IntoIterator<Item = ActionDemoSchema>,
+        V: IntoIterator<Item = TableViewSchema>,
+        M: IntoIterator<Item = ModulePresentationSchema>,
+    {
         let mut actions = actions.into_iter().collect::<Vec<_>>();
         actions.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
+        let mut table_views = views.into_iter().collect::<Vec<_>>();
+        table_views.sort_by(|left, right| left.view_id.cmp(&right.view_id));
+        let mut modules = modules.into_iter().collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.module_id.cmp(&right.module_id));
         let mut catalog = Self {
             schema_version: UI_SCHEMA_VERSION,
             revision: String::new(),
             actions,
-            table_views: Vec::new(),
-            modules: Vec::new(),
+            table_views,
+            modules,
         };
         catalog.refresh_revision()?;
         Ok(catalog)
-    }
-
-    pub(crate) fn with_table_views<I>(mut self, views: I) -> Result<Self, crate::error::BaseError>
-    where
-        I: IntoIterator<Item = TableViewSchema>,
-    {
-        self.table_views = views.into_iter().collect();
-        self.table_views
-            .sort_by(|left, right| left.view_id.cmp(&right.view_id));
-        self.refresh_revision()?;
-        Ok(self)
-    }
-
-    pub(crate) fn with_modules<I>(mut self, modules: I) -> Result<Self, crate::error::BaseError>
-    where
-        I: IntoIterator<Item = ModulePresentationSchema>,
-    {
-        self.modules = modules.into_iter().collect();
-        self.modules
-            .sort_by(|left, right| left.module_id.cmp(&right.module_id));
-        self.refresh_revision()?;
-        Ok(self)
     }
 
     fn refresh_revision(&mut self) -> Result<(), crate::error::BaseError> {

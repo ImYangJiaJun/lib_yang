@@ -148,6 +148,7 @@ impl AppBuilder {
         let compiled_views = compile_views(&self.addons, &registry)?;
         registry.table_views = compile_runtime_table_views(&self.addons, &registry)?;
         registry.modules = compile_runtime_modules(&self.addons, &registry)?;
+        registry.reindex_views_by_module();
         for runtime in &registry.handlers {
             runtime.handler.bind_registry(&registry).map_err(|error| {
                 BuildError::InvalidReference {

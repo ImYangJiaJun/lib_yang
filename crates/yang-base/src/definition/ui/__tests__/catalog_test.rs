@@ -82,6 +82,104 @@ fn catalog_revision_is_order_independent_and_content_sensitive() {
     assert_ne!(ordered.revision, changed.revision);
 }
 
+/// M20 回归：三段投影一次性构造只哈希一次 revision，且结果与修复前逐段
+/// `refresh_revision` 的最终值逐字节一致（ETag 不失效），每段各自按稳定键升序。
+#[test]
+fn from_parts_hashes_three_projections_once_and_keeps_revision_stable() {
+    use super::super::{
+        AccountIdentitySchema, FormSchema, ModulePresentationSchema, TableQuerySchema,
+        TableViewSchema,
+    };
+    use sha2::{Digest, Sha256};
+
+    let view = |view_id: &str| TableViewSchema {
+        view_id: view_id.to_string(),
+        title: view_id.to_string(),
+        table: "org_member".to_string(),
+        data_action: "org.member.list".to_string(),
+        columns: Vec::new(),
+        form: FormSchema { fields: Vec::new() },
+        tree: None,
+        query: TableQuerySchema {
+            search_fields: Vec::new(),
+            filter_fields: Vec::new(),
+            default_sort: Vec::new(),
+            default_page_size: 20,
+            max_page_size: 100,
+        },
+        actions: Vec::new(),
+        action_presentations: Vec::new(),
+    };
+    let module = |module_id: &str| ModulePresentationSchema {
+        module_id: module_id.to_string(),
+        identity: AccountIdentitySchema {
+            id: "user".to_string(),
+            title: "用户".to_string(),
+            icon: "person".to_string(),
+            order: 0,
+        },
+        title: module_id.to_string(),
+        description: String::new(),
+        icon: "page".to_string(),
+        order: 0,
+        primary_action: None,
+        actions: Vec::new(),
+        action_presentations: Vec::new(),
+        views: Vec::new(),
+    };
+
+    let first = ActionDemoSchema::from(&action("first", "org.user.first"));
+    let second = ActionDemoSchema::from(&action("second", "org.user.second"));
+    // 三段均以逆序传入，构造后必须各自按稳定键升序排列。
+    let catalog = UiCatalog::from_parts(
+        [second, first],
+        [view("z_view"), view("a_view")],
+        [module("z.module"), module("a.module")],
+    )
+    .expect("三段投影目录 revision 应可计算");
+
+    assert_eq!(
+        catalog
+            .actions
+            .iter()
+            .map(|action| action.operation_id.as_str())
+            .collect::<Vec<_>>(),
+        ["org.user.first", "org.user.second"]
+    );
+    assert_eq!(
+        catalog
+            .table_views
+            .iter()
+            .map(|view| view.view_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a_view", "z_view"]
+    );
+    assert_eq!(
+        catalog
+            .modules
+            .iter()
+            .map(|module| module.module_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a.module", "z.module"]
+    );
+
+    // revision 仍是对 (schema_version, actions, table_views, modules) 元组的一次
+    // SHA-256；与修复前「逐段 refresh_revision」的最终值完全一致，ETag 不失效。
+    let payload = serde_json::to_vec(&(
+        UI_SCHEMA_VERSION,
+        catalog.actions.as_slice(),
+        catalog.table_views.as_slice(),
+        catalog.modules.as_slice(),
+    ))
+    .expect("目录元组应可序列化");
+    use std::fmt::Write;
+    let mut expected = String::with_capacity(64);
+    for byte in Sha256::digest(payload) {
+        let _ = write!(expected, "{byte:02x}");
+    }
+    assert_eq!(catalog.revision, expected);
+}
+
 #[test]
 fn catalog_json_schema_requires_version_revision_actions_and_views() {
     let schema = serde_json::to_value(schemars::schema_for!(UiCatalog))
