@@ -928,3 +928,64 @@ async fn test_paginate_query_with_conditions() {
         );
     }
 }
+
+// ==================== 写路径不误跑读投影门禁（H6） ====================
+
+/// write-only 角色可 INSERT，但读路径仍 fail-closed（H6 回归）。
+///
+/// 表内 `payload` 仅 `ingest` 可写且 `secret()`，`id` 对 `ingest` 不可读——
+/// 即 `ingest` 没有任何可读字段。修复前写路径会因解析读投影而把 INSERT
+/// 误判为读权限拒绝；修复后写路径只应用 WHERE/软删守卫，INSERT 成功，
+/// 而 `all()` 仍按读权限拒绝。
+#[tokio::test]
+#[ignore] // 需要 Docker 环境
+async fn test_write_only_role_insert_not_rejected_by_read_permission() {
+    let (pool, db, _container) = setup_test_env!();
+
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS write_only_rows (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            payload VARCHAR(255) NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    )
+    .await
+    .unwrap();
+
+    let definition = Table::new("write_only_rows")
+        .fields([
+            Field::id("id").not_readable(),
+            Field::string("payload", 255)
+                .secret()
+                .writable_by(["ingest"]),
+        ])
+        .build()
+        .expect("write_only_rows 表定义应有效");
+
+    let write_query = bound_query(
+        definition.clone(),
+        vec!["ingest".to_string()].into(),
+        Some(Arc::new(pool.clone())),
+    );
+
+    let (_affected, _id) = write_query
+        .insert_returning_id(Record::new().set("payload", "hello"))
+        .await
+        .expect("write-only 角色 INSERT 不应被读投影门禁误拒");
+
+    let read_query = bound_query(
+        definition,
+        vec!["ingest".to_string()].into(),
+        Some(Arc::new(pool)),
+    );
+
+    let err = read_query
+        .all()
+        .await
+        .expect_err("无可读字段时 all() 应 fail-closed");
+
+    assert!(matches!(
+        err,
+        yang_base::error::BaseError::FieldPermissionDenied(table, field, _)
+            if table == "write_only_rows" && field == "*"
+    ));
+}

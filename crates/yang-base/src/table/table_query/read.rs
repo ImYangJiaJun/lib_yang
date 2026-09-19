@@ -202,7 +202,7 @@ impl TableQuery {
         T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
     {
         let query = tx.table(&self.table_config.table_ref);
-        self.apply_db_plan(query)?
+        self.apply_read_plan(query)?
             .select::<T>()
             .await
             .map_err(BaseError::DatabaseQueryFailed)
