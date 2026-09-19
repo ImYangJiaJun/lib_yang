@@ -15,6 +15,8 @@
 //! 状态用 `Arc<Mutex<HashMap>>` 共享，随 [`HttpClient`](crate::http::HttpClient)
 //! 的 `clone()` 复用同一份。锁仅在同步的检查/记录期间短暂持有，绝不跨 `.await`。
 //! HalfOpen 不做并发探测限流——多个并发请求都会被放行探测，适合本场景的轻量需求。
+//! 失败 host 条目受 `max_tracked_hosts` 与 `host_idle_ttl_secs` 约束，防止状态 map
+//! 随不同 host 数无限增长。
 
 use crate::error::BaseError;
 use std::collections::HashMap;
@@ -32,6 +34,11 @@ pub struct CircuitBreakerConfig {
     pub cooldown_secs: u64,
     /// HalfOpen 状态下恢复 Closed 所需的连续成功次数。
     pub success_threshold: u32,
+    /// 状态 map 最多保留的 host 数；超出后按最久未活跃淘汰。
+    pub max_tracked_hosts: usize,
+    /// host 条目空闲多久后可被淘汰（秒）。必须 >= cooldown_secs，
+    /// 否则已打开的熔断可能在冷却期结束前被遗忘（fail-open）。
+    pub host_idle_ttl_secs: u64,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -40,6 +47,8 @@ impl Default for CircuitBreakerConfig {
             failure_threshold: 5,
             cooldown_secs: 30,
             success_threshold: 1,
+            max_tracked_hosts: 1024,
+            host_idle_ttl_secs: 600,
         }
     }
 }
@@ -65,6 +74,18 @@ impl CircuitBreakerConfig {
             return Err(BaseError::ParamInvalid(
                 "http.circuit_breaker.success_threshold".to_string(),
                 "熔断器恢复成功阈值必须大于 0".to_string(),
+            ));
+        }
+        if self.max_tracked_hosts == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.circuit_breaker.max_tracked_hosts".to_string(),
+                "熔断器 host 上限必须大于 0".to_string(),
+            ));
+        }
+        if self.host_idle_ttl_secs < self.cooldown_secs {
+            return Err(BaseError::ParamInvalid(
+                "http.circuit_breaker.host_idle_ttl_secs".to_string(),
+                "host 空闲淘汰时间不能小于冷却时间，否则会提前遗忘已打开的熔断".to_string(),
             ));
         }
 
@@ -101,6 +122,20 @@ mod config_tests {
                     ..CircuitBreakerConfig::default()
                 },
             ),
+            (
+                "http.circuit_breaker.max_tracked_hosts",
+                CircuitBreakerConfig {
+                    max_tracked_hosts: 0,
+                    ..CircuitBreakerConfig::default()
+                },
+            ),
+            (
+                "http.circuit_breaker.host_idle_ttl_secs",
+                CircuitBreakerConfig {
+                    host_idle_ttl_secs: 10, // 小于默认 cooldown_secs 30，应被拒绝
+                    ..CircuitBreakerConfig::default()
+                },
+            ),
         ];
 
         for (expected_field, config) in invalid_configs {
@@ -129,7 +164,8 @@ mod config_tests {
 }
 
 /// 单个 host 的熔断状态。注意：HashMap 中**无 entry** 等价于「Closed 且零失败」，
-/// 因此健康 host 不占用内存。
+/// 因此健康 host 不占用内存；失败 host 条目受 `max_tracked_hosts` 与
+/// `host_idle_ttl_secs` 约束，达到容量上限或空闲超时后被淘汰。
 #[derive(Debug)]
 enum Phase {
     /// 闭合，附带当前连续失败数（>=1；0 失败时直接从 map 移除）。
@@ -144,8 +180,9 @@ enum Phase {
 #[derive(Debug, Clone)]
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
-    /// host → 当前状态。无 entry == Closed 且零失败。
-    states: Arc<Mutex<HashMap<String, Phase>>>,
+    /// host → (最后活跃时刻, 当前状态)。无 entry == Closed 且零失败。
+    /// 条目受 `max_tracked_hosts` 与 `host_idle_ttl_secs` 约束，防止无界增长。
+    states: Arc<Mutex<HashMap<String, (Instant, Phase)>>>,
 }
 
 impl CircuitBreaker {
@@ -167,16 +204,19 @@ impl CircuitBreaker {
 
     /// 记录一次成功（2xx/3xx/4xx）。HalfOpen 下累计成功，达阈值恢复 Closed。
     pub fn on_success(&self, host: &str) {
+        let now = Instant::now();
         let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
-        match map.get_mut(host) {
+        match map.get(host) {
             // Closed 有失败累计 → 成功即清零（移除 entry 回到健康）。
-            Some(Phase::Closed { .. }) => {
+            Some((_, Phase::Closed { .. })) => {
                 map.remove(host);
             }
-            Some(Phase::HalfOpen { successes }) => {
-                *successes += 1;
-                if *successes >= self.config.success_threshold {
+            Some((_, Phase::HalfOpen { successes })) => {
+                let next = successes.saturating_add(1);
+                if next >= self.config.success_threshold {
                     map.remove(host); // 恢复 Closed
+                } else {
+                    map.insert(host.to_string(), (now, Phase::HalfOpen { successes: next }));
                 }
             }
             // None（已健康）或 Open（探测尚未经 allow 放行）：无需变更。
@@ -193,12 +233,12 @@ impl CircuitBreaker {
     pub(crate) fn allow_at(&self, host: &str, now: Instant) -> bool {
         let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
         match map.get(host) {
-            None | Some(Phase::Closed { .. }) | Some(Phase::HalfOpen { .. }) => true,
-            Some(Phase::Open { opened_at }) => {
+            None | Some((_, Phase::Closed { .. })) | Some((_, Phase::HalfOpen { .. })) => true,
+            Some((_, Phase::Open { opened_at })) => {
                 let cooled = now.duration_since(*opened_at)
                     >= Duration::from_secs(self.config.cooldown_secs);
                 if cooled {
-                    map.insert(host.to_string(), Phase::HalfOpen { successes: 0 });
+                    map.insert(host.to_string(), (now, Phase::HalfOpen { successes: 0 }));
                     true // 放行一次探测
                 } else {
                     false
@@ -210,6 +250,12 @@ impl CircuitBreaker {
     /// `on_failure` 的可注入时钟版本。
     pub(crate) fn on_failure_at(&self, host: &str, now: Instant) {
         let mut map = self.states.lock().unwrap_or_else(|p| p.into_inner());
+
+        // 新 host 首次失败会新增条目：先回收空间，避免 map 随不同 host 数无限增长。
+        if !map.contains_key(host) {
+            self.make_room(&mut map, now);
+        }
+
         match map.get_mut(host) {
             None => {
                 let phase = if self.config.failure_threshold <= 1 {
@@ -217,18 +263,51 @@ impl CircuitBreaker {
                 } else {
                     Phase::Closed { failures: 1 }
                 };
-                map.insert(host.to_string(), phase);
+                map.insert(host.to_string(), (now, phase));
             }
-            Some(Phase::Closed { failures }) => {
-                *failures += 1;
+            Some((last_seen, Phase::Closed { failures })) => {
+                *last_seen = now;
+                *failures = failures.saturating_add(1);
                 if *failures >= self.config.failure_threshold {
-                    map.insert(host.to_string(), Phase::Open { opened_at: now });
+                    map.insert(host.to_string(), (now, Phase::Open { opened_at: now }));
                 }
             }
             // 半开探测失败 → 立即重新打开；已打开 → 刷新冷却起点。
-            Some(Phase::HalfOpen { .. }) | Some(Phase::Open { .. }) => {
-                map.insert(host.to_string(), Phase::Open { opened_at: now });
+            Some((last_seen, Phase::HalfOpen { .. })) | Some((last_seen, Phase::Open { .. })) => {
+                *last_seen = now;
+                map.insert(host.to_string(), (now, Phase::Open { opened_at: now }));
             }
         }
+    }
+
+    /// 在插入新 host 条目前回收空间：先淘汰空闲超时的条目，
+    /// 仍达上限时淘汰最久未活跃者（优先淘汰非 Open 条目，尽量不遗忘已打开的熔断）。
+    ///
+    /// 权衡：容量压力下淘汰 `Phase::Open` 条目等于遗忘一次已打开的熔断（fail-open），
+    /// 因此 (a) 用 `host_idle_ttl_secs >= cooldown_secs` 的校验保证正常冷却周期内不会
+    /// 被空闲淘汰，(b) 淘汰顺序优先挑非 Open，只有全部为 Open 时才动 Open。
+    fn make_room(&self, map: &mut HashMap<String, (Instant, Phase)>, now: Instant) {
+        let ttl = Duration::from_secs(self.config.host_idle_ttl_secs);
+        map.retain(|_, (last_seen, _)| now.duration_since(*last_seen) < ttl);
+
+        while map.len() >= self.config.max_tracked_hosts {
+            let victim = map
+                .iter()
+                .min_by_key(|(_, (last_seen, phase))| {
+                    (matches!(phase, Phase::Open { .. }), *last_seen)
+                })
+                .map(|(host, _)| host.clone());
+            match victim {
+                Some(host) => {
+                    map.remove(&host);
+                }
+                None => break,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked_host_count(&self) -> usize {
+        self.states.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }

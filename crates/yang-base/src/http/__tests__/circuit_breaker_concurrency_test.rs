@@ -17,6 +17,7 @@ fn cb(failure_threshold: u32, cooldown_secs: u64, success_threshold: u32) -> Cir
         failure_threshold,
         cooldown_secs,
         success_threshold,
+        ..CircuitBreakerConfig::default()
     })
     .expect("测试熔断器配置应合法")
 }
