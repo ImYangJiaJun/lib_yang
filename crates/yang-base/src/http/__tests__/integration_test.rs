@@ -251,3 +251,143 @@ async fn test_retry_exhausts_on_connection_error() {
         .await;
     assert!(result.is_err(), "连接失败重试耗尽后应返回 Err");
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 响应体大小上限（M12）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// 起一个本地 TCP 监听器，接受一次连接后返回指定响应（状态行 + 头 + 空行 + 体）。
+///
+/// 返回监听地址；服务任务随测试结束时由运行时回收。
+async fn serve_once(
+    status_line: &'static str,
+    headers: String,
+    body: Vec<u8>,
+) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("本地监听端口应可绑定");
+    let addr = listener.local_addr().expect("应能取得监听地址");
+
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        // 读走请求，避免客户端写请求时收到 EPIPE
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+
+        let mut resp = Vec::new();
+        resp.extend_from_slice(status_line.as_bytes());
+        resp.extend_from_slice(headers.as_bytes());
+        resp.extend_from_slice(b"\r\n");
+        resp.extend_from_slice(&body);
+        let _ = stream.write_all(&resp).await;
+        let _ = stream.shutdown().await;
+    });
+
+    addr
+}
+
+/// Content-Length 预检分支：显式返回 `Content-Length: 1024` 的响应，
+/// 应快速失败并携带 `actual == Some(1024)`。
+#[tokio::test]
+async fn test_response_bytes_exceeds_limit_via_content_length() {
+    let addr = serve_once(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/plain\r\nContent-Length: 1024\r\nConnection: close\r\n".to_string(),
+        vec![b'x'; 1024],
+    )
+    .await;
+
+    let client = HttpClient::with_config(crate::http::HttpClientConfig {
+        max_response_bytes: 64,
+        ..crate::http::HttpClientConfig::default()
+    })
+    .expect("合法配置应创建客户端");
+
+    let response = client
+        .get(&format!("http://{addr}/large"))
+        .send()
+        .await
+        .expect("请求应成功（响应体读取前）");
+
+    let err = match response.bytes().await {
+        Ok(_) => panic!("超限响应体应被拒绝"),
+        Err(err) => err,
+    };
+
+    match err {
+        crate::error::BaseError::HttpResponseTooLarge { limit, actual } => {
+            assert_eq!(limit, 64);
+            assert_eq!(actual, Some(1024));
+        }
+        other => panic!("期望 HttpResponseTooLarge，实际: {other:?}"),
+    }
+}
+
+/// 流式分支（无 Content-Length，close 定界）：运行中累计触发上限，
+/// 应携带 `actual == None`。
+#[tokio::test]
+async fn test_response_bytes_exceeds_limit_streaming() {
+    let addr = serve_once(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/plain\r\nConnection: close\r\n".to_string(),
+        vec![b'y'; 1024],
+    )
+    .await;
+
+    let client = HttpClient::with_config(crate::http::HttpClientConfig {
+        max_response_bytes: 64,
+        ..crate::http::HttpClientConfig::default()
+    })
+    .expect("合法配置应创建客户端");
+
+    let response = client
+        .get(&format!("http://{addr}/large"))
+        .send()
+        .await
+        .expect("请求应成功（响应体读取前）");
+
+    let err = match response.bytes().await {
+        Ok(_) => panic!("超限响应体应被拒绝"),
+        Err(err) => err,
+    };
+
+    match err {
+        crate::error::BaseError::HttpResponseTooLarge { limit, actual } => {
+            assert_eq!(limit, 64);
+            assert_eq!(actual, None);
+        }
+        other => panic!("期望 HttpResponseTooLarge，实际: {other:?}"),
+    }
+}
+
+/// 边界：body 恰好等于上限时应成功（上限判断是 `>` 而非 `>=`）。
+#[tokio::test]
+async fn test_response_bytes_exactly_at_limit_succeeds() {
+    let limit = 1024usize;
+    let headers =
+        format!("Content-Type: text/plain\r\nContent-Length: {limit}\r\nConnection: close\r\n");
+    let addr = serve_once("HTTP/1.1 200 OK\r\n", headers, vec![b'z'; limit]).await;
+
+    let client = HttpClient::with_config(crate::http::HttpClientConfig {
+        max_response_bytes: limit,
+        ..crate::http::HttpClientConfig::default()
+    })
+    .expect("合法配置应创建客户端");
+
+    let response = client
+        .get(&format!("http://{addr}/exact"))
+        .send()
+        .await
+        .expect("请求应成功");
+
+    let body = response
+        .bytes()
+        .await
+        .expect("恰好等于上限的响应体应成功读取");
+    assert_eq!(body.len(), limit);
+}

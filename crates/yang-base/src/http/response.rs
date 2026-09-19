@@ -28,6 +28,9 @@ use reqwest::Response as ReqwestResponse;
 pub struct Response {
     /// reqwest 响应
     response: ReqwestResponse,
+
+    /// 响应体最大允许字节数（0 表示已由调用方保证不会为 0；由 HttpClientConfig 注入）
+    max_response_bytes: usize,
 }
 
 impl Response {
@@ -36,8 +39,12 @@ impl Response {
     /// # 参数
     ///
     /// - `response`: reqwest 响应
-    pub(crate) fn new(response: ReqwestResponse) -> Self {
-        Self { response }
+    /// - `max_response_bytes`: 响应体最大允许字节数（由 HttpClientConfig 注入）
+    pub(crate) fn new(response: ReqwestResponse, max_response_bytes: usize) -> Self {
+        Self {
+            response,
+            max_response_bytes,
+        }
     }
 
     /// 获取状态码
@@ -108,10 +115,18 @@ impl Response {
     /// println!("响应内容: {}", text);
     /// ```
     pub async fn text(self) -> Result<String, BaseError> {
-        self.response
-            .text()
-            .await
-            .map_err(|e| BaseError::HttpResponseParseFailed(e.to_string()))
+        // 必须在 read_body_limited() 消耗 self 之前取出 charset，保留现 charset feature 语义。
+        let charset = self
+            .response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').find_map(|p| p.trim().strip_prefix("charset=")))
+            .and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()))
+            .unwrap_or(encoding_rs::UTF_8);
+        let body = self.read_body_limited().await?;
+        let (text, _, _) = charset.decode(&body);
+        Ok(text.into_owned())
     }
 
     /// 获取响应体为字节流
@@ -128,11 +143,7 @@ impl Response {
     /// println!("响应大小: {} 字节", bytes.len());
     /// ```
     pub async fn bytes(self) -> Result<Vec<u8>, BaseError> {
-        self.response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| BaseError::HttpResponseParseFailed(e.to_string()))
+        self.read_body_limited().await
     }
 
     /// 获取响应体为 JSON
@@ -159,9 +170,40 @@ impl Response {
     /// println!("用户: {} (ID: {})", user.name, user.id);
     /// ```
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, BaseError> {
-        self.response
-            .json()
+        let body = self.read_body_limited().await?;
+        serde_json::from_slice(&body).map_err(|e| BaseError::JsonDeserializeFailed(e.to_string()))
+    }
+
+    /// 按上限流式读取响应体。
+    ///
+    /// 上游可能省略（chunked）或谎报 Content-Length，因此头部预检只做快速失败，
+    /// 真正的硬上限由下面的运行中累计校验保证（验证需求: M12）。
+    async fn read_body_limited(mut self) -> Result<Vec<u8>, BaseError> {
+        let limit = self.max_response_bytes;
+        if let Some(len) = self.response.content_length() {
+            if len > limit as u64 {
+                return Err(BaseError::HttpResponseTooLarge {
+                    limit,
+                    actual: Some(len),
+                });
+            }
+        }
+        let mut buf: Vec<u8> = Vec::with_capacity(limit.min(64 * 1024));
+        while let Some(chunk) = self
+            .response
+            .chunk()
             .await
-            .map_err(|e| BaseError::JsonDeserializeFailed(e.to_string()))
+            .map_err(|e| BaseError::HttpResponseParseFailed(e.to_string()))?
+        {
+            // 先判后拷，超限时不再多分配一整块 chunk
+            if buf.len() + chunk.len() > limit {
+                return Err(BaseError::HttpResponseTooLarge {
+                    limit,
+                    actual: None,
+                });
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        Ok(buf)
     }
 }

@@ -169,6 +169,15 @@ pub enum BaseError {
     #[error("HTTP 响应解析失败: {0}")]
     HttpResponseParseFailed(String),
 
+    /// HTTP 响应体超过配置上限（防异常/恶意上游耗尽内存）
+    #[error("HTTP 响应体超过上限: 上限 {limit} 字节, 实际 {actual:?} 字节")]
+    HttpResponseTooLarge {
+        /// 配置的响应体上限（字节）。
+        limit: usize,
+        /// 上游声明（Content-Length）的实际大小；流式累计触发时为 None。
+        actual: Option<u64>,
+    },
+
     /// HTTP 超时
     #[error("HTTP 请求超时")]
     HttpTimeout,
@@ -587,6 +596,7 @@ impl BaseError {
             BaseError::HttpClientAlreadyInitialized => 300005,
             BaseError::HttpClientNotInitialized => 300006,
             BaseError::HttpCircuitBreakerOpen(_) => 300007,
+            BaseError::HttpResponseTooLarge { .. } => 300008,
 
             // ==================== Token 管理错误 (4xxxxx) ====================
             BaseError::TokenKeyInvalid(_) => 400001,
@@ -683,6 +693,7 @@ impl BaseError {
             BaseError::HttpClientAlreadyInitialized => "300005",
             BaseError::HttpClientNotInitialized => "300006",
             BaseError::HttpCircuitBreakerOpen(_) => "300007",
+            BaseError::HttpResponseTooLarge { .. } => "300008",
             // Token 管理错误 (4xxxxx)
             BaseError::TokenKeyInvalid(_) => "400001",
             BaseError::TokenGenerateFailed(_) => "400002",
@@ -785,6 +796,8 @@ impl BaseError {
             BaseError::HttpRequestFailed(_) | BaseError::HttpTimeout => C::Transient,
             // 熔断器打开意味着下游服务不健康，立即重试无济于事
             BaseError::HttpCircuitBreakerOpen(_) => C::Server,
+            // 对端违约/谎报大小导致超出上限：非瞬时网络问题，与熔断器同类归为服务端
+            BaseError::HttpResponseTooLarge { .. } => C::Server,
             // Token 错误
             BaseError::TokenKeyInvalid(_)
             | BaseError::TokenGenerateFailed(_)
