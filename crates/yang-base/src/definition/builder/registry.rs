@@ -35,7 +35,8 @@ pub(super) struct RuntimeAction {
     pub(super) policy: AuthorizationPolicy,
     pub(super) module: String,
     pub(super) action: String,
-    pub(super) table_definition: Option<TableDefinition>,
+    /// 与同表其它 Action 共享的表定义；`TableDefinition::clone` 只是 `Arc<TableConfig>` bump。
+    pub(super) table_definition: Option<Arc<TableDefinition>>,
     pub(super) ui_schema: crate::definition::ActionDemoSchema,
 }
 
@@ -315,7 +316,7 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))?;
         context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
         if let Some(table) = &runtime.table_definition {
-            context = context.with_table_definition(table.clone());
+            context = context.with_table_definition((**table).clone());
         }
         let next = Next {
             remaining: &runtime.middlewares,
@@ -369,7 +370,7 @@ impl Registry {
         authorize(&runtime.policy, &context)?;
         context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
         if let Some(table) = &runtime.table_definition {
-            context = context.with_table_definition(table.clone());
+            context = context.with_table_definition((**table).clone());
         }
         let output = runtime.handler.call_boxed(context, Box::new(input)).await?;
         output.downcast::<O>().map(|value| *value).map_err(|_| {

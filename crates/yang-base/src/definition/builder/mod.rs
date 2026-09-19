@@ -68,3 +68,6 @@ pub(crate) fn schema_subtree_contains_binary(
     }
     inner(document, subtree, &mut BTreeSet::new())
 }
+
+#[cfg(test)]
+mod __tests__;
