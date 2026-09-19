@@ -46,12 +46,18 @@ fn redact_url_for_log(url: &str) -> String {
 /// 对临时性失败（连接错误、可重试的 5xx 等）按指数退避自动重试。
 /// 默认不重试——只有显式调用 [`RequestBuilder::retry`] 才启用。
 ///
-/// 注意：当前仅实现「重试 + 指数退避」。熔断（circuit breaker）尚未实现，
+/// 注意：当前仅实现「重试 + 指数退避 + 抖动」。熔断（circuit breaker）尚未实现，
 /// 如需熔断请在调用方或网关层处理。
 ///
 /// 非幂等方法（POST/PATCH）默认不参与重试——即使启用了重试也只发送一次；
 /// 需要重试时须显式设置 [`RetryConfig::retry_non_idempotent`] 为 `true`，
 /// 由调用方自行承担重复写入（重复扣款/重复插入）的风险。
+///
+/// 重试等待受 [`RetryConfig::total_budget_ms`] 总预算钳制，避免长退避把单次
+/// `send()` 拖成不可控的长尾；另有 [`RetryConfig::jitter_percent`] 抖动去同步
+/// 并发重试。本配置只在调用方显式调用 [`RequestBuilder::retry`] 时生效，
+/// 应用层应另外配置 transport 的 `request_timeout`
+/// （`AxumTransportConfig::request_timeout`，默认 `None`）作为最终兜底。
 ///
 /// # 示例
 ///
@@ -63,6 +69,8 @@ fn redact_url_for_log(url: &str) -> String {
 ///     retry_on: vec![502, 503, 504],
 ///     backoff_ms: 100, // 第 n 次重试前等待 backoff_ms * 2^(n-1) 毫秒
 ///     retry_non_idempotent: false, // POST/PATCH 不重试
+///     total_budget_ms: 30_000,     // 单次 send() 内全部退避等待的总预算
+///     jitter_percent: 25,          // 退避抖动幅度 ±25%
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -79,6 +87,18 @@ pub struct RetryConfig {
     /// 「服务端已处理但响应超时/连接中断」时重复扣款、重复插入。
     /// 仅当调用方确认接口幂等（如带幂等键）时才可置为 `true`。
     pub retry_non_idempotent: bool,
+    /// 单次 `send()` 内全部重试等待的总时间预算（毫秒）。
+    ///
+    /// 每次退避等待取 `min(抖动后退避, 剩余预算)`；预算耗尽后不再等待，
+    /// 直接返回最后一次请求的结果。必须大于 0（禁止「无预算」后门），
+    /// 上限 300_000 毫秒（`MAX_TOTAL_BUDGET_MS`）。
+    pub total_budget_ms: u64,
+    /// 单次退避的抖动幅度（百分比 `0..=100`）。0 表示不抖动。
+    ///
+    /// 抖动用于打散并发请求的同步重试（惊群）：实际上限为初始退避的
+    /// ±`jitter_percent`%，取 `SystemTime` 纳秒 + 进程号 + 重试序号混合的
+    /// 非密码学熵源，不引入额外依赖。
+    pub jitter_percent: u8,
 }
 
 impl Default for RetryConfig {
@@ -88,6 +108,8 @@ impl Default for RetryConfig {
             retry_on: vec![502, 503, 504],
             backoff_ms: 100,
             retry_non_idempotent: false,
+            total_budget_ms: 30_000,
+            jitter_percent: 25,
         }
     }
 }
@@ -95,6 +117,7 @@ impl Default for RetryConfig {
 impl RetryConfig {
     const MAX_RETRIES: u32 = 10;
     const MAX_BACKOFF_MS: u64 = 60_000;
+    const MAX_TOTAL_BUDGET_MS: u64 = 300_000;
 
     /// 验证请求级重试策略。
     ///
@@ -144,8 +167,49 @@ impl RetryConfig {
             ));
         }
 
+        if self.total_budget_ms == 0 || self.total_budget_ms > Self::MAX_TOTAL_BUDGET_MS {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.total_budget_ms".to_string(),
+                format!("重试总预算必须在 1..={} 毫秒内", Self::MAX_TOTAL_BUDGET_MS),
+            ));
+        }
+
+        if self.jitter_percent > 100 {
+            return Err(BaseError::ParamInvalid(
+                "http.retry.jitter_percent".to_string(),
+                "退避抖动百分比不能超过 100".to_string(),
+            ));
+        }
+
         Ok(())
     }
+}
+
+/// 对退避时长施加 ±`jitter_percent`% 抖动，避免并发请求同步重试（惊群）。
+///
+/// 纯整数运算：`span = base_ms / 100 * jitter_percent`，返回值落在
+/// `[base_ms - span, base_ms + span]`。熵源仅用于打散去同步，非密码学用途，
+/// 故直接复用 `SystemTime` 纳秒 + 进程号 + 重试序号，不引入 `rand` 等依赖。
+fn jittered_backoff(base_ms: u64, jitter_percent: u8, attempt: u32) -> u64 {
+    let jp = u64::from(jitter_percent.min(100));
+    if base_ms == 0 || jp == 0 {
+        return base_ms;
+    }
+
+    let span = base_ms / 100 * jp;
+    if span == 0 {
+        return base_ms;
+    }
+
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_nanos()))
+        ^ u64::from(std::process::id())
+        ^ u64::from(attempt);
+
+    base_ms
+        .saturating_sub(span)
+        .saturating_add(entropy % span.saturating_mul(2).saturating_add(1))
 }
 
 /// HTTP 请求构建器
@@ -694,8 +758,10 @@ impl RequestBuilder {
             return self.send_guarded(host.as_deref()).await;
         }
 
-        // 有重试策略：最多发送 1 + max_retries 次
+        // 有重试策略：最多发送 1 + max_retries 次。
+        // `remaining_budget_ms` 是本轮 `send()` 内全部退避等待共享的总预算。
         let mut attempt: u32 = 0;
+        let mut remaining_budget_ms = retry.total_budget_ms;
         loop {
             let result = self.send_guarded(host.as_deref()).await;
 
@@ -712,11 +778,18 @@ impl RequestBuilder {
                 return result;
             }
 
-            // 指数退避：backoff_ms * 2^attempt
-            let backoff = retry.backoff_ms.saturating_mul(1u64 << attempt.min(20));
-            if backoff > 0 {
-                tokio::time::sleep(Duration::from_millis(backoff)).await;
+            // 指数退避 backoff_ms * 2^attempt，叠加抖动，再受剩余预算钳制：
+            // 预算耗尽（钳制后为 0）时不再等待，直接返回最后一次结果，避免
+            // 「重试 + 长退避」把单次 send() 拖成长尾。
+            let base = retry.backoff_ms.saturating_mul(1u64 << attempt.min(20));
+            let sleep_ms =
+                jittered_backoff(base, retry.jitter_percent, attempt).min(remaining_budget_ms);
+            if sleep_ms == 0 {
+                return result;
             }
+
+            tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+            remaining_budget_ms -= sleep_ms;
             attempt += 1;
         }
     }
@@ -869,6 +942,175 @@ mod retry_config_tests {
                 Err(BaseError::ParamInvalid(_, _))
             ));
         }
+    }
+
+    #[test]
+    fn test_retry_config_validate_rejects_bad_budget_and_jitter() {
+        let cases = [
+            // 总预算不能为 0（不留「无预算」后门）
+            (
+                "http.retry.total_budget_ms",
+                RetryConfig {
+                    max_retries: 1,
+                    total_budget_ms: 0,
+                    ..RetryConfig::default()
+                },
+            ),
+            // 总预算不能超过上限
+            (
+                "http.retry.total_budget_ms",
+                RetryConfig {
+                    max_retries: 1,
+                    total_budget_ms: RetryConfig::MAX_TOTAL_BUDGET_MS + 1,
+                    ..RetryConfig::default()
+                },
+            ),
+            // 抖动百分比不能超过 100
+            (
+                "http.retry.jitter_percent",
+                RetryConfig {
+                    max_retries: 1,
+                    jitter_percent: 101,
+                    ..RetryConfig::default()
+                },
+            ),
+        ];
+
+        for (expected_field, config) in cases {
+            let err = match config.validate() {
+                Ok(()) => panic!("非法 {expected_field} 应被 validate() 拒绝"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(&err, BaseError::ParamInvalid(field, _) if field == expected_field),
+                "期望 ParamInvalid({expected_field})，实际 {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_retry_config_default_and_boundaries_are_valid() {
+        assert!(
+            RetryConfig::default().validate().is_ok(),
+            "默认配置必须通过校验"
+        );
+
+        // 边界：预算取上限、抖动取 100 均为合法值
+        assert!(RetryConfig {
+            max_retries: 1,
+            total_budget_ms: RetryConfig::MAX_TOTAL_BUDGET_MS,
+            jitter_percent: 100,
+            ..RetryConfig::default()
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn test_jittered_backoff_identity_and_bounds() {
+        // jitter_percent = 0：恒等返回 base
+        for base in [0_u64, 1, 99, 100, 1_000, u64::MAX] {
+            assert_eq!(
+                jittered_backoff(base, 0, 0),
+                base,
+                "jitter_percent=0 时退避时长不应改变"
+            );
+        }
+
+        // base = 0：任何抖动都只能得到 0
+        assert_eq!(jittered_backoff(0, 100, 3), 0);
+
+        // span 向下取整为 0（base < 100）：不做抖动，避免下溢
+        assert_eq!(jittered_backoff(50, 1, 0), 50);
+
+        // jitter_percent = 100：结果落在 [base - span, base + span]
+        let base = 1_000_u64;
+        let span = base / 100 * 100;
+        for attempt in 0..64 {
+            let got = jittered_backoff(base, 100, attempt);
+            assert!(
+                (base - span..=base + span).contains(&got),
+                "第 {attempt} 次抖动的退避 {got} 应落在 [{}, {}]",
+                base - span,
+                base + span
+            );
+        }
+    }
+
+    /// 起一个对每个请求都回 `503` 的本地监听器，用于验证重试次数与耗时。
+    ///
+    /// 返回 `(监听地址, 请求计数)`；监听线程随测试结束由进程回收。
+    fn spawn_503_listener() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("本地监听端口应可绑定");
+        let addr = listener.local_addr().expect("应能取得监听地址");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_thread = Arc::clone(&counter);
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                counter_for_thread.fetch_add(1, Ordering::SeqCst);
+                // 读走请求再回 503，避免客户端写请求时收到 EPIPE
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let _ = stream.flush();
+            }
+        });
+
+        (addr, counter)
+    }
+
+    /// 预算钳制：总预算小于首轮退避时只睡剩余预算，随后立即返回最后一次结果。
+    #[tokio::test]
+    async fn test_send_clamps_backoff_wait_to_total_budget() {
+        let (addr, counter) = spawn_503_listener();
+        let client = crate::http::HttpClient::new(30).expect("HTTP client should be valid");
+
+        let started = std::time::Instant::now();
+        let result = client
+            .get(&format!("http://{addr}/always-503"))
+            .retry(RetryConfig {
+                max_retries: 3,
+                retry_on: vec![503],
+                backoff_ms: 1_000,
+                jitter_percent: 0,
+                total_budget_ms: 5,
+                ..RetryConfig::default()
+            })
+            .send()
+            .await;
+        let elapsed = started.elapsed();
+
+        // 预算耗尽不等于丢结果：仍须把最后一次响应（503）返回给调用方
+        let resp = match result {
+            Ok(resp) => resp,
+            Err(err) => panic!("预算耗尽后应返回最后一次响应而非错误: {err:?}"),
+        };
+        assert_eq!(resp.status(), 503);
+
+        // 未钳制时退避合计 1000 + 2000 + 4000 = 7000ms；钳制后只有 1 次 5ms 等待
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "退避等待应被总预算钳制（未钳制需约 7s），实际耗时 {elapsed:?}"
+        );
+
+        // 等监听线程计数落定：预算耗尽后不应再发第 3 次请求
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "预算耗尽后应停止重试（首次 + 1 次重试共 2 次请求）"
+        );
     }
 
     #[tokio::test]
@@ -1048,6 +1290,7 @@ mod retry_config_tests {
                 retry_on: vec![503],
                 backoff_ms: 1,
                 retry_non_idempotent: false,
+                ..RetryConfig::default()
             })
             .send()
             .await;
@@ -1077,6 +1320,7 @@ mod retry_config_tests {
                 retry_on: vec![503],
                 backoff_ms: 1,
                 retry_non_idempotent: true,
+                ..RetryConfig::default()
             })
             .send()
             .await;

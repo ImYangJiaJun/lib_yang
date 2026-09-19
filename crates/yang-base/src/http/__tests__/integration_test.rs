@@ -203,6 +203,9 @@ fn test_retry_config_default() {
     assert_eq!(cfg.max_retries, 3);
     assert_eq!(cfg.backoff_ms, 100);
     assert_eq!(cfg.retry_on, vec![502, 503, 504]);
+    // 默认 3 次重试的退避合计仅 ~0.7s，远小于总预算，故默认行为不受钳制影响
+    assert_eq!(cfg.total_budget_ms, 30_000);
+    assert_eq!(cfg.jitter_percent, 25);
 }
 
 #[test]
@@ -217,6 +220,9 @@ fn test_request_builder_with_retry() {
             backoff_ms: 10,
             // 本用例仅验证链式组合，显式 opt-in 非幂等重试以免语义被默认值改变
             retry_non_idempotent: false,
+            // 退避预算与抖动沿用默认值（10ms 退避下 span 向下取整为 0，不抖动）
+            total_budget_ms: 30_000,
+            jitter_percent: 25,
         })
         .header("X-Test", "1");
     drop(builder);
@@ -237,6 +243,9 @@ async fn test_retry_exhausts_on_connection_error() {
             backoff_ms: 1,
             // GET 幂等，无需 opt-in；显式写出避免新增字段后语义歧义
             retry_non_idempotent: false,
+            // 1ms 退避下抖动 span 为 0，预算充足，重试路径不被钳制
+            total_budget_ms: 30_000,
+            jitter_percent: 25,
         })
         .send()
         .await;

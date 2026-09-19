@@ -368,7 +368,7 @@ FieldType::Date => {
 **状态**：✅ 已完成（2026-05-31）。三要素全部到位：
 
 1. **请求级超时**：`RequestBuilder::timeout(secs)` 覆盖单次请求超时（已有）。
-2. **重试 + 指数退避**：`RetryConfig { max_retries, retry_on, backoff_ms }` + `RequestBuilder::retry(cfg)`，默认不重试；启用后对连接/超时错误与命中 `retry_on` 的状态码按 `backoff_ms * 2^attempt` 退避重试（已有）。
+2. **重试 + 指数退避 + 抖动/预算**：`RetryConfig { max_retries, retry_on, backoff_ms, retry_non_idempotent, total_budget_ms, jitter_percent }` + `RequestBuilder::retry(cfg)`，默认不重试；启用后对连接/超时错误与命中 `retry_on` 的状态码按 `backoff_ms * 2^attempt` 退避重试。非幂等方法（POST/PATCH）默认不参与重试，需 `retry_non_idempotent: true` 显式 opt-in。每次等待叠加 ±`jitter_percent`%（默认 25）抖动去同步，并受 `total_budget_ms`（默认 30s，上限 300s，必须 > 0）总预算钳制：预算耗尽即不再等待、直接返回最后一次结果，避免长退避把单次 `send()` 拖成长尾。
 3. **熔断器（本次新增）**：手写经典三态熔断器 `CircuitBreaker`（`http/circuit_breaker.rs`），**按目标 host 分键**——一个故障上游被熔断不影响其它健康 host。
    - 状态机：Closed（累计连续失败，达 `failure_threshold` → Open）/ Open（快速失败，冷却 `cooldown_secs` 后放行探测 → HalfOpen）/ HalfOpen（累计 `success_threshold` 次成功 → Closed，任一失败 → 重新 Open）。
    - 配置：`CircuitBreakerConfig { failure_threshold: 5, cooldown_secs: 30, success_threshold: 1 }`（默认值）。通过 `HttpClientConfig.circuit_breaker: Option<_>` 开启，**默认 None，向后兼容**。
