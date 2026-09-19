@@ -564,11 +564,17 @@ pub(super) fn validate_references(
                         reference: format!("{view_ref}: id/parent 字段必须不同"),
                     });
                 }
-                if tree.max_nodes == Some(0) {
-                    return Err(BuildError::InvalidReference {
-                        kind: "Tree View",
-                        reference: format!("{view_ref}: max_nodes 必须大于 0"),
-                    });
+                // 树节点数硬天花板：View 只能下调，不能把查询 LIMIT 抬到无界（H7/M25）。
+                const TREE_MAX_NODES_CEILING: usize = crate::table::DEFAULT_TREE_MAX_NODES;
+                if let Some(limit) = tree.max_nodes {
+                    if limit == 0 || limit > TREE_MAX_NODES_CEILING {
+                        return Err(BuildError::InvalidReference {
+                            kind: "Tree View",
+                            reference: format!(
+                                "{view_ref}: max_nodes 必须在 1..={TREE_MAX_NODES_CEILING} 之间"
+                            ),
+                        });
+                    }
                 }
                 for field in tree_fields {
                     validate_field_ref(field, fields)?;

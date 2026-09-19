@@ -11,11 +11,19 @@ use crate::error::BaseError;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// 树查询的默认节点上限（I-7）。
+/// 树查询的默认节点上限，同时是 `TreeViewSpec::max_nodes` 的硬天花板（I-7/H7）。
 ///
 /// 树查询需要把全部匹配行读入内存组装，无分页保护；该常量限制单次树查询
-/// 可处理的节点数，超出即报错。`TreeViewSpec::max_nodes` 可按 View 覆盖。
+/// 可处理的节点数，超出即报错。View 只能在此上限之内下调，不能把查询
+/// LIMIT 抬成无界。
 pub const DEFAULT_TREE_MAX_NODES: usize = 10_000;
+
+/// 树的最大嵌套深度（H7）。
+///
+/// 节点数上限约束总量，深度上限约束单棵子树的规模。[`Tables::build_tree`] 用显式
+/// 工作栈而非递归组装，栈占用由节点数决定，因此本上限是纯防御性上界（拒绝病态输入）
+/// 而不是防栈溢出的唯一依赖。
+pub const DEFAULT_TREE_MAX_DEPTH: usize = 1_024;
 
 /// 校验树查询节点数未超过上限；超限返回 `ParamInvalid`，提示调用方先收窄筛选。
 #[cfg(any(feature = "mysql", test))]
@@ -24,6 +32,20 @@ fn ensure_tree_node_cap(count: usize, max_nodes: usize) -> Result<(), BaseError>
         return Err(BaseError::ParamInvalid(
             "tree".to_string(),
             format!("树节点数 {count} 超过上限 {max_nodes}，请先收窄查询范围"),
+        ));
+    }
+    Ok(())
+}
+
+/// 校验树嵌套深度未超过上限；超限返回 `ParamInvalid`，提示调用方先收窄筛选。
+///
+/// `build_tree` 是公开 API，守卫必须落在组装过程内部（逐层校验），否则外部调用者
+/// 仍会暴露在风险中。
+fn ensure_tree_depth_cap(depth: usize, max_depth: usize) -> Result<(), BaseError> {
+    if depth > max_depth {
+        return Err(BaseError::ParamInvalid(
+            "tree".to_string(),
+            format!("树嵌套深度 {depth} 超过上限 {max_depth}，请先收窄查询范围"),
         ));
     }
     Ok(())
@@ -218,10 +240,55 @@ impl Tables {
 
         let mut rows = rows.into_iter().map(Some).collect::<Vec<_>>();
         let mut visiting = HashSet::new();
-        let nodes = roots
-            .into_iter()
-            .map(|index| build_node(index, &mut rows, &children, &mut visiting))
-            .collect::<Result<Vec<_>, _>>()?;
+        // 显式工作栈后序遍历（H7）：调用栈占用恒为常数，结果缓冲放在堆上，
+        // 因此任意输入（含 N 层线性链）都不会爆栈——树深不再是栈占用的量纲。
+        let mut stack: Vec<TreeBuildFrame> = roots
+            .iter()
+            .rev()
+            .map(|&index| TreeBuildFrame::Enter { index, depth: 1 })
+            .collect();
+        // 展开中的节点：自身索引、已取走的记录、按顺序累积的已完成子树。
+        let mut pending: Vec<(usize, Record, Vec<TableTreeNode>)> = Vec::new();
+        let mut nodes = Vec::with_capacity(roots.len());
+        while let Some(frame) = stack.pop() {
+            match frame {
+                TreeBuildFrame::Enter { index, depth } => {
+                    ensure_tree_depth_cap(depth, DEFAULT_TREE_MAX_DEPTH)?;
+                    if !visiting.insert(index) {
+                        return Err(BaseError::ConfigError("树关系包含循环".to_string()));
+                    }
+                    let record = rows[index]
+                        .take()
+                        .ok_or_else(|| BaseError::ConfigError("树节点被重复引用".to_string()))?;
+                    pending.push((index, record, Vec::new()));
+                    stack.push(TreeBuildFrame::Leave { index });
+                    // 逆序压栈，保证子节点按数据库结果顺序展开。
+                    stack.extend(children[index].iter().rev().map(|&child| {
+                        TreeBuildFrame::Enter {
+                            index: child,
+                            depth: depth + 1,
+                        }
+                    }));
+                }
+                TreeBuildFrame::Leave { index } => {
+                    visiting.remove(&index);
+                    let (owner, record, child_nodes) =
+                        pending.pop().ok_or_else(work_stack_error)?;
+                    if owner != index {
+                        return Err(work_stack_error());
+                    }
+                    let node = TableTreeNode {
+                        record,
+                        children: child_nodes,
+                    };
+                    // 栈顶仍是父节点时收拢到它，否则本节点即根节点。
+                    match pending.last_mut() {
+                        Some((_, _, siblings)) => siblings.push(node),
+                        None => nodes.push(node),
+                    }
+                }
+            }
+        }
         if rows.iter().any(Option::is_some) {
             return Err(BaseError::ConfigError("树关系包含循环".to_string()));
         }
@@ -247,33 +314,49 @@ fn value_key(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
-fn build_node(
-    index: usize,
-    rows: &mut [Option<Record>],
-    children: &[Vec<usize>],
-    visiting: &mut HashSet<usize>,
-) -> Result<TableTreeNode, BaseError> {
-    if !visiting.insert(index) {
-        return Err(BaseError::ConfigError("树关系包含循环".to_string()));
-    }
-    let record = rows[index]
-        .take()
-        .ok_or_else(|| BaseError::ConfigError("树节点被重复引用".to_string()))?;
-    let nodes = children[index]
-        .iter()
-        .copied()
-        .map(|child| build_node(child, rows, children, visiting))
-        .collect::<Result<Vec<_>, _>>()?;
-    visiting.remove(&index);
-    Ok(TableTreeNode {
-        record,
-        children: nodes,
-    })
+/// [`Tables::build_tree`] 后序遍历的工作栈帧。
+enum TreeBuildFrame {
+    /// 进入节点：校验深度与环、取走记录，并把子节点与 `Leave` 压栈。
+    Enter { index: usize, depth: usize },
+    /// 离开节点：子树已按顺序收拢完成，组装自身并挂到父节点。
+    Leave { index: usize },
+}
+
+/// 工作栈与结果缓冲失衡的错误构造（内部不变量被破坏，属配置/实现错误）。
+fn work_stack_error() -> BaseError {
+    BaseError::ConfigError("树构建工作栈与结果不符".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 构造 `len` 个节点的线性链：`id = i`、`parent_id = i - 1`，仅 0 号为根。
+    fn linear_chain(len: usize) -> Vec<Record> {
+        (0..len)
+            .map(|index| {
+                Record::new().set("id", index).set(
+                    "parent_id",
+                    if index == 0 {
+                        Value::Null
+                    } else {
+                        serde_json::json!(index - 1)
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// 逐层下探线性链的实际深度。
+    fn chain_depth(tree: &[TableTreeNode]) -> usize {
+        let mut depth = 0;
+        let mut cursor = tree.first();
+        while let Some(node) = cursor {
+            depth += 1;
+            cursor = node.children.first();
+        }
+        depth
+    }
 
     #[test]
     fn tree_node_cap_rejects_overflow() {
@@ -331,6 +414,43 @@ mod tests {
         )
         .expect_err("重复主键必须失败");
         assert!(matches!(duplicate, BaseError::ConfigError(_)));
+    }
+
+    #[test]
+    fn tree_depth_cap_rejects_overflow() {
+        // 边界：恰好等于上限放行。
+        ensure_tree_depth_cap(DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_DEPTH)
+            .expect("深度等于上限应放行");
+        ensure_tree_depth_cap(3, 10).expect("深度低于上限应放行");
+
+        let error = ensure_tree_depth_cap(DEFAULT_TREE_MAX_DEPTH + 1, DEFAULT_TREE_MAX_DEPTH)
+            .expect_err("深度超过上限必须报错");
+        assert!(
+            matches!(error, BaseError::ParamInvalid(_, _)),
+            "树深度超限应返回 ParamInvalid: {error:?}"
+        );
+    }
+
+    /// H7 回归：线性链在节点数上限之内就能把递归调用栈耗尽。修复前该输入会
+    /// 直接 abort（栈溢出），而不是返回可处理的错误。
+    #[test]
+    fn tree_builder_rejects_linear_chain_deeper_than_cap() {
+        let error = Tables::build_tree(linear_chain(2_000), "id", "parent_id")
+            .expect_err("超深线性链必须报错而不是爆栈");
+        assert!(
+            matches!(error, BaseError::ParamInvalid(_, _)),
+            "超深线性链应返回 ParamInvalid: {error:?}"
+        );
+    }
+
+    /// H7 边界：深度恰好等于上限的线性链必须组装成功——组装走显式工作栈，
+    /// 调用栈占用不随树深增长，因此这种输入在默认线程栈上也能安全完成。
+    #[test]
+    fn tree_builder_accepts_linear_chain_at_depth_cap() {
+        let tree = Tables::build_tree(linear_chain(DEFAULT_TREE_MAX_DEPTH), "id", "parent_id")
+            .expect("等于深度上限的线性链应组装成功");
+        assert_eq!(tree.len(), 1, "线性链只应有一个根节点");
+        assert_eq!(chain_depth(&tree), DEFAULT_TREE_MAX_DEPTH);
     }
 
     #[test]
