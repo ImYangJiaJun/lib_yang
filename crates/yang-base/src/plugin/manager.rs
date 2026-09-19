@@ -164,12 +164,15 @@ impl PluginManager {
     /// ```
     pub async fn get_all(&self) -> Vec<Arc<dyn Plugin>> {
         let plugins = self.plugins.read().await;
-        let mut plugin_list: Vec<_> = plugins.values().cloned().collect();
+        let mut plugin_list: Vec<(String, Arc<dyn Plugin>)> = plugins
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
-        // 按依赖关系排序
+        // 按依赖关系排序（节点名使用注册时归一化后的 key，见 topological_sort）
         self.topological_sort(&mut plugin_list);
 
-        plugin_list
+        plugin_list.into_iter().map(|(_, p)| p).collect()
     }
 
     /// 加载插件配置
@@ -244,20 +247,30 @@ impl PluginManager {
     /// 拓扑排序（按依赖关系排序）
     ///
     /// # 参数
-    /// - plugins: 插件列表
+    /// - plugins: `(注册 key, 插件)` 列表，key 为注册时经 `normalize_plugin_name` 归一化后的名称
     ///
     /// # 说明
-    /// 使用 Kahn 算法进行拓扑排序，确保依赖插件先于当前插件
-    fn topological_sort(&self, plugins: &mut Vec<Arc<dyn Plugin>>) {
+    /// 使用 Kahn 算法进行拓扑排序，确保依赖插件先于当前插件。
+    ///
+    /// 节点名一律使用注册 key、依赖名一律经 `normalize_plugin_name` 归一化后再建边，
+    /// 与 [`super::registry::PluginRegistry`] 的 `compute_topological_sort` 同口径：
+    /// 避免插件对象 `name()` 返回带边界空格时与内部 key 失配，造成断边或误报循环依赖。
+    fn topological_sort(&self, plugins: &mut Vec<(String, Arc<dyn Plugin>)>) {
         // 构建依赖图
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut graph: HashMap<String, Vec<String>> = HashMap::new();
 
-        for plugin in plugins.iter() {
-            let name = plugin.name().to_string();
+        for (name, plugin) in plugins.iter() {
             in_degree.entry(name.clone()).or_insert(0);
 
             for dep in plugin.dependencies() {
+                // 与 registry 同口径：trim 后再建边
+                let Ok(dep) = normalize_plugin_name(dep) else {
+                    continue;
+                };
+                if !plugins.iter().any(|(n, _)| n == dep) {
+                    log::warn!("插件 {} 声明的依赖 {:?} 未注册，无法建立依赖边", name, dep);
+                }
                 graph.entry(dep.to_string()).or_default().push(name.clone());
                 *in_degree.entry(name.clone()).or_insert(0) += 1;
             }
@@ -270,7 +283,7 @@ impl PluginManager {
             .map(|(name, _)| name.clone())
             .collect();
 
-        let mut sorted = Vec::new();
+        let mut sorted: Vec<String> = Vec::new();
 
         while let Some(node) = queue.pop() {
             sorted.push(node.clone());
@@ -287,28 +300,23 @@ impl PluginManager {
             }
         }
 
-        // 检测循环依赖：Kahn 算法结束后，未被排序的节点构成环
+        // 检测循环依赖或断边：Kahn 算法结束后，未被排序的节点降级到最后
         if sorted.len() < plugins.len() {
             let circular: Vec<String> = plugins
                 .iter()
-                .filter(|p| !sorted.iter().any(|n| n == p.name()))
-                .map(|p| p.name().to_string())
+                .map(|(n, _)| n.clone())
+                .filter(|n| !sorted.contains(n))
                 .collect();
             log::error!(
-                "检测到循环依赖，以下插件将无法按依赖顺序加载: {}",
+                "插件依赖图无法排序（存在环或断边），以下插件降级到最后: {}",
                 circular.join(", ")
             );
-            // 将循环中的插件追加到排序末尾，保证所有插件都出现在结果中
+            // 将无法排序的插件追加到排序末尾，保证所有插件都出现在结果中
             sorted.extend(circular);
         }
 
-        // 重新排序插件列表
-        plugins.sort_by_key(|p| {
-            sorted
-                .iter()
-                .position(|n| n == p.name())
-                .unwrap_or(usize::MAX)
-        });
+        // 重新排序插件列表（比较器同样用归一化 key，避免二次失配）
+        plugins.sort_by_key(|(n, _)| sorted.iter().position(|s| s == n).unwrap_or(usize::MAX));
     }
 
     /// 验证配置
