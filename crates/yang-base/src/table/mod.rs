@@ -84,4 +84,4 @@ pub(crate) use table_config::TableConfig;
 pub(crate) use table_config::{CheckConfig, ForeignKeyConfig};
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
 pub use tables::{TableListResult, TableTreeNode, Tables, DEFAULT_TREE_MAX_NODES};
-pub use validator::{Validator, ValidatorFn};
+pub use validator::{RegexCache, Validator, ValidatorFn};

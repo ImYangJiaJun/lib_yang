@@ -148,4 +148,8 @@ pub struct TableQuery {
 
     /// 本次派发的运行期标识（用于慢查询日志串联），由 ActionContext 注入。
     request_id: Option<crate::action::RequestId>,
+
+    /// 共享的有界正则缓存（Email/Phone/Regex 验证器复用），由 ActionContext 从
+    /// [`crate::tools::Tools`] 注入；未注入时退化为默认容量缓存。
+    regex_cache: crate::table::RegexCache,
 }

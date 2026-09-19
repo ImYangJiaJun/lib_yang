@@ -4,52 +4,185 @@
 
 use crate::error::BaseError;
 #[cfg(feature = "validator")]
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "validator")]
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "validator")]
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 /// 自定义验证函数类型
 ///
 /// 接收字段名和字段值，返回验证结果
 pub type ValidatorFn = Arc<dyn Fn(&str, &serde_json::Value) -> Result<(), BaseError> + Send + Sync>;
 
-/// 缓存的邮箱正则表达式（严格模式）
-///
-/// 使用 OnceLock 确保线程安全的延迟初始化
-#[cfg(feature = "validator")]
-static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
+/// 默认动态正则缓存容量：正则条目数有界，避免进程级无界增长。
+pub const DEFAULT_REGEX_CACHE_CAP: usize = 128;
 
-/// 缓存的手机号正则表达式（E.164 格式）
+/// 单条正则编译的内存硬上限（1 MiB），防止病态正则占满 regex crate 默认 10 MiB。
 #[cfg(feature = "validator")]
-static PHONE_REGEX: OnceLock<Regex> = OnceLock::new();
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
-/// 动态正则表达式缓存（用于 Validator::Regex 变体）
-///
-/// 使用 RwLock 支持并发读写，避免重复编译相同的正则表达式
+/// 超长 pattern 只编译不入表，避免用极长字符串撑大缓存键集合。
 #[cfg(feature = "validator")]
-static REGEX_CACHE: OnceLock<RwLock<HashMap<String, Regex>>> = OnceLock::new();
+const MAX_PATTERN_LENGTH: usize = 512;
 
-/// 获取缓存的邮箱正则表达式引用
+/// 严格邮箱格式常量 pattern。
 #[cfg(feature = "validator")]
-fn email_regex() -> &'static Regex {
-    EMAIL_REGEX.get_or_init(|| {
-        // 严格邮箱格式：用户名@域名.顶级域名（至少2个字符）
-        Regex::new(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
-            .expect("邮箱正则表达式编译失败")
-    })
+const EMAIL_PATTERN: &str = r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$";
+
+/// 严格手机号格式（E.164）常量 pattern。
+#[cfg(feature = "validator")]
+const PHONE_PATTERN: &str = r"^\+?[1-9]\d{1,14}$";
+
+/// 按 `REGEX_SIZE_LIMIT` 硬上限编译一条正则。
+#[cfg(feature = "validator")]
+fn compile_bounded(pattern: &str) -> Result<Regex, regex::Error> {
+    RegexBuilder::new(pattern)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
 }
 
-/// 获取缓存的手机号正则表达式引用
+/// 有界正则缓存的共享可变状态。
 #[cfg(feature = "validator")]
-fn phone_regex() -> &'static Regex {
-    PHONE_REGEX.get_or_init(|| {
-        // E.164 格式：可选的 + 号，第一位非零数字，总长度 2-15 位
-        Regex::new(r"^\+?[1-9]\d{1,14}$").expect("手机号正则表达式编译失败")
-    })
+#[derive(Debug)]
+struct RegexCacheInner {
+    /// 邮箱常量正则（首次使用惰性编译，编译失败返回错误而非 panic）。
+    email: OnceLock<Arc<Regex>>,
+    /// 手机号常量正则（同上）。
+    phone: OnceLock<Arc<Regex>>,
+    /// 动态 pattern → 已编译正则，容量以 `RegexCache::cap` 为上限。
+    dynamic: Mutex<HashMap<String, Arc<Regex>>>,
+}
+
+/// 有界正则缓存：由 [`crate::tools::Tools`] 拥有并随应用生命周期冻结。
+///
+/// 取代历史进程级 `EMAIL_REGEX`/`PHONE_REGEX`/`REGEX_CACHE` 三个 static：资源所有权
+/// 收口到 `Tools`，动态条目数有上限（[`Self::cap`]），单条正则有编译内存硬上限。
+///
+/// 未启用 `validator` feature 时退化为仅含 `cap` 的空壳，调用链签名在两种 feature
+/// 组合下保持一致。
+#[derive(Debug, Clone)]
+pub struct RegexCache {
+    #[cfg(feature = "validator")]
+    inner: Arc<RegexCacheInner>,
+    cap: usize,
+}
+
+impl RegexCache {
+    /// 创建容量为 `cap` 的缓存。
+    ///
+    /// 常量正则（邮箱/手机号）在首次使用时惰性编译；编译失败返回
+    /// [`BaseError::ConfigError`] 而非 panic。
+    pub fn new(cap: usize) -> Self {
+        Self {
+            #[cfg(feature = "validator")]
+            inner: Arc::new(RegexCacheInner {
+                email: OnceLock::new(),
+                phone: OnceLock::new(),
+                dynamic: Mutex::new(HashMap::new()),
+            }),
+            cap,
+        }
+    }
+
+    /// 动态 pattern 缓存容量上限。
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// 当前已缓存的动态 pattern 条数（测试与观测用）。
+    pub fn len(&self) -> usize {
+        #[cfg(feature = "validator")]
+        {
+            self.inner
+                .dynamic
+                .lock()
+                .map(|guard| guard.len())
+                .unwrap_or(0)
+        }
+        #[cfg(not(feature = "validator"))]
+        {
+            0
+        }
+    }
+
+    /// 动态缓存是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 邮箱常量正则（惰性编译，失败返回错误）。
+    #[cfg(feature = "validator")]
+    fn email(&self) -> Result<Arc<Regex>, BaseError> {
+        if let Some(compiled) = self.inner.email.get() {
+            return Ok(Arc::clone(compiled));
+        }
+        let compiled =
+            Arc::new(compile_bounded(EMAIL_PATTERN).map_err(|error| {
+                BaseError::ConfigError(format!("邮箱正则表达式编译失败: {error}"))
+            })?);
+        // 并发竞争下后到者被丢弃，返回的 Arc 与已存实例语义等价。
+        let _ = self.inner.email.set(Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
+    /// 手机号常量正则（惰性编译，失败返回错误）。
+    #[cfg(feature = "validator")]
+    fn phone(&self) -> Result<Arc<Regex>, BaseError> {
+        if let Some(compiled) = self.inner.phone.get() {
+            return Ok(Arc::clone(compiled));
+        }
+        let compiled = Arc::new(compile_bounded(PHONE_PATTERN).map_err(|error| {
+            BaseError::ConfigError(format!("手机号正则表达式编译失败: {error}"))
+        })?);
+        // 并发竞争下后到者被丢弃，返回的 Arc 与已存实例语义等价。
+        let _ = self.inner.phone.set(Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
+    /// 获取（或编译并缓存）动态 pattern 的共享正则。
+    ///
+    /// 命中：锁内克隆 `Arc` 后立即释放锁，再在外侧匹配，缩短持锁时间；
+    /// 未命中：编译，仅当 `len() < cap` 且 pattern 长度未超阈值时插入，否则直接用
+    /// 刚编译的 `Arc` 不入表。
+    #[cfg(feature = "validator")]
+    pub(crate) fn dynamic(&self, pattern: &str) -> Result<Arc<Regex>, BaseError> {
+        if let Some(compiled) = self
+            .inner
+            .dynamic
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(pattern)
+            .cloned()
+        {
+            return Ok(compiled);
+        }
+        let compiled = Arc::new(
+            compile_bounded(pattern)
+                .map_err(|error| BaseError::ConfigError(format!("正则表达式无效: {error}")))?,
+        );
+        if pattern.len() <= MAX_PATTERN_LENGTH {
+            let mut guard = self
+                .inner
+                .dynamic
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.len() < self.cap {
+                guard
+                    .entry(pattern.to_string())
+                    .or_insert_with(|| Arc::clone(&compiled));
+            }
+        }
+        Ok(compiled)
+    }
+}
+
+impl Default for RegexCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_REGEX_CACHE_CAP)
+    }
 }
 
 /// 字段验证器
@@ -109,8 +242,35 @@ impl Validator {
         }
     }
 
-    /// 验证字段值是否符合验证规则
+    /// 验证字段值是否符合验证规则（无缓存回退）。
+    ///
+    /// 保留此方法以兼容未持有 [`crate::tools::Tools`] 的公开调用方：Email/Phone/Regex
+    /// 变体在此路径下一次性编译、不入缓存。运行期写路径请优先使用
+    /// [`Validator::validate_with`] 传入共享 [`RegexCache`]。
     pub fn validate(&self, field_name: &str, value: &serde_json::Value) -> Result<(), BaseError> {
+        self.validate_impl(field_name, value, None)
+    }
+
+    /// 使用共享正则缓存验证字段值。
+    ///
+    /// Email/Phone 走缓存内预编译常量正则；Regex 走有界动态缓存，避免重复编译与
+    /// 进程级无界缓存。
+    pub fn validate_with(
+        &self,
+        field_name: &str,
+        value: &serde_json::Value,
+        cache: &RegexCache,
+    ) -> Result<(), BaseError> {
+        self.validate_impl(field_name, value, Some(cache))
+    }
+
+    #[cfg_attr(not(feature = "validator"), allow(unused_variables))]
+    fn validate_impl(
+        &self,
+        field_name: &str,
+        value: &serde_json::Value,
+        cache: Option<&RegexCache>,
+    ) -> Result<(), BaseError> {
         match self {
             Validator::MinLength(min_len) => {
                 if let Some(s) = value.as_str() {
@@ -196,7 +356,15 @@ impl Validator {
             #[cfg(feature = "validator")]
             Validator::Email => {
                 if let Some(s) = value.as_str() {
-                    if !email_regex().is_match(s) {
+                    let matched = match cache {
+                        Some(cache) => cache.email()?.is_match(s),
+                        None => compile_bounded(EMAIL_PATTERN)
+                            .map_err(|error| {
+                                BaseError::ConfigError(format!("邮箱正则表达式编译失败: {error}"))
+                            })?
+                            .is_match(s),
+                    };
+                    if !matched {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
                             "邮箱格式无效，请使用标准邮箱格式（如 user@example.com）".to_string(),
@@ -252,7 +420,15 @@ impl Validator {
             #[cfg(feature = "validator")]
             Validator::Phone => {
                 if let Some(s) = value.as_str() {
-                    if !phone_regex().is_match(s) {
+                    let matched = match cache {
+                        Some(cache) => cache.phone()?.is_match(s),
+                        None => compile_bounded(PHONE_PATTERN)
+                            .map_err(|error| {
+                                BaseError::ConfigError(format!("手机号正则表达式编译失败: {error}"))
+                            })?
+                            .is_match(s),
+                    };
+                    if !matched {
                         return Err(BaseError::ValidationFailed(
                             field_name.to_string(),
                             "手机号格式无效，请使用 E.164 格式（如 +8613800138000 或 13800138000）"
@@ -330,31 +506,21 @@ impl Validator {
             #[cfg(feature = "validator")]
             Validator::Regex(pattern) => {
                 if let Some(s) = value.as_str() {
-                    let cache = REGEX_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-                    // 快路径：单把读锁内命中即直接匹配返回，避免重复编译与额外加锁
-                    {
-                        let read_guard = cache.read().unwrap_or_else(|p| p.into_inner());
-                        if let Some(re) = read_guard.get(pattern) {
-                            return if re.is_match(s) {
-                                Ok(())
-                            } else {
-                                Err(BaseError::ValidationFailed(
-                                    field_name.to_string(),
-                                    format!("值不匹配正则表达式: {}", pattern),
-                                ))
-                            };
-                        }
-                    }
-                    // 未命中：取写锁，编译并缓存后立即用 &mut Regex 匹配
-                    let re = Regex::new(pattern).map_err(|e| {
-                        BaseError::ValidationFailed(
-                            field_name.to_string(),
-                            format!("正则表达式无效: {}", e),
-                        )
-                    })?;
-                    let mut write_guard = cache.write().unwrap_or_else(|p| p.into_inner());
-                    let cached = write_guard.entry(pattern.to_string()).or_insert_with(|| re);
-                    if cached.is_match(s) {
+                    let compiled = match cache {
+                        Some(cache) => cache.dynamic(pattern).map_err(|error| match error {
+                            BaseError::ConfigError(message) => {
+                                BaseError::ValidationFailed(field_name.to_string(), message)
+                            }
+                            other => other,
+                        })?,
+                        None => Arc::new(compile_bounded(pattern).map_err(|error| {
+                            BaseError::ValidationFailed(
+                                field_name.to_string(),
+                                format!("正则表达式无效: {error}"),
+                            )
+                        })?),
+                    };
+                    if compiled.is_match(s) {
                         Ok(())
                     } else {
                         Err(BaseError::ValidationFailed(

@@ -3,7 +3,7 @@
 //! 应用侧通过 [`super::Field`] 声明字段；本模块只保存构建完成后的执行期表示。
 
 use crate::error::BaseError;
-use crate::table::{FieldType, Validator};
+use crate::table::{FieldType, RegexCache, Validator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -124,6 +124,7 @@ impl FieldConfig {
     /// # 参数
     ///
     /// - `value`: 要验证的值
+    /// - `cache`: 共享正则缓存（Email/Phone/Regex 验证器复用预编译结果）
     ///
     /// # 返回值
     ///
@@ -135,7 +136,11 @@ impl FieldConfig {
     /// - `BaseError::InvalidFieldType`: 字段类型验证失败
     /// - `BaseError::ValidationFailed`: 验证器验证失败
     ///
-    pub(crate) fn validate(&self, value: &serde_json::Value) -> Result<(), BaseError> {
+    pub(crate) fn validate(
+        &self,
+        value: &serde_json::Value,
+        cache: &RegexCache,
+    ) -> Result<(), BaseError> {
         // 1. 检查必填约束
         if self.required && value.is_null() {
             return Err(BaseError::FieldRequired(self.name.clone()));
@@ -151,7 +156,7 @@ impl FieldConfig {
 
         // 3. 依次执行所有配置的验证器
         for validator in &self.validators {
-            validator.validate(&self.name, value)?;
+            validator.validate_with(&self.name, value, cache)?;
         }
 
         Ok(())

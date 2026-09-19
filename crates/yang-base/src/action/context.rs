@@ -397,7 +397,8 @@ impl ActionContext {
             pool,
         )
         .with_slow_threshold(slow_threshold)
-        .with_request_id(self.request_id))
+        .with_request_id(self.request_id)
+        .with_regex_cache(self.tools.regex_cache().clone()))
     }
 
     /// 创建默认失败关闭的表查询构建器。
