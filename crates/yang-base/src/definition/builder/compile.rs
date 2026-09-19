@@ -1,6 +1,8 @@
 //! 构建期编译：定义 → Registry/TableDefinition/运行时视图与模块投影。
 
-use crate::definition::{ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ModuleName};
+use crate::definition::{
+    ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ModuleName, TableName,
+};
 use crate::router::middleware::{AuthorizationPolicy, PermissionGroup};
 use crate::table::{RelationOptionsRequest, RelationOptionsResponse, TableDefinition};
 use std::any::TypeId;
@@ -686,41 +688,52 @@ fn checked_runtime_field(
 }
 
 pub(super) fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildError> {
+    // 每张表只编译一次 TableDefinition，并由所有引用它的 Action 以 Arc 共享，
+    // 避免同一模块内 N 个 Action 重复编译同一份表定义。
+    let mut table_definitions: BTreeMap<&TableName, Arc<TableDefinition>> = BTreeMap::new();
+    for table in addons
+        .iter()
+        .flat_map(|addon| &addon.modules)
+        .filter_map(|module| module.table.as_ref())
+    {
+        if table_definitions.contains_key(&table.name) {
+            continue;
+        }
+        let definition =
+            table
+                .table_definition()
+                .map_err(|error| BuildError::InvalidFieldDefinition {
+                    table: table.name.to_string(),
+                    field: "<table>".to_string(),
+                    reason: error.to_string(),
+                })?;
+        table_definitions.insert(&table.name, Arc::new(definition));
+    }
+
     let mut actions = BTreeMap::new();
     let mut handlers = Vec::new();
-    for (slot, (module, table, action, handler, middlewares)) in addons
+    // 迭代器本就持有 `&ModuleSpec`，直接带进循环体，免去按名反查模块的 O(A×M) 扫描。
+    for (slot, (module, action, handler, middlewares)) in addons
         .iter()
         .flat_map(|addon| &addon.modules)
         .flat_map(|module| {
-            module.action_pairs().map(move |(action, handler)| {
-                (
-                    &module.name,
-                    module.table.as_ref(),
-                    action,
-                    handler,
-                    module.middlewares(),
-                )
-            })
+            module
+                .action_pairs()
+                .map(move |(action, handler)| (module, action, handler, module.middlewares()))
         })
         .enumerate()
     {
         actions.insert(
-            ActionRef::new(module.clone(), action.name.clone()),
+            ActionRef::new(module.name.clone(), action.name.clone()),
             ActionHandle(slot),
         );
         let mut permission_groups = Vec::new();
-        let module_spec = addons
-            .iter()
-            .flat_map(|addon| &addon.modules)
-            .find(|candidate| &candidate.name == module);
-        if let Some(module_spec) = module_spec {
-            if !module_spec.default_permissions.is_empty() {
-                permission_groups.push(PermissionGroup::new(
-                    "模块",
-                    Arc::<[String]>::from(module_spec.default_permissions.clone()),
-                    module_spec.default_permission_mode,
-                ));
-            }
+        if !module.default_permissions.is_empty() {
+            permission_groups.push(PermissionGroup::new(
+                "模块",
+                Arc::<[String]>::from(module.default_permissions.clone()),
+                module.default_permission_mode,
+            ));
         }
         if !action.permissions.is_empty() {
             permission_groups.push(PermissionGroup::new(
@@ -733,18 +746,14 @@ pub(super) fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildErro
             handler: Arc::clone(handler),
             middlewares: Arc::from(middlewares.to_vec()),
             policy: AuthorizationPolicy::new(action.is_public, permission_groups),
-            module: module.to_string(),
+            module: module.name.to_string(),
             action: action.name.to_string(),
             ui_schema: crate::definition::ActionDemoSchema::from(action),
-            table_definition: table
-                .map(crate::definition::TableSpec::table_definition)
-                .transpose()
-                .map_err(|error| BuildError::InvalidFieldDefinition {
-                    table: table
-                        .map_or_else(|| "<none>".to_string(), |value| value.name.to_string()),
-                    field: "<table>".to_string(),
-                    reason: error.to_string(),
-                })?,
+            table_definition: module
+                .table
+                .as_ref()
+                .and_then(|table| table_definitions.get(&table.name))
+                .map(Arc::clone),
         });
     }
     Ok(Registry {
