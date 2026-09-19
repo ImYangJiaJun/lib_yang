@@ -50,7 +50,8 @@ async fn mysql_subquery_executes_with_bound_parameters() {
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_users"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .where_exists(paid_order)
         .select()
         .await
@@ -92,7 +93,8 @@ async fn postgres_subquery_executes_with_numbered_bound_parameters() {
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_users"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .where_exists(paid_order)
         .select()
         .await
@@ -128,13 +130,15 @@ async fn mysql_union_all_preserves_branch_and_outer_scope() {
     let archive = db
         .table(yang_db::table!("p3_archive"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
         .limit(1);
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_current"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .union_all(archive)
         .expect("输出一致")
         .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
@@ -172,13 +176,15 @@ async fn postgres_union_all_preserves_branch_and_outer_scope() {
     let archive = db
         .table(yang_db::table!("p3_archive"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
         .limit(1);
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_current"))
         .field(yang_db::field!("id"))
-        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+        .expect("固定受控条件应合法")
         .union_all(archive)
         .expect("输出一致")
         .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
@@ -212,7 +218,8 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
         .select_for_update(
             db1.table(yang_db::table!("p3_lock_accounts"))
                 .field(yang_db::field!("balance"))
-                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法"),
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+                .expect("固定受控条件应合法"),
         )
         .await
         .expect("获取 FOR UPDATE");
@@ -223,7 +230,8 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
         Duration::from_millis(250),
         waiter
             .table(yang_db::table!("p3_lock_accounts"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .update(&json!({"balance": 101})),
     )
     .await;
@@ -235,7 +243,8 @@ async fn mysql_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     assert_eq!(
         retry
             .table(yang_db::table!("p3_lock_accounts"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .update(&json!({"balance": 102}))
             .await
             .expect("锁释放后更新"),
@@ -268,7 +277,8 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
         .select_for_update(
             db1.table(yang_db::table!("p3_lock_accounts"))
                 .field(yang_db::field!("balance"))
-                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法"),
+                .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+                .expect("固定受控条件应合法"),
         )
         .await
         .expect("获取 FOR UPDATE");
@@ -279,7 +289,8 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
         Duration::from_millis(250),
         waiter
             .table(yang_db::table!("p3_lock_accounts"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .update(&json!({"balance": 101})),
     )
     .await;
@@ -291,7 +302,8 @@ async fn postgres_for_update_blocks_cancelled_wait_and_releases_on_rollback() {
     assert_eq!(
         retry
             .table(yang_db::table!("p3_lock_accounts"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .update(&json!({"balance": 102}))
             .await
             .expect("锁释放后更新"),
@@ -318,7 +330,8 @@ async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
 
     assert_eq!(
         db.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .increment(yang_db::field!("value"), -3)
             .await
             .expect("负增量"),
@@ -326,7 +339,8 @@ async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
     );
     assert_eq!(
         db.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .decrement(yang_db::field!("value"), 2)
             .await
             .expect("原子递减"),
@@ -335,7 +349,8 @@ async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
     let mut tx = db.transaction().await.expect("开始事务");
     assert_eq!(
         tx.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .increment(yang_db::field!("value"), 5)
             .await
             .expect("事务内原子增加"),
@@ -345,14 +360,16 @@ async fn mysql_atomic_updates_cover_negative_transaction_and_overflow() {
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_counters"))
         .field(yang_db::field!("value"))
-        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+        .expect("固定受控条件应合法")
         .select()
         .await
         .expect("读取结果");
     assert_eq!(rows, vec![(10,)]);
     assert!(db
         .table(yang_db::table!("p3_counters"))
-        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2)
+        .expect("固定受控条件应合法")
         .increment(yang_db::field!("value"), 1)
         .await
         .is_err());
@@ -376,7 +393,8 @@ async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
 
     assert_eq!(
         db.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .increment(yang_db::field!("value"), -3)
             .await
             .expect("负增量"),
@@ -384,7 +402,8 @@ async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
     );
     assert_eq!(
         db.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .decrement(yang_db::field!("value"), 2)
             .await
             .expect("原子递减"),
@@ -393,7 +412,8 @@ async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
     let mut tx = db.transaction().await.expect("开始事务");
     assert_eq!(
         tx.table(yang_db::table!("p3_counters"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .increment(yang_db::field!("value"), 5)
             .await
             .expect("事务内原子增加"),
@@ -403,14 +423,16 @@ async fn postgres_atomic_updates_cover_negative_transaction_and_overflow() {
     let rows: Vec<(i64,)> = db
         .table(yang_db::table!("p3_counters"))
         .field(yang_db::field!("value"))
-        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+        .expect("固定受控条件应合法")
         .select()
         .await
         .expect("读取结果");
     assert_eq!(rows, vec![(10,)]);
     assert!(db
         .table(yang_db::table!("p3_counters"))
-        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2).expect("固定受控条件应合法")
+        .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 2)
+        .expect("固定受控条件应合法")
         .increment(yang_db::field!("value"), 1)
         .await
         .is_err());

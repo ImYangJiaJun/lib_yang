@@ -80,7 +80,10 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let deny_unknown = attrs
         .iter()
         .any(|attribute| attribute.path().is_ident("deny_unknown_fields"));
-    if let Some(attribute) = attrs.iter().find(|attribute| !is_supported_item_attr(attribute)) {
+    if let Some(attribute) = attrs
+        .iter()
+        .find(|attribute| !is_supported_item_attr(attribute))
+    {
         return Err(Error::new_spanned(
             attribute,
             "params! 容器仅支持 #[deny_unknown_fields] 与文档注释；\

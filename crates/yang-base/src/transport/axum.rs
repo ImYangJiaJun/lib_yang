@@ -223,9 +223,20 @@ fn router_with_addr(
         max_attachment_bytes: config.max_attachment_bytes,
     };
 
-    let mut router = Router::new()
-        .route("/health/live", axum::routing::get(live))
-        .route("/health/ready", axum::routing::get(ready));
+    // 框架保留路由由 definition 侧的常量派生注册，禁止两处硬编码漂移。
+    let mut router = Router::new();
+    for &(method, path) in crate::definition::RESERVED_FRAMEWORK_ROUTES {
+        debug_assert_eq!(method, "GET");
+        router = match path {
+            "/health/live" => router.route(path, axum::routing::get(live)),
+            "/health/ready" => router.route(path, axum::routing::get(ready)),
+            other => {
+                return Err(BaseError::ConfigError(format!(
+                    "框架保留路由缺少处理器: {other}"
+                )))
+            }
+        };
+    }
 
     for addon in state.app.catalog().addons() {
         for module in &addon.modules {
@@ -395,7 +406,10 @@ async fn ready(State(state): State<HttpState>) -> Response {
         tracing::warn!(?health, "就绪检查失败");
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiResponse::fail(crate::error::NOT_READY_CODE, "服务尚未就绪")),
+            Json(ApiResponse::fail(
+                crate::error::NOT_READY_CODE,
+                "服务尚未就绪",
+            )),
         )
             .into_response()
     }
@@ -484,7 +498,9 @@ async fn dispatch_request(
                 .unwrap_or_else(|| StatusCode::from_u16(success_status).unwrap_or(StatusCode::OK));
             let response_headers = response.response_headers().to_vec();
             let mut http_response = match response.attachment.clone() {
-                Some(attachment) => attachment_response(attachment, state.max_attachment_bytes).await,
+                Some(attachment) => {
+                    attachment_response(attachment, state.max_attachment_bytes).await
+                }
                 None => (status, Json(response)).into_response(),
             };
             if let Err(error) =
@@ -980,7 +996,12 @@ async fn attachment_response(
             ),
         },
         ResponseAttachment::Download { path, filename } => {
-            file_response(&path, Disposition::Attachment(&filename), max_attachment_bytes).await
+            file_response(
+                &path,
+                Disposition::Attachment(&filename),
+                max_attachment_bytes,
+            )
+            .await
         }
         ResponseAttachment::Preview { path } => {
             file_response(&path, Disposition::Inline, max_attachment_bytes).await

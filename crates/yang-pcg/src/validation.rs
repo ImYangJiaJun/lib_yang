@@ -1497,10 +1497,12 @@ mod tests {
             GridPoint { x: 0, y: 0 },
             GridPoint { x: 5, y: 5 },
         );
-        let ok = crate::constraint::validate_constraints(&[Constraint::ExclusionZone(
-            default_zone,
-        )]);
-        assert!(ok.is_ok(), "exclude_rooms 为 false 的默认排除区应通过约束校验");
+        let ok =
+            crate::constraint::validate_constraints(&[Constraint::ExclusionZone(default_zone)]);
+        assert!(
+            ok.is_ok(),
+            "exclude_rooms 为 false 的默认排除区应通过约束校验"
+        );
     }
 
     #[test]

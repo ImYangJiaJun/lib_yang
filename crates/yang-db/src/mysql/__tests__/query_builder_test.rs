@@ -102,7 +102,8 @@ mod tests {
                 yang_db::field!("users.tenant_id"),
                 yang_db::CompareOp::Eq,
                 7,
-            ).expect("固定受控条件应合法")
+            )
+            .expect("固定受控条件应合法")
             .where_exists(paid_order)
             .where_in_subquery(yang_db::field!("users.id"), active_user)
             .where_not_exists(banned_user);
@@ -155,13 +156,15 @@ mod tests {
         let branch = QueryBuilder::new(pool, "archived_users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("kind"))
-            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 8).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 8)
+            .expect("固定受控条件应合法")
             .order(yang_db::field!("id"), yang_db::SortOrder::Desc)
             .limit(2);
         let builder = QueryBuilder::new(pool, "users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("kind"))
-            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("tenant_id"), yang_db::CompareOp::Eq, 7)
+            .expect("固定受控条件应合法")
             .union_all(branch)
             .expect("输出列数一致")
             .order(yang_db::field!("id"), yang_db::SortOrder::Asc)
@@ -208,7 +211,8 @@ mod tests {
     fn test_transaction_row_lock_rendering_is_typed_and_parameterized() {
         let builder = QueryBuilder::new(make_sync_test_pool(), "accounts", false)
             .field(yang_db::field!("balance"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 42).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 42)
+            .expect("固定受控条件应合法")
             .limit(1);
         let (sql, params) = builder
             .render_for_transaction(Some(crate::RowLock::ForUpdate))
@@ -402,8 +406,10 @@ mod tests {
     async fn test_where_and() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_and(yang_db::field!("name"), yang_db::CompareOp::Eq, "test").expect("固定受控条件应合法")
-            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18).expect("固定受控条件应合法");
+            .where_and(yang_db::field!("name"), yang_db::CompareOp::Eq, "test")
+            .expect("固定受控条件应合法")
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18)
+            .expect("固定受控条件应合法");
 
         assert_eq!(builder.conditions.len(), 2);
     }
@@ -412,8 +418,10 @@ mod tests {
     async fn test_where_or() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
-            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 2).expect("固定受控条件应合法");
+            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
+            .where_or(yang_db::field!("status"), yang_db::CompareOp::Eq, 2)
+            .expect("固定受控条件应合法");
 
         // where_or 会将条件组合成 OR
         assert_eq!(builder.conditions.len(), 1);
@@ -500,7 +508,8 @@ mod tests {
         let builder = QueryBuilder::new(&pool, "users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("name"))
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法");
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法");
 
         let sql = builder.to_sql();
         assert!(sql.contains("SELECT `id`, `name` FROM `users`"));
@@ -573,8 +582,10 @@ mod tests {
                 yang_db::field!("users.id"),
                 yang_db::field!("orders.user_id"),
             )
-            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
-            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
+            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100)
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("users.id"))
             .order(yang_db::field!("orders.total"), yang_db::SortOrder::Desc)
             .limit(50);
@@ -659,7 +670,8 @@ mod tests {
     fn test_is_null_with_and_condition() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1i64).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1i64)
+            .expect("固定受控条件应合法")
             .where_null(yang_db::field!("deleted_at"));
         let sql = builder.to_sql();
         assert!(sql.contains("`status` = ?"));
@@ -673,7 +685,8 @@ mod tests {
             .field(yang_db::field!("user_id"))
             .expr(crate::SelectExpr::count_all().alias(yang_db::field!("cnt")))
             .group(yang_db::field!("user_id"))
-            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64).expect("固定受控条件应合法");
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .expect("固定受控条件应合法");
         let sql = builder.to_sql();
         assert!(sql.contains("HAVING"));
         assert!(sql.contains("`cnt` > ?"));
@@ -682,11 +695,9 @@ mod tests {
     #[test]
     fn test_having_without_group_returns_error() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "orders", false).having_cond(
-            yang_db::field!("cnt"),
-            yang_db::CompareOp::Gt,
-            5i64,
-        ).expect("固定受控条件应合法");
+        let builder = QueryBuilder::new(pool, "orders", false)
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .expect("固定受控条件应合法");
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
         assert!(result.is_err());
@@ -751,7 +762,8 @@ mod tests {
         // H5：JOIN 表名此前裸 `format!("`{}`", ...)` 拼接，含反引号的表名可注入任意 SQL。
         // 现 JOIN 表名在渲染期经 quote_identifier 校验，非法标识符 fail-closed。
         let pool = make_sync_test_pool();
-        let malicious = crate::TableRef::__from_validated_owned("orders` INNER JOIN secret --".into());
+        let malicious =
+            crate::TableRef::__from_validated_owned("orders` INNER JOIN secret --".into());
         let builder = QueryBuilder::new(pool, "users", false).join(
             &malicious,
             yang_db::field!("users.id"),
@@ -775,13 +787,15 @@ mod tests {
                 yang_db::field!("users.status"),
                 yang_db::CompareOp::Eq,
                 1i64,
-            ).expect("固定受控条件应合法")
+            )
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("users.id"))
             .having_cond(
                 yang_db::field!("users.score"),
                 yang_db::CompareOp::Gt,
                 10i64,
-            ).expect("固定受控条件应合法");
+            )
+            .expect("固定受控条件应合法");
 
         let sql = builder
             .try_to_sql()
@@ -812,11 +826,9 @@ mod tests {
     #[test]
     fn test_try_to_sql_surfaces_missing_group_by() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "orders", false).having_cond(
-            yang_db::field!("cnt"),
-            yang_db::CompareOp::Gt,
-            5i64,
-        ).expect("固定受控条件应合法");
+        let builder = QueryBuilder::new(pool, "orders", false)
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .expect("固定受控条件应合法");
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));
@@ -858,7 +870,8 @@ mod tests {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "orders", false)
             .group(yang_db::field!("user_id"))
-            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64).expect("固定受控条件应合法")
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .expect("固定受控条件应合法")
             .order(yang_db::field!("cnt"), yang_db::SortOrder::Desc);
         let sql = builder.to_sql();
         let group_pos = sql.find("GROUP BY").unwrap();
@@ -964,8 +977,10 @@ mod tests {
     async fn test_sql_generator_build_where() {
         let pool = create_test_pool().await;
         let builder = QueryBuilder::new(&pool, "users", false)
-            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
-            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18).expect("固定受控条件应合法");
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
+            .where_and(yang_db::field!("age"), yang_db::CompareOp::Gt, 18)
+            .expect("固定受控条件应合法");
 
         let mut generator = SqlGenerator::new();
         let result = generator.build_select(&builder);
@@ -1068,8 +1083,10 @@ mod tests {
                 yang_db::field!("users.id"),
                 yang_db::field!("orders.user_id"),
             )
-            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
-            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("users.status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
+            .where_and(yang_db::field!("orders.total"), yang_db::CompareOp::Gt, 100)
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("users.id"))
             .group(yang_db::field!("users.name"))
             .order(yang_db::field!("order_count"), yang_db::SortOrder::Desc)
@@ -1101,7 +1118,8 @@ mod tests {
         let builder = QueryBuilder::new(&pool, "users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("name"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法");
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法");
 
         // 在调用 find() 之前，limit 应该是 None
         assert_eq!(builder.limit, None);
@@ -1110,7 +1128,8 @@ mod tests {
         let builder_with_limit = QueryBuilder::new(&pool, "users", false)
             .field(yang_db::field!("id"))
             .field(yang_db::field!("name"))
-            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法")
             .limit(1);
 
         let sql = builder_with_limit.to_sql();
@@ -1221,11 +1240,9 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟 avg() 方法与 WHERE 条件组合
-        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and(
-            yang_db::field!("status"),
-            yang_db::CompareOp::Eq,
-            1,
-        ).expect("固定受控条件应合法");
+        let mut test_builder = QueryBuilder::new(&pool, "products", false)
+            .where_and(yang_db::field!("status"), yang_db::CompareOp::Eq, 1)
+            .expect("固定受控条件应合法");
         test_builder.fields.clear();
         test_builder
             .fields
@@ -1333,11 +1350,13 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 模拟多个聚合函数组合
-        let mut test_builder = QueryBuilder::new(&pool, "orders", false).where_and(
-            yang_db::field!("status"),
-            yang_db::CompareOp::Eq,
-            "completed",
-        ).expect("固定受控条件应合法");
+        let mut test_builder = QueryBuilder::new(&pool, "orders", false)
+            .where_and(
+                yang_db::field!("status"),
+                yang_db::CompareOp::Eq,
+                "completed",
+            )
+            .expect("固定受控条件应合法");
         test_builder.fields.clear();
         test_builder
             .fields
@@ -1372,7 +1391,8 @@ mod tests {
                 yang_db::field!("status"),
                 yang_db::CompareOp::Eq,
                 "completed",
-            ).expect("固定受控条件应合法")
+            )
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("user_id"))
             .order(yang_db::field!("total_amount"), yang_db::SortOrder::Desc);
         test_builder.fields.clear();
@@ -1398,11 +1418,9 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 创建一个不会匹配任何记录的查询
-        let mut test_builder = QueryBuilder::new(&pool, "products", false).where_and(
-            yang_db::field!("id"),
-            yang_db::CompareOp::Eq,
-            -1,
-        ).expect("固定受控条件应合法"); // 假设 id 不会是负数
+        let mut test_builder = QueryBuilder::new(&pool, "products", false)
+            .where_and(yang_db::field!("id"), yang_db::CompareOp::Eq, -1)
+            .expect("固定受控条件应合法"); // 假设 id 不会是负数
         test_builder.fields.clear();
         test_builder
             .fields
@@ -1489,11 +1507,13 @@ mod tests {
         let pool = create_test_pool().await;
 
         // 测试 WHERE 条件使用参数化查询
-        let builder = QueryBuilder::new(&pool, "products", false).where_and(
-            yang_db::field!("category"),
-            yang_db::CompareOp::Eq,
-            "'; DROP TABLE products; --",
-        ).expect("固定受控条件应合法");
+        let builder = QueryBuilder::new(&pool, "products", false)
+            .where_and(
+                yang_db::field!("category"),
+                yang_db::CompareOp::Eq,
+                "'; DROP TABLE products; --",
+            )
+            .expect("固定受控条件应合法");
 
         // 生成 SQL 和参数
         let mut generator = SqlGenerator::new();

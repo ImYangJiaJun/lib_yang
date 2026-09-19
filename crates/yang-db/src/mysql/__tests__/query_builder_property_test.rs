@@ -1345,11 +1345,9 @@ mod property_tests {
             crate::CompareOp::Gte,
             crate::CompareOp::Lte,
         ] {
-            let builder = QueryBuilder::new(pool, "users", false).where_and(
-                yang_db::field!("age"),
-                operator,
-                18i64,
-            ).expect("固定受控条件应合法");
+            let builder = QueryBuilder::new(pool, "users", false)
+                .where_and(yang_db::field!("age"), operator, 18i64)
+                .expect("固定受控条件应合法");
             assert_eq!(builder.conditions.len(), 1);
         }
 
@@ -1362,8 +1360,11 @@ mod property_tests {
             [crate::mysql::condition::Condition::Like(_, p)] if p == "%a%"
         ));
         assert!(matches!(
-            QueryBuilder::new(pool, "users", false)
-                .where_and(yang_db::field!("age"), crate::CompareOp::Like, 18i64),
+            QueryBuilder::new(pool, "users", false).where_and(
+                yang_db::field!("age"),
+                crate::CompareOp::Like,
+                18i64
+            ),
             Err(crate::DbError::UnsupportedOperator(_))
         ));
     }
@@ -1372,11 +1373,15 @@ mod property_tests {
     fn typed_where_or_having_and_chaining_work() {
         let pool = make_sync_test_pool();
         let builder = QueryBuilder::new(pool, "users", false)
-            .where_and(yang_db::field!("age"), crate::CompareOp::Gt, 18i64).expect("固定受控条件应合法")
-            .where_and(yang_db::field!("status"), crate::CompareOp::Eq, 1i64).expect("固定受控条件应合法")
-            .where_or(yang_db::field!("status"), crate::CompareOp::Eq, 2i64).expect("固定受控条件应合法")
+            .where_and(yang_db::field!("age"), crate::CompareOp::Gt, 18i64)
+            .expect("固定受控条件应合法")
+            .where_and(yang_db::field!("status"), crate::CompareOp::Eq, 1i64)
+            .expect("固定受控条件应合法")
+            .where_or(yang_db::field!("status"), crate::CompareOp::Eq, 2i64)
+            .expect("固定受控条件应合法")
             .group(yang_db::field!("age"))
-            .having_cond(yang_db::field!("age"), crate::CompareOp::Gt, 0i64).expect("固定受控条件应合法");
+            .having_cond(yang_db::field!("age"), crate::CompareOp::Gt, 0i64)
+            .expect("固定受控条件应合法");
         assert_eq!(builder.conditions.len(), 1);
         assert_eq!(builder.having_clause.len(), 1);
     }

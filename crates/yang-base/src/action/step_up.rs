@@ -295,7 +295,12 @@ where
     ///
     /// proof 的一次性语义**完全**由该存储承担；[`StepUpManager::verify_proof`] 是无状态
     /// 的，不查任何共享状态。多实例部署必须传入 [`RedisStepUpProofStore`]。
-    pub fn new<S>(manager: Arc<StepUpManager>, action: ActionRef, resolver: R, proof_store: S) -> Self
+    pub fn new<S>(
+        manager: Arc<StepUpManager>,
+        action: ActionRef,
+        resolver: R,
+        proof_store: S,
+    ) -> Self
     where
         S: StepUpProofStore,
     {
@@ -953,7 +958,11 @@ mod tests {
     ) -> Result<crate::definition::BuiltApp, crate::definition::BuildError> {
         let module_name = ModuleName::new("org.user").expect("测试 Module 名称应有效");
         let module = ModuleSpec::new(module_name)
-            .middleware(StepUpMiddleware::in_process(manager, target, PathResourceResolver))
+            .middleware(StepUpMiddleware::in_process(
+                manager,
+                target,
+                PathResourceResolver,
+            ))
             .action(
                 ActionSpec::new(
                     ActionName::new("delete").expect("测试 Action 名称应有效"),

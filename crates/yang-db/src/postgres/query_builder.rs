@@ -2906,12 +2906,9 @@ mod tests {
     #[test]
     fn test_try_to_sql_surfaces_missing_group_by() {
         let pool = make_sync_test_pool();
-        let builder = QueryBuilder::new(pool, "orders", false).having_cond(
-            yang_db::field!("cnt"),
-            yang_db::CompareOp::Gt,
-            5i64,
-        )
-        .expect("固定受控条件应合法");
+        let builder = QueryBuilder::new(pool, "orders", false)
+            .having_cond(yang_db::field!("cnt"), yang_db::CompareOp::Gt, 5i64)
+            .expect("固定受控条件应合法");
         let result = builder.try_to_sql();
 
         assert!(matches!(result, Err(crate::DbError::MissingGroupByClause)));

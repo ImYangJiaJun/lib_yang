@@ -483,7 +483,8 @@ fn test_maze_border_integrity_odd_center() {
             let room = make_test_room_with_bounds(RoomType::Puzzle, w, h, vec!["maze"]);
             let anchors = make_test_anchors(&room.id, w, h);
             let mut rng = StableRng::from_seed(seed);
-            let terrain = MazeStrategy.generate(&room, &anchors, &default_terrain_config(), &mut rng)
+            let terrain = MazeStrategy
+                .generate(&room, &anchors, &default_terrain_config(), &mut rng)
                 .expect("MazeStrategy 生成失败");
             assert_border_integrity(&terrain, &format!("maze({}x{},seed={})", w, h, seed));
         }
