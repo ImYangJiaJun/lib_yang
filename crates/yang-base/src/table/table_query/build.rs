@@ -2,7 +2,7 @@
 //! 慢查询阈值 / request_id 链式注入，以及测试专用的无连接池构造器。
 
 use super::TableQuery;
-use crate::table::{QueryParams, TableConfig};
+use crate::table::{QueryParams, RegexCache, TableConfig};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -35,6 +35,7 @@ impl TableQuery {
             pool,
             slow_threshold: None,
             request_id: None,
+            regex_cache: RegexCache::default(),
         }
     }
 
@@ -57,6 +58,7 @@ impl TableQuery {
             tenant_scope: None,
             slow_threshold: None,
             request_id: None,
+            regex_cache: RegexCache::default(),
         }
     }
 
@@ -72,6 +74,13 @@ impl TableQuery {
     /// 设置本次查询关联的 request_id（链式），用于慢查询日志串联。
     pub fn with_request_id(mut self, request_id: crate::action::RequestId) -> Self {
         self.request_id = Some(request_id);
+        self
+    }
+
+    /// 注入共享有界正则缓存（链式）。通常由 `ActionContext::table_query()` 从
+    /// [`crate::tools::Tools`] 注入；未注入时使用默认容量缓存。
+    pub fn with_regex_cache(mut self, cache: RegexCache) -> Self {
+        self.regex_cache = cache;
         self
     }
 

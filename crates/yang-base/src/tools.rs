@@ -4,6 +4,7 @@
 //! 高频资源使用直接字段，低频扩展与配置使用按 Rust 类型索引的只读映射。
 
 use crate::error::BaseError;
+use crate::table::RegexCache;
 use std::any::{type_name, Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
@@ -73,6 +74,7 @@ pub struct Tools {
     token: Option<TokenManager>,
     #[cfg(feature = "http")]
     http: Option<HttpClient>,
+    regex_cache: RegexCache,
     extensions: TypeMap,
     config: TypeMap,
     state: AtomicU8,
@@ -147,6 +149,13 @@ impl Tools {
         self.http
             .as_ref()
             .ok_or(BaseError::HttpClientNotInitialized)
+    }
+
+    /// 获取共享的有界正则缓存。
+    ///
+    /// 缓存为冻结的不可变资源，无需参与 close/health_check 流程；始终可用。
+    pub fn regex_cache(&self) -> &RegexCache {
+        &self.regex_cache
     }
 
     /// 按具体类型获取低频扩展。
@@ -260,6 +269,7 @@ pub struct ToolsBuilder {
     token: Option<TokenManager>,
     #[cfg(feature = "http")]
     http: Option<HttpClient>,
+    regex_cache: RegexCache,
     extensions: TypeMap,
     config: TypeMap,
     duplicate: Option<String>,
@@ -317,6 +327,12 @@ impl ToolsBuilder {
         if self.http.replace(client).is_some() {
             self.record_duplicate("HttpClient");
         }
+        self
+    }
+
+    /// 覆盖默认容量的共享正则缓存。
+    pub fn regex_cache(mut self, cache: RegexCache) -> Self {
+        self.regex_cache = cache;
         self
     }
 
@@ -382,6 +398,7 @@ impl ToolsBuilder {
             token,
             #[cfg(feature = "http")]
             http: self.http,
+            regex_cache: self.regex_cache,
             extensions: self.extensions,
             config: self.config,
             state: AtomicU8::new(RUNNING),

@@ -178,8 +178,9 @@ fn schema_first_field_policies_feed_runtime_validation_and_permissions() {
     let admin = HashSet::from(["admin".to_string()]);
     let user = HashSet::from(["user".to_string()]);
 
-    assert!(email.validate(&json!("user@example.com")).is_ok());
-    assert!(email.validate(&json!("invalid")).is_err());
+    let cache = crate::table::RegexCache::default();
+    assert!(email.validate(&json!("user@example.com"), &cache).is_ok());
+    assert!(email.validate(&json!("invalid"), &cache).is_err());
     assert!(email.permissions.can_read(&admin));
     assert!(email.permissions.can_read(&user));
     assert!(email.permissions.can_write(&admin));

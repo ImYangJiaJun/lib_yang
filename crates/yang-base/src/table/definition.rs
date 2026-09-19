@@ -10,7 +10,7 @@ use super::table_config::{
 };
 #[cfg(feature = "mysql")]
 use super::TableQuery;
-use super::{FieldType, SortOrder, Validator, MAX_VARCHAR_LENGTH};
+use super::{FieldType, RegexCache, SortOrder, Validator, MAX_VARCHAR_LENGTH};
 use crate::error::BaseError;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -688,6 +688,8 @@ impl Table {
         let mut indexes = self.indexes;
         let checks = self.checks;
         let foreign_keys = self.foreign_keys;
+        // 启动期默认值校验复用同一个有界正则缓存（每表构建一次，构建完即丢弃）。
+        let regex_cache = RegexCache::default();
 
         for mut field in self.fields {
             validate_identifier("字段", &field.config.name)?;
@@ -719,7 +721,7 @@ impl Table {
                 })?;
                 relation.display_fields = display_fields;
             }
-            validate_field_shape(&self.name, &field)?;
+            validate_field_shape(&self.name, &field, &regex_cache)?;
 
             if field.primary_key && primary_key.replace(field.config.name.clone()).is_some() {
                 return Err(BaseError::ConfigError(format!(
@@ -1151,7 +1153,7 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), BaseError> {
     Ok(())
 }
 
-fn validate_field_shape(table: &str, field: &Field) -> Result<(), BaseError> {
+fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Result<(), BaseError> {
     match &field.config.field_type {
         FieldType::String { max_length } if !(1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
             return Err(BaseError::ConfigError(format!(
@@ -1211,7 +1213,7 @@ fn validate_field_shape(table: &str, field: &Field) -> Result<(), BaseError> {
                 field.config.name
             )));
         }
-        field.config.validate(default)?;
+        field.config.validate(default, cache)?;
     }
     validate_audience(
         table,

@@ -238,7 +238,7 @@ impl TableQuery {
                 continue;
             }
             let value = prepared.get(field_name).unwrap_or(&Value::Null);
-            field_config.validate(value)?;
+            field_config.validate(value, &self.regex_cache)?;
         }
 
         Ok(prepared)
@@ -427,7 +427,7 @@ impl TableQuery {
 
             // 3. 验证显式提供的字段值。部分更新不要求提交其它必填字段，但若本字段
             // 被显式设为 null，仍执行 required 约束。
-            field_config.validate(value)?;
+            field_config.validate(value, &self.regex_cache)?;
         }
 
         Ok(())

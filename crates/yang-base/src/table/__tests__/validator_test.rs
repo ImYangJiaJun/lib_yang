@@ -1,7 +1,7 @@
 //! Validator 验证器单元测试
 
 use crate::error::BaseError;
-use crate::table::Validator;
+use crate::table::{RegexCache, Validator};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -573,4 +573,40 @@ fn test_validator_debug() {
 
     let custom_validator = Validator::Custom(Arc::new(|_, _| Ok(())));
     assert_eq!(format!("{:?}", custom_validator), "Custom(<function>)");
+}
+
+// ==================== RegexCache 有界缓存回归测试 ====================
+
+#[test]
+#[cfg(feature = "validator")]
+fn regex_cache_is_bounded_by_cap() {
+    let cache = RegexCache::new(8);
+    // 构造 cap+4 个不同 pattern：即使值不匹配，编译结果仍应尝试入表，但受 cap 上限约束
+    for i in 0..12u32 {
+        let pattern = format!(r"^bounded_{}$", i);
+        let _ = Validator::Regex(pattern).validate_with("f", &json!("x"), &cache);
+    }
+    assert_eq!(cache.cap(), 8);
+    assert!(
+        cache.len() <= 8,
+        "缓存条目数 {} 应不超过 cap {}",
+        cache.len(),
+        cache.cap()
+    );
+    assert_eq!(cache.len(), 8, "前 8 个 pattern 应全部入表，之后不再增长");
+}
+
+#[test]
+#[cfg(feature = "validator")]
+fn overlong_pattern_is_not_cached() {
+    let cache = RegexCache::new(16);
+    // 超长 pattern（> 512 字节）只编译不入表
+    let overlong = format!("^{}$", "a".repeat(600));
+    let result = Validator::Regex(overlong).validate_with("f", &json!("aaa"), &cache);
+    assert!(result.is_err(), "超长 pattern 与值不匹配应报验证失败");
+    assert!(
+        cache.is_empty(),
+        "超长 pattern 不应入表，缓存应保持为空，实际 len = {}",
+        cache.len()
+    );
 }
