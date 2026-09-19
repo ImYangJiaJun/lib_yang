@@ -145,23 +145,69 @@ pub(super) fn render_foreign_key(foreign_key: &ForeignKeyConfig) -> Result<Strin
 }
 
 pub(super) fn normalize_check_expression(expression: &str) -> String {
-    let mut normalized = expression
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace() && *character != '`')
-        .flat_map(char::to_lowercase)
-        .collect::<String>()
-        .replace("_utf8mb4", "")
-        .replace("_utf8", "");
     // MySQL 读回 CHECK 表达式时会对字符串字面量叠加多层转义（层数随版本与
     // 元数据路径不同，如 information_schema 中 `\.` 可读回为 `\\\\.`），
     // 循环解码反斜杠转义直到收敛，保证同一约束的声明侧与读回侧归一。
+    let mut decoded = expression.to_string();
     loop {
-        let decoded = normalized.replace("\\\\", "\\").replace("\\'", "'");
-        if decoded == normalized {
+        let next = decoded.replace("\\\\", "\\").replace("\\'", "'");
+        if next == decoded {
             break;
         }
-        normalized = decoded;
+        decoded = next;
     }
+
+    // 再逐字符归一化并跟踪引号态：字符串字面量内容必须原样保留，
+    // 否则 'x y' 与 'xy' 会被错误归一为同一约束，导致 plan 静默跳过变更。
+    let mut normalized = String::with_capacity(decoded.len());
+    let mut characters = decoded.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        if character == '\'' {
+            normalized.push(character);
+            let mut escaped = false;
+            while let Some((_, literal)) = characters.next() {
+                normalized.push(literal);
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match literal {
+                    '\\' => escaped = true,
+                    '\'' => {
+                        // '' 是字面量内的转义引号，仍属字面量内容。
+                        if matches!(characters.peek(), Some((_, '\''))) {
+                            continue;
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if character == '`' || character.is_ascii_whitespace() {
+            continue;
+        }
+        if character == '_' {
+            // 读回侧会在字面量前加 charset introducer（如 _utf8mb4'x'），
+            // 只在紧邻引号时剔除，避免误伤以 _utf8 开头的标识符。
+            let rest = &decoded[index..];
+            if let Some(introducer) = ["_utf8mb4", "_utf8"].into_iter().find(|candidate| {
+                rest.get(..candidate.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(candidate))
+                    && rest
+                        .get(candidate.len()..)
+                        .is_some_and(|tail| tail.starts_with('\''))
+            }) {
+                for _ in 1..introducer.chars().count() {
+                    characters.next();
+                }
+                continue;
+            }
+        }
+        normalized.extend(character.to_lowercase());
+    }
+
     while has_redundant_outer_parentheses(&normalized) {
         normalized = normalized[1..normalized.len() - 1].to_string();
     }
