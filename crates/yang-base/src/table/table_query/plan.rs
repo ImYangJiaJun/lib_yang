@@ -80,20 +80,39 @@ impl TableQuery {
         })
     }
 
+    /// 读路径池绑定入口：绑定连接池后应用完整读计划（投影/WHERE/软删守卫/排序/分页）。
     #[cfg(feature = "mysql")]
     pub(super) fn compile_db_query(&self) -> Result<yang_db::QueryBuilder<'_>, BaseError> {
         let pool = self
             .pool
             .as_deref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
-        self.apply_db_plan(yang_db::QueryBuilder::from_pool(
+        self.apply_read_plan(yang_db::QueryBuilder::from_pool(
             pool,
             &self.table_config.table_ref,
         ))
     }
 
+    /// 写路径池绑定入口（与 [`TableQuery::compile_db_query`] 对称）。
+    ///
+    /// 写 SQL 不使用投影/排序/分页（yang-db 的 insert/update/delete 仅取
+    /// table/field_types/conditions/expr_assignments），因此此处只应用
+    /// WHERE/软删守卫，不得解析读投影，否则 write-only 角色会被读权限错误拒绝。
     #[cfg(feature = "mysql")]
-    pub(super) fn apply_db_plan<'a>(
+    pub(super) fn compile_db_write_query(&self) -> Result<yang_db::QueryBuilder<'_>, BaseError> {
+        let pool = self
+            .pool
+            .as_deref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
+        self.apply_write_plan(yang_db::QueryBuilder::from_pool(
+            pool,
+            &self.table_config.table_ref,
+        ))
+    }
+
+    /// 读路径计划：投影 + WHERE/软删守卫 + 排序 + 分页。
+    #[cfg(feature = "mysql")]
+    pub(super) fn apply_read_plan<'a>(
         &self,
         mut query: yang_db::QueryBuilder<'a>,
     ) -> Result<yang_db::QueryBuilder<'a>, BaseError> {
@@ -110,19 +129,7 @@ impl TableQuery {
             })?;
             query = query.field(field);
         }
-        for condition in &self.query_params.where_conditions {
-            query = query
-                .where_predicate(&self.compile_predicate(condition)?)
-                .map_err(BaseError::DatabaseQueryFailed)?;
-        }
-        if !self.include_trashed {
-            if let Some(name) = &self.table_config.soft_delete_field {
-                let field = self.table_config.get_field_ref(name).ok_or_else(|| {
-                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
-                })?;
-                query = query.where_null(field);
-            }
-        }
+        query = self.apply_where_guards(query)?;
         let orders = if self.query_params.order_by.is_empty() {
             &self.table_config.default_order
         } else {
@@ -147,6 +154,37 @@ impl TableQuery {
                 BaseError::ParamInvalid("page".to_string(), "分页偏移超出范围".to_string())
             })?;
             query = query.limit(limit).offset(offset);
+        }
+        Ok(query)
+    }
+
+    /// 写路径计划：只保留 WHERE/软删守卫。
+    #[cfg(feature = "mysql")]
+    pub(super) fn apply_write_plan<'a>(
+        &self,
+        query: yang_db::QueryBuilder<'a>,
+    ) -> Result<yang_db::QueryBuilder<'a>, BaseError> {
+        self.apply_where_guards(query)
+    }
+
+    /// WHERE 条件 + 软删守卫（读写路径共享）。
+    #[cfg(feature = "mysql")]
+    fn apply_where_guards<'a>(
+        &self,
+        mut query: yang_db::QueryBuilder<'a>,
+    ) -> Result<yang_db::QueryBuilder<'a>, BaseError> {
+        for condition in &self.query_params.where_conditions {
+            query = query
+                .where_predicate(&self.compile_predicate(condition)?)
+                .map_err(BaseError::DatabaseQueryFailed)?;
+        }
+        if !self.include_trashed {
+            if let Some(name) = &self.table_config.soft_delete_field {
+                let field = self.table_config.get_field_ref(name).ok_or_else(|| {
+                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
+                })?;
+                query = query.where_null(field);
+            }
         }
         Ok(query)
     }

@@ -53,7 +53,7 @@ impl TableQuery {
     pub async fn insert(self, data: crate::table::Record) -> Result<u64, BaseError> {
         // 填充默认值/时间戳并校验（顺序：写权限→填充默认值→必填/类型校验）
         let data = self.prepare_and_validate_insert(data.into_columns())?;
-        self.compile_db_query()?
+        self.compile_db_write_query()?
             .insert(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
@@ -76,7 +76,7 @@ impl TableQuery {
     ) -> Result<u64, BaseError> {
         let data = self.prepare_and_validate_insert(data.into_columns())?;
         let query = tx.table(&self.table_config.table_ref);
-        self.apply_db_plan(query)?
+        self.apply_write_plan(query)?
             .insert(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
@@ -110,7 +110,7 @@ impl TableQuery {
     ) -> Result<(u64, u64), BaseError> {
         let data = self.prepare_and_validate_insert(data.into_columns())?;
         let id = self
-            .compile_db_query()?
+            .compile_db_write_query()?
             .insert(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
@@ -129,7 +129,7 @@ impl TableQuery {
         let data = self.prepare_and_validate_insert(data.into_columns())?;
         let query = tx.table(&self.table_config.table_ref);
         let id = self
-            .apply_db_plan(query)?
+            .apply_write_plan(query)?
             .insert(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
@@ -293,7 +293,7 @@ impl TableQuery {
     /// ```
     pub async fn update(self, data: crate::table::Record) -> Result<u64, BaseError> {
         let data = self.prepare_update_data(data.into_columns())?;
-        self.compile_db_query()?
+        self.compile_db_write_query()?
             .update(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)
@@ -315,7 +315,7 @@ impl TableQuery {
     ) -> Result<u64, BaseError> {
         let data = self.prepare_update_data(data.into_columns())?;
         let query = tx.table(&self.table_config.table_ref);
-        self.apply_db_plan(query)?
+        self.apply_write_plan(query)?
             .update(&data)
             .await
             .map_err(BaseError::DatabaseExecuteFailed)
@@ -484,12 +484,12 @@ impl TableQuery {
                 Value::Number(chrono::Utc::now().timestamp().into()),
             )]))?;
             return self
-                .compile_db_query()?
+                .compile_db_write_query()?
                 .update(&data)
                 .await
                 .map_err(BaseError::DatabaseExecuteFailed);
         }
-        self.compile_db_query()?
+        self.compile_db_write_query()?
             .delete()
             .await
             .map_err(BaseError::DatabaseExecuteFailed)
@@ -512,12 +512,12 @@ impl TableQuery {
                 Value::Number(chrono::Utc::now().timestamp().into()),
             )]))?;
             return self
-                .apply_db_plan(query)?
+                .apply_write_plan(query)?
                 .update(&data)
                 .await
                 .map_err(BaseError::DatabaseExecuteFailed);
         }
-        self.apply_db_plan(query)?
+        self.apply_write_plan(query)?
             .delete()
             .await
             .map_err(BaseError::DatabaseExecuteFailed)

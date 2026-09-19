@@ -1870,6 +1870,35 @@ fn test_select_projection_permission_matrix() {
     ));
 }
 
+/// 无可读字段时 `ensure_readable_projection()` 仍 fail-closed（H6 回归：把读投影
+/// 门禁从写路径抽走后，读路径的守卫必须原样保留，不能修反）。
+#[test]
+fn test_ensure_readable_projection_fails_without_readable_fields() {
+    let config = test_config(
+        crate::table::Table::new("write_only_rows").fields([
+            crate::table::Field::integer("id")
+                .required()
+                .primary_key()
+                .readable_by(["admin"]),
+            crate::table::Field::string("payload", 255)
+                .secret()
+                .writable_by(["ingest"]),
+        ]),
+    );
+    let roles: Arc<[String]> = Arc::from(vec!["ingest".to_string()]);
+    let query = TableQuery::new(config, roles, None);
+
+    let err = query
+        .ensure_readable_projection()
+        .expect_err("无可读字段时读投影门禁应 fail-closed");
+
+    assert!(matches!(
+        err,
+        BaseError::FieldPermissionDenied(table, field, _)
+            if table == "write_only_rows" && field == "*"
+    ));
+}
+
 #[test]
 fn test_default_projection_is_deterministic_and_excludes_hidden_fields() {
     for _ in 0..64 {
