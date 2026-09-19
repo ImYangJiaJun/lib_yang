@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use yang_base::database::{DatabaseInitializer, SchemaSyncChangeKind};
+use yang_base::error::BaseError;
 use yang_base::table::{Field, Table, TableDefinition};
 use yang_db::Database;
 
@@ -271,4 +272,75 @@ async fn schema_evolution_reports_dirty_primary_keys_before_any_ddl_and_retries_
     .await
     .expect("smallint 扩为 int 后应能读取旧数据");
     assert_eq!(versions, [2, 2, 2]);
+}
+
+/// 函数索引（MySQL 8.0.13+）的键部在 information_schema.statistics 中 COLUMN_NAME 为 NULL。
+/// 修复前 `IndexRow::column_name` 是 String，会在这里因 ColumnDecode 失败而崩溃。
+#[tokio::test]
+#[ignore = "需要 Docker 环境"]
+async fn schema_sync_tolerates_functional_index_key_parts() {
+    let (_container, url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
+    let database = Database::connect(&url).await.expect("数据库连接应成功");
+    let pool = database.pool().clone();
+    let initializer = DatabaseInitializer::new(database);
+    let definition = account_table(32, false);
+    initializer
+        .sync_table_definitions(&[&definition])
+        .await
+        .expect("初次同步应建表成功");
+    sqlx::query(
+        "ALTER TABLE schema_sync_accounts ADD INDEX idx_accounts_lower_username ((LOWER(username)))",
+    )
+    .execute(&pool)
+    .await
+    .expect("函数索引应创建成功");
+
+    let report = initializer
+        .plan_table_definitions(&[&definition])
+        .await
+        .expect("函数索引的 NULL COLUMN_NAME 不应导致解码失败");
+    assert!(report.is_noop(), "表定义与数据库一致时函数索引不应触发变更");
+}
+
+/// 与已存在的纯函数索引同名但定义不同的目标索引，必须给出明确中文冲突而不是退化 DDL 报错。
+#[tokio::test]
+#[ignore = "需要 Docker 环境"]
+async fn schema_sync_rejects_functional_index_name_conflict() {
+    let (_container, url) = match setup_mysql().await {
+        Some(setup) => setup,
+        None => return,
+    };
+    let database = Database::connect(&url).await.expect("数据库连接应成功");
+    let pool = database.pool().clone();
+    let initializer = DatabaseInitializer::new(database);
+    let initial = account_table(32, false);
+    initializer
+        .sync_table_definitions(&[&initial])
+        .await
+        .expect("初次同步应建表成功");
+    sqlx::query(
+        "ALTER TABLE schema_sync_accounts ADD INDEX idx_accounts_lower_username ((LOWER(username)))",
+    )
+    .execute(&pool)
+    .await
+    .expect("函数索引应创建成功");
+
+    let conflicting = Table::new("schema_sync_accounts")
+        .fields([
+            Field::id("id"),
+            Field::string("username", 32)
+                .required()
+                .index_named("idx_accounts_lower_username"),
+        ])
+        .build()
+        .expect("同名索引冲突的测试表定义应有效");
+    let error = initializer
+        .plan_table_definitions(&[&conflicting])
+        .await
+        .expect_err("同名但定义不同的索引应被拒绝");
+    assert!(matches!(error, BaseError::DatabaseInitFailed(_)));
+    assert!(error.to_string().contains("已存在但定义不同"));
 }

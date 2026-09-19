@@ -26,7 +26,9 @@ pub(super) async fn load_existing_schema(
     struct IndexRow {
         index_name: String,
         non_unique: i64,
-        column_name: String,
+        // MySQL 8.0.13+ 的函数索引键部在 information_schema.statistics 中 COLUMN_NAME 为
+        // NULL，因此这里必须按可空解码，否则启动期会因 ColumnDecode 失败而崩溃。
+        column_name: Option<String>,
     }
 
     #[derive(FromRow)]
@@ -83,13 +85,16 @@ pub(super) async fn load_existing_schema(
         })
         .collect();
 
-    let primary_key: Vec<String> = sqlx::query_scalar(
+    let primary_key: Vec<String> = sqlx::query_scalar::<_, Option<String>>(
         "SELECT CAST(COLUMN_NAME AS CHAR) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = 'PRIMARY' ORDER BY SEQ_IN_INDEX",
     )
     .bind(&table.table_name)
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+    .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?
+    .into_iter()
+    .flatten()
+    .collect();
 
     let index_rows: Vec<IndexRow> = sqlx::query_as(
         "SELECT CAST(INDEX_NAME AS CHAR) AS index_name, CAST(NON_UNIQUE AS SIGNED) AS non_unique, CAST(COLUMN_NAME AS CHAR) AS column_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
@@ -103,7 +108,13 @@ pub(super) async fn load_existing_schema(
         let entry = index_map
             .entry(row.index_name)
             .or_insert_with(|| (row.non_unique == 0, Vec::new()));
-        entry.1.push(row.column_name);
+        // 函数索引（MySQL 8.0.13+）的键部在 information_schema.statistics 中 COLUMN_NAME 为
+        // NULL，改由 EXPRESSION 描述；本模型只表达「列名」索引，跳过该键部而不是解码失败。
+        // 保留整条索引条目：同名冲突会由 plan 阶段给出明确的中文错误，直接丢弃反而会退化成
+        // ALTER TABLE ADD INDEX 的 Duplicate key name 报错。
+        if let Some(column_name) = row.column_name {
+            entry.1.push(column_name);
+        }
     }
     let indexes = index_map
         .into_iter()
