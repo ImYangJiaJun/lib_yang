@@ -215,6 +215,8 @@ fn test_request_builder_with_retry() {
             max_retries: 5,
             retry_on: vec![500, 503],
             backoff_ms: 10,
+            // 本用例仅验证链式组合，显式 opt-in 非幂等重试以免语义被默认值改变
+            retry_non_idempotent: false,
         })
         .header("X-Test", "1");
     drop(builder);
@@ -230,8 +232,11 @@ async fn test_retry_exhausts_on_connection_error() {
         .get("http://127.0.0.1:1/never")
         .retry(crate::http::RetryConfig {
             max_retries: 2,
-            retry_on: vec![],
+            // 非空：空 retry_on 会被 validate() 拒绝，永远走不到「重试耗尽」路径
+            retry_on: vec![503],
             backoff_ms: 1,
+            // GET 幂等，无需 opt-in；显式写出避免新增字段后语义歧义
+            retry_non_idempotent: false,
         })
         .send()
         .await;
