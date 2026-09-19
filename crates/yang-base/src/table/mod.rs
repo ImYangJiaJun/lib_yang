@@ -65,7 +65,7 @@ pub use definition::TableHandle;
 pub use definition::{col, ColumnName, Field, FieldMetadata, Order, Table, TableDefinition};
 pub(crate) use field_config::FieldConfig;
 pub use field_config::RelationType;
-pub use field_type::FieldType;
+pub use field_type::{FieldType, MAX_VARCHAR_LENGTH};
 pub use query_params::{
     PaginatedResult, QueryParams, TableQueryPlan, WhereCondition, DEFAULT_QUERY_PAGE_SIZE,
     MAX_QUERY_PAGE_SIZE,

@@ -10,7 +10,7 @@ use super::table_config::{
 };
 #[cfg(feature = "mysql")]
 use super::TableQuery;
-use super::{FieldType, SortOrder, Validator};
+use super::{FieldType, SortOrder, Validator, MAX_VARCHAR_LENGTH};
 use crate::error::BaseError;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -1153,9 +1153,9 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), BaseError> {
 
 fn validate_field_shape(table: &str, field: &Field) -> Result<(), BaseError> {
     match &field.config.field_type {
-        FieldType::String { max_length } if *max_length == 0 => {
+        FieldType::String { max_length } if !(1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
             return Err(BaseError::ConfigError(format!(
-                "表 {table} 的字符串字段 {} 长度必须大于 0",
+                "表 {table} 的字符串字段 {} 长度必须在 1..={MAX_VARCHAR_LENGTH}（更长内容请使用 Text 字段）",
                 field.config.name
             )));
         }

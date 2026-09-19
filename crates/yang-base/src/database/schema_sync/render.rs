@@ -2,6 +2,7 @@ use super::model::{DesiredIndex, ExistingForeignKey};
 use crate::error::BaseError;
 use crate::table::{
     CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, TableConfig, TableDefinition,
+    MAX_VARCHAR_LENGTH,
 };
 use std::collections::BTreeMap;
 
@@ -250,12 +251,14 @@ pub(super) fn expression_for_existing_schema(
 
 pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
     let sql_type = match &field.field_type {
-        FieldType::String { max_length } if (1..=16_383).contains(max_length) => {
+        // 防御性断言：构建期 validate_field_shape 已强制同一上界，
+        // 此处不应再可达；保留 Err 以免绕过构建期的配置静默渲染出非法 DDL。
+        FieldType::String { max_length } if (1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
             format!("VARCHAR({max_length})")
         }
         FieldType::String { max_length } => {
             return Err(BaseError::ConfigError(format!(
-                "字段 {} 的 VARCHAR 长度必须在 1..=16383: {}",
+                "字段 {} 的 VARCHAR 长度必须在 1..={MAX_VARCHAR_LENGTH}: {}",
                 field.name, max_length
             )))
         }
