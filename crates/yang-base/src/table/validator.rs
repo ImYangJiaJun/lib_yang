@@ -224,6 +224,15 @@ pub enum Validator {
     Custom(ValidatorFn),
 }
 
+/// 从 JSON 值提取数值：优先数字，其次十进制文本（Decimal 字段合法携带字符串）。
+fn numeric_value(value: &serde_json::Value) -> Option<f64> {
+    value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|text| text.trim().parse::<f64>().ok())
+    })
+}
+
 impl Validator {
     /// 获取验证器的显示名称
     pub fn display_name(&self) -> &str {
@@ -309,13 +318,7 @@ impl Validator {
             }
 
             Validator::Min(min_val) => {
-                let num = if let Some(n) = value.as_f64() {
-                    n
-                } else if let Some(n) = value.as_i64() {
-                    n as f64
-                } else if let Some(n) = value.as_u64() {
-                    n as f64
-                } else {
+                let Some(num) = numeric_value(value) else {
                     return Err(BaseError::ValidationFailed(
                         field_name.to_string(),
                         "Min 验证器只能用于数值类型".to_string(),
@@ -331,13 +334,7 @@ impl Validator {
             }
 
             Validator::Max(max_val) => {
-                let num = if let Some(n) = value.as_f64() {
-                    n
-                } else if let Some(n) = value.as_i64() {
-                    n as f64
-                } else if let Some(n) = value.as_u64() {
-                    n as f64
-                } else {
+                let Some(num) = numeric_value(value) else {
                     return Err(BaseError::ValidationFailed(
                         field_name.to_string(),
                         "Max 验证器只能用于数值类型".to_string(),

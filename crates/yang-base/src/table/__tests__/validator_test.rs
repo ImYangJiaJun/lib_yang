@@ -164,6 +164,23 @@ fn test_min_value_invalid_type() {
     assert!(validator.validate("age", &json!(true)).is_err());
 }
 
+#[test]
+fn test_min_and_max_tolerate_decimal_strings() {
+    // Decimal 字段合法携带十进制字符串；Min/Max 必须按数值语义比较而非一律拒绝字符串。
+    let min = Validator::Min(0.0);
+    assert!(min.validate("price", &json!("9.99")).is_ok());
+    assert!(min.validate("price", &json!("0")).is_ok());
+    assert!(min.validate("price", &json!("-1")).is_err());
+    assert!(min.validate("price", &json!("-0.5")).is_err());
+    // 非数值字符串仍应被拒绝为类型不匹配。
+    assert!(min.validate("price", &json!("not a number")).is_err());
+
+    let max = Validator::Max(100.0);
+    assert!(max.validate("price", &json!("99.99")).is_ok());
+    assert!(max.validate("price", &json!("100")).is_ok());
+    assert!(max.validate("price", &json!("100.5")).is_err());
+}
+
 // ==================== Max 验证器测试 ====================
 
 #[test]
