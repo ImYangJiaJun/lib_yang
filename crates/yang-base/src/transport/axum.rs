@@ -145,8 +145,11 @@ struct HttpState {
 enum RequestDecoder {
     Json,
     Multipart {
-        spec: MultipartSpec,
-        input_schema: Value,
+        // spec / input_schema 在路由构建期一次成型、之后只读，改持 Arc 后
+        // `decoder.clone()`（每个请求一次）只做引用计数自增，不再深拷贝 Schema 与
+        // allowed_content_types；多请求之间共享的仍是同一份不可变数据。
+        spec: Arc<MultipartSpec>,
+        input_schema: Arc<Value>,
     },
 }
 
@@ -269,8 +272,11 @@ fn router_with_addr(
                         }
                         (
                             RequestDecoder::Multipart {
-                                spec,
-                                input_schema: action.input_schema.clone(),
+                                // spec 已按值解构出来，直接 Arc::new 避免多一次 clone；
+                                // input_schema 的深拷贝只发生在构建期（每路由一次），
+                                // 请求期不再复制。
+                                spec: Arc::new(spec),
+                                input_schema: Arc::new(action.input_schema.clone()),
                             },
                             action_limit,
                         )
@@ -1278,6 +1284,43 @@ mod tests {
         assert_eq!(
             status_for_error(&BaseError::AuthorizationCheckUnavailable),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn multipart_decoder_clone_shares_schema_and_spec_allocation() {
+        // M16 回归：multipart 解码器持 Arc<Value> / Arc<MultipartSpec>，每请求的
+        // `decoder.clone()`（axum.rs 闭包内）必须只做引用计数自增。若改回按值持有，
+        // 这里除 Arc::ptr_eq 失败外还会在每个请求上重新深拷贝 Schema 与
+        // allowed_content_types。
+        let spec = Arc::new(MultipartSpec::new(["text/plain"]));
+        let input_schema = Arc::new(json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "file": { "type": "string", "format": "binary" }
+            }
+        }));
+        let decoder = RequestDecoder::Multipart {
+            spec: Arc::clone(&spec),
+            input_schema: Arc::clone(&input_schema),
+        };
+
+        let cloned = decoder.clone();
+        let RequestDecoder::Multipart {
+            spec: cloned_spec,
+            input_schema: cloned_schema,
+        } = cloned
+        else {
+            panic!("multipart 解码器 clone 后必须仍是 Multipart 变体");
+        };
+        assert!(
+            Arc::ptr_eq(&spec, &cloned_spec),
+            "clone 必须共享同一份 MultipartSpec 分配"
+        );
+        assert!(
+            Arc::ptr_eq(&input_schema, &cloned_schema),
+            "clone 必须共享同一份 input_schema 分配"
         );
     }
 }

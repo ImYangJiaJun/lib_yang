@@ -1969,3 +1969,33 @@ async fn multipart_text_part_over_field_limit_is_rejected_413() {
         "字段上限以内、总量上限以内的文本 part 必须放行"
     );
 }
+
+#[tokio::test]
+async fn multipart_repeated_requests_share_decoder_without_behavior_change() {
+    // M16 回归：解码器改持 Arc<MultipartSpec>/Arc<Value> 后，同一路由的多个请求共享
+    // 同一份不可变 Schema 与资源上限。连续请求必须逐次得到完全一致的成功响应——
+    // 若共享过程中混入任何按请求的可变状态或解码漂移，这里会立即暴露。
+    let upload_router = router(build_scalar_upload_app(), AxumTransportConfig::default())
+        .expect("标量上传 Router 应构建成功");
+    let boundary = "yang-boundary-repeat";
+    let body = multipart_payload(
+        boundary,
+        &[("title", "doc"), ("count", "42"), ("note", "hello")],
+        &[("file", "a.txt", "text/plain", b"hi")],
+    );
+
+    for round in 0..3 {
+        let response = oneshot(
+            upload_router.clone(),
+            multipart_request_to("/api/upload/scalar", boundary, body.clone()),
+        )
+        .await;
+        let status = response.status();
+        let json = body_json(response).await;
+        assert_eq!(status, StatusCode::OK, "第 {round} 轮响应体: {json}");
+        assert_eq!(json["data"]["title"], "doc", "第 {round} 轮");
+        assert_eq!(json["data"]["count"], 42, "第 {round} 轮");
+        assert_eq!(json["data"]["note"], "hello", "第 {round} 轮");
+        assert_eq!(json["data"]["size"], 2, "第 {round} 轮");
+    }
+}
