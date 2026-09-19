@@ -263,6 +263,9 @@ pub struct RequestBuilder {
     /// 超时时间
     timeout: Duration,
 
+    /// 出站响应体最大允许字节数（来自 HttpClientConfig）
+    max_response_bytes: usize,
+
     /// Token（可选）
     token: Option<String>,
 
@@ -282,6 +285,7 @@ impl RequestBuilder {
     /// - `method`: HTTP 方法
     /// - `url`: 请求 URL
     /// - `timeout`: 超时时间
+    /// - `max_response_bytes`: 出站响应体最大允许字节数
     /// - `token`: 默认 Token
     /// - `circuit_breaker`: 熔断器（可选，来自 HttpClient）
     pub(crate) fn new(
@@ -289,6 +293,7 @@ impl RequestBuilder {
         method: Method,
         url: String,
         timeout: Duration,
+        max_response_bytes: usize,
         token: Option<String>,
         circuit_breaker: Option<crate::http::CircuitBreaker>,
     ) -> Self {
@@ -301,6 +306,7 @@ impl RequestBuilder {
             query_params: Vec::new(),
             body: None,
             timeout,
+            max_response_bytes,
             token,
             retry: None,
             circuit_breaker,
@@ -641,6 +647,29 @@ impl RequestBuilder {
         self
     }
 
+    /// 设置出站响应体最大允许字节数。
+    ///
+    /// 与 `HttpClientConfig::max_response_bytes` 语义一致：读取响应体时超限
+    /// 返回 `BaseError::HttpResponseTooLarge`。设为 0 会在 `send()` 前被拒绝。
+    ///
+    /// # 参数
+    ///
+    /// - `bytes`: 响应体最大允许字节数（必须大于 0）
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let response = client
+    ///     .get("https://api.example.com/users")
+    ///     .max_response_bytes(1024 * 1024)
+    ///     .send()
+    ///     .await?;
+    /// ```
+    pub fn max_response_bytes(mut self, bytes: usize) -> Self {
+        self.max_response_bytes = bytes;
+        self
+    }
+
     /// 设置请求级重试策略（L-4）。
     ///
     /// 默认不重试。启用后，对连接错误与命中 `retry_on` 的状态码按指数退避重试。
@@ -731,6 +760,13 @@ impl RequestBuilder {
             return Err(BaseError::ParamInvalid(
                 "http.timeout_secs".to_string(),
                 "HTTP 请求超时时间必须大于 0 秒".to_string(),
+            ));
+        }
+
+        if self.max_response_bytes == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.max_response_bytes".to_string(),
+                "HTTP 响应体上限必须大于 0 字节".to_string(),
             ));
         }
 
@@ -883,7 +919,7 @@ impl RequestBuilder {
         }
         let response = result.map_err(BaseError::HttpRequestFailed)?;
 
-        Ok(Response::new(response))
+        Ok(Response::new(response, self.max_response_bytes))
     }
 }
 
@@ -1120,6 +1156,7 @@ mod retry_config_tests {
             Method::GET,
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(30),
+            10 * 1024 * 1024,
             None,
             None,
         )
@@ -1145,6 +1182,7 @@ mod retry_config_tests {
             Method::GET,
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(30),
+            10 * 1024 * 1024,
             None,
             None,
         )
@@ -1185,6 +1223,7 @@ mod retry_config_tests {
             Method::GET,
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(30),
+            10 * 1024 * 1024,
             Some("bad\r\ntoken".to_string()),
             None,
         );
@@ -1207,6 +1246,7 @@ mod retry_config_tests {
                 Method::GET,
                 url.to_string(),
                 Duration::from_secs(30),
+                10 * 1024 * 1024,
                 None,
                 None,
             );

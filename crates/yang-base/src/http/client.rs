@@ -10,6 +10,9 @@ use reqwest::{Client, Method};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+/// 出站响应体默认上限（10 MiB，与出站场景对齐；服务端侧为 DEFAULT_MAX_BODY_BYTES = 2 MiB）
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
 /// HTTP 客户端配置
 ///
 /// 用于通过 `HttpClient::with_config` 创建自定义配置的客户端
@@ -51,6 +54,12 @@ pub struct HttpClientConfig {
     /// 熔断器策略，默认 None（不启用）。设为 `Some(..)` 后，对连续失败的目标
     /// host 快速失败（返回 `BaseError::HttpCircuitBreakerOpen`），按 host 分键。
     pub circuit_breaker: Option<crate::http::CircuitBreakerConfig>,
+
+    /// 出站响应体最大允许字节数，默认 10 MiB（`DEFAULT_MAX_RESPONSE_BYTES`）。
+    ///
+    /// 读取响应体（`bytes`/`json`/`text`）时先查 Content-Length 做快速失败，
+    /// 再流式累计校验运行中上限，超限返回 `BaseError::HttpResponseTooLarge`。
+    pub max_response_bytes: usize,
 }
 
 impl Default for HttpClientConfig {
@@ -63,6 +72,7 @@ impl Default for HttpClientConfig {
             accept_invalid_certs: false,
             proxy_url: None,
             circuit_breaker: None,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 }
@@ -90,6 +100,12 @@ impl HttpClientConfig {
                 "连接池空闲超时时间必须大于 0 秒".to_string(),
             ));
         }
+        if self.max_response_bytes == 0 {
+            return Err(BaseError::ParamInvalid(
+                "http.max_response_bytes".to_string(),
+                "HTTP 响应体上限必须大于 0 字节".to_string(),
+            ));
+        }
         if let Some(circuit_breaker) = &self.circuit_breaker {
             circuit_breaker.validate()?;
         }
@@ -115,6 +131,10 @@ mod config_tests {
             },
             HttpClientConfig {
                 pool_idle_timeout_secs: 0,
+                ..HttpClientConfig::default()
+            },
+            HttpClientConfig {
+                max_response_bytes: 0,
                 ..HttpClientConfig::default()
             },
         ];
@@ -190,6 +210,9 @@ pub struct HttpClient {
     /// 默认超时时间
     default_timeout: Duration,
 
+    /// 出站响应体最大允许字节数
+    max_response_bytes: usize,
+
     /// 默认 Token（可选）
     default_token: Arc<RwLock<Option<String>>>,
 
@@ -253,6 +276,7 @@ impl HttpClient {
         Ok(Self {
             client,
             default_timeout: Duration::from_secs(cfg.timeout_secs),
+            max_response_bytes: cfg.max_response_bytes,
             default_token: Arc::new(RwLock::new(None)),
             circuit_breaker,
         })
@@ -344,6 +368,7 @@ impl HttpClient {
             method,
             url.to_string(),
             self.default_timeout,
+            self.max_response_bytes,
             self.get_default_token(),
             self.circuit_breaker.clone(),
         )
