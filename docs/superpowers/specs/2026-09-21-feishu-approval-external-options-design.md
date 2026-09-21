@@ -561,10 +561,23 @@ encryption_key = "replace-with-…"          # secret；配置后才启用加密
 
 **`yang-system` 集成测试**（`tests/feishu_*_integration.rs`，`#[ignore]`，真实 MySQL/Redis）
 
-- 端到端：建数据源 → 写入选项 → 以正确/错误 Token 调入口 1 → 断言响应体的字面形状
-- 禁用选项不出现在结果中；`query` 关键词命中；分页游标推进
 - **文件须读 `YANG_SYSTEM_TEST_DATABASE_URL` 以被 `run_ci.py` 反向发现**，并同步登记
-  `INTEGRATION` 元组
+  `INTEGRATION` 元组。
+
+分两个入口，职责不同：
+
+| 入口 | 覆盖 |
+|---|---|
+| `feishu_options_integration.rs` | **Schema 级**：两张表被创建、`option_id` / `source_key` 的唯一索引真实存在且真的拒绝重复、`token_hash` 列宽、二次同步为无操作 |
+| `feishu_approval_options_integration.rs` | **端点级**：装配完整应用经 Registry 派发，断言响应体字面形状（裸 `{code,msg,data}`、`Content-Type`、`@i18n@` 占位符、`i18nResources` 非空）、分页推进不漏不重（含**排序键并列**时靠 `option_id` 推进的那一支）、`query` 关键词命中与未命中、非法游标 fail-closed、数据源不存在（`40401`）、错误 Token / 停用数据源被拒、禁用选项不出现、加密路径（用文档 Go 参考实现独立解密核对）、开了加密但服务端缺密钥（`50002`）、写入入口的管理 Token 鉴权与跨数据源归属保护（含比较用的排序规则必须与写入一致）、public 端点不得被无关 `Authorization` 头打成 401 |
+
+> **端点级测试是后补的，原因值得记住。** 本设计把上述用例列为「必做」，但 P6 只落地了
+> Schema 级入口，端点级从未实现——于是「页大小越硬上限」与「keyset 引用未声明
+> `filterable` 的字段」两个缺陷同时逃逸，取选项端点在生产形态下对**每一个**合法请求
+> 返回 `code=50001`，而 110 条单测全绿。
+
+**仍未覆盖**：入口 1 的 2.5 秒处理预算（`50401`）没有自动化用例——需要注入一个会阻塞的
+查询，本期的 harness 不具备该注入点。该路径目前只有代码审查与手工联调保障。
 
 ## 11. 实施阶段
 
