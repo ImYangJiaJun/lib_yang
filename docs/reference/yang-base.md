@@ -1,16 +1,16 @@
 # yang-base — 后端基础库公共 API
 
-版本：0.2.2 | 许可：MIT OR Apache-2.0
+版本：0.3.0 | 许可：MIT OR Apache-2.0
 
 `yang-base` 提供 schema-first 数据表、类型化 Action、原子 API 注册、应用级路由目录、插件生命周期、MySQL/Redis 初始化、HTTP 客户端和 JWT Token 管理。
 
-精确签名以 rustdoc 与源码为准；本文件描述 0.2.2 应用侧公共契约，不保留已删除 API 的历史教程。
+精确签名以 rustdoc 与源码为准；本文件描述 0.3.0 应用侧公共契约，不保留已删除 API 的历史教程。
 
 ## 安装与 feature
 
 ```toml
 [dependencies]
-yang-base = "0.2.2"
+yang-base = "0.3.0"
 ```
 
 | Feature | 默认 | 能力 |

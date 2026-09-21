@@ -92,10 +92,10 @@ fn api_overviews_cover_current_public_contracts() {
     let base_version_tag = format!("版本：{base_version}");
     let db_version_tag = format!("版本：{db_version}");
 
-    let base = workspace_file("docs/yang-base.md");
+    let base = workspace_file("docs/reference/yang-base.md");
     assert_contains_all(
         &base,
-        "docs/yang-base.md",
+        "docs/reference/yang-base.md",
         &[
             base_version_tag.as_str(),
             "Table + Field",
@@ -116,10 +116,10 @@ fn api_overviews_cover_current_public_contracts() {
         ],
     );
 
-    let db = workspace_file("docs/yang-db.md");
+    let db = workspace_file("docs/reference/yang-db.md");
     assert_contains_all(
         &db,
-        "docs/yang-db.md",
+        "docs/reference/yang-db.md",
         &[
             db_version_tag.as_str(),
             "BackendCapabilities",
@@ -138,7 +138,7 @@ fn capability_matrix_and_backlog_reconciliation_are_present() {
     let base_version = crate_version("crates/yang-base/Cargo.toml");
     let base_version_tag = format!("yang-base {base_version}");
 
-    let matrix = workspace_file("docs/BASE_DB_CAPABILITY_MATRIX.md");
+    let matrix = workspace_file("docs/reference/BASE_DB_CAPABILITY_MATRIX.md");
     assert_contains_all(
         &matrix,
         "能力矩阵",
@@ -182,7 +182,7 @@ fn versioning_and_current_docs_lock_schema_first_release_boundary() {
     let derive_version_tag = format!("`yang-base-derive` {derive_version}");
     let db_version_tag = format!("`yang-db` {db_version}");
 
-    let versioning = workspace_file("docs/VERSIONING.md");
+    let versioning = workspace_file("docs/reference/VERSIONING.md");
     assert_contains_all(
         &versioning,
         "VERSIONING",
@@ -199,9 +199,9 @@ fn versioning_and_current_docs_lock_schema_first_release_boundary() {
 
     let current_documents = [
         workspace_file("crates/yang-base/README.md"),
-        workspace_file("docs/yang-base.md"),
+        workspace_file("docs/reference/yang-base.md"),
         versioning.clone(),
-        workspace_file("docs/BASE_DB_CAPABILITY_MATRIX.md"),
+        workspace_file("docs/reference/BASE_DB_CAPABILITY_MATRIX.md"),
     ]
     .join("\n");
 
