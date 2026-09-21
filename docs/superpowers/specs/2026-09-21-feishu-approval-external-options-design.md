@@ -217,23 +217,52 @@ let mut http_response = match response.attachment.clone() {
 改动清单：
 
 1. `action/response.rs`
-   - `ResponseBody` 新增 `Raw { body: Vec<u8>, content_type: String }` 与构造器
+   - `ResponseBody` 新增 `Raw { body: String, content_type: String }` 与构造器
    - `ResponseAttachment` 新增同构变体（两者按 `response.rs:420-423` 的注释是「结构一一对应」）
    - `From<ResponseBody> for ResponseAttachment` 补一个 match 臂
    - `wrap_dispatch_output`（`response.rs:459`）**无需改动**，它已经统一做转附件
-2. `transport/axum.rs:1010` 的 `attachment_response` 补一个臂
+   - **body 用 `String` 而不是 `Vec<u8>`**：`ResponseBody` 是 Action 的 Output 类型，必须满足
+     `Serialize + JsonSchema`。`Vec<u8>` 会序列化成整数数组、schema 变成 `array of integer`；
+     既然 content-type 已被限死为 `application/json`（UTF-8 文本），`String` 更诚实也更干净。
+2. `transport/axum.rs:1009` 的 `attachment_response` 补一个臂
 
    ```rust
    ResponseAttachment::Raw { body, content_type } => match HeaderValue::from_str(&content_type) {
-       Ok(ct) => (StatusCode::OK, [(header::CONTENT_TYPE, ct)], body).into_response(),
+       Ok(value) => (
+           StatusCode::OK,
+           [(header::CONTENT_TYPE, value)],
+           body,
+       )
+           .into_response(),
        Err(_) => error_response(
            StatusCode::INTERNAL_SERVER_ERROR,
-           BaseError::ConfigError("响应 content-type 非法".to_string()),
+           BaseError::ConfigError("Raw 附件响应 content-type 非法".to_string()),
        ),
    },
    ```
 
-   该 match 是穷尽的，编译器会强制处理新变体，不会漏。
+3. `definition/builder/registry.rs:402` 的 `warn_response_kind_mismatch` 必须补臂。
+   它按 `&response.attachment` 穷尽匹配并把 attachment 映回 `ActionResponseKind`——
+   这是**第三处**必须同步的穷尽 match（前两处是上面两个）。`Raw` 映射为
+   `ActionResponseKind::Json`（body 确实是 JSON），与 Action 声明的 `Json` 一致，不触发告警。
+
+   注意 `infer_action_presentation`（`compile.rs:464`）与 `validate_action_presentation`
+   （`compile.rs:557`）匹配的是 **`ActionResponseKind` 而不是 attachment**，因为本方案不新增
+   kind 变体，**这两处不需要改**。同理 `ActionResponseKind` 有 `#[non_exhaustive]`，
+   前端 zod 契约（`ui-catalog.ts:49` 的 `.enum([...]).catch("json")`）对未知值静默降级，
+   **前端零影响**。
+
+4. **两个 enum 同时加 `#[non_exhaustive]`**：既然本次已是破坏性变更（两者当前都不是
+   `#[non_exhaustive]`），一并加上，使未来新增变体不再构成破坏性变更。注意
+   `#[non_exhaustive]` 只对**其它 crate** 生效，crate 内仍是穷尽匹配——所以上面三处照旧必须改。
+
+5. **两个真实的陷阱，必须处理**：
+   - `append_action_response_headers`（`axum.rs:531`）的拒绝名单逐字为
+     `content-length | transfer-encoding | connection | x-request-id`，**不含 `content-type`**，
+     且用 `target.append(...)` 而非 `insert`。⇒ 若 Action 再用 `with_header("Content-Type", …)`
+     会产出**重复的 Content-Type 头**。本方案的 Raw 动作不得声明 Content-Type 头。
+   - `max_attachment_bytes` 目前只在 `file_response` 内校验（`axum.rs:1050-1069`），
+     Raw 变体不经过它，**必须自己比对 `body.len()`**，否则完全绕过上限（默认 64 MiB）。
 3. **两个 enum 同时加 `#[non_exhaustive]`**：既然本次已是破坏性变更（两者当前都不是
    `#[non_exhaustive]`），一并加上，使未来新增变体不再构成破坏性变更。
 4. **安全硬化**：`Raw` 能让任意 Action 返回任意字节与任意 Content-Type。若放任，未来可用它
@@ -252,48 +281,82 @@ let mut http_response = match response.attachment.clone() {
 
 ## 5. 数据模型
 
+**表声明走 `TableSpec` + `fields!` DSL。** 这不是风格选择——它是「进 Catalog / UI / 权限目录」
+与「拿不到 DSL 能力」之间的取舍，见 §5.3。
+
 ### 5.1 `feishu_datasource`（module `feishu.datasource`）
 
-| 列 | 类型 | 说明 |
+| 字段 | DSL 声明 | 说明 |
 |---|---|---|
-| `id` | `Field::id` | 自增主键，not_writable |
-| `source_key` | varchar(64) | 唯一 + 索引；进 URL；规则 `^[a-z][a-z0-9_]{0,63}$` |
-| `title` | varchar(100) | 展示名 |
-| `token_hash` | varchar(64) | **`.secret()` + `.not_readable()`**；只存 sha256 十六进制，**永不存明文** |
-| `encrypt_enabled` | boolean | 默认 `false` |
-| `default_locale` | varchar(16) | 默认 `zh_cn` |
-| `status` | enumeration | `active` / `disabled` + `check_named` 兜底 |
-| `linkage_mapping` | json（可空） | 预留；v1 不消费 |
-| `created_at` / `updated_at` | `Timestamp` | 框架自动写入，not_writable |
+| `id` | `Key::new()` | → `Field::id`：自增大整数主键、`not_writable` |
+| `source_key` | `Str::new().require(true).unique(true).max_length(64).searchable(true).filterable(true).sortable(true)` | 进 URL；规则 `^[a-z][a-z0-9_]{0,63}$` |
+| `title` | `Str::new().require(true).max_length(100).searchable(true)` | 展示名 |
+| `token_hash` | `Str::new().require(true).max_length(64).secret(true).readable_by([SYSTEM_ROLE]).writable_by([SYSTEM_ROLE])` | 只存 sha256 十六进制，**永不存明文** |
+| `encrypt_enabled` | `Switch::new().require(true).default(false)` | |
+| `default_locale` | `Str::new().require(true).max_length(16).default("zh_cn")` | |
+| `status` | `Radio::<String>::new().require(true).varchar(16).options([("active","启用"),("disabled","停用")]).default("active")` | 另加 `check_named` 兜底 |
+| `linkage_mapping` | `Text::new()` | JSON 文本（DSL 无 Json builder）；预留，v1 不消费 |
+| `created_at` / `updated_at` | `Timestamp::new().created_at()` / `.updated_at()` | 框架自动写入 |
 
 ### 5.2 `feishu_option`（module `feishu.option`）
 
-| 列 | 类型 | 说明 |
+| 字段 | DSL 声明 | 说明 |
 |---|---|---|
-| `option_id` | varchar(128) | **单列自然键主键**（照 `user_session` 先例 `schema.rs:213`）；`.searchable()`——见下方说明 |
-| `source_key` | varchar(64) | 索引；`.filterable()` |
-| `label` | varchar(255) | **`.searchable()`**，飞书的 `query` 关键词检索依赖它 |
-| `i18n` | json（可空） | `{"en_us":"…","ja_jp":"…"}` |
-| `sort_order` | int | 默认 0；稳定排序键 |
-| `is_default` | boolean | 默认 `false` |
-| `enabled` | boolean | 默认 `true`；禁用而非删除，避免历史审批单失联 |
-| `extra` | json（可空） | 预留联动筛选键值 |
-| `created_at` / `updated_at` | `Timestamp` | |
+| `id` | `Key::new()` | 自增大整数主键 |
+| `option_id` | `Str::new().require(true).unique(true).max_length(128).searchable(true).filterable(true).sortable(true)` | **飞书契约 id**；唯一性由唯一索引强制 |
+| `source_key` | `Str::new().require(true).max_length(64).indexed(true).filterable(true).sortable(true)` | 所属数据源 |
+| `label` | `Str::new().require(true).max_length(255).searchable(true)` | 飞书 `query` 关键词检索依赖它 |
+| `i18n` | `Text::new()` | JSON 文本 `{"en_us":"…","ja_jp":"…"}` |
+| `sort_order` | `Int::new().require(true).default(0).sortable(true)` | 稳定排序键 |
+| `is_default` | `Switch::new().require(true).default(false)` | |
+| `enabled` | `Switch::new().require(true).default(true).filterable(true)` | 禁用而非删除，避免历史审批单失联 |
+| `extra` | `Text::new()` | JSON 文本；预留联动筛选键值 |
+| `created_at` / `updated_at` | `Timestamp::new().created_at()` / `.updated_at()` | |
 
-**关于 `option_id` 的 `.searchable()`**：`TableQuery::search` 会对「所有 `searchable` 且为文本
-类型」的字段构造一个 OR-LIKE 组（`table_query/filters.rs:543`）。把 `option_id` 纳入搜索面，
-是为了让审批人在选择器里能直接按选项编码检索（多数外部系统的主键本身就是有意义的编码）。
-代价是关键词会同时匹配 id 与 label，可能带来少量噪音。若不希望如此，去掉该 `.searchable()`
-即可——但**必须至少保留 `label` 的 `searchable`**，否则当前角色没有可搜索文本字段时
-`search` 会 fail-closed 报错。
+**关于 `option_id` 的 `searchable(true)`**：`TableQuery::search` 会对「所有 `searchable` 且为
+文本类型」的字段构造一个 OR-LIKE 组（`table_query/filters.rs:543`）。把 `option_id` 纳入搜索面，
+是为了让审批人能直接按选项编码检索（多数外部系统的主键本身就是有意义的编码）。代价是关键词
+会同时匹配 id 与 label。若不希望如此，去掉该 `searchable(true)` 即可——但**必须至少保留
+`label` 的 `searchable(true)`**，否则当前角色没有可搜索文本字段时 `search` 会 fail-closed 报错。
 
-### 5.3 必须现在就说清的两个取舍
+### 5.3 关于 DSL 能力的三个硬约束（决定了上面的写法）
 
-1. **`option_id` 做单列主键 ⇒ 一个选项只能属于一个数据源。** 这正是飞书「id 全局唯一且
-   固定」要求的强制实现。若将来要把同一选项复用到多个数据源，需要引入连接表——
-   `schema_sync` **不支持复合主键**（`render.rs:87-90`），没有中间路线。
-2. **Schema 纯增量、无回滚**，主键一旦建立不可改（`plan.rs:284-289`），
-   且不能事后补自增主键。⇒ 这两张表的结构必须**一次设计到位**。
+`fields!` + `TableSpec` 是**进 Catalog / 前端零代码 TableView / 权限目录的唯一通道**
+（`ModuleSpec::table` 只接受 `TableSpec`），但它有三个能力缺口，实测确认：
+
+1. **没有 Json builder。** `simple_builder!` 只实例化 9 个（`Key` / `Str` / `Text` / `Int` /
+   `Decimal` / `Switch` / `Table` / `Tree` / `Timestamp`，`field.rs:595-603`），
+   `definition/mod.rs:32` 的导出列表里也没有 `Json`；`Field::json` 只存在于 schema-first 侧
+   （`table/definition.rs:172`）。⇒ `i18n` / `extra` / `linkage_mapping` **只能落成 `Text`
+   列存放 JSON 文本**，由 `domain/` 自己 serde 序列化。这三个列从不被 SQL 查询进内部，
+   代价可接受。
+2. **无法声明自然键主键。** DSL 的 `Key` 硬编码映射到 `Field::id(name)`，即
+   `required().primary_key().auto_increment().not_writable()`（`table/definition.rs:113`），
+   builder 上也没有 `primary_key()`。⇒ `option_id` **不能做单列主键**，改为
+   `Str::new().unique(true)`——`FieldSpec.storage.unique` 在 `field.rs:276-277` 映射为
+   schema-first 的 `Field::unique()`，落成真实 UNIQUE 索引。**约束力等价**：
+   飞书要求的「id 全局唯一且固定」由唯一索引强制，与由主键强制没有区别。
+3. **`filterable` / `sortable` 在 DSL 侧是 fail-closed 的。** `FieldSpec::into_schema_field`
+   对未声明的字段会显式调 `not_filterable()` / `not_sortable()` 关闭表层默认
+   （`field.rs:311-320`）。⇒ 每个需要筛选或排序的字段都必须显式打开，漏一个就是运行时
+   `FieldPermissionDenied`。
+
+另外两条会让实现写错的差异：
+
+- **`secret(true)` 会把 readable/writable 同时置为 `Nobody`**（`field.rs:539-546`），
+  所以 `token_hash` 后面**必须**跟 `.readable_by([SYSTEM_ROLE]).writable_by([SYSTEM_ROLE])`，
+  否则连受信 writer 都读写不了。
+- **DSL 与 schema-first 的参数形状相反**：DSL 的 `require(bool)` / `unique(bool)` /
+  `searchable(bool)` / `readable(bool)` 都收 `bool`；schema-first 的 `Field::required()` /
+  `unique()` / `searchable()` 都不收参数。混用即编译错误。
+
+### 5.4 必须现在就说清的两个取舍
+
+1. **`option_id` 全局唯一 ⇒ 一个选项只能属于一个数据源。** 这正是飞书契约的强制实现；
+   若将来要把同一选项复用到多个数据源，需要引入连接表。
+2. **Schema 纯增量、无回滚**，主键一旦建立不可改（`plan.rs:284-289`），且不能事后补自增主键。
+   ⇒ 这两张表的结构必须**一次设计到位**。注意唯一索引同样不可事后改定义
+   （`plan.rs:308-317` 对同名不同定义的索引直接拒绝启动）。
 
 ## 6. 接口契约
 
@@ -472,6 +535,7 @@ encryption_key = "replace-with-…"          # secret；配置后才启用加密
 | `run_ci.py --self-test`（B） | 新增集成测试 | `INTEGRATION` 元组须与「含 `YANG_SYSTEM_TEST_` 的测试文件集」完全相等 |
 | `pnpm verify:deployment-contract`（B） | 新增非 `/api` 顶层路径 | 本设计全部路由在 `/api/v1/` 下，无需改 nginx |
 | OpenAPI 契约产物（B） | 新增 Action | 重跑 `scripts/dump_openapi.py` 与 `pnpm gen:contracts`。**注意：该产物无 CI 新鲜度门禁**（`run_ci.py` 中无 openapi 步骤），只有 `AGENTS.md` 的约定，容易静默过期 |
+| **`crates/yang-base/tests/*.rs`（A）** | —— | **任何门禁都不执行它们**：`run_ci.py` 对 yang-base 只跑 `--lib`（单元测试），而 `--all-targets` 只覆盖 `yang-base-derive`/`yang-pcg`/`yang-runtime`（`AUXILIARY_PACKAGE_FLAGS`）。`transport_axum.rs`（2052 行）、`compatibility_contract.rs`、`release_docs_contract.rs` 等都**只在 clippy 的 `--all-targets --all-features` 下被编译**。⇒ P0 必须**显式手动运行**它们并保留输出，不能把「`run_ci.py quick` 绿」当作验收 |
 
 **跨仓推送顺序**：先 `lib_yang`（Phase 1 的 yang-base 变更）→ 确认推送完成 → 再推
 `yang-system`。两侧都用 `--locked`，间隔过近会因锁文件与旧清单不匹配而失败。
