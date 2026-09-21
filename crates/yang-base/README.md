@@ -189,7 +189,7 @@ let nickname: Option<String> = row.optional("nickname").expect("nickname 类型�
 启用默认 feature 后，MySQL/Redis 客户端经 `ToolsBuilder` 注册进应用资源并由每个 `BuiltApp` 显式持有（无进程级全局单例）。初始化配置类型来自 `yang-db`；直接构造这些客户端的应用还需声明匹配的依赖：
 
 ```toml
-yang-db = { version = "0.1.6", default-features = false, features = ["mysql", "redis"] }
+yang-db = { version = "0.2.0", default-features = false, features = ["mysql", "redis"] }
 ```
 
 初始化示例：
