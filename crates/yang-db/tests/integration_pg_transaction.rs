@@ -87,6 +87,9 @@ async fn test_pg_transaction_rollback_on_drop() {
 ///   5. Task2 在同一事务内再 SELECT → 应看到 value=2（READ COMMITTED 语义）
 ///   6. Task2 UPDATE value=3 并 commit
 ///   7. 最终验证 value=3
+///
+/// 各步骤用 oneshot 信号串行化（"UPDATE 完成"/"首次读完成"/"commit 完成"），
+/// 等待的是事件本身，因此结果不受机器负载影响。
 #[tokio::test]
 #[ignore = "需要本地 PostgreSQL 实例，默认离线套件跳过"]
 async fn test_pg_transaction_concurrent_isolation() {
@@ -112,9 +115,11 @@ async fn test_pg_transaction_concurrent_isolation() {
         .await
         .expect("种子 INSERT 失败");
 
-    // 用 channel 协调两个 task 的执行顺序
+    // 用 channel 协调两个 task 的执行顺序。三个信号都是"事件发生"同步，
+    // 不使用固定 sleep 猜测耗时——CI 负载下 commit 可能远慢于任何假定的毫秒数。
     let (tx1_ready, rx1_ready) = tokio::sync::oneshot::channel::<()>();
     let (tx2_read, rx2_read) = tokio::sync::oneshot::channel::<()>();
+    let (tx1_committed, rx1_committed) = tokio::sync::oneshot::channel::<()>();
 
     let db_url = test_db_url();
 
@@ -142,10 +147,13 @@ async fn test_pg_transaction_concurrent_isolation() {
 
             // commit
             tx.commit().await.expect("task1: commit 失败");
+
+            // 通知 Task2：commit 已真正完成，其第二次 SELECT 现在必须看到新值
+            let _ = tx1_committed.send(());
         }
     });
 
-    // Task2: 等 Task1 UPDATE 完成 → SELECT（应看到旧值）→ 通知 Task1 → Task1 commit → 再 SELECT
+    // Task2: 等 Task1 UPDATE 完成 → SELECT（应看到旧值）→ 通知 Task1 → 等 commit 完成 → 再 SELECT
     let handle2 = tokio::spawn({
         let url = db_url.clone();
         let tbl = table.clone();
@@ -176,8 +184,11 @@ async fn test_pg_transaction_concurrent_isolation() {
             // 通知 Task1 可以 commit 了
             let _ = tx2_read.send(());
 
-            // 给 Task1 一点时间完成 commit
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // 等 Task1 的 commit 真正完成（等待事件，而非猜测耗时）。
+            // Task1 若在 commit 前失败，发送端随 task 结束被 drop，这里立即报错而非挂起。
+            rx1_committed
+                .await
+                .expect("task1: 应在 commit 完成后发出信号");
 
             // 同一事务内再 SELECT → READ COMMITTED 下应看到 Task1 已提交的 value=2
             let rows2: Vec<TxRow> = tx
