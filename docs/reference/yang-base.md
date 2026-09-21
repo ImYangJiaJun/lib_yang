@@ -298,7 +298,7 @@ let document = catalog.to_openapi(
 - 资源一律经 `ToolsBuilder` 在启动期注册（mysql/cache/token/http + 类型化 extension/config 槽），运行期通过 `Tools` 只读获取；重复注册在构建期报错。
 - `health_check` 汇总各资源健康状态，`close` 幂等并按注册逆序释放。
 
-直接使用初始化配置时，应用还需依赖 `yang-db` 0.1.6 的 `DatabaseConfig` / `RedisConfig`。
+直接使用初始化配置时，应用还需依赖 `yang-db` 0.2.0 的 `DatabaseConfig` / `RedisConfig`。
 
 ### DatabaseInitializer
 

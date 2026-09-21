@@ -4494,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "yang-base-derive"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -4504,7 +4504,7 @@ dependencies = [
 
 [[package]]
 name = "yang-db"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4523,7 +4523,7 @@ dependencies = [
 
 [[package]]
 name = "yang-pcg"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "crc32fast",
  "proptest",
