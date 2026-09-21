@@ -2,7 +2,7 @@
 
 当前仓库基线：
 
-- `yang-base` 0.2.2
+- `yang-base` 0.3.0
 - `yang-base-derive` 0.2.1
 - `yang-db` 0.1.6
 
@@ -80,3 +80,49 @@ unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新
 4. README、公共 API 文档、能力矩阵和 release docs contract 同步更新。
 
 不得只修改源码而保留旧版本文档，也不得只更新文档而缺少可执行契约。
+
+## yang-base 0.3.0 迁移说明
+
+0.3.0 是一次**公共契约收紧**版本。逐项变更与迁移方式如下。
+
+### 新增 `ResponseBody::Raw` 与 `ResponseAttachment::Raw`
+
+外部系统的响应契约可能与框架的 `{code,message,data}` 包络不兼容（例如要求顶层键名为
+`msg`）。为此新增逃生口：Action 以 `ResponseBody::Raw` 为输出时，传输层按变体自带的
+`content_type` 直接返回 `body`，**不套 `ApiResponse` 包络**。
+
+- 构造请用 `ResponseBody::raw(body, content_type) -> Result<Self, BaseError>`：它校验
+  `content_type` 必须为 `application/json`（防止该通道被用来返回 `text/html`，从而绕过
+  前端 JSON 契约的保护）。
+- HTTP 状态固定 `200`；`max_attachment_bytes` 由该变体自行比对（`file_response` 的限额
+  不覆盖它）。
+- **迁移**：对 `ResponseBody` 或 `ResponseAttachment` 做穷尽 `match` 的下游代码必须补
+  `Raw` 臂。不使用该能力的调用方无需任何改动。
+
+### 两个枚举加 `#[non_exhaustive]`
+
+`ResponseBody` 与 `ResponseAttachment` 现在标注 `#[non_exhaustive]`，此后新增变体不再
+构成破坏性变更。
+
+- **迁移**：下游穷尽 `match` 需补通配臂。注意该属性只对**其它 crate** 生效，yang-base
+  内部仍是穷尽匹配。
+
+### 未变更的部分
+
+- `ActionResponseKind` **未**新增变体：`Raw` 的 body 就是 JSON，声明 `Json` 是诚实的，
+  前端 zod 契约（`.enum([...]).catch("json")`）因此零影响。
+- `ApiResponse` 的 JSON 线格式不变（`attachment` 字段带 `serde(skip)`）。
+- 普通 Action、附件（下载/预览/重定向）的行为与状态码语义均未改变。
+
+### 契约测试
+
+- `crates/yang-base/src/action/response.rs` 的 `mod tests`：content-type 白名单、Raw →
+  附件的映射、JSON 线格式不含 `attachment`。
+- `crates/yang-base/tests/transport_axum.rs`：端到端裸 body 与响应头、`response_kind`
+  投影保持 `json`。
+- `crates/yang-base/tests/compatibility_contract.rs` 与 `release_docs_contract.rs`：
+  版本号与文档一致性。
+
+> 注意：`crates/yang-base/tests/*.rs` **不被 `run_ci.py` 执行**（quick/full 对 yang-base
+> 只跑 `--lib`）。验证传输层行为需显式运行
+> `cargo test --test transport_axum -p yang-base --features transport-axum --locked`。

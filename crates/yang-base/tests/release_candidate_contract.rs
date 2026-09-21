@@ -12,7 +12,7 @@ fn workspace_file(relative: &str) -> String {
 
 #[test]
 fn release_report_records_every_required_gate() {
-    let report = workspace_file("docs/RELEASE_CANDIDATE_REPORT.md");
+    let report = workspace_file("docs/audit/RELEASE_CANDIDATE_REPORT.md");
     for required in [
         "yang-base 0.1.2",
         "yang-db 0.1.4",
@@ -34,6 +34,6 @@ fn release_report_records_every_required_gate() {
 
 #[test]
 fn completeness_plan_has_no_pending_points() {
-    let plan = workspace_file("docs/YANG_BASE_DB_COMPLETENESS_PLAN.md");
+    let plan = workspace_file("docs/plans/YANG_BASE_DB_COMPLETENESS_PLAN.md");
     assert!(!plan.contains("— `PENDING`"), "完整度计划仍存在 PENDING 点");
 }

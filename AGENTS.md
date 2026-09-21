@@ -15,7 +15,7 @@ lib_yang/
 ├── benchmarks/               # runtime-shadow 基准配置（CI performance-shadow job）
 ├── crates/
 │   ├── yang-db/              # MySQL/PG 查询构建 + Redis 客户端（v0.1.6）
-│   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.2.2）
+│   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.3.0）
 │   ├── yang-base-derive/     # #[derive(Action)]/#[derive(TableEntity)] + params! 宏（v0.2.1）
 │   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.1.0）
 │   └── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.1.1）

@@ -313,6 +313,34 @@ impl BusinessAction for RedirectAction {
     }
 }
 
+/// 返回原始 JSON 响应体的 Action：用于验证传输层不套 `ApiResponse` 包络。
+#[derive(Action)]
+#[action(
+    name = "raw",
+    display_name = "原始响应体",
+    method = "POST",
+    path = "/api/test/raw",
+    public
+)]
+struct RawAction;
+
+#[async_trait::async_trait]
+impl BusinessAction for RawAction {
+    type Input = EmptyInput;
+    type Output = ResponseBody;
+
+    async fn index(
+        &self,
+        _ctx: ActionContext,
+        _input: Self::Input,
+    ) -> Result<Self::Output, BaseError> {
+        ResponseBody::raw(
+            r#"{"code":0,"msg":"success!","data":{"result":{"options":[]}}}"#,
+            "application/json",
+        )
+    }
+}
+
 /// 下载不存在文件的 Action。
 #[derive(Action)]
 #[action(
@@ -696,6 +724,7 @@ fn build_app() -> Arc<BuiltApp> {
         .native_action(DownloadAction { path: download })
         .native_action(PreviewAction { path: preview })
         .native_action(RedirectAction)
+        .native_action(RawAction)
         .native_action(MissingFileAction)
         .native_action(SlowAction)
         .native_action(ProtectedAction)
@@ -1380,6 +1409,74 @@ async fn redirect_returns_302_with_location() {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     assert_eq!(location, "https://example.com/next");
+}
+
+#[tokio::test]
+async fn raw_action_returns_unwrapped_json_body() {
+    // Raw 附件不套 ApiResponse 包络：HTTP body 就是 Action 声明的原文，
+    // 因此顶层出现的是 msg（外部系统契约）而不是框架的 message
+    let response = oneshot(
+        default_router(),
+        json_request("POST", "/api/test/raw", "{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json"),
+        "Raw 响应必须带声明的 content-type"
+    );
+    assert!(
+        response.headers().get("content-disposition").is_none(),
+        "Raw 不是文件下载，不应带 Content-Disposition"
+    );
+    let text = String::from_utf8(body_bytes(response).await).expect("Raw body 应是 UTF-8");
+    assert!(
+        text.starts_with(r#"{"code":0,"msg":"success!""#),
+        "实际: {text}"
+    );
+    assert!(
+        !text.contains("\"message\""),
+        "Raw 响应不得出现框架包络的 message 键: {text}"
+    );
+}
+
+#[tokio::test]
+async fn raw_response_body_keeps_declared_response_kind_json() {
+    // 设计决策：不为 Raw 新增 ActionResponseKind 变体——body 确实是 JSON，
+    // 声明 Json 是诚实的，且前端 zod 契约（.enum([...]).catch("json")）零影响。
+    // 同时验证 attachment 不泄露进 Catalog 投影（该字段带 serde(skip)）。
+    let response = oneshot(
+        default_router(),
+        json_request("GET", "/.well-known/yang/ui-catalog", ""),
+    )
+    .await;
+    let json = body_json(response).await;
+    let raw = json["data"]["actions"]
+        .as_array()
+        .expect("actions 应为数组")
+        .iter()
+        .find(|action| action["operation_id"] == "test.probe.raw")
+        .expect("raw 动作应出现在目录中");
+    assert_eq!(
+        raw["response_kind"], "json",
+        "Raw 动作声明的 response_kind 应保持 json: {raw}"
+    );
+    // ApiResponse.attachment 带 serde(skip)，不得作为字段出现在任意投影对象里。
+    // 注意：不能对整段 JSON 做字符串包含判断——ResponseBody 的文档注释里
+    // 含有 "attachment" 一词，会被投影进 output_schema 的 description。
+    for action in json["data"]["actions"]
+        .as_array()
+        .expect("actions 应为数组")
+    {
+        assert!(
+            action.get("attachment").is_none(),
+            "Catalog 投影不得含 attachment 字段: {action}"
+        );
+    }
 }
 
 #[tokio::test]
