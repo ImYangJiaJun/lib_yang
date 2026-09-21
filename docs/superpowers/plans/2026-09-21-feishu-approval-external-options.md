@@ -1129,19 +1129,15 @@ mod tests {
 
     #[test]
     fn key_derivation_is_sha256_of_raw_text() {
-        // 密钥取配置原文的 SHA-256 摘要，避免对 hex/base64/原文的形态猜测
-        let key = derive_key("a-test-key");
-        assert_eq!(
-            key.to_vec(),
-            [
-                0xc7, 0x99, 0x51, 0xf8, 0x1a, 0x3c, 0x00, 0xbe, 0x4f, 0x2b, 0x9f, 0x8f, 0x19,
-                0x1d, 0x9d, 0x84, 0x6a, 0x8b, 0x8f, 0x8b, 0x9f, 0x1a, 0x9b, 0x8f, 0x9f, 0x8b,
-                0x8f, 0x9f, 0x8b, 0x8f, 0x9f, 0x8b
-            ]
-            .to_vec()
-            .len()
-                ..=32
-        );
+        // 密钥取配置原文的 SHA-256 摘要，避免对 hex/base64/原文的形态猜测。
+        // 下面这串是 sha256("a-test-key") 的已知值。
+        const EXPECTED_HEX: &str = "bd01d31bd0851d44aa6fcaae3317a20e450cc16929f33babc79222ad7ca9a952";
+        let mut want = [0u8; 32];
+        for (index, chunk) in EXPECTED_HEX.as_bytes().chunks(2).enumerate() {
+            let text = std::str::from_utf8(chunk).expect("hex 应是 UTF-8");
+            want[index] = u8::from_str_radix(text, 16).expect("应是合法 hex");
+        }
+        assert_eq!(derive_key("a-test-key"), want);
     }
 
     #[test]
@@ -1293,9 +1289,7 @@ pub(crate) fn encrypt_json(
 ```bash
 cd /d/code/lib_yang/project/yang-system && cargo test --lib --locked feishu::domain::crypto
 ```
-Expected: 5 passed。第一个测试 `key_derivation_is_sha256_of_raw_text` 里的期望数组是占位——
-**实现后请用实际值替换**：先让测试失败并打印 `derive_key("a-test-key")` 的真实摘要，
-再把真实摘要写进断言。
+Expected: 5 passed。
 
 - [ ] **Step 6: 提交**
 
@@ -1326,7 +1320,7 @@ EOF
 - Produces:
   - `pub(crate) const DEFAULT_LOCALE: &str = "zh_cn"`
   - `pub(crate) fn i18n_key(option_id: &str) -> String` → `@i18n@<option_id>`
-  - `pub(crate) struct OptionRow { pub option_id: String, pub label: String, pub i18n: BTreeMap<String, String>, pub is_default: bool }`
+  - `pub(crate) struct OptionRow { pub option_id: String, pub label: String, pub i18n: BTreeMap<String, String>, pub sort_order: i64, pub is_default: bool }`（`sort_order` 不被 `build_result_body` 消费，只供 Task 8 生成分页游标）
   - `pub(crate) fn build_result_body(rows: &[OptionRow], default_locale: &str, has_more: bool, next_page_token: Option<String>) -> FeishuResultBody`
 
 > **`i18nResources` 必须至少有一项。** 飞书文档明示「i18nResources 必须返回，返回空会导致
@@ -1350,6 +1344,7 @@ mod tests {
                 .iter()
                 .map(|(locale, text)| ((*locale).to_string(), (*text).to_string()))
                 .collect::<BTreeMap<_, _>>(),
+            sort_order: 0,
             is_default,
         }
     }
@@ -1464,6 +1459,8 @@ pub(crate) struct OptionRow {
     pub(crate) label: String,
     /// 额外语言下的文案，键为语言环境。
     pub(crate) i18n: BTreeMap<String, String>,
+    /// 稳定排序键；不被本模块消费，供分页游标编码使用。
+    pub(crate) sort_order: i64,
     /// 是否为默认选项。
     pub(crate) is_default: bool,
 }
@@ -1974,21 +1971,25 @@ impl Repository {
         self.query().insert(data).await
     }
 
-    /// 按条件更新。
-    pub(crate) async fn update(self_query: TableQuery, data: Record) -> Result<u64, BaseError> {
-        self_query.update(data).await
+    /// 按给定查询条件更新。
+    ///
+    /// `query` 必须自带 WHERE 条件——无 WHERE 的 update/delete 会被底层拒绝
+    /// （`DbError::MissingWhereClause`），这是防全表写的守卫，不要绕过。
+    pub(crate) async fn update(&self, query: TableQuery, data: Record) -> Result<u64, BaseError> {
+        query.update(data).await
     }
 
-    /// 按条件删除。
-    pub(crate) async fn delete(self_query: TableQuery) -> Result<u64, BaseError> {
-        self_query.delete().await
+    /// 按给定查询条件删除。
+    pub(crate) async fn delete(&self, query: TableQuery) -> Result<u64, BaseError> {
+        query.delete().await
     }
 }
 ```
 
-> `Repository::update` / `delete` 需要 `&self` 与查询分开传，上面的写法签名不完整——
-> **请按实际编译情况调整为方法形式**：`pub(crate) async fn update(&self, query: TableQuery, data: Record)`。
-> `TableQuery` 的链式方法大多返回 `Result`，调用处记得 `?`。
+> `TableQuery` 的链式方法**大多返回 `Result<Self, BaseError>`**，调用处记得 `?`；
+> 只有 `with_trashed()` / `with_slow_threshold()` / `with_request_id()` / `with_regex_cache()`
+> 返回裸 `Self`，对它们写 `?` 会编译不过。
+> `insert` 恒返回 `Ok(1)`（不是真实 affected rows）；需要真实行数时看 `update` / `delete` 的返回值。
 
 `domain/context.rs`：
 
@@ -2374,6 +2375,12 @@ use super::super::super::domain::protocol::{FeishuEnvelope, FeishuOptionsRequest
 /// 单次请求返回的最大选项数（框架 `TableQuery` 的硬上限是 100）。
 const PAGE_SIZE: usize = 100;
 
+/// 内部处理预算。
+///
+/// 飞书对这次回调的超时是 **3 秒**，我们在 2.5 秒主动收口，返回一个合法的失败信封，
+/// 而不是被飞书掐断、留下一个既无响应也无法归因的黑洞。
+const PROCESSING_BUDGET: std::time::Duration = std::time::Duration::from_millis(2_500);
+
 /// 校验数据源与 Token，返回失败信封表示拒绝。
 ///
 /// 抽成纯函数以便不依赖数据库做单元测试。
@@ -2417,13 +2424,23 @@ async fn handle(
     input: FeishuOptionsRequest,
     context: Arc<FeishuContext>,
 ) -> Result<ResponseBody, BaseError> {
-    let envelope = match resolve(&ctx, &input, &context).await {
-        Ok(envelope) => envelope,
-        Err(error) => {
+    let envelope = match tokio::time::timeout(
+        PROCESSING_BUDGET,
+        resolve(&ctx, &input, &context),
+    )
+    .await
+    {
+        Ok(Ok(envelope)) => envelope,
+        Ok(Err(error)) => {
             // 内部故障也返回 200 + 失败信封：非 200 会让飞书按「接口报错」处理，
             // 而 FAQ 对失败现象的归因正是「外部数据源返回接口报错」
             tracing::error!(error = %error, code = error.code(), "飞书取选项请求失败");
             FeishuEnvelope::fail(50001, "服务内部错误")
+        }
+        Err(_elapsed) => {
+            // 主动收口而不是被飞书在 3 秒处掐断
+            tracing::error!("飞书取选项请求超出内部处理预算");
+            FeishuEnvelope::fail(50401, "服务处理超时")
         }
     };
     let body = envelope.to_json()?;
@@ -2525,16 +2542,17 @@ async fn resolve(
                 option_id: record.require("option_id")?,
                 label: record.require("label")?,
                 i18n,
+                sort_order: record.require("sort_order")?,
                 is_default: record.optional("is_default")?.unwrap_or(false),
             })
         })
         .collect::<Result<Vec<_>, BaseError>>()?;
 
+    // 游标必须用该行真实的 sort_order，否则下一页的 keyset 条件会错位
     let next_page_token = if has_more {
-        rows.last()
-            .map(|last| {
-                super::super::super::domain::pagination::encode_cursor(0, &last.option_id)
-            })
+        rows.last().map(|last| {
+            super::super::super::domain::pagination::encode_cursor(last.sort_order, &last.option_id)
+        })
     } else {
         None
     };
@@ -2564,11 +2582,11 @@ fn encryption_key(ctx: &ActionContext) -> Result<[u8; 32], BaseError> {
 }
 ```
 
-> **`next_page_token` 的游标取值**：上面写了 `encode_cursor(0, &last.option_id)`，这是**错的**——
-> 必须用该行的真实 `sort_order`。请把 `OptionRow` 增加一个 `sort_order: i64` 字段（Task 5 的
-> `build_result_body` 不消费它，仅供游标使用），并在构造 `OptionRow` 时从记录里读出
-> `record.require::<i64>("sort_order")?`，然后 `encode_cursor(last.sort_order, &last.option_id)`。
-> 同时 `select_fields` 要加上 `"sort_order"`。
+> **`user_id` / `employee_id` 在 v1 被忽略**：飞书文档说「两者都空表示期望返回全部数据」。
+> 本实现无论是否传入都返回该数据源的全部选项——这满足「两者都空」的语义，但对传入了值的
+> 请求不做按人过滤。这是有意识的 v1 边界（按人过滤需要业务侧定义「谁能看到哪些选项」的
+> 规则，属于新增需求），已记入 spec §12 的未决项。若要做，应新增数据源级的过滤配置而不是
+> 在 handler 里猜规则。
 
 在 `option/actions/mod.rs` 中登记：
 
@@ -3058,6 +3076,8 @@ fn test_database_url() -> String {
    `data.result` 是字符串；用同一密钥解密后应等于明文 `result` 的 JSON。
 8. **写入幂等**：同一批 upsert 调两次，选项行数不变。
 9. **审计留痕**：写入后查 `audit_event` 表，断言有对应记录且 actor 是 system。
+10. **处理预算**：用 `tokio::time::pause()` 或注入一个会阻塞的查询，验证超时后返回的是
+    `code != 0` 且 HTTP 200 的失败信封（`50401`），而不是被掐断或返回 5xx。
 
 > 清理必须白名单化：照 `tests/schema_apply_integration.rs:29-40` 的 `drop_test_table`
 > 模式，对未声明的表名 `bail!`，不要内联拼接表名。
