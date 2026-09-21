@@ -408,6 +408,8 @@ fn warn_response_kind_mismatch(runtime: &RuntimeAction, response: &ApiResponse) 
         Some(ResponseAttachment::Redirect { .. }) => {
             crate::definition::ActionResponseKind::Redirect
         }
+        // Raw 的 body 就是 JSON 文本，与声明 Json 的 Action 一致，不触发告警
+        Some(ResponseAttachment::Raw { .. }) => crate::definition::ActionResponseKind::Json,
         None => crate::definition::ActionResponseKind::Json,
     };
     let declared = runtime.ui_schema.response_kind;

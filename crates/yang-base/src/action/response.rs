@@ -7,6 +7,12 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::PathBuf;
 
+/// [`ResponseBody::Raw`] 唯一允许的响应内容类型。
+///
+/// 该逃生口存在的理由是「外部系统的响应契约与框架 JSON 包络不兼容」，不是通用响应通道；
+/// 限死为 JSON 可防止它被用来返回 `text/html`，从而绕过前端 JSON 契约的保护。
+const RAW_ALLOWED_CONTENT_TYPE: &str = "application/json";
+
 /// API 响应
 ///
 /// 统一的 API 响应格式，用于所有 Action 的返回值
@@ -355,11 +361,14 @@ impl Default for ApiResponse {
     }
 }
 
-/// Action 的特殊业务响应体：文件下载、文件预览、重定向。
+/// Action 的特殊业务响应体：文件下载、文件预览、重定向、原始响应体。
 ///
 /// Action 将本类型作为 `type Output` 返回时，派发边界
 /// （[`DynAction::dispatch`](crate::action::DynAction)）会识别并把它转为
 /// [`ApiResponse::attachment`]，普通输出的 JSON 线格式不受影响。
+///
+/// 标注 `#[non_exhaustive]`：未来新增变体不再构成破坏性变更，下游穷尽 `match`
+/// 请保留通配臂。
 ///
 /// # 示例
 ///
@@ -373,10 +382,13 @@ impl Default for ApiResponse {
 ///     // Ok(ResponseBody::preview("/data/a.png"))
 ///     // 重定向
 ///     // Ok(ResponseBody::redirect("https://example.com/next"))
+///     // 原始 JSON 响应体（不套 ApiResponse 包络）
+///     // ResponseBody::raw(r#"{"code":0,"msg":"ok"}"#, "application/json")
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ResponseBody {
     /// 文件下载：传输层以 `Content-Disposition: attachment` 返回文件字节。
     Download {
@@ -394,6 +406,18 @@ pub enum ResponseBody {
     Redirect {
         /// 目标地址。
         url: String,
+    },
+    /// 原始响应体：传输层直接以 `content_type` 返回 `body`，**不套 [`ApiResponse`] 包络**。
+    ///
+    /// 供外部系统要求固定响应形状（顶层键名、层级与框架包络不一致）时使用。
+    /// `content_type` 只允许 `application/json`；`body` 必须是该类型下的完整响应文本。
+    ///
+    /// 请优先用 [`ResponseBody::raw`] 构造，它会校验 `content_type`。
+    Raw {
+        /// 完整响应体文本（UTF-8）。
+        body: String,
+        /// 响应 `Content-Type`；当前只允许 `application/json`。
+        content_type: String,
     },
 }
 
@@ -415,13 +439,53 @@ impl ResponseBody {
     pub fn redirect(url: impl Into<String>) -> Self {
         Self::Redirect { url: url.into() }
     }
+
+    /// 构造原始响应体，传输层将原样返回 `body` 而不套 [`ApiResponse`] 包络。
+    ///
+    /// 这是给「外部系统契约与框架包络不兼容」用的逃生口，不是通用响应通道——
+    /// `content_type` 被限死为 `application/json`，防止它被用来返回 `text/html`。
+    ///
+    /// # 错误
+    ///
+    /// `content_type` 不是 `application/json` 时返回 [`BaseError::ConfigError`]。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_base::action::ResponseBody;
+    ///
+    /// let body = ResponseBody::raw(r#"{"code":0}"#, "application/json")?;
+    /// assert!(matches!(body, ResponseBody::Raw { .. }));
+    ///
+    /// // 非 JSON 类型被拒绝
+    /// assert!(ResponseBody::raw("<html></html>", "text/html").is_err());
+    /// # Ok::<(), yang_base::BaseError>(())
+    /// ```
+    pub fn raw(
+        body: impl Into<String>,
+        content_type: impl Into<String>,
+    ) -> Result<Self, BaseError> {
+        let content_type = content_type.into();
+        if content_type != RAW_ALLOWED_CONTENT_TYPE {
+            return Err(BaseError::ConfigError(format!(
+                "Raw 响应 content-type 只允许 {RAW_ALLOWED_CONTENT_TYPE}，收到 {content_type}"
+            )));
+        }
+        Ok(Self::Raw {
+            body: body.into(),
+            content_type,
+        })
+    }
 }
 
 /// 一次响应携带的非 JSON 附件描述，由传输层消费，不参与 JSON 序列化。
 ///
 /// 与 [`ResponseBody`] 结构一一对应；拆开是为了让 Action 输出类型满足
 /// `Serialize + JsonSchema` 契约，而响应上的附件字段不受该契约约束。
+///
+/// 标注 `#[non_exhaustive]`：未来新增变体不再构成破坏性变更。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResponseAttachment {
     /// 文件下载（`Content-Disposition: attachment`）。
     Download {
@@ -440,6 +504,13 @@ pub enum ResponseAttachment {
         /// 目标地址。
         url: String,
     },
+    /// 原始响应体：`Content-Type` 由变体自带，**不套 [`ApiResponse`] 包络**。
+    Raw {
+        /// 完整响应体文本。
+        body: String,
+        /// 响应 `Content-Type`。
+        content_type: String,
+    },
 }
 
 impl From<ResponseBody> for ResponseAttachment {
@@ -448,6 +519,7 @@ impl From<ResponseBody> for ResponseAttachment {
             ResponseBody::Download { path, filename } => Self::Download { path, filename },
             ResponseBody::Preview { path } => Self::Preview { path },
             ResponseBody::Redirect { url } => Self::Redirect { url },
+            ResponseBody::Raw { body, content_type } => Self::Raw { body, content_type },
         }
     }
 }
@@ -732,5 +804,45 @@ mod tests {
         assert_eq!(response.code, 0);
         assert_eq!(response.data.unwrap()["value"], 7);
         assert!(response.attachment.is_none());
+    }
+
+    #[test]
+    fn raw_response_body_rejects_non_json_content_type() {
+        // Raw 只允许 application/json：这个逃生口不得被用来返回 text/html
+        let failed = ResponseBody::raw("<html></html>", "text/html")
+            .expect_err("非 application/json 必须被拒绝");
+        assert!(
+            failed.to_string().contains("application/json"),
+            "错误信息应说明允许的 content-type，实际: {failed}"
+        );
+    }
+
+    #[test]
+    fn raw_response_body_maps_to_raw_attachment_without_envelope() {
+        // Raw 输出映射为 Raw 附件，且不进入 data
+        let body = ResponseBody::raw(r#"{"code":0,"msg":"ok"}"#, "application/json")
+            .expect("application/json 应被接受");
+        let response = wrap_dispatch_output(body, "成功").expect("收口应成功");
+        assert_eq!(response.code, 0);
+        assert!(response.data.is_none(), "Raw 不得进入 data");
+        assert_eq!(
+            response.attachment,
+            Some(ResponseAttachment::Raw {
+                body: r#"{"code":0,"msg":"ok"}"#.to_string(),
+                content_type: "application/json".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn raw_response_body_survives_json_wire_format() {
+        // Raw 变体不得让 ApiResponse 的 JSON 线格式出现 attachment 字段
+        let body = ResponseBody::raw("{}", "application/json").expect("应被接受");
+        let response = wrap_dispatch_output(body, "成功").expect("收口应成功");
+        let json = serde_json::to_string(&response).expect("应可序列化");
+        assert!(
+            !json.contains("attachment"),
+            "线格式不得含 attachment: {json}"
+        );
     }
 }

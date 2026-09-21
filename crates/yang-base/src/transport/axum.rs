@@ -1030,6 +1030,30 @@ async fn attachment_response(
         ResponseAttachment::Preview { path } => {
             file_response(&path, Disposition::Inline, max_attachment_bytes).await
         }
+        ResponseAttachment::Raw { body, content_type } => {
+            // 附件大小上限只在 file_response 内校验，Raw 不经过它，必须自己比对，
+            // 否则会完全绕过 max_attachment_bytes（默认 64 MiB）。
+            if let Some(max_bytes) = max_attachment_bytes {
+                if body.len() as u64 > max_bytes {
+                    return error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        BaseError::ParamInvalid(
+                            "attachment".to_string(),
+                            "附件超过大小上限".to_string(),
+                        ),
+                    );
+                }
+            }
+            match HeaderValue::from_str(&content_type) {
+                Ok(value) => {
+                    (StatusCode::OK, [(header::CONTENT_TYPE, value)], body).into_response()
+                }
+                Err(_) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    BaseError::ConfigError("Raw 附件响应 content-type 非法".to_string()),
+                ),
+            }
+        }
     }
 }
 

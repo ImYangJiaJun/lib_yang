@@ -1,6 +1,6 @@
 # yang-base
 
-`yang-base` 0.2.2 是 YANG 后端基础库，提供构建期定义内核（Addon/Module/Action/fields/params → 冻结 Catalog + Registry）、类型化 Action、显式资源所有权（`Tools`）、schema-first 数据表、HTTP 客户端、JWT Token 管理和可选 Axum HTTP 传输。
+`yang-base` 0.3.0 是 YANG 后端基础库，提供构建期定义内核（Addon/Module/Action/fields/params → 冻结 Catalog + Registry）、类型化 Action、显式资源所有权（`Tools`）、schema-first 数据表、HTTP 客户端、JWT Token 管理和可选 Axum HTTP 传输。
 
 当前应用侧的核心链路是：
 
@@ -36,7 +36,7 @@ fields! / params! / #[derive(Action)]
 
 ```toml
 [dependencies]
-yang-base = "0.2.2"
+yang-base = "0.3.0"
 ```
 
 同一 workspace 联调：
@@ -50,13 +50,13 @@ yang-base = { path = "../yang-base" }
 
 ```toml
 # 仅核心模型
-yang-base = { version = "0.2.2", default-features = false }
+yang-base = { version = "0.3.0", default-features = false }
 
 # 核心模型 + MySQL
-yang-base = { version = "0.2.2", default-features = false, features = ["mysql"] }
+yang-base = { version = "0.3.0", default-features = false, features = ["mysql"] }
 
 # 核心模型 + Redis
-yang-base = { version = "0.2.2", default-features = false, features = ["redis"] }
+yang-base = { version = "0.3.0", default-features = false, features = ["redis"] }
 ```
 
 ## 快速开始：定义表并注册 CRUD
