@@ -247,6 +247,19 @@ impl HttpClient {
     pub fn with_config(cfg: HttpClientConfig) -> Result<Self, BaseError> {
         cfg.validate()?;
 
+        // 安装 rustls 的进程级 CryptoProvider。
+        //
+        // 本 crate 走的是 reqwest 的 `rustls-tls-webpki-roots-no-provider`（原因见
+        // 工作区 `Cargo.toml` 里 reqwest 那段注释：带 provider 的变体会经
+        // `__rustls-ring` 的 `quinn?/ring` 把 quinn 及其 `rand 0.10` 链锁进
+        // `Cargo.lock`，而那条链需要 edition2024，直接击穿 MSRV 1.80）。
+        // `-no-provider` 不替我们选 provider，因此必须在这里显式安装：
+        // 不装的话**第一次 TLS 握手**才会失败（"no process-level CryptoProvider
+        // available"），编译期与构造期都看不出来。
+        //
+        // provider 是进程级的，重复安装返回 `Err`，属预期，忽略即可。
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // 构建 reqwest 客户端
         let mut builder = Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
