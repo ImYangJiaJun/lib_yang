@@ -644,20 +644,20 @@ fn invalid_code() -> BaseError {
     )
 }
 
-/// 投递失败的脱敏映射。
+/// 投递失败的脱敏映射：一律是**同一个**脱敏的、可重试的上游失败。
 ///
-/// `http` feature 关闭时 `BaseError::HttpRequestFailed` 持有字符串载荷，与既有
-/// 应用行为完全一致（错误码 300002、Transient、可重试）；`http` feature 开启时该
-/// 变体只能由真实 `reqwest::Error` 构造，退回等价的脱敏服务端错误。
+/// 文案不含任何 SMTP 侧细节（地址、响应码、异常文本），避免把投递设施的信息泄露给
+/// 注册/重置接口的调用方。分类为 `Transient`（HTTP 边界 → **503**）是因为 SMTP
+/// 不可用几乎总是瞬时的，客户端按 503 重试是正确行为。
+///
+/// **不要改回 `HttpRequestFailed`**：该变体在 `http` feature 开启时持有
+/// `reqwest::Error`、关闭时持有 `String`，用它会让本函数的错误分类随**构建配置**
+/// 漂移。此前正是如此：开启 `http` 后退化成 `Unknown`，分类从 Transient 变成
+/// Server、错误码从 300002 变成 999999、HTTP 从 503 变成 500，客户端不再重试——
+/// 而当时这里的注释还写着这是「等价的脱敏服务端错误」。两者并不等价。
+/// [`BaseError::UpstreamUnavailable`] 与传输和 feature 都无关，正是为此而设。
 fn delivery_unavailable() -> BaseError {
-    #[cfg(not(feature = "http"))]
-    {
-        BaseError::HttpRequestFailed("邮件服务暂不可用".to_string())
-    }
-    #[cfg(feature = "http")]
-    {
-        BaseError::Unknown("邮件服务暂不可用".to_string())
-    }
+    BaseError::UpstreamUnavailable("邮件服务暂不可用".to_string())
 }
 
 #[cfg(test)]
