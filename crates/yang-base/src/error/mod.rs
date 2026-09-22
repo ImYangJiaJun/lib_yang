@@ -194,6 +194,19 @@ pub enum BaseError {
     #[error("HTTP 熔断器已打开，目标主机暂不可用: {0}")]
     HttpCircuitBreakerOpen(String),
 
+    /// 上游依赖暂时不可用（**与具体传输无关**）。
+    ///
+    /// 存在的理由：[`BaseError::HttpRequestFailed`] 在 `http` feature 开启时持有
+    /// `reqwest::Error`、关闭时持有 `String`，也就是说**它的可构造性取决于 feature**。
+    /// 非 HTTP 传输（SMTP、消息队列等）需要同一语义的可重试错误，却又不能依赖该
+    /// feature —— 否则「上游暂时不可用」会随构建配置在「可重试」与「不可重试」之间
+    /// 漂移（历史上邮件投递就因此从 503 退化成 500）。
+    ///
+    /// 分类是 [`ErrorCategory::Transient`]，在 HTTP 边界映射为 **503**，
+    /// 语义上等同于 `HttpRequestFailed`，但不携带传输层错误链。
+    #[error("上游服务暂不可用: {0}")]
+    UpstreamUnavailable(String),
+
     // ==================== Token 管理错误 ====================
     /// Token 密钥无效
     #[error("Token 密钥无效: {0}")]
@@ -597,6 +610,9 @@ impl BaseError {
             BaseError::HttpClientNotInitialized => 300006,
             BaseError::HttpCircuitBreakerOpen(_) => 300007,
             BaseError::HttpResponseTooLarge { .. } => 300008,
+            // 与传输无关的上游依赖错误：与 300002 同为 Transient，但可在任何
+            // feature 组合下构造（见变体文档）。
+            BaseError::UpstreamUnavailable(_) => 300009,
 
             // ==================== Token 管理错误 (4xxxxx) ====================
             BaseError::TokenKeyInvalid(_) => 400001,
@@ -694,6 +710,7 @@ impl BaseError {
             BaseError::HttpClientNotInitialized => "300006",
             BaseError::HttpCircuitBreakerOpen(_) => "300007",
             BaseError::HttpResponseTooLarge { .. } => "300008",
+            BaseError::UpstreamUnavailable(_) => "300009",
             // Token 管理错误 (4xxxxx)
             BaseError::TokenKeyInvalid(_) => "400001",
             BaseError::TokenGenerateFailed(_) => "400002",
@@ -794,6 +811,8 @@ impl BaseError {
             // 解析失败是客户端编程错误（期望的响应类型不匹配），不是瞬时网络问题
             BaseError::HttpResponseParseFailed(_) => C::Client,
             BaseError::HttpRequestFailed(_) | BaseError::HttpTimeout => C::Transient,
+            // 上游依赖不可用是瞬时故障：重试有意义（客户端应据 503 重试）。
+            BaseError::UpstreamUnavailable(_) => C::Transient,
             // 熔断器打开意味着下游服务不健康，立即重试无济于事
             BaseError::HttpCircuitBreakerOpen(_) => C::Server,
             // 对端违约/谎报大小导致超出上限：非瞬时网络问题，与熔断器同类归为服务端
