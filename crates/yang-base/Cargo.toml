@@ -29,7 +29,7 @@ default = ["token", "http", "mysql", "redis", "validator", "plugin-schema"]
 token = ["dep:jsonwebtoken", "dep:uuid", "redis", "dep:argon2", "dep:rand_core", "dep:hmac", "dep:http-uri", "dep:totp-lite"]
 
 # HTTP 客户端功能
-http = ["dep:reqwest", "dep:serde_urlencoded", "dep:encoding_rs"]
+http = ["dep:reqwest", "dep:serde_urlencoded", "dep:encoding_rs", "dep:rustls"]
 
 # MySQL 数据库功能
 mysql = ["dep:sqlx", "dep:base64", "sqlx/mysql", "sqlx/derive", "yang-db/mysql"]
@@ -86,6 +86,7 @@ base64 = { workspace = true, optional = true }
 
 # HTTP 客户端（可选，通过 "http" feature 启用）
 reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 serde_urlencoded = { workspace = true, optional = true }
 
 # HTTP 响应体 charset 解码（可选，通过 "http" feature 启用；encoding_rs 0.8.35

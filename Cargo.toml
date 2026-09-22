@@ -66,12 +66,37 @@ regex = "1.12.3"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "chrono", "json"] }
 
 # HTTP 客户端
+#
+# TLS 走 rustls + 内置根证书（webpki-roots），**不用** `default-tls`：后者是
+# native-tls → Linux 上 openssl-sys，需要系统装 pkg-config 与 libssl-dev 才能构建。
+# 生产镜像的构建阶段（`project/yang-system/docker/app/Dockerfile`）不装任何系统包，
+# 启用 http feature 后 openssl-sys 会在该阶段硬失败；实测 `rust:1.97.1-slim-bookworm`
+# 内既无 pkg-config 也无 /usr/include/openssl。
+#
+# 这与 sqlx（`runtime-tokio-rustls`）和 lettre（`tokio1-rustls` + `webpki-roots`）
+# 的既有取向一致，且 rustls / hyper-rustls / webpki-roots 早已在这些依赖的树里，
+# 不新增版本。内置根证书还让运行期不再依赖系统 CA 存储。
+#
+# **为什么是 `-no-provider` 变体而不是 `rustls-tls-webpki-roots`**：
+# 后者会带上 `__rustls-ring`，而那个 feature 里有 `quinn?/ring` 这一条引用。
+# 它本身不激活 quinn，却会把 reqwest 的可选依赖 `quinn` 一并锁进 `Cargo.lock`；
+# quinn → quinn-proto 硬依赖 `rand 0.10` → `chacha20 0.10` → `cpufeatures 0.3.1`，
+# 而 `cpufeatures 0.3.1` 的清单是 edition2024 —— **Cargo 1.80 直接解析失败**，
+# 击穿 MSRV job（`cargo check --workspace --all-targets --all-features --locked`）。
+# 实测：带 provider 的变体在 MSRV 1.80 下报
+# "requires the Cargo feature called `edition2024`"；换 `-no-provider` 后 quinn
+# 整条链从 lock 中消失，MSRV 通过。代价是 CryptoProvider 要显式安装，
+# 见 `crates/yang-base/src/http/client.rs` 中 `HttpClient::with_config` 的说明。
 reqwest = { version = "=0.12.16", default-features = false, features = [
-    "default-tls",
+    "rustls-tls-webpki-roots-no-provider",
     "charset",
     "http2",
     "json",
 ] }
+
+# rustls 的 ring provider。reqwest 的 `-no-provider` 变体不自带 provider，
+# 由 `HttpClient::with_config` 在构造客户端时调用 `install_default()` 装上。
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 # JWT Token
 jsonwebtoken = "=9.3.1"
