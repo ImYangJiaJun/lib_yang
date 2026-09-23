@@ -32,3 +32,12 @@ project/yang-system/config.local.toml
 
 # 压缩包与杂项
 *.7z
+
+# 飞书联调产物：后端构建上下文是**整个仓库根**（见文件头），不排除的话
+# 每次 docker build 都要把 project/yang-system/.tmp-fs（约 200MB / 1500 个文件）
+# 送进 docker daemon。后端 Dockerfile 从不 COPY 这些路径，纯粹是浪费。
+# 它们同时也是**生产数据与活体 base_token**，不该离开本机。
+project/yang-system/.tmp-fs
+project/yang-system/.tmp-*
+project/yang-system/*.manifest.json
+**/*.ndjson
