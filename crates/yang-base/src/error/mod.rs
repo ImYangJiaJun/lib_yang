@@ -384,15 +384,55 @@ pub enum BaseError {
 
 // ==================== From trait 实现 ====================
 
+/// 从数据库约束错误的报文里提取**唯一键冲突**的键名。
+///
+/// 返回 `None` 表示「这不是唯一键冲突」。
+///
+/// # 为什么不看错误码
+///
+/// MySQL 的外键、非空、CHECK 与唯一键**共用同一个 SQLSTATE（23000）**，
+/// PostgreSQL 的唯一约束是 23505 而 SQLSTATE 在 `yang-db` 里已被抹平成
+/// `DbError::ConstraintError`。所以在这一层只能看报文。
+///
+/// 覆盖两种形态：
+/// - MySQL：`Duplicate entry 'x' for key 'source_key'`（键名可能被库名/表名限定）
+/// - PostgreSQL：`duplicate key value violates unique constraint "xxx"`
+fn duplicate_key_field(message: &str) -> Option<String> {
+    if message.contains("Duplicate entry") {
+        if let Some((_, rest)) = message.split_once("for key '") {
+            // MySQL 8 会写成 `库.表.键`，取最后一段才是键名本身
+            let raw = rest.split('\'').next().unwrap_or_default();
+            let last = raw.rsplit('.').next().unwrap_or(raw);
+            if !last.is_empty() {
+                return Some(last.to_string());
+            }
+        }
+    }
+    if message.contains("duplicate key value violates unique constraint") {
+        if let Some((_, rest)) = message.split_once("unique constraint \"") {
+            let name = rest.split('"').next().unwrap_or_default();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// 从 yang_db::DbError 转换为 BaseError
 ///
 /// 按 DbError 变体分类映射到对应的 BaseError 变体：
 /// - 查询类 → DatabaseQueryFailed
-/// - 执行类 → DatabaseExecuteFailed
+/// - 执行类 → DatabaseExecuteFailed（**唯一键冲突例外**，见下）
 /// - 事务类 → DatabaseTransactionFailed
 /// - 连接类 → DatabaseConnectionFailed（包装 DbError 保留错误链）
 /// - Redis 连接类 → RedisConnectionFailed
 /// - Redis 其他操作类 → RedisOperationFailed
+///
+/// 唯一键冲突映射为 [`BaseError::ParamInvalid`]：它是**可归因的输入问题**
+/// （自动派生的 `source_key`、系统生成的 token 都可能撞唯一索引），
+/// 落成 `DatabaseExecuteFailed` 会让控制台只能显示「数据库执行失败」，
+/// 运维看不出撞的是哪个键。
 #[allow(unreachable_patterns)]
 impl From<yang_db::DbError> for BaseError {
     fn from(err: yang_db::DbError) -> Self {
@@ -406,9 +446,15 @@ impl From<yang_db::DbError> for BaseError {
             | D::UnsupportedOperator(_)
             | D::Unknown(_) => BaseError::DatabaseQueryFailed(err),
 
-            // 执行类：约束错误、SQL 语法错误、缺少 WHERE 条件、缺少 GROUP BY、序列化错误、参数非法
-            D::ConstraintError(_)
-            | D::SqlSyntaxError(_)
+            // 唯一键冲突：**先于**通用执行类分支判定，让它变成可归因的参数错误。
+            // 报文不匹配时原样落回 DatabaseExecuteFailed——外键/非空/CHECK 都走这一支。
+            D::ConstraintError(message) => match duplicate_key_field(message) {
+                Some(field) => BaseError::ParamInvalid(field, "该值已存在".to_string()),
+                None => BaseError::DatabaseExecuteFailed(err),
+            },
+
+            // 其余执行类：SQL 语法错误、缺少 WHERE 条件、缺少 GROUP BY、序列化错误、参数非法
+            D::SqlSyntaxError(_)
             | D::MissingWhereClause
             | D::MissingGroupByClause
             | D::InvalidArgument(_)
@@ -1348,5 +1394,78 @@ mod tests {
         assert!(BaseError::PluginAlreadyRegistered("p".into()).is_server_error());
         assert!(!BaseError::ParamInvalid("k".into(), "r".into()).is_server_error());
         assert!(!BaseError::Unauthorized("u".into()).is_server_error());
+    }
+
+    /// MySQL 唯一键冲突必须变成可归因的参数错误，而不是裸 DB 错误。
+    #[test]
+    fn mysql_duplicate_entry_maps_to_param_invalid_naming_the_key() {
+        // 「Duplicate entry 'x' for key 'source_key'」是 MySQL 1062 的报文形态。
+        // 系统自动派生 source_key、系统生成 token 都会撞唯一索引；裸 DB 错误会让
+        // 控制台只能显示「数据库执行失败」，运维无从知道撞的是哪个键。
+        let error = BaseError::from(yang_db::DbError::ConstraintError(
+            "Duplicate entry 'payment_currency' for key 'source_key'".to_string(),
+        ));
+        match error {
+            BaseError::ParamInvalid(field, message) => {
+                assert_eq!(field, "source_key", "要点名冲突的键");
+                assert!(!message.is_empty());
+            }
+            other => panic!("唯一键冲突应映射为 ParamInvalid，实际: {other:?}"),
+        }
+    }
+
+    /// 复合/限定形态：MySQL 8 可能把库名或表名带进 key。
+    #[test]
+    fn qualified_mysql_key_name_keeps_only_the_last_segment() {
+        assert_eq!(
+            duplicate_key_field(
+                "Duplicate entry 'x' for key 'yang_system.feishu_datasource.source_key'"
+            ),
+            Some("source_key".to_string())
+        );
+    }
+
+    /// PostgreSQL 的唯一约束冲突（23505）同样要归因到可读的名字。
+    #[test]
+    fn postgres_unique_violation_maps_to_param_invalid() {
+        let error = BaseError::from(yang_db::DbError::ConstraintError(
+            "duplicate key value violates unique constraint \"feishu_option_option_id_key\""
+                .to_string(),
+        ));
+        match error {
+            BaseError::ParamInvalid(field, _) => assert_eq!(field, "feishu_option_option_id_key"),
+            other => panic!("PG 唯一约束冲突应映射为 ParamInvalid，实际: {other:?}"),
+        }
+    }
+
+    /// 回归守卫：约束错误里**只有**唯一键冲突该变成 ParamInvalid。
+    ///
+    /// 外键、非空、CHECK 与唯一键在 MySQL 上共用同一个 SQLSTATE（23000），
+    /// 把它们也吞成「参数非法」会让真正的数据完整性问题显示成用户的输入错误。
+    #[test]
+    fn other_constraint_errors_keep_their_own_mapping() {
+        for message in [
+            "Cannot add or update a child row: a foreign key constraint fails",
+            "Column 'title' cannot be null",
+            "Check constraint 'positive_amount' is violated",
+        ] {
+            let error = BaseError::from(yang_db::DbError::ConstraintError(message.to_string()));
+            assert!(
+                !matches!(error, BaseError::ParamInvalid(_, _)),
+                "{message:?} 不该被当成参数非法，实际: {error:?}"
+            );
+        }
+    }
+
+    /// 报文提取本身是纯函数，单独钉住它的边界。
+    #[test]
+    fn duplicate_key_field_returns_none_for_unrecognised_messages() {
+        assert_eq!(duplicate_key_field(""), None);
+        assert_eq!(
+            duplicate_key_field("Duplicate entry 'x'"),
+            None,
+            "缺 for key 段就该放弃提取，而不是编一个名字出来"
+        );
+        assert_eq!(duplicate_key_field("some other db error"), None);
     }
 }
