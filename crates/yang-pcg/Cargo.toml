@@ -15,7 +15,7 @@ categories = ["game-development"]
 
 #排除文件
 exclude = [
-    "INSTALL.md.md",
+    "INSTALL.md",
 ]
 
 # yang-pcg 测试代码中使用了 expect/unwrap，不使用 workspace lints
