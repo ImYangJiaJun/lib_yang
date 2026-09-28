@@ -1,7 +1,7 @@
 //! Prometheus 与 OpenTelemetry 的单一进程级运行时。
 
 use super::logging::{LogIdentity, RuntimeMetricNames};
-use super::ObservabilitySettings;
+use super::{LogFormat, ObservabilitySettings};
 use anyhow::Context;
 use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
@@ -83,16 +83,42 @@ impl TelemetryRuntime {
         let otel_layer = tracer_provider.as_ref().map(|provider| {
             tracing_opentelemetry::layer().with_tracer(provider.tracer(identity.service.clone()))
         });
-        let json_layer = tracing_subscriber::fmt::layer()
-            .json()
-            .flatten_event(true)
-            .with_ansi(false);
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(otel_layer)
-            .with(json_layer)
-            .try_init()
-            .map_err(|error| anyhow::anyhow!("初始化 tracing 失败: {error}"))?;
+        // 两个分支各自装配整条链：`fmt::layer()` 的两种格式是**不同的类型**，
+        // 塞进同一个变量要先擦成 trait object，那会把这个只有几行的差别放大成一堆
+        // 类型噪音。分支里各写一遍更直白，而 `filter` / `otel_layer` 只会被其中一条
+        // 走到，条件移动是合法且唯一的。
+        match settings.log_format {
+            // 单行 JSON：采集端按 `service` + `environment` 分索引流，多行会把一条事件
+            // 拆成许多无主片段（见 `docs/operations/LOG_SHIPPING.md`）。
+            LogFormat::Json => tracing_subscriber::registry()
+                .with(filter)
+                .with(otel_layer)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .flatten_event(true)
+                        .with_ansi(false),
+                )
+                .try_init()
+                .map_err(|error| anyhow::anyhow!("初始化 tracing 失败: {error}"))?,
+            // 人读格式：字段排成 `key: value, …` 并着色，`at file:line` 另起一行。
+            //
+            // 两条实现笔记，都是预览时看出来的：
+            //
+            // 1. **不要写 `.json()….pretty()`** —— `pretty()` 会把格式**换掉**而不是
+            //    「美化 JSON」，结果既不结构化也没变多行。tracing-subscriber 没有
+            //    「多行 JSON」这个选项。
+            // 2. 所以「让长字段换行」得靠**值里带真实换行**：本格式原样打印字符串，
+            //    不把换行转义掉；而 JSON 格式会转义它，整条事件仍是单行合法 JSON。
+            //    同一份事件因此在两种格式下都成立，只是排版不同（见
+            //    `request_log.rs` 的 `pretty_json`）。
+            LogFormat::Pretty => tracing_subscriber::registry()
+                .with(filter)
+                .with(otel_layer)
+                .with(tracing_subscriber::fmt::layer().pretty().with_ansi(true))
+                .try_init()
+                .map_err(|error| anyhow::anyhow!("初始化 tracing 失败: {error}"))?,
+        }
 
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
@@ -433,6 +459,7 @@ mod tests {
             traces_sample_ratio: 0.1,
             traces_export_timeout_seconds: 1,
             readiness_budget_ms: 100,
+            log_format: LogFormat::Json,
         };
         let identity = LogIdentity::new("telemetry-test", "1.2.3", "test");
         let mut runtime = TelemetryRuntime::initialize(&settings, "off", &identity)

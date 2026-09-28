@@ -10,6 +10,21 @@ use thiserror::Error;
 pub use logging::{ActionLogMiddleware, LogIdentity, RuntimeMetricNames};
 pub use telemetry::{ReadinessGate, TelemetryRuntime};
 
+/// 日志输出格式。
+///
+/// 同一份事件、同一批字段，两种排版：`Json` 给采集端（单行、可解析），`Pretty` 给人读
+/// （多行缩进、字段逐行对齐）。**事件与字段完全一致**，只是排版不同——所以本地开
+/// `Pretty` 看清楚、生产用 `Json` 送出去，不需要维护两套日志语句。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// 单行 JSON。采集与生产环境的默认值。
+    #[default]
+    Json,
+    /// 多行缩进。命令行窗口里读日志用。
+    Pretty,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilitySettings {
@@ -27,6 +42,9 @@ pub struct ObservabilitySettings {
     pub traces_export_timeout_seconds: u64,
     #[serde(default = "default_readiness_budget_ms")]
     pub readiness_budget_ms: u64,
+    /// 日志输出格式。省略时保持单行 JSON——不改变既有部署的行为。
+    #[serde(default)]
+    pub log_format: LogFormat,
 }
 
 impl Default for ObservabilitySettings {
@@ -39,6 +57,7 @@ impl Default for ObservabilitySettings {
             traces_sample_ratio: default_traces_sample_ratio(),
             traces_export_timeout_seconds: default_traces_export_timeout_seconds(),
             readiness_budget_ms: default_readiness_budget_ms(),
+            log_format: LogFormat::default(),
         }
     }
 }
@@ -113,4 +132,33 @@ const fn default_traces_export_timeout_seconds() -> u64 {
 
 const fn default_readiness_budget_ms() -> u64 {
     2_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 省略 `log_format` 必须落到 `json`：既有部署的配置里没有这个键，若默认值变成
+    /// `pretty`，它们会在升级的那一刻**静默**把标准输出从一行一个 object 变成多行，
+    /// 采集侧按行切分当场失效。
+    #[test]
+    fn log_format_defaults_to_json_for_existing_configs() {
+        let settings: ObservabilitySettings =
+            toml::from_str("metrics_enabled = true").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(settings.log_format, LogFormat::Json);
+        assert_eq!(LogFormat::default(), LogFormat::Json);
+    }
+
+    /// 两个取值都要能读进来，且大小写按 serde 的 `lowercase` 约定。
+    #[test]
+    fn log_format_accepts_both_spellings() {
+        for (raw, expected) in [("json", LogFormat::Json), ("pretty", LogFormat::Pretty)] {
+            let settings: ObservabilitySettings = toml::from_str(&format!(
+                "metrics_enabled = false
+log_format = \"{raw}\""
+            ))
+            .unwrap_or_else(|error| panic!("{raw} 应可解析: {error}"));
+            assert_eq!(settings.log_format, expected);
+        }
+    }
 }
