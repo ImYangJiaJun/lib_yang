@@ -11,6 +11,7 @@ use super::{ArithmeticOperator, QueryBuilder, QueryExecutor, SqlGenerator};
 ///
 /// 为了避免单次插入过多数据导致 SQL 语句过大或超时，
 /// 批量插入操作会自动将数据分批处理，每批最多插入 INSERT_BATCH_SIZE 条记录。
+/// 批量 upsert 共用该值（两者的占位符数都 = 行数 × 列数）。
 const INSERT_BATCH_SIZE: usize = 500;
 
 /// 批量更新的默认批次大小
@@ -33,6 +34,14 @@ fn derive_update_batch_size(field_count: usize, requested: usize) -> usize {
         return requested;
     }
     (MAX_BIND_PARAMS / per_record).max(1).min(requested)
+}
+
+/// 由「单行列数」推导批量 upsert 的安全批大小：占位符 = 行数 × 列数（ODKU 尾巴不占位符）。
+pub(crate) fn derive_upsert_batch_size(column_count: usize, requested: usize) -> usize {
+    if column_count == 0 {
+        return requested;
+    }
+    (MAX_BIND_PARAMS / column_count).max(1).min(requested)
 }
 
 /// 取首条记录的「非主键列数」，与 build_update_batch 的 update_fields 口径一致。
@@ -287,6 +296,9 @@ impl<'a> QueryBuilder<'a> {
     /// 与 `insert_batch` 相同，但允许调用方根据场景自定义每批次的最大记录数。
     /// 适用于需要根据网络延迟、数据大小或 MySQL max_allowed_packet 调整性能的场景。
     ///
+    /// 注意：本方法**没有**占位符上限缩批（`derive_upsert_batch_size` 只服务批量
+    /// upsert）——超宽表按此路径仍可能撞协议占位符上限，本轮射程外。
+    ///
     /// # 类型参数
     /// - T: 数据类型，必须实现 Serialize trait
     ///
@@ -427,6 +439,177 @@ impl<'a> QueryBuilder<'a> {
                 "insert_batch_with_size() 多批事务提交完成，总共影响 {} 行",
                 total_affected
             );
+        }
+
+        Ok(total_affected)
+    }
+
+    /// 批量 UPSERT（`INSERT ... ON DUPLICATE KEY UPDATE`），每批最多 [`INSERT_BATCH_SIZE`] 行。
+    ///
+    /// 委托给 [`Self::upsert_batch_with_size`]；空数据与参数校验全部由它统一处理。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "upsert", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn upsert_batch<T>(
+        self,
+        data: &[T],
+        on_duplicate_fields: &[String],
+    ) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        self.upsert_batch_with_size(data, on_duplicate_fields, INSERT_BATCH_SIZE)
+            .await
+    }
+
+    /// 批量 UPSERT（自定义批次大小）。
+    ///
+    /// 冲突键由**表上的唯一索引**决定，本方法无法指定；`on_duplicate_fields` 是冲突时
+    /// 要赋值的列白名单，**调用方必须自己排除身份列**（把归属列放进去，命中别人的行时
+    /// 会静默改写归属）。
+    ///
+    /// ODKU 尾巴不产生占位符，参数数 = 行数 × 列数，故批大小只按列数收敛
+    /// （[`derive_upsert_batch_size`]）。一条语句本身原子：单批走裸连接、多批才包事务
+    /// （`QueryExecutor::Transaction` 分支不 begin 也不 commit，失败由调用方整体回滚）。
+    ///
+    /// # 参数
+    /// - data: 要写入的数据切片（各行必须同构列集，否则 fail-closed）
+    /// - on_duplicate_fields: 冲突时的赋值列（非空，⊆ 首条记录的列集）
+    /// - batch_size: 每批最多写入的记录数（必须 > 0）
+    ///
+    /// # 返回
+    /// - `Ok(u64)`: 各批 `rows_affected` 之和，∈ `[N, 2N]`——**不是行数**（1=插入，
+    ///   2=更新且值有变）。sqlx 默认带 `CLIENT_FOUND_ROWS` ⇒「命中但值未变」也计 1
+    ///   而不是 0；**inserted/updated 不可拆**，`LAST_INSERT_ID()` 对多行无意义。
+    /// - `Err(DbError::SerializationError)`: batch_size 为 0 或数据为空时
+    /// - `Err(DbError::InvalidArgument)`: set_expr / 异构列集 / 赋值列为空或不在插入列集内
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "mysql", db.operation = "upsert", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn upsert_batch_with_size<T>(
+        self,
+        data: &[T],
+        on_duplicate_fields: &[String],
+        batch_size: usize,
+    ) -> Result<u64, crate::error::DbError>
+    where
+        T: serde::Serialize,
+    {
+        if batch_size == 0 {
+            return Err(crate::error::DbError::SerializationError(
+                "batch_size 不能为 0".to_string(),
+            ));
+        }
+
+        // set_expr 不被批量 upsert 路径消费，存在表达式赋值时 fail-closed，不做静默丢弃
+        if !self.expr_assignments.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "upsert_batch 不支持 set_expr；请改用 upsert() 或 update()".to_string(),
+            ));
+        }
+
+        if data.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "批量 upsert 数据不能为空".to_string(),
+            ));
+        }
+
+        let json_data_list: Vec<serde_json::Value> = data
+            .iter()
+            .map(|item| {
+                serde_json::to_value(item).map_err(|e| {
+                    crate::error::DbError::SerializationError(format!("数据序列化失败: {}", e))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        // 列数取首条对象键数；非对象数据留给 SQL 生成层报「插入数据必须是 JSON 对象」
+        let column_count = json_data_list[0]
+            .as_object()
+            .map(|obj| obj.len())
+            .unwrap_or(0);
+        let effective = derive_upsert_batch_size(column_count, batch_size);
+        let chunk_count = json_data_list.len().div_ceil(effective);
+
+        let mut total_affected = 0u64;
+        if chunk_count == 1 {
+            // 单条语句本身原子，不额外包事务（省一次 begin/commit 往返）
+            match self.executor {
+                QueryExecutor::Pool(pool) => {
+                    let mut connection =
+                        pool.acquire().await.map_err(crate::error::DbError::from)?;
+                    total_affected += execute_upsert_chunk(
+                        &mut connection,
+                        &self.table,
+                        &json_data_list,
+                        &self.field_types,
+                        on_duplicate_fields,
+                    )
+                    .await?;
+                }
+                QueryExecutor::Transaction(transaction) => {
+                    let connection = transaction.executor().ok_or_else(|| {
+                        crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                    })?;
+                    total_affected += execute_upsert_chunk(
+                        &mut *connection,
+                        &self.table,
+                        &json_data_list,
+                        &self.field_types,
+                        on_duplicate_fields,
+                    )
+                    .await?;
+                }
+            }
+            return Ok(total_affected);
+        }
+
+        match self.executor {
+            QueryExecutor::Pool(pool) => {
+                let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
+                for (batch_index, chunk) in json_data_list.chunks(effective).enumerate() {
+                    let result = execute_upsert_chunk(
+                        &mut transaction,
+                        &self.table,
+                        chunk,
+                        &self.field_types,
+                        on_duplicate_fields,
+                    )
+                    .await?;
+                    total_affected += result;
+                    if self.enable_logging {
+                        log::debug!("第 {} 批 upsert 成功，影响 {} 行", batch_index + 1, result);
+                    }
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::DbError::from)?;
+            }
+            QueryExecutor::Transaction(transaction) => {
+                // 调用方事务：逐 chunk 在本连接上执行，不 begin / 不 commit（失败靠调用方整体回滚）
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                for (batch_index, chunk) in json_data_list.chunks(effective).enumerate() {
+                    let result = execute_upsert_chunk(
+                        &mut *connection,
+                        &self.table,
+                        chunk,
+                        &self.field_types,
+                        on_duplicate_fields,
+                    )
+                    .await?;
+                    total_affected += result;
+                    if self.enable_logging {
+                        log::debug!("第 {} 批 upsert 成功，影响 {} 行", batch_index + 1, result);
+                    }
+                }
+            }
         }
 
         Ok(total_affected)
@@ -931,7 +1114,9 @@ impl<'a> QueryBuilder<'a> {
     /// 自动更新所有字段，否则插入新记录。
     ///
     /// # 返回
-    /// - `Ok(u64)`: MySQL rows_affected（1=插入新记录, 2=更新现有记录）
+    /// - `Ok(u64)`: MySQL rows_affected（1=插入新记录, 2=更新现有记录且值有变）。
+    ///   命中但值未变时 sqlx 带 `CLIENT_FOUND_ROWS` 计 1 而不是 0——所以 1 不等于
+    ///   「一定是新插入」，分不出 inserted/updated。
     ///
     /// # 示例
     /// ```no_run
@@ -1027,6 +1212,23 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     let mut generator = SqlGenerator::new();
     generator.build_insert_batch(table, &json_data_list, field_types)?;
+    let mut query = sqlx::query(generator.get_sql());
+    for param in generator.get_params() {
+        query = bind_execute_param(query, param);
+    }
+    Ok(query.execute(connection).await?.rows_affected())
+}
+
+/// 执行单个批次的批量 UPSERT（镜像 `execute_insert_chunk`，两个批量路径各自只有一份实现）。
+async fn execute_upsert_chunk(
+    connection: &mut sqlx::MySqlConnection,
+    table: &str,
+    data: &[serde_json::Value],
+    field_types: &HashMap<String, FieldType>,
+    on_duplicate_fields: &[String],
+) -> Result<u64, crate::error::DbError> {
+    let mut generator = SqlGenerator::new();
+    generator.build_upsert_batch(table, data, field_types, on_duplicate_fields)?;
     let mut query = sqlx::query(generator.get_sql());
     for param in generator.get_params() {
         query = bind_execute_param(query, param);

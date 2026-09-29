@@ -7,6 +7,8 @@
 //! - 任一步失败回滚后，先前步骤不落库（多步原子）
 //! - 软删除在事务内同样走 UPDATE 标记
 //! - 事务结束后复用 TableQuery 的 `*_in_tx` 返回错误而非 panic
+//! - 批量 upsert（`INSERT ... ON DUPLICATE KEY UPDATE`）：赋值列白名单、`created_at`
+//!   不被第二次写入刷新、`rows_affected` 语义、跨 chunk 失败整批回滚
 //!
 //! **注意**: 这些测试需要 Docker 环境。无 Docker 时自动跳过。
 //! 运行：`cargo test --test table_query_transaction_test -- --test-threads=1 --ignored`
@@ -520,4 +522,355 @@ async fn test_slow_query_timing_does_not_break_execution() {
         .unwrap();
     assert_eq!(users.len(), 1, "慢查询计时不应改变结果");
     assert_eq!(users[0].require::<i64>("age").unwrap(), 42);
+}
+
+// ==================== 批量 upsert（INSERT ... ON DUPLICATE KEY UPDATE） ====================
+
+/// 批量 upsert 的测试表：`option_id` 上有唯一索引——ODKU 的冲突键由它决定。
+async fn create_test_batch_options_table(db: &Database) -> Result<(), Box<dyn std::error::Error>> {
+    db.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS test_batch_options (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            option_id VARCHAR(64) NOT NULL,
+            label VARCHAR(100) NOT NULL,
+            sort_order INT NOT NULL,
+            created_at BIGINT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            UNIQUE KEY uk_test_batch_options_option_id (option_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        "#,
+    )
+    .await?;
+    Ok(())
+}
+
+/// 没有时间戳列的同一形状。
+///
+/// `rows_affected` 那条用例需要「命中且**整行**没有任何变化」的一拍，而带 `updated_at`
+/// 时框架每轮都会写一个新时间戳 ⇒ 那一拍必然算「有变化」，测不到 CLIENT_FOUND_ROWS。
+async fn create_test_batch_options_plain_table(
+    db: &Database,
+) -> Result<(), Box<dyn std::error::Error>> {
+    db.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS test_batch_options_plain (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            option_id VARCHAR(64) NOT NULL,
+            label VARCHAR(100) NOT NULL,
+            sort_order INT NOT NULL,
+            UNIQUE KEY uk_test_batch_options_plain_option_id (option_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        "#,
+    )
+    .await?;
+    Ok(())
+}
+
+fn create_test_batch_options_definition() -> TableDefinition {
+    Table::new("test_batch_options")
+        .fields([
+            Field::id("id"),
+            Field::string("option_id", 64).required().unique(),
+            Field::string("label", 100).required(),
+            Field::integer("sort_order").required(),
+            Field::created_at("created_at"),
+            Field::updated_at("updated_at"),
+        ])
+        .build()
+        .expect("test_batch_options 表定义应有效")
+}
+
+fn create_test_batch_options_plain_definition() -> TableDefinition {
+    Table::new("test_batch_options_plain")
+        .fields([
+            Field::id("id"),
+            Field::string("option_id", 64).required().unique(),
+            Field::string("label", 100).required(),
+            Field::integer("sort_order").required(),
+        ])
+        .build()
+        .expect("test_batch_options_plain 表定义应有效")
+}
+
+/// 一行同构的批量 upsert 数据：`option_id` 是冲突键，`label` / `sort_order` 是业务值。
+fn batch_option_row(option_id: &str, label: &str, sort_order: i64) -> Record {
+    Record::new()
+        .set("option_id", option_id)
+        .set("label", label)
+        .set("sort_order", sort_order)
+}
+
+/// 首轮插入、改 label 再批走 UPDATE：**`created_at` 原地不动**、`updated_at` 前进。
+///
+/// 这是「框架补的 created_at 不进赋值列」的实证：把它放进 ODKU 的赋值列，第二次导入
+/// 会把创建时间刷成本轮时间，注释与文档里所有「created_at 只在新插入时写」就都成了空话。
+#[tokio::test]
+#[ignore] // 需要 Docker 环境
+async fn batch_upsert_inserts_then_updates_without_touching_created_at() {
+    let (_container, pool, db) = setup_test_env!();
+    create_test_batch_options_table(&db).await.unwrap();
+    let config = create_test_batch_options_definition();
+    let update_columns = ["label", "sort_order"];
+
+    // 首轮：两行全新 → 全插入
+    let mut tx = db.transaction().await.unwrap();
+    let affected = admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲", 1),
+                batch_option_row("opt_b", "乙", 2),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(affected, 2, "全插入 = N");
+
+    let (created_before, updated_before): (i64, i64) = sqlx::query_as(
+        "SELECT `created_at`, `updated_at` FROM `test_batch_options` WHERE `option_id` = 'opt_a'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(created_before > 0, "created_at 由框架在 prepare 阶段补齐");
+
+    // 时间戳是**秒**：两轮落在同一秒时 updated_at 不会变，先跨过一秒再断言「前进」。
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+    // 第二轮：`opt_a` 改 label、`opt_b` 原样 —— 两行都命中唯一键，走 UPDATE 分支
+    let mut tx = db.transaction().await.unwrap();
+    let affected = admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲改", 1),
+                batch_option_row("opt_b", "乙", 2),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(affected >= 2, "两行都命中，实际 {affected}");
+
+    let (created_after, updated_after, label_after, sort_after): (i64, i64, String, i64) =
+        sqlx::query_as(
+            "SELECT `created_at`, `updated_at`, `label`, `sort_order` \
+             FROM `test_batch_options` WHERE `option_id` = 'opt_a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        created_after, created_before,
+        "**created_at 绝不能被第二次 upsert 刷新**（它不在 ODKU 的赋值列里）"
+    );
+    assert!(
+        updated_after > updated_before,
+        "updated_at 必须前进（它在赋值列里，语义同 with_updated_timestamp）"
+    );
+    assert_eq!(label_after, "甲改", "label 在赋值列里，走 UPDATE");
+    assert_eq!(sort_after, 1);
+
+    // 第三轮：原样再批 —— 业务列一个都不许变（`updated_at` 例外，它每轮都写）。
+    let mut tx = db.transaction().await.unwrap();
+    admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲改", 1),
+                batch_option_row("opt_b", "乙", 2),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let (created_again, label_again, sort_again): (i64, String, i64) = sqlx::query_as(
+        "SELECT `created_at`, `label`, `sort_order` \
+         FROM `test_batch_options` WHERE `option_id` = 'opt_a'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        created_again, created_before,
+        "原样再批同样不许碰 created_at"
+    );
+    assert_eq!(label_again, "甲改");
+    assert_eq!(sort_again, 1);
+    let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM `test_batch_options`")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2, "ODKU 只更新命中行，不长出新行");
+}
+
+/// `rows_affected` 的语义：全插入 = N、全更新且值有变 = 2N、全命中无变化 = N。
+///
+/// 最后一条是 sqlx 带 `CLIENT_FOUND_ROWS` 的实证：命中但不改的行计 1 而不是 0。
+/// 用**没有时间戳列**的那张表正是为了让那一拍真的「整行无变化」（见建表注释）。
+#[tokio::test]
+#[ignore] // 需要 Docker 环境
+async fn batch_upsert_rows_affected_semantics() {
+    let (_container, pool, db) = setup_test_env!();
+    create_test_batch_options_plain_table(&db).await.unwrap();
+    let config = create_test_batch_options_plain_definition();
+    let update_columns = ["label", "sort_order"];
+
+    // ① 全插入：每行计 1
+    let mut tx = db.transaction().await.unwrap();
+    let affected = admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲", 1),
+                batch_option_row("opt_b", "乙", 2),
+                batch_option_row("opt_c", "丙", 3),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(affected, 3, "全插入 = N");
+
+    // ② 全更新且值有变：每行计 2
+    let mut tx = db.transaction().await.unwrap();
+    let affected = admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲2", 10),
+                batch_option_row("opt_b", "乙2", 20),
+                batch_option_row("opt_c", "丙2", 30),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(affected, 6, "全更新且值有变 = 2N");
+
+    // ③ 全命中但整行没有任何变化：CLIENT_FOUND_ROWS 把它计成 N（不是 0）
+    let mut tx = db.transaction().await.unwrap();
+    let affected = admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![
+                batch_option_row("opt_a", "甲2", 10),
+                batch_option_row("opt_b", "乙2", 20),
+                batch_option_row("opt_c", "丙2", 30),
+            ],
+            &update_columns,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        affected, 3,
+        "命中但值未变：CLIENT_FOUND_ROWS 下计 1 而不是 0"
+    );
+}
+
+/// 赋值列是**白名单**：批里带了新值的列，只要不在白名单里，命中时就保持原值。
+///
+/// 「省略即保持原值」这条语义全靠它——白名单若退化成「行里带的列」，第二次导入会把
+/// 调用方没打算动的列一并重置。
+#[tokio::test]
+#[ignore] // 需要 Docker 环境
+async fn batch_upsert_only_writes_the_whitelisted_columns() {
+    let (_container, pool, db) = setup_test_env!();
+    create_test_batch_options_table(&db).await.unwrap();
+    let config = create_test_batch_options_definition();
+
+    let mut tx = db.transaction().await.unwrap();
+    admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![batch_option_row("opt_a", "甲", 1)],
+            &["label"],
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let (created_before,): (i64,) =
+        sqlx::query_as("SELECT `created_at` FROM `test_batch_options` WHERE `option_id` = 'opt_a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // 第二次：label 与 sort_order 都带了新值，但赋值列只点名 label
+    let mut tx = db.transaction().await.unwrap();
+    admin_query(&config, &pool)
+        .upsert_batch_in_tx(
+            &mut tx,
+            vec![batch_option_row("opt_a", "甲改", 99)],
+            &["label"],
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let (label, sort_order, created_after): (String, i64, i64) = sqlx::query_as(
+        "SELECT `label`, `sort_order`, `created_at` \
+         FROM `test_batch_options` WHERE `option_id` = 'opt_a'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(label, "甲改", "白名单里的列照常更新");
+    assert_eq!(
+        sort_order, 1,
+        "**不在白名单里的列必须保持原值**（ODKU 只赋值白名单）"
+    );
+    assert_eq!(created_after, created_before, "created_at 不在赋值列里");
+}
+
+/// 跨 chunk 的原子性：批大小 = 1 时第 1 行先写出去、第 2 行在**服务端**失败
+/// （超列宽 1406），整批仍必须随调用方事务一起回滚。
+///
+/// 这条刻意下沉到 `yang-db` 层：批大小只有 `upsert_batch_with_size` 能指定
+/// （`TableQuery` 不暴露它），而它也是全仓唯一让「多行 ODKU + 分块」真的落进 MySQL 的地方。
+#[tokio::test]
+#[ignore] // 需要 Docker 环境
+async fn batch_upsert_is_atomic_across_chunks() {
+    let (_container, pool, db) = setup_test_env!();
+    create_test_batch_options_table(&db).await.unwrap();
+    let table = yang_db::TableRef::new("test_batch_options").expect("固定表名有效");
+    let update_columns = vec!["label".to_string(), "sort_order".to_string()];
+
+    let rows = vec![
+        serde_json::json!({
+            "option_id": "opt_1", "label": "甲", "sort_order": 1,
+            "created_at": 1, "updated_at": 1,
+        }),
+        serde_json::json!({
+            // 150 个汉字 = 450 字节，超过 `label VARCHAR(100)` ⇒ 服务端报 1406
+            "option_id": "opt_2", "label": "乙".repeat(150), "sort_order": 2,
+            "created_at": 1, "updated_at": 1,
+        }),
+    ];
+
+    let mut tx = db.transaction().await.unwrap();
+    let result = tx
+        .table(&table)
+        .upsert_batch_with_size(&rows, &update_columns, 1)
+        .await;
+    assert!(result.is_err(), "第 2 行超列宽，必须在服务端失败（1406）");
+    tx.rollback().await.unwrap();
+
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM `test_batch_options`")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "第 1 行已经在第 1 个 chunk 里写出去过，也必须随调用方事务回滚"
+    );
 }

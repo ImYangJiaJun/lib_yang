@@ -2,6 +2,7 @@
 
 mod batch_insert_test;
 mod batch_update_test;
+mod batch_upsert_test;
 mod condition_test;
 mod query_builder_property_test;
 mod query_builder_test;

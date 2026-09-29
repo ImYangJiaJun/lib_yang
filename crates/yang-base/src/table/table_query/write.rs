@@ -1,11 +1,22 @@
-//! 写入执行（`mysql` feature）：insert/update/delete 及事务内变体，
-//! 含插入数据准备（默认值/时间戳/租户注入）与更新数据校验。
+//! 写入执行（`mysql` feature）：写路径分 insert / update / delete / 批量 upsert 四类
+//! （各自带事务内变体），含插入数据准备（默认值/时间戳/租户注入）与更新数据校验。
 
 #![cfg(feature = "mysql")]
 
 use super::TableQuery;
 use crate::error::BaseError;
 use serde_json::Value;
+
+/// 批量 upsert 的计划产物：一次性校验通过的待写行集与 ODKU 赋值列。
+///
+/// 只由 [`TableQuery::plan_upsert_batch`] 构造，是「校验已完成、只剩执行」的中间态；
+/// 空批不会产出它（计划返回 `None`）。
+struct PreparedUpsertBatch {
+    /// 逐行同构的 INSERT 行（已补默认值/时间戳、已剔自增列）。
+    rows: Vec<std::collections::HashMap<String, Value>>,
+    /// ODKU 赋值列（已含 `updated_at`）；列序由生成器按 INSERT 列序收敛。
+    tail: Vec<String>,
+}
 
 impl TableQuery {
     /// 执行 INSERT 操作
@@ -134,6 +145,184 @@ impl TableQuery {
             .await
             .map_err(BaseError::DatabaseExecuteFailed)?;
         Ok((1, id))
+    }
+
+    /// 在调用方事务内批量 upsert（`INSERT ... ON DUPLICATE KEY UPDATE`）。
+    ///
+    /// - INSERT 列集与值 = [`TableQuery::prepare_and_validate_insert`] 的输出（写权限 /
+    ///   自增剔除 / 缺省补 `default_value` / 补 `created_at`+`updated_at` / 必填校验），
+    ///   与单行插入**共用同一个函数**；
+    /// - UPDATE 分支只写 `update_columns ∪ {updated_at}`。框架补出来的默认值与
+    ///   `created_at` **都不在**赋值列里，这正是「省略即保持原值」与「创建时间不被刷新」
+    ///   的落点。
+    ///
+    /// # 调用方义务（框架不兜、也兜不了）
+    ///
+    /// - 冲突键由**表上的唯一索引**决定，本方法无法指定；
+    /// - 本方法**没有 WHERE**。身份列（如 `source_key`）必须由调用方自己从
+    ///   `update_columns` 里排除：把它放进赋值列，跨源命中就会把归属**静默改写**——
+    ///   而逐行路径的 `where_eq(id)+where_eq(owner)` 至少还会撞唯一索引响亮失败。
+    /// - 调用方应在事务前做归属预检，并在同一事务内做写后归属再断言。
+    ///
+    /// # 错误
+    ///
+    /// - `BaseError::ParamInvalid`：带 where / 软删表未 `with_trashed` / 行集不一致 /
+    ///   赋值列为空或不在提供列内 / 赋值列是自增列
+    /// - `BaseError::FieldPermissionDenied`：显式提交 `not_writable` 列（`created_at` 等），
+    ///   沿用 prepare 的错误
+    /// - `BaseError::DatabaseExecuteFailed`：数据库执行失败
+    ///
+    /// # 返回值
+    ///
+    /// `rows_affected` 之和 ∈ `[N, 2N]`（1=插入，2=更新且值有变；sqlx 带
+    /// `CLIENT_FOUND_ROWS` ⇒「命中但值未变」也计 1）。**不是行数**（要行数用
+    /// `rows.len()`），也**分不出 inserted/updated**。
+    pub async fn upsert_batch_in_tx(
+        self,
+        tx: &mut yang_db::Transaction,
+        rows: Vec<crate::table::Record>,
+        update_columns: &[&str],
+    ) -> Result<u64, BaseError> {
+        // 空批 = 写 0 行：没写就没写，不发明语句（生成器也会拒空数据）。
+        let Some(batch) = self.plan_upsert_batch(rows, update_columns)? else {
+            return Ok(0);
+        };
+        // 不走 apply_write_plan：写路径计划只挂 WHERE 与软删守卫，而本方法两者都不支持
+        // （plan_upsert_batch 已把带 where / 软删表的调用拒掉），挂上去只会给人
+        // 「守卫已应用」的错觉。
+        let affected = tx
+            .table(&self.table_config.table_ref)
+            .upsert_batch(&batch.rows, &batch.tail)
+            .await
+            .map_err(BaseError::DatabaseExecuteFailed)?;
+        Ok(affected)
+    }
+
+    /// 校验并准备一批 upsert：`Ok(None)` = 空批（写 0 行），`Ok(Some(_))` = 可执行计划。
+    ///
+    /// 失败面顺序即调用方踩坑的顺序：空批 → where → 软删 → 逐行列集 → 赋值列。
+    fn plan_upsert_batch(
+        &self,
+        rows: Vec<crate::table::Record>,
+        update_columns: &[&str],
+    ) -> Result<Option<PreparedUpsertBatch>, BaseError> {
+        let total = rows.len();
+        let mut records = rows.into_iter();
+        // 空批 = 写 0 行：没有第一行可推赋值列，也不发明语句。
+        let Some(first) = records.next() else {
+            return Ok(None);
+        };
+
+        // ODKU 没有 WHERE：带条件的调用会被静默忽略（写错行远比报错危险），直接拒绝。
+        if !self.query_params.where_conditions.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "where".to_string(),
+                "批量 upsert 不支持 where 条件：ON DUPLICATE KEY UPDATE 没有 WHERE，条件会被静默忽略"
+                    .to_string(),
+            ));
+        }
+        // 软删守卫是 `deleted_at IS NULL` 这类 WHERE，批量 upsert 表达不了：命中已软删行时
+        // 会把它们改活，而逐行 update 路径上这会被守卫挡住。
+        if self.table_config.soft_delete_field.is_some() && !self.include_trashed {
+            return Err(BaseError::ParamInvalid(
+                "soft_delete_field".to_string(),
+                "该表配置了软删字段，而批量 upsert 无法表达软删守卫；要么改用 update_in_tx，要么先 with_trashed()"
+                    .to_string(),
+            ));
+        }
+
+        // 第 1 条记录的两套列集就是全批基准：provided 管「省略即重置」，prepared 管列集
+        // 异构。先取 provided 再 prepare——prepare 会把默认值与时间戳补进来，之后就分不出
+        // 「调用方写过这一列」与「框架补的」了。
+        let first_provided: std::collections::BTreeSet<String> =
+            first.as_map().keys().cloned().collect();
+        let first_prepared = self.prepare_and_validate_insert(first.into_columns())?;
+        let first_prepared_keys: std::collections::BTreeSet<String> =
+            first_prepared.keys().cloned().collect();
+
+        let mut prepared_rows = Vec::with_capacity(total);
+        prepared_rows.push(first_prepared);
+        for (offset, record) in records.enumerate() {
+            let provided: std::collections::BTreeSet<String> =
+                record.as_map().keys().cloned().collect();
+            let prepared = self.prepare_and_validate_insert(record.into_columns())?;
+            let prepared_keys: std::collections::BTreeSet<String> =
+                prepared.keys().cloned().collect();
+            // 第 1 条在循环外已处理，这里从第 2 条起数。
+            let row_number = offset + 2;
+            // 某行省略了带默认值的列 ⇒ 批量路径会拿第 1 行的值替它做 ODKU 赋值，等价于
+            // 「省略即重置」（prepared 两侧都被默认值补齐，只看 prepared 拦不住）。
+            if provided != first_provided {
+                return Err(BaseError::ParamInvalid(
+                    "rows".to_string(),
+                    format!("批量 upsert 第 {row_number} 条记录提供的列集与第 1 条不一致"),
+                ));
+            }
+            // 列集异构交给生成器只会得到一条更晚、更难归因的 SerializationError。
+            if prepared_keys != first_prepared_keys {
+                return Err(BaseError::ParamInvalid(
+                    "rows".to_string(),
+                    format!("批量 upsert 第 {row_number} 条记录提供的列集与第 1 条不一致"),
+                ));
+            }
+            prepared_rows.push(prepared);
+        }
+
+        if update_columns.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "update_columns".to_string(),
+                "批量 upsert 至少需要一个可更新列（ON DUPLICATE KEY UPDATE 的赋值列)".to_string(),
+            ));
+        }
+        for name in update_columns {
+            // 要求 ⊆ provided 而不是 ⊆ prepared：prepared 里有框架补出来的默认值与
+            // created_at，让它们进赋值列就等于「省略即重置」「创建时间被刷新」。
+            // created_at 不必单独排除：它是 Audience::Nobody，调用方提交会先吃
+            // FieldPermissionDenied，永远进不了 provided，上一条已把它挡住。
+            if !first_provided.contains(*name) {
+                return Err(BaseError::ParamInvalid(
+                    "update_columns".to_string(),
+                    format!(
+                        "赋值列 `{name}` 不在调用方提供的列里（框架补出来的默认值与 created_at 不能当赋值列）"
+                    ),
+                ));
+            }
+            if self
+                .table_config
+                .get_field(name)
+                .is_some_and(|field| field.auto_increment)
+            {
+                return Err(BaseError::ParamInvalid(
+                    "update_columns".to_string(),
+                    format!("赋值列 `{name}` 是自增列，不能出现在 ON DUPLICATE KEY UPDATE 里"),
+                ));
+            }
+        }
+
+        // 赋值列 = 调用方白名单（去重）+ updated_at（语义同 with_updated_timestamp：列存在
+        // 且不在集合里时追加）。列序不在这里排：生成器按 INSERT 列序收敛。
+        let mut tail: Vec<String> = Vec::with_capacity(update_columns.len() + 1);
+        for name in update_columns {
+            if !tail.iter().any(|existing| existing.as_str() == *name) {
+                tail.push((*name).to_string());
+            }
+        }
+        if let Some(updated_at) = self
+            .table_config
+            .timestamp_fields
+            .as_ref()
+            .and_then(|fields| fields.updated_at.as_ref())
+            .filter(|name| self.table_config.fields.contains_key(*name))
+        {
+            if !tail.iter().any(|existing| existing == updated_at) {
+                tail.push(updated_at.clone());
+            }
+        }
+
+        Ok(Some(PreparedUpsertBatch {
+            rows: prepared_rows,
+            tail,
+        }))
     }
 
     /// 填充默认值/时间戳并验证插入数据
@@ -431,6 +620,24 @@ impl TableQuery {
         }
 
         Ok(())
+    }
+
+    /// 批量 upsert 的**计划**（不连库、不执行）——测试专用。
+    ///
+    /// 只把 [`TableQuery::plan_upsert_batch`] 的产物摊平成 `(待写行集, 赋值列)`，让无库
+    /// 用例能断言「哪些列进了 INSERT、哪些列进了 ODKU 尾巴」；生产路径不经过这里。
+    // 摊平元组比再发明一个测试专用结构体更省；clippy 只嫌它长。
+    #[allow(clippy::type_complexity)]
+    #[cfg(test)]
+    pub fn upsert_batch_plan_for_test(
+        &self,
+        rows: Vec<crate::table::Record>,
+        update_columns: &[&str],
+    ) -> Result<Option<(Vec<std::collections::HashMap<String, Value>>, Vec<String>)>, BaseError>
+    {
+        Ok(self
+            .plan_upsert_batch(rows, update_columns)?
+            .map(|batch| (batch.rows, batch.tail)))
     }
 
     /// 执行 DELETE 操作
