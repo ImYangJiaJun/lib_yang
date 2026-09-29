@@ -479,6 +479,63 @@ impl SqlGenerator {
         Ok(())
     }
 
+    /// 生成批量 UPSERT 语句（`INSERT ... ON DUPLICATE KEY UPDATE`）。
+    ///
+    /// INSERT 部分直接复用 [`Self::build_insert_batch`]：列集取首条、异构列集 fail-closed、
+    /// 标识符 quote 全部与批量插入同一份实现；本方法只追加 ODKU 尾巴。
+    ///
+    /// `on_duplicate_fields` 是**调用方显式的赋值列白名单**（框架不自动派生）：框架不认识
+    /// 「身份列」，若自动把 provided 全集放进尾巴，命中别人的行时会把归属**静默改写**。
+    ///
+    /// # 参数
+    /// - table: 表名
+    /// - data_list: 要写入的数据列表（JSON 格式，列集必须同构）
+    /// - field_types: 字段类型映射
+    /// - on_duplicate_fields: 冲突时要赋值的列（非空，且必须 ⊆ 首条记录的列集）
+    ///
+    /// # 返回
+    /// - Ok(()): 成功生成 SQL（参数数 = 行数 × INSERT 列数）
+    /// - Err(DbError): 生成失败
+    pub(crate) fn build_upsert_batch(
+        &mut self,
+        table: &str,
+        data_list: &[serde_json::Value],
+        field_types: &HashMap<String, FieldType>,
+        on_duplicate_fields: &[String],
+    ) -> Result<(), crate::error::DbError> {
+        // 复用批量 INSERT：自带 clear / 空数据拒绝 / 首条定列集 / 列集异构 fail-closed
+        self.build_insert_batch(table, data_list, field_types)?;
+
+        if on_duplicate_fields.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "批量 upsert 的赋值列不能为空".to_string(),
+            ));
+        }
+
+        let first_obj = data_list[0].as_object().ok_or_else(|| {
+            crate::error::DbError::SerializationError("插入数据必须是 JSON 对象".to_string())
+        })?;
+
+        for field in on_duplicate_fields {
+            if !first_obj.contains_key(field.as_str()) {
+                return Err(crate::error::DbError::InvalidArgument(format!(
+                    "批量 upsert 的赋值列 `{field}` 不在插入列集内"
+                )));
+            }
+        }
+
+        // 尾巴列序 = INSERT 列序：keys 来自 serde_json::Map，仓库未开 preserve_order
+        // ⇒ BTreeMap，顺序确定 ⇒ SQL 文本唯一，不会炸 sqlx 的语句缓存。
+        let quoted_fields = first_obj
+            .keys()
+            .filter(|key| on_duplicate_fields.iter().any(|field| field == *key))
+            .map(|key| crate::mysql::identifier::quote_identifier(key.as_str()))
+            .collect::<Result<Vec<String>, crate::error::DbError>>()?;
+        self.append_upsert_tail(&quoted_fields);
+
+        Ok(())
+    }
+
     /// 生成 UPDATE 语句
     ///
     /// # 参数
@@ -746,6 +803,24 @@ impl SqlGenerator {
         Ok(())
     }
 
+    /// 追加 ` ON DUPLICATE KEY UPDATE \`c\`=VALUES(\`c\`), ...`。入参是**已 quote** 的列名。
+    ///
+    /// 单行 `build_upsert` 与批量 `build_upsert_batch` 共用同一份尾巴渲染：批量路径只
+    /// 把「要赋值的列」（调用方白名单）换掉，拼写一字不差——两侧 SQL 文本才可对齐断言。
+    /// 尾巴**不产生占位符**，故参数数恒 = 行数 × INSERT 列数。
+    fn append_upsert_tail(&mut self, quoted_fields: &[String]) {
+        self.sql.push_str(" ON DUPLICATE KEY UPDATE ");
+        for (i, qf) in quoted_fields.iter().enumerate() {
+            if i > 0 {
+                self.sql.push_str(", ");
+            }
+            self.sql.push_str(qf);
+            self.sql.push_str("=VALUES(");
+            self.sql.push_str(qf);
+            self.sql.push(')');
+        }
+    }
+
     /// 生成 UPSERT (INSERT ... ON DUPLICATE KEY UPDATE) 语句
     pub(crate) fn build_upsert(
         &mut self,
@@ -789,16 +864,7 @@ impl SqlGenerator {
             self.add_param(self.json_value_to_sql_value(val, field_types.get(field.as_str()))?);
         }
 
-        self.sql.push_str(" ON DUPLICATE KEY UPDATE ");
-        for (i, qf) in quoted_fields.iter().enumerate() {
-            if i > 0 {
-                self.sql.push_str(", ");
-            }
-            self.sql.push_str(qf);
-            self.sql.push_str("=VALUES(");
-            self.sql.push_str(qf);
-            self.sql.push(')');
-        }
+        self.append_upsert_tail(&quoted_fields);
 
         Ok(())
     }

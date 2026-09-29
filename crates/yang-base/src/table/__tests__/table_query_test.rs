@@ -7,7 +7,7 @@
 
 use crate::error::BaseError;
 use crate::table::table_query::SqlParam;
-use crate::table::{col, Field, SortOrder, Table, TableConfig, TableQuery, Tables};
+use crate::table::{col, Field, Record, SortOrder, Table, TableConfig, TableQuery, Tables};
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
@@ -1945,4 +1945,390 @@ fn test_effective_pagination_applies_default_limit_to_data_query_sql() {
         )),
         "分页数据查询必须包含默认 LIMIT，实际 SQL: {sql}"
     );
+}
+
+// ==================== 批量 upsert 计划（无库） ====================
+//
+// 批量路径的安全边界全在 `plan_upsert_batch` 里（生成器只负责拼 SQL），因此这里用
+// `upsert_batch_plan_for_test` 直接断言「哪些列进了 INSERT、哪些列进了 ODKU 尾巴」。
+
+/// 批量 upsert 计划测试表：`id` 自增主键（prepare 会剔除）、`option_id` 冲突键、
+/// `source_key` 身份列、`label` 必填、`sort_order` 带默认值、`extra` 可空 JSON，
+/// 以及 `created_at`/`updated_at` 时间戳（与单行插入同一套字段声明）。
+fn upsert_batch_table() -> Table {
+    Table::new("feishu_option").fields([
+        Field::id("id"),
+        Field::string("option_id", 64).required(),
+        Field::string("source_key", 64).required(),
+        Field::string("label", 255).required(),
+        Field::integer("sort_order").required().default(0),
+        Field::json("extra"),
+        Field::created_at("created_at"),
+        Field::updated_at("updated_at"),
+    ])
+}
+
+fn upsert_batch_query() -> TableQuery {
+    TableQuery::new_without_pool(build_config(upsert_batch_table()))
+}
+
+/// 一条调用方**显式提供**的 upsert 记录（不含 `id`：它由数据库生成）。
+fn upsert_record(option_id: &str, label: &str) -> Record {
+    Record::new()
+        .set("option_id", option_id)
+        .set("source_key", "s1")
+        .set("label", label)
+}
+
+/// 从 `INSERT INTO \`t\` (\`a\`, \`b\`) VALUES (?, ?)` 里取出列名（去反引号）。
+fn insert_sql_columns(sql: &str) -> Vec<String> {
+    let (_, rest) = sql.split_once('(').expect("INSERT 语句应含列清单");
+    let (columns, _) = rest.split_once(')').expect("INSERT 语句的列清单应闭合");
+    columns
+        .split(", ")
+        .map(|name| name.trim_matches('`').to_string())
+        .collect()
+}
+
+/// 本设计的核心断言：`created_at` 进 INSERT 列，但绝不进 ODKU 赋值列。
+#[test]
+fn created_at_is_filled_but_never_an_update_column() {
+    let query = upsert_batch_query();
+
+    let (prepared_rows, tail) = query
+        .upsert_batch_plan_for_test(
+            vec![upsert_record("o1", "甲"), upsert_record("o2", "乙")],
+            &["label"],
+        )
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+
+    assert_eq!(prepared_rows.len(), 2);
+    for row in &prepared_rows {
+        assert!(
+            row.contains_key("created_at"),
+            "created_at 应补进 INSERT 列"
+        );
+        assert!(
+            row.contains_key("updated_at"),
+            "updated_at 应补进 INSERT 列"
+        );
+        assert!(!row.contains_key("id"), "自增列应由数据库生成");
+    }
+    assert_eq!(tail, vec!["label".to_string(), "updated_at".to_string()]);
+}
+
+/// 省略带默认值的列：prepared 里有它（补默认值），tail 里没有它（UPDATE 分支保持原值）。
+#[test]
+fn defaulted_columns_are_filled_but_stay_out_of_the_update_columns() {
+    let query = upsert_batch_query();
+
+    // 调用方没提 sort_order ⇒ prepared 有（默认 0）、tail 没有
+    let (prepared_rows, tail) = query
+        .upsert_batch_plan_for_test(vec![upsert_record("o1", "甲")], &["label"])
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+    assert_eq!(prepared_rows[0].get("sort_order"), Some(&json!(0)));
+    assert!(
+        !tail.contains(&"sort_order".to_string()),
+        "框架补出来的默认值不能进赋值列（否则就是「省略即重置」）"
+    );
+
+    // 调用方显式提供并点名 ⇒ 可以进赋值列（要不要它由调用方决定，不由框架推断）
+    let mut row = upsert_record("o1", "甲");
+    row.insert("sort_order", json!(5));
+    let (_, tail) = query
+        .upsert_batch_plan_for_test(vec![row], &["sort_order"])
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+    assert!(tail.contains(&"sort_order".to_string()));
+}
+
+/// `updated_at` 总是被追加进赋值列（语义同 `with_updated_timestamp`），且赋值列去重
+/// （同列赋值两次是 SQL 错误）。
+#[test]
+fn updated_at_is_always_appended_to_the_update_columns() {
+    let (_, tail) = upsert_batch_query()
+        .upsert_batch_plan_for_test(vec![upsert_record("o1", "甲")], &["label"])
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+    assert!(tail.contains(&"updated_at".to_string()));
+
+    // updated_at 一般 not_writable（调用方进不了 provided）；把表声明成可写后，调用方点名
+    // 它、并把 label 写两遍，尾巴里两列都只该出现一次。
+    let writable = Table::new("writable_updated_at").fields([
+        Field::id("id"),
+        Field::string("option_id", 64).required(),
+        Field::string("label", 255).required(),
+        Field::updated_at("updated_at").writable(),
+    ]);
+    let query = TableQuery::new_without_pool(build_config(writable));
+    let mut row = Record::new().set("option_id", "o1").set("label", "甲");
+    row.insert("updated_at", json!(1_700_000_000));
+
+    let (_, tail) = query
+        .upsert_batch_plan_for_test(vec![row], &["label", "label", "updated_at"])
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+
+    assert_eq!(
+        tail.iter().filter(|name| *name == "label").count(),
+        1,
+        "重复点名的赋值列应去重: {tail:?}"
+    );
+    assert_eq!(
+        tail.iter().filter(|name| *name == "updated_at").count(),
+        1,
+        "updated_at 不该被追加两次: {tail:?}"
+    );
+}
+
+/// 自增列不能当赋值列：它由数据库生成，写进 ODKU 会污染自增序列与行归属。
+#[test]
+fn an_auto_increment_column_is_rejected_as_update_column() {
+    let query = upsert_batch_query();
+    // null 的自增主键等价于「未提供」⇒ 能进 provided，但它仍是自增列
+    let row = upsert_record("o1", "甲").set("id", Value::Null);
+
+    let err = query
+        .upsert_batch_plan_for_test(vec![row], &["id", "label"])
+        .expect_err("自增列不能当赋值列");
+
+    assert!(
+        matches!(
+            err,
+            BaseError::ParamInvalid(ref field, ref message)
+                if field == "update_columns" && message.contains("自增列")
+        ),
+        "实际错误: {err:?}"
+    );
+}
+
+/// 各行提供的列集必须一致：某行省略了默认值列，批量路径会拿第 1 行的值替它做赋值，
+/// 等价于「省略即重置」——只看 prepared 拦不住（默认值会把两侧列集补齐）。
+#[test]
+fn rows_with_different_provided_columns_are_rejected() {
+    let query = upsert_batch_query();
+    let rows = vec![
+        upsert_record("o1", "甲").set("sort_order", 3),
+        upsert_record("o2", "乙"), // 省略 sort_order
+    ];
+
+    let err = query
+        .upsert_batch_plan_for_test(rows, &["label"])
+        .expect_err("各行提供的列集不一致应被拒绝");
+
+    assert!(
+        matches!(
+            err,
+            BaseError::ParamInvalid(ref field, ref message)
+                if field == "rows" && message.contains("第 2 条")
+        ),
+        "实际错误: {err:?}"
+    );
+}
+
+/// 各行 prepared 列集必须一致（异构行会被生成器 fail-closed 拒掉）。
+#[test]
+fn rows_with_different_prepared_column_sets_are_rejected() {
+    let query = upsert_batch_query();
+    // (a) 一行显式 extra、一行没有
+    let err = query
+        .upsert_batch_plan_for_test(
+            vec![
+                upsert_record("o1", "甲").set("extra", json!({"anomaly": "label 超长"})),
+                upsert_record("o2", "乙"),
+            ],
+            &["label"],
+        )
+        .expect_err("列集异构应被拒绝");
+    assert!(matches!(err, BaseError::ParamInvalid(ref field, _) if field == "rows"));
+
+    // (b) provided 完全相同、只有 prepared 不同：自增列一行为值、一行为 null（prepare 会把
+    //     null 自增列剔除）⇒ 只有 prepared 一致性检查能挡住这一批。
+    let seq_table = Table::new("seq_rows").fields([
+        Field::bigint("seq")
+            .required()
+            .primary_key()
+            .auto_increment(),
+        Field::string("label", 64).required(),
+    ]);
+    let query = TableQuery::new_without_pool(build_config(seq_table));
+
+    let err = query
+        .upsert_batch_plan_for_test(
+            vec![
+                Record::new().set("seq", 7).set("label", "甲"),
+                Record::new().set("seq", Value::Null).set("label", "乙"),
+            ],
+            &["label"],
+        )
+        .expect_err("prepared 列集异构应被拒绝");
+
+    assert!(
+        matches!(
+            err,
+            BaseError::ParamInvalid(ref field, ref message)
+                if field == "rows" && message.contains("第 2 条")
+        ),
+        "实际错误: {err:?}"
+    );
+}
+
+/// 空批 = 写 0 行：没有第一行可推赋值列，也不发明语句。
+#[test]
+fn an_empty_batch_plans_nothing() {
+    let plan = upsert_batch_query()
+        .upsert_batch_plan_for_test(Vec::new(), &["label"])
+        .expect("空批不是错误");
+
+    assert!(plan.is_none(), "空批不应产出任何计划");
+}
+
+/// 赋值列一个都不给：ODKU 尾巴会退化成 `ON DUPLICATE KEY UPDATE `。
+#[test]
+fn an_empty_update_columns_list_is_rejected() {
+    let err = upsert_batch_query()
+        .upsert_batch_plan_for_test(vec![upsert_record("o1", "甲")], &[])
+        .expect_err("空赋值列应被拒绝");
+
+    assert!(
+        matches!(err, BaseError::ParamInvalid(ref field, _) if field == "update_columns"),
+        "实际错误: {err:?}"
+    );
+}
+
+/// ODKU 没有 WHERE：带条件的批量 upsert 会被静默忽略，必须响亮拒绝。
+#[test]
+fn where_conditions_are_rejected() {
+    let query = upsert_batch_query()
+        .where_eq("label", json!("甲"))
+        .expect("label 可筛选");
+
+    let err = query
+        .upsert_batch_plan_for_test(vec![upsert_record("o1", "甲")], &["label"])
+        .expect_err("带 where 的批量 upsert 应被拒绝");
+
+    assert!(
+        matches!(
+            err,
+            BaseError::ParamInvalid(ref field, ref message)
+                if field == "where" && message.contains("静默忽略")
+        ),
+        "实际错误: {err:?}"
+    );
+}
+
+/// 软删表：批量 upsert 表达不了软删守卫（`deleted_at IS NULL`），要么别用、要么先
+/// `with_trashed()`（调用方自担软删语义）。
+#[test]
+fn a_soft_deleted_table_is_rejected() {
+    let config = build_config(Table::new("soft_rows").fields([
+        Field::id("id"),
+        Field::string("label", 64).required(),
+        Field::soft_delete("deleted_at"),
+    ]));
+    let rows = vec![Record::new().set("label", "甲")];
+
+    let err = TableQuery::new_without_pool(Arc::clone(&config))
+        .upsert_batch_plan_for_test(rows.clone(), &["label"])
+        .expect_err("软删表未 with_trashed 时应被拒绝");
+    assert!(
+        matches!(err, BaseError::ParamInvalid(ref field, _) if field == "soft_delete_field"),
+        "实际错误: {err:?}"
+    );
+
+    let plan = TableQuery::new_without_pool(config)
+        .with_trashed()
+        .upsert_batch_plan_for_test(rows, &["label"])
+        .expect("with_trashed 后应放行");
+    assert!(plan.is_some());
+}
+
+/// 赋值列必须来自调用方**提供**的列：框架补出来的 `created_at` 与默认值列都不能当赋值列
+/// （带上就是「省略即重置」「创建时间被刷新」）。
+#[test]
+fn update_columns_must_come_from_the_provided_columns() {
+    let query = upsert_batch_query();
+    let row = upsert_record("o1", "甲");
+
+    for name in ["created_at", "updated_at", "sort_order"] {
+        let err = query
+            .upsert_batch_plan_for_test(vec![row.clone()], &["label", name])
+            .expect_err("框架补出来的列不能当赋值列");
+        assert!(
+            matches!(
+                err,
+                BaseError::ParamInvalid(ref field, ref message)
+                    if field == "update_columns" && message.contains(name)
+            ),
+            "赋值列 `{name}` 应被拒绝，实际错误: {err:?}"
+        );
+    }
+}
+
+/// 显式提交 not_writable 列（`created_at` 等）：与单行插入同一个 prepare 的
+/// `FieldPermissionDenied`。
+#[test]
+fn a_not_writable_field_is_rejected() {
+    let query = upsert_batch_query();
+    let row = upsert_record("o1", "甲").set("created_at", 1_700_000_000);
+
+    let err = query
+        .upsert_batch_plan_for_test(vec![row], &["label"])
+        .expect_err("显式提交只读列应被拒绝");
+
+    assert!(
+        matches!(
+            err,
+            BaseError::FieldPermissionDenied(ref table, ref field, _)
+                if table == "feishu_option" && field == "created_at"
+        ),
+        "实际错误: {err:?}"
+    );
+}
+
+/// 批量路径与单行插入共用同一个 prepare：计划行 = 单行 `build_insert_sql_for_test` 的准备
+/// 结果（键与值逐项相等），且它绑定的值就是计划行里的值。
+#[test]
+fn prepared_rows_equal_the_single_row_insert_preparation() {
+    // 用无时间戳的表：两次 prepare 的 `now` 若落在不同秒上会让逐项比较抖动
+    let config = build_config(Table::new("feishu_option").fields([
+        Field::id("id"),
+        Field::string("option_id", 64).required(),
+        Field::string("label", 255).required(),
+        Field::integer("sort_order").required().default(0),
+    ]));
+    let query = TableQuery::new_without_pool(config);
+    let records = vec![
+        Record::new().set("option_id", "o1").set("label", "甲"),
+        Record::new().set("option_id", "o2").set("label", "乙"),
+    ];
+
+    let (prepared_rows, tail) = query
+        .upsert_batch_plan_for_test(records.clone(), &["label"])
+        .expect("计划应成功")
+        .expect("非空批应有计划");
+    assert_eq!(tail, vec!["label".to_string()]);
+
+    for (index, record) in records.iter().enumerate() {
+        let single = query
+            .prepare_and_validate_insert(record.clone().into_columns())
+            .expect("单行插入准备应成功");
+        assert_eq!(prepared_rows[index], single, "批量路径不得有第二套 prepare");
+
+        let (sql, params) = query
+            .build_insert_sql_for_test(record.clone().into_columns())
+            .expect("单行插入 SQL 应可构建");
+        let mut columns = insert_sql_columns(&sql);
+        columns.sort();
+        let mut prepared_names: Vec<String> = single.keys().cloned().collect();
+        prepared_names.sort();
+        assert_eq!(columns, prepared_names, "INSERT 列集应与计划行一致: {sql}");
+        assert_eq!(params.len(), single.len(), "参数数 = 计划行列数");
+        // 单行路径绑定的值 = 计划行里的值（含框架补的默认值）
+        let label: String = record.require("label").expect("label 应为字符串");
+        assert!(params.contains(&SqlParam::String(label)));
+        assert!(params.contains(&SqlParam::Int(0)), "默认值应作为参数绑定");
+    }
 }
