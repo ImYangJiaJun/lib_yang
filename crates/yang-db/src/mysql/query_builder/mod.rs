@@ -29,6 +29,8 @@ pub(crate) use bind::bind_param;
 pub(crate) use generator::SqlGenerator;
 #[cfg(test)]
 pub(crate) use predicate::predicate_value;
+#[cfg(test)]
+pub(crate) use write::derive_upsert_batch_size;
 
 /// 将 `(字段, 操作符, 值)` 映射为 6 个比较类 `Condition` 变体的共享助手。
 ///
