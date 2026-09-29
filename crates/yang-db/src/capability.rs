@@ -48,6 +48,9 @@ pub enum BackendCapability {
     Delete,
     /// 方言原生 UPSERT。
     Upsert,
+    /// 批量 UPSERT。MySQL 是 `INSERT ... ON DUPLICATE KEY UPDATE`；
+    /// PostgreSQL 的对应物需显式冲突列 + `EXCLUDED`，形状不同，本轮不声明。
+    BatchUpsert,
     /// PostgreSQL `RETURNING`。
     Returning,
     /// PostgreSQL 显式冲突列 `ON CONFLICT (...)`。
@@ -119,6 +122,7 @@ const MYSQL_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::BatchUpdate,
     BackendCapability::Delete,
     BackendCapability::Upsert,
+    BackendCapability::BatchUpsert,
 ];
 
 const POSTGRES_OPERATIONS: &[BackendCapability] = &[
@@ -248,6 +252,14 @@ mod tests {
         assert!(POSTGRES_CAPABILITIES.supports(BackendCapability::Returning));
         assert!(!MYSQL_CAPABILITIES.supports(BackendCapability::ExplicitConflictTarget));
         assert!(POSTGRES_CAPABILITIES.supports(BackendCapability::ExplicitConflictTarget));
+    }
+
+    #[test]
+    fn mysql_declares_batch_upsert_and_postgres_does_not() {
+        // 批量 upsert 是 MySQL 方言形状（ODKU）；PG 的对应物需显式冲突列 + EXCLUDED，
+        // 形状不同，本轮不声明——一旦有人把 BatchUpsert 加进 POSTGRES_OPERATIONS，这里会红。
+        assert!(MYSQL_CAPABILITIES.supports(BackendCapability::BatchUpsert));
+        assert!(!POSTGRES_CAPABILITIES.supports(BackendCapability::BatchUpsert));
     }
 
     #[test]
