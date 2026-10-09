@@ -39,7 +39,7 @@ pub use table::{
 };
 
 /// 当前 UI 契约版本。
-pub const UI_SCHEMA_VERSION: &str = "2.3";
+pub const UI_SCHEMA_VERSION: &str = "2.4";
 
 #[cfg(test)]
 mod __tests__;

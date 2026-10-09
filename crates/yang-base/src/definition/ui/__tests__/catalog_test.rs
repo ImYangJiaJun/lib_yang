@@ -111,6 +111,7 @@ fn from_parts_hashes_three_projections_once_and_keeps_revision_stable() {
         action_presentations: Vec::new(),
     };
     let module = |module_id: &str| ModulePresentationSchema {
+        app_route: None,
         module_id: module_id.to_string(),
         identity: AccountIdentitySchema {
             id: "user".to_string(),

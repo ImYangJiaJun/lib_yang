@@ -345,6 +345,23 @@ pub(super) fn compile_runtime_modules(
         };
         validate_presentation_text("Identity title", &presentation.identity.title, 100)?;
         validate_presentation_text("Module title", &presentation.title, 100)?;
+        if let Some(route) = &presentation.app_route {
+            if !route.starts_with('/')
+                || route.starts_with("//")
+                || route.chars().count() > 512
+                || route
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+            {
+                return Err(BuildError::InvalidReference {
+                    kind: "Module app_route",
+                    reference: format!(
+                        "{}: 必须是最多 512 字符、无空白/控制字符/反斜杠的单斜线站内路径",
+                        module.name
+                    ),
+                });
+            }
+        }
         if presentation.description.chars().count() > 500 {
             return Err(BuildError::InvalidReference {
                 kind: "Module Presentation",
@@ -433,6 +450,7 @@ pub(super) fn compile_runtime_modules(
             description: presentation.description.clone(),
             icon: presentation.icon.clone(),
             order: presentation.order,
+            app_route: presentation.app_route.clone(),
             primary_action,
             actions: actions.into(),
         });
