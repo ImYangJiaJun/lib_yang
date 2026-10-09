@@ -13,6 +13,75 @@ use crate::definition::{
 use crate::tools::ToolsBuilder;
 use serde_json::json;
 
+fn build_route(
+    route: Option<&str>,
+) -> Result<crate::definition::BuiltApp, crate::definition::BuildError> {
+    let name = ModuleName::new("console.page").expect("测试模块有效");
+    let mut presentation = ModulePresentationSpec::new(
+        AccountIdentitySpec::new("user", "个人账户", "person"),
+        "控制台",
+        "account",
+    )
+    .primary_action(ActionRef::new(
+        name.clone(),
+        ActionName::new("open").expect("测试 Action 有效"),
+    ));
+    if let Some(route) = route {
+        presentation = presentation.app_route(route);
+    }
+    AppBuilder::new()
+        .addon(
+            AddonSpec::new(AddonName::new("console").expect("测试 Addon 有效")).module(
+                ModuleSpec::new(name)
+                    .presentation(presentation)
+                    .action(action("open", "console.page.open"), NoopAction),
+            ),
+        )
+        .build(ToolsBuilder::new().build().expect("测试 Tools 有效"))
+}
+
+#[test]
+fn app_route_survives_compilation_and_request_projection() {
+    for route in [Some("/console/page"), Some("/a\u{feff}b"), None] {
+        let app = build_route(route).expect("合法路由可构建");
+        let catalog = app
+            .ui_catalog(
+                &app.context(Request::new(json!({})))
+                    .with_user(User::new(7, "alice")),
+            )
+            .expect("可投影");
+        assert_eq!(catalog.modules[0].app_route.as_deref(), route);
+    }
+}
+
+#[test]
+fn app_route_rejects_ambiguous_or_external_paths() {
+    for route in [
+        "",
+        "relative",
+        "//evil.example/x",
+        "/a b",
+        "/a\nb",
+        "/a\tb",
+        "/a\0b",
+        "/\\evil",
+        "/a\u{00a0}b",
+        "/a\u{2003}b",
+    ] {
+        assert!(
+            matches!(
+                build_route(Some(route)),
+                Err(crate::definition::BuildError::InvalidReference { .. })
+            ),
+            "应拒绝 {route:?}"
+        );
+    }
+    assert!(build_route(Some(&format!("/{}", "界".repeat(512)))).is_err());
+    for route in ["/".to_owned(), format!("/{}", "界".repeat(511))] {
+        assert!(build_route(Some(&route)).is_ok(), "应接受 {route:?}");
+    }
+}
+
 #[test]
 fn module_projection_uses_explicit_primary_and_hides_incomplete_identity_pages() {
     let module_name = ModuleName::new("account.profile").expect("测试 Module 名称应有效");

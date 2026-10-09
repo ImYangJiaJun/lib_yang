@@ -1,7 +1,7 @@
 # 侧边栏导航单一事实源设计（Module 级入口）
 
 **日期**：2026-10-08
-**状态**：设计已确认，待实现
+**状态**：2026-10-09 已按代码事实修正并实现；验收记录见同目录的 navigation-catalog-single-source-acceptance.md，标准门禁状态以该记录为准。
 **影响面**：`crates/yang-base`（UI 契约）、`project/yang-system`（后端声明 + 前端）
 **契约版本**：UI schema `2.3` → `2.4`
 
@@ -74,15 +74,15 @@ if primary_action.is_none() && allowed_actions.is_empty() && views.is_empty() {
 
 `identity` 现在**身兼两职**：侧边栏分组标题（`groupNavigationPages` 用 `identity.title`）+ 角色切换单元（`AccountSwitcher`、`SelectIdentityPage`、`resolveIdentityLanding`）。今天它只有**一个值**（`user`/"个人账户"，三个 Module 全用它，见 `src/addon/mod.rs:13-15`），矛盾未暴露。
 
-若照旧直接新增 `feishu_identity()` / `access_identity()`，它们会立刻变成「可切换的角色」，`SelectIdentityPage` 将询问「选择本次使用的角色：个人账户 / 飞书集成 / 权限管理」——语义上错误。因此本设计把 identity 明确**升格为功能域**：它既是分组，也是角色镜头，两职统一。
+若照旧直接新增 `feishu_identity()` / `access_identity()`，它们会立刻变成「可切换的角色」，`SelectIdentityPage` 将询问「选择本次使用的角色：个人账户 / 飞书集成 / 权限管理」——语义上错误。因此本设计把 identity 明确**升格为功能域**：它是导航分组和当前功能域镜头，不是权限角色；切换功能域不会授予权限。
 
 ### 决策 4 的背景（`feishu.approval` 是一对多）
 
-`feishu.approval` 是**单个** Module（`src/addon/feishu/approval/mod.rs:93`），却对应两个前端页面（`/feishu/approval/configs`、`/feishu/approval/requests`），且两者可见性**独立**（`AppLayout.tsx:239-251` 的注释明确说明一个身份可能只有 record read 而无 config read）。这与决策 1 的「一个 Module 一个入口」冲突。
+`feishu.approval` 是单个 Module，却对应配置与记录两个页面，违反一个 Module 一个入口。两个读 Action 实际共享 `feishu.approval.read`；旧前端注释中的独立读权限假设不成立，本次不拆权限。
 
 拆 Module 这条路已堵死：`operation_id = format!("{module.name}.{action.name}")`（`src/addon/access/domain/permission_catalog.rs:81`），拆分会改掉 `feishu.approval.list_configs` 等权限键，属破坏性变更。
 
-采用：**合并为一个带 tab 的控制台**。后端该 Module **不设 `primary_action`**，依赖 `registry.rs:269` 的既有兜底（任一 action 可见即入目录）；前端在 tab 内按权限各自判权。
+采用：**合并为一个带 tab 的控制台**。两个读 Action 实际共享 `feishu.approval.read`，本次不拆分权限。Module 不设 `primary_action`，但必须通过 `present_action` 显式展示 `list_configs` 与 `list_requests`；Registry 只从 primary、显式展示 Actions 和 views 投影，不扫描所有已注册 Action。public 机器派发接口不得作为导航门控。前端根据目录 operation 判定 tab，当前真实权限下两个 tab 同时可见。
 
 ## 6. 目标形态
 
@@ -98,7 +98,7 @@ if primary_action.is_none() && allowed_actions.is_empty() && views.is_empty() {
 |---|---|---|
 | 权限管理 | `/access/workspace` | `access.grants.list_user_grants` |
 | 飞书数据源 | `/feishu/datasources` | `feishu.datasource.list_datasources` |
-| 审批派发 | `/feishu/approval` | **不设** → 任一 approval action 可见即入目录 |
+| 审批派发 | `/feishu/approval` | 不设 primary；显式展示 list_configs/list_requests，均受 feishu.approval.read 门控 |
 
 对照今天：删 3 个硬编码区块 + 4 个 `canReadXxx` 布尔；「权限管理」两处合一；账号入口两处合一（硬编码「账号设置」`/account` 与动态「用户中心」`/m/account.user`，两者功能高度重叠，`AccountSettingsPage` 严格更丰富）；便签消失。
 
@@ -124,14 +124,14 @@ impl ModulePresentationSpec {
 }
 ```
 
-`ModulePresentationSchema` 增同名字段 `pub app_route: Option<String>`，随投影带出（`registry.rs:272` 处加一行 `app_route: module.app_route.clone()`）。
+`ModulePresentationSchema` 增同名字段 `pub app_route: Option<String>`。字段必须贯穿 `ModulePresentationSpec` → `compile_runtime_modules` → `RuntimeModule` → 请求级 `ModulePresentationSchema`：运行时字段和两个显式复制点均不可遗漏。
 
 **构建期校验**（与现有展示文本校验同处：`crates/yang-base/src/definition/builder/compile.rs:443` 的 `validate_presentation_text`，返回 `BuildError::InvalidReference`）：
 
 - 非空
 - 以 `/` 开头
 - 不以 `//` 开头（挡掉协议相对 URL）
-- 长度上限（防止异常长串进目录）
+- 长度不超过 512 个 Unicode 码点，不含 Unicode White_Space、Cc 控制字符与反斜杠（拒绝路径歧义与浏览器 URL 归一化绕过）；Rust 使用 is_whitespace/is_control，前端使用对应 Unicode 属性，不使用语义不同的 JavaScript \s。U+FEFF 不属于这两类，前后端均接受。
 
 实现上建议新增同族的 `validate_app_route`，而非扩展现有 `validate_presentation_text`——后者被 title / description 复用，签名（`kind, value, max_chars`）不含路径语义。
 
@@ -158,7 +158,7 @@ pub(crate) fn admin_identity() -> AccountIdentitySpec {
 | `src/addon/account/user/mod.rs:70` | identity 不变；加 `.app_route("/account")`；标题定为「账号设置」（与落地页一致，取代动态投影出的「用户中心」） |
 | `src/addon/access/grants/mod.rs:64` | identity 换 `admin_identity()`；加 `.app_route("/access/workspace")` |
 | `src/addon/feishu/datasource/mod.rs` | **新增** `.presentation(...)`：admin identity、`/feishu/datasources`、`primary_action(feishu.datasource.list_datasources)` |
-| `src/addon/feishu/approval/mod.rs` | **新增** `.presentation(...)`：admin identity、`/feishu/approval`、**不设 `primary_action`** |
+| `src/addon/feishu/approval/mod.rs` | 新增 presentation：admin identity、/feishu/approval、不设 primary_action，显式 present_action 两个读 Action |
 | `src/addon/feishu/option/mod.rs` | 不动（无 presentation，本就无导航入口） |
 | `src/addon/access/groups/mod.rs` | 不动（无 presentation；其 Action 仍是工作台的能力来源） |
 
@@ -166,21 +166,25 @@ pub(crate) fn admin_identity() -> AccountIdentitySpec {
 
 | 文件 | 改动 |
 |---|---|
-| `engine/contracts/ui-catalog.ts` | `modulePresentationSchema` 加 `app_route: z.string().startsWith("/").nullable().optional()`；SUPPORTED 加 `"2.4"` |
+| `engine/contracts/ui-catalog.ts` | app_route 允许 null/省略；非空值与后端一样：单 / 开头、最长 512、不含空白/控制字符/反斜杠；SUPPORTED 追加 2.4 |
 | `engine/catalog/module-pages.ts` | `ModulePageDefinition` 加 `link?: string`；`buildAccountModulePages` 映射 `link: module.app_route ?? undefined` |
-| `shell/AppLayout.tsx` | **净删除**：4 个 `canReadXxx` 布尔、4 个硬编码区块、随之失效的 imports。动态区唯一改动：`to={page.link ?? \`/m/${page.id}\`}` |
+| `shell/AppLayout.tsx` | **净删除**：4 个 `canReadXxx` 布尔、现有 3 个硬编码导航区块及其失效 imports；同时把 `AccountSwitcher` 的落点改为 `page.link ?? \`/m/${page.id}\``。动态侧边栏区也使用同一回退规则。 |
 | `shell/routes.tsx` | `/feishu/approval/configs` 与 `/requests` 合并为 `/feishu/approval`，旧两条保留为**重定向**（沿用 `access/groups` → 工作台的兼容先例） |
-| 新增 `features/feishu/views/ApprovalConsolePage.tsx` | tab 容器：读 `?tab=`，按权限决定可见 tab 与默认 tab；两个既有页面组件原样复用为 tab 内容 |
-| `features/registry.ts` | 移除 `DemoItemInsight` 的 custom view 注册 |
+| 新增 `features/feishu/views/ApprovalConsolePage.tsx` | tab 容器：读 `?tab=`，按权限决定可见 tab 与默认 tab；复用既有页面组件，记录页及 requests/tasks hooks 分别按自身 operation 门控，不依赖配置读取 operation |
+| `features/registry.ts` | 保留 `demo.items.insight` 与 `DemoItemInsight`，它服务 `examples/frontend_demo`，不是生产便签 |
 
-身份过滤仍由 `AppLayout.tsx:215-220` 完成，语义不变。
+身份过滤仍由 `AppLayout.tsx:215-220` 完成，语义不变；`identity` 只是功能域镜头，不参与授权。
+
+Catalog 更新时，AppLayout 复用 resolveIdentityLanding 校正已保存的功能域：仅剩一个域时自动选中，多个域且旧选择失效时清空选择；首页沿用选择页跳转规则。Cookie 恢复与运行期间权限撤销都必须覆盖，避免剩余可用模块被失效的 admin 镜头全部过滤。Dashboard 不再重复承担单域持久化。
+
+所有导航落点消费者（AppLayout、其中的 AccountSwitcher、SelectIdentityPage、DashboardPage）都必须使用 link，缺省回退 /m/{id}；显式 view 深链接保留。同步 engine 图标白名单与 shell ICONS 的 access、admin_panel_settings、database、send，未知 token 仍回退 extension。身份选择文案改为功能域，不暗示切换会授予权限。
 
 ### 7.4 删除项
 
 - `src/addon/demo/**` 整个目录
 - `src/addon/mod.rs` 的 `pub(crate) mod demo;`
 - `src/app.rs`：`demo::build_addon` 装配、`ActionLogMiddleware` 挂载、P7 冒烟测试
-- `frontend/src/features/demo/views/DemoItemInsight.tsx`
+- 保留 `frontend/src/features/demo/views/DemoItemInsight.tsx` 与静态注册；不清理历史便签表或授权事实。
 
 ## 8. 连带影响
 
@@ -195,14 +199,17 @@ pub(crate) fn admin_identity() -> AccountIdentitySpec {
 - `src/addon/access/domain/sensitive_permissions.rs:106` —— `"demo.notes.read"` 是 `#[cfg(test)]` 内的样本串，替换
 - `src/addon/access/domain/groups/resolution.rs:107/136/140` —— 三处样本串，替换
 - `src/app.rs` —— P7 冒烟测试删除
+- `tests/permission_groups_integration.rs` —— 普通权限样本使用 feishu.datasource.read；孤儿样本使用 legacy.notes.read；保留管理员等价测试语义。
 - `frontend/tests/shell/navigation.test.ts`、`tests/engine/catalog/module-pages.test.ts`
 - `frontend/tests/shell/routes.test.tsx` —— 逐条钉住 lazy 路由约定，合并 approval 路由必须同步
 - `frontend/tests/features/feishu/*` —— approval 页面路径变化
 
 建议新增守护测试（本次最该留下的东西）：
 
+控制台 Module 不声明 view；框架仍会为带表 Module 编译内部默认视图，但它们没有 data_action，不进入请求级 TableView。应用测试不得把“无可读取视图”错误断言成“无编译视图”。认证身份注入是框架内部 API，应用不为测试增加生产后门。
+
 - **后端**：每个注册了 presentation 的 Module 必须能落到某处（`app_route` 或 views），否则用户点进去是空页
-- **前端**：`侧边栏条目数 == catalog modules 数` —— 钉死「第二事实源不得复活」
+- **前端**：渲染真实 AppLayout，验证 Catalog 落点、当前功能域过滤、AccountSwitcher/身份选择/首页卡片的落点以及无硬编码条目；未认领 TableView 仍可合成工作台入口，因此不要求条目数恒等于 modules 数。
 - **后端**：`feishu.approval` 等控制台 Module 的 `app_route` 稳定（防止静默改路由）
 
 ### 8.3 文档
@@ -220,9 +227,9 @@ pub(crate) fn admin_identity() -> AccountIdentitySpec {
 ## 10. 验收标准
 
 1. `AppLayout` 里不再手写任何导航条目——侧边栏条目集合完全由 catalog 决定
-2. 全权限账号：4 个条目分两组（个人账户 1 / 系统管理 3），无重复、无便签
-3. 只有 `feishu.approval.list_requests` 的账号：看不到「飞书数据源」，看得到「审批派发」，进去只有「记录」tab
-4. 无 grants 权限的账号：系统管理组只剩飞书相关条目；个人账户组只剩账号设置
+2. 全权限账号 Catalog 有四个 Module；选择 user 域显示账号设置，选择 admin 域显示权限管理、飞书数据源、审批派发，无重复、无便签，不要求两域同时显示。
+3. 只有 `feishu.approval.read` 而没有 datasource read 的账号：可见审批派发，配置与记录两个 tab 均可用，不显示飞书数据源；本次不拆读权限。
+4. 无 `access.grants.read` 的普通用户没有权限工作台菜单；权限组 API 原有自服务能力不改变。
 5. `python scripts/run_ci.py quick` 绿；前端 `pnpm test` 与 `pnpm run check` 绿
 
 ## 11. 非目标

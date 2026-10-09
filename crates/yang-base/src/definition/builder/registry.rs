@@ -276,6 +276,7 @@ impl Registry {
                 description: module.description.clone(),
                 icon: module.icon.clone(),
                 order: module.order,
+                app_route: module.app_route.clone(),
                 primary_action,
                 actions: allowed_actions
                     .iter()
@@ -384,6 +385,7 @@ impl Registry {
 
 #[derive(Clone)]
 pub(super) struct RuntimeModule {
+    pub(super) app_route: Option<String>,
     pub(super) module_id: String,
     pub(super) identity: crate::definition::AccountIdentitySchema,
     pub(super) title: String,

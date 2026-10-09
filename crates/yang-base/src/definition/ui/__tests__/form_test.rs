@@ -17,7 +17,7 @@ use serde_json::json;
 #[test]
 fn form_field_validation_serializes_only_declared_constraints() {
     assert_eq!(
-        UI_SCHEMA_VERSION, "2.3",
+        UI_SCHEMA_VERSION, "2.4",
         "TreeViewSchema.max_nodes 进入线上契约，必须递增 schema 版本"
     );
 

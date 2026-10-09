@@ -54,6 +54,8 @@ pub struct ModulePresentationSpec {
     pub icon: String,
     /// 同一身份下的稳定顺序。
     pub order: i32,
+    /// 站内入口路由，缺省使用通用 Module 页面。
+    pub app_route: Option<String>,
     /// 可选页面主 Action。
     pub primary_action: Option<ActionRef>,
     /// 不属于 TableView 的页面级 Action 展示语义。
@@ -73,6 +75,7 @@ impl ModulePresentationSpec {
             description: String::new(),
             icon: icon.into(),
             order: 0,
+            app_route: None,
             primary_action: None,
             action_presentations: BTreeMap::new(),
         }
@@ -89,6 +92,13 @@ impl ModulePresentationSpec {
     #[must_use]
     pub fn order(mut self, order: i32) -> Self {
         self.order = order;
+        self
+    }
+
+    /// 设置站内入口路由。
+    #[must_use]
+    pub fn app_route(mut self, route: impl Into<String>) -> Self {
+        self.app_route = Some(route.into());
         self
     }
 
@@ -139,6 +149,8 @@ pub struct ModulePresentationSchema {
     pub icon: String,
     /// 同一身份下的稳定顺序。
     pub order: i32,
+    /// 站内入口路由，缺省使用通用 Module 页面。
+    pub app_route: Option<String>,
     /// 当前请求有权访问的页面主 Action。
     pub primary_action: Option<String>,
     /// 当前请求有权访问的页面级 Actions。
