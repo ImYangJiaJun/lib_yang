@@ -34,6 +34,84 @@ fn create_test_result() -> GenerationResult {
     }
 }
 
+#[test]
+fn imported_terrain_rejects_invalid_dimensions_and_coordinates() {
+    use crate::model::geometry::{GridPoint, GridSize, RoomBounds};
+    use crate::model::room::{Room, RoomType};
+    use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
+    let mut valid = create_test_result();
+    valid.rooms.push(Room {
+        id: "r".into(),
+        room_type: RoomType::Start,
+        depth_from_start: 0,
+        branch_id: None,
+        difficulty: 0,
+        theme_tags: vec![],
+        template_ref: None,
+        grammar_token: None,
+        bounds: Some(RoomBounds {
+            min: GridPoint::new(0, 0),
+            max: GridPoint::new(2, 2),
+        }),
+    });
+    valid.terrains.push(Terrain {
+        room_id: "r".into(),
+        grid_size: GridSize {
+            width: 2,
+            height: 2,
+        },
+        tiles: Grid2D::new(2, 2, TileKind::Floor).expect("网格"),
+        reserved_zones: vec![],
+        connectivity_summary: ConnectivitySummary {
+            all_doors_connected: true,
+            walkable_tile_count: 4,
+            total_tile_count: 4,
+            connected_region_count: 1,
+        },
+    });
+    let json = export_json(&valid).expect("JSON");
+    assert!(import_json(&json).is_ok());
+    assert!(
+        crate::export::import_binary(&crate::export::export_binary(&valid).expect("二进制"))
+            .is_ok()
+    );
+    assert!(crate::ue::adapter::export_named_channels(&valid).is_ok());
+    for case in 0..6 {
+        let mut bad = valid.clone();
+        match case {
+            0 => {
+                bad.terrains[0].grid_size = GridSize {
+                    width: 1_000_000,
+                    height: 1_000_000,
+                }
+            }
+            1 => bad.terrains[0].tiles.data.clear(),
+            2 => bad.terrains[0].tiles.width = u32::MAX,
+            3 => bad.terrains[0].tiles.height = 0,
+            4 => {
+                bad.rooms[0].bounds = Some(RoomBounds {
+                    min: GridPoint::new(i32::MAX, 0),
+                    max: GridPoint::new(i32::MIN, 2),
+                })
+            }
+            _ => bad.rooms.clear(),
+        }
+        assert!(
+            import_json(&export_json(&bad).expect("JSON")).is_err(),
+            "case {case}"
+        );
+        assert!(
+            crate::export::import_binary(&crate::export::export_binary(&bad).expect("二进制"))
+                .is_err(),
+            "case {case}"
+        );
+        assert!(
+            crate::ue::adapter::export_named_channels(&bad).is_err(),
+            "case {case}"
+        );
+    }
+}
+
 /// 创建不含 target_engine_version 的测试结果
 fn create_test_result_without_engine_version() -> GenerationResult {
     GenerationResult {
