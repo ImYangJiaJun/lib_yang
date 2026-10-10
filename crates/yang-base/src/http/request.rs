@@ -31,6 +31,7 @@ fn redact_url_for_log(url: &str) -> String {
     };
 
     parsed_url.set_query(None);
+    parsed_url.set_fragment(None);
     if !parsed_url.username().is_empty() {
         let _ = parsed_url.set_username("***");
     }
@@ -912,7 +913,10 @@ impl RequestBuilder {
                     method = %self.method,
                     url = %log_url,
                     elapsed_ms = elapsed_ms as u64,
-                    error = %e,
+                    timeout = e.is_timeout(),
+                    connect = e.is_connect(),
+                    builder = e.is_builder(),
+                    request = e.is_request(),
                     "HTTP 出站请求失败"
                 );
             }
@@ -927,6 +931,62 @@ impl RequestBuilder {
 mod retry_config_tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn failed_request_logs_do_not_expose_url_secrets() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use tracing::instrument::WithSubscriber;
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("日志锁").write(bytes)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let writer_buf = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || Writer(writer_buf.clone()))
+            .finish();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("本地端口");
+        let port = listener.local_addr().expect("地址").port();
+        drop(listener);
+        let result = RequestBuilder::new(
+            Client::builder().no_proxy().build().expect("客户端"), Method::GET,
+            format!("http://user-secret:password-secret@127.0.0.1:{port}/path?token=query-secret#fragment-secret"),
+            Duration::from_secs(2), 1024, None, None
+        ).query("extra", "builder-secret").send().with_subscriber(subscriber).await;
+        let Err(BaseError::HttpRequestFailed(error)) = result else {
+            panic!("应返回原始请求错误");
+        };
+        assert!(
+            error.is_connect() || error.is_builder() || error.is_request(),
+            "{error:?}"
+        );
+        assert!(error
+            .url()
+            .expect("原始 URL")
+            .query()
+            .expect("query")
+            .contains("builder-secret"));
+        let logs = String::from_utf8(buf.lock().expect("日志锁").clone()).expect("日志 UTF8");
+        assert!(logs.contains("HTTP 出站请求失败"));
+        for secret in [
+            "user-secret",
+            "password-secret",
+            "query-secret",
+            "fragment-secret",
+            "builder-secret",
+        ] {
+            assert!(!logs.contains(secret), "不得记录 {secret}: {logs}");
+        }
+    }
 
     #[test]
     fn test_redact_url_for_log_removes_query_and_userinfo() {

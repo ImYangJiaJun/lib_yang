@@ -226,6 +226,7 @@ pub fn import_binary(data: &[u8]) -> PcgResult<GenerationResult> {
     let result: GenerationResult = serde_json::from_slice(body)
         .map_err(|e| PcgError::export_err(format!("二进制反序列化失败: {}", e), "binary", e))?;
 
+    result.validate_terrain_data()?;
     Ok(result)
 }
 

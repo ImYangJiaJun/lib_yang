@@ -22,8 +22,8 @@ use yang_base_derive::Action;
 /// 的 `sub` 与待撤销 Token（`input.token`）的 `sub` 一致。不一致时返回
 /// [`BaseError::PermissionDenied`]，防止用户撤销他人的 Token。
 ///
-/// 若请求未携带 Bearer Token（匿名调用），则跳过所有权校验——此时无法确认调用者身份，
-/// 撤销操作仍允许执行（向后兼容）。
+/// 若请求未携带 Bearer Token，则待撤销 Token 本身必须尚未撤销；失效凭据不能
+/// 再次推进用户水位线、撤销后续新会话。
 #[derive(Action, Default)]
 #[action(
     name = "logout",
@@ -65,8 +65,7 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
         let manager = ctx.tools().token()?;
 
         let run = async {
-            // AUTH-4：解析待撤销 Token 的 claims（仅校验签名/过期，不查黑名单——
-            // 该 Token 本身就是要被撤销的目标，查黑名单无意义）
+            // 有效 Bearer 可授权同用户撤销；匿名调用须由目标凭据自身授权。
             let target_claims = manager.verify_token(&input.token)?;
 
             // 若请求携带 Bearer Token，校验其 sub 与待撤销 Token 的 sub 一致
@@ -80,6 +79,10 @@ impl<A: AuthAuditHook> TypedHandler for LogoutAction<A> {
                         "只能撤销自己的 Token".to_string(),
                     ));
                 }
+            } else {
+                manager
+                    .verify_token_checked(&input.token, target_claims.token_type)
+                    .await?;
             }
 
             // CONC-1：用 subject 水位线一次性原子撤销该用户所有 Token

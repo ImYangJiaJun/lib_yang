@@ -23,6 +23,120 @@ async fn redis_container() -> (testcontainers::ContainerAsync<GenericImage>, Red
     (container, cache)
 }
 
+#[tokio::test]
+#[ignore = "需要 Docker 启动 Redis 7"]
+async fn revoked_logout_target_cannot_revoke_new_sessions() {
+    use std::sync::Arc;
+    use yang_base::action::auth::{LogoutAction, LogoutInput};
+    use yang_base::action::{ActionContext, Request, TypedHandler};
+    use yang_base::token::TokenType;
+    let (_container, cache) = redis_container().await;
+    let manager = TokenManager::new_symmetric(
+        "logout_security_regression_test_key",
+        Algorithm::HS256,
+        "issuer".into(),
+        "audience".into(),
+        3600,
+        86400,
+    )
+    .expect("TokenManager");
+    let tools = Arc::new(
+        ToolsBuilder::new()
+            .cache(cache)
+            .token(manager)
+            .build()
+            .expect("资源"),
+    );
+    let manager = tools.token().expect("TokenManager");
+    let (old_access, old_refresh) = manager
+        .generate_token_pair("user", json!({}))
+        .expect("旧会话");
+    manager
+        .revoke_token(&old_access)
+        .await
+        .expect("撤销旧 Access");
+    manager
+        .revoke_token(&old_refresh)
+        .await
+        .expect("撤销旧 Refresh");
+    let (access, refresh) = manager
+        .generate_token_pair("user", json!({}))
+        .expect("新会话");
+    let before = manager.subject_min_iat("user").await.expect("水位线");
+    for token in [&old_access, &old_refresh] {
+        let ctx = ActionContext::new(Request::new(json!({})), tools.clone());
+        assert!(LogoutAction::new()
+            .handle(
+                ctx,
+                LogoutInput {
+                    token: token.clone()
+                }
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            manager.subject_min_iat("user").await.expect("水位线"),
+            before
+        );
+        manager
+            .verify_token_checked(&access, TokenType::Access)
+            .await
+            .expect("新 Access 保持有效");
+        manager
+            .verify_token_checked(&refresh, TokenType::Refresh)
+            .await
+            .expect("新 Refresh 保持有效");
+    }
+    let stranger = manager
+        .generate_access_token("stranger", json!({}))
+        .expect("他人");
+    let ctx = ActionContext::new(
+        Request::new(json!({})).header("authorization", format!("Bearer {stranger}")),
+        tools.clone(),
+    );
+    assert!(matches!(
+        LogoutAction::new()
+            .handle(
+                ctx,
+                LogoutInput {
+                    token: access.clone()
+                }
+            )
+            .await,
+        Err(BaseError::PermissionDenied(_))
+    ));
+    let ctx = ActionContext::new(
+        Request::new(json!({})).header("authorization", format!("Bearer {access}")),
+        tools.clone(),
+    );
+    LogoutAction::new()
+        .handle(ctx, LogoutInput { token: old_access })
+        .await
+        .expect("有效同用户 Bearer 可以授权");
+    assert!(manager
+        .verify_token_checked(&access, TokenType::Access)
+        .await
+        .is_err());
+    let token = manager
+        .generate_access_token("anonymous-control", json!({}))
+        .expect("匿名正常输入");
+    let ctx = ActionContext::new(Request::new(json!({})), tools.clone());
+    LogoutAction::new()
+        .handle(
+            ctx,
+            LogoutInput {
+                token: token.clone(),
+            },
+        )
+        .await
+        .expect("合法匿名登出");
+    assert!(manager
+        .verify_token_checked(&token, TokenType::Access)
+        .await
+        .is_err());
+    tools.close().await;
+}
+
 async fn assert_public_paths_fail_closed(
     tools: &Tools,
     subject: &str,

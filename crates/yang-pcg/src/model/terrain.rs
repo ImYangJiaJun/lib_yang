@@ -61,25 +61,22 @@ pub struct Grid2D<T> {
 impl<T: Clone> Grid2D<T> {
     /// 创建新网格
     pub fn new(width: u32, height: u32, default_value: T) -> PcgResult<Self> {
-        if width == 0 || height == 0 {
-            return Err(PcgError::terrain("Grid2D 宽度和高度必须大于 0"));
-        }
-
-        let size = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or_else(|| PcgError::terrain("Grid2D 尺寸乘法溢出"))?;
-        if size > MAX_GRID_CELLS {
-            return Err(PcgError::terrain(format!(
-                "Grid2D 尺寸过大: {}x{} = {}，最大允许 {}",
-                width, height, size, MAX_GRID_CELLS
-            )));
-        }
+        let size = checked_grid_cells(width, height)?;
 
         Ok(Self {
             width,
             height,
             data: vec![default_value; size],
         })
+    }
+
+    /// 校验公开字段或反序列化得到的网格，避免绕过构造器约束。
+    pub fn validate(&self) -> PcgResult<()> {
+        let size = checked_grid_cells(self.width, self.height)?;
+        if self.data.len() != size {
+            return Err(PcgError::terrain("Grid2D 数据长度与尺寸不一致"));
+        }
+        Ok(())
     }
 
     /// 获取指定位置的瓦片
@@ -121,6 +118,24 @@ impl<T: Clone> Grid2D<T> {
             false
         }
     }
+}
+
+fn checked_grid_cells(width: u32, height: u32) -> PcgResult<usize> {
+    if width == 0 || height == 0 {
+        return Err(PcgError::terrain("Grid2D 宽度和高度必须大于 0"));
+    }
+
+    let size = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| PcgError::terrain("Grid2D 尺寸乘法溢出"))?;
+    if size > MAX_GRID_CELLS {
+        return Err(PcgError::terrain(format!(
+            "Grid2D 尺寸过大: {}x{} = {}，最大允许 {}",
+            width, height, size, MAX_GRID_CELLS
+        )));
+    }
+
+    Ok(size)
 }
 
 #[cfg(test)]

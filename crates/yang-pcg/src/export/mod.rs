@@ -166,6 +166,7 @@ pub fn import_json(json: &str) -> PcgResult<(GenerationResult, Vec<String>)> {
         }
     }
 
+    result.validate_terrain_data()?;
     Ok((result, warnings))
 }
 

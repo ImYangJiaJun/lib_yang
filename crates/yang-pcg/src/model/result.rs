@@ -55,6 +55,43 @@ pub struct GenerationResult {
 }
 
 impl GenerationResult {
+    /// 在导入和 UE 导出边界检查地形预算、冗余尺寸及坐标映射。
+    pub(crate) fn validate_terrain_data(&self) -> crate::error::PcgResult<()> {
+        use crate::error::PcgError;
+        use std::collections::HashMap;
+
+        let rooms: HashMap<_, _> = self
+            .rooms
+            .iter()
+            .map(|room| (room.id.as_str(), room))
+            .collect();
+        let mut total_cells = 0u64;
+        for terrain in &self.terrains {
+            terrain.tiles.validate()?;
+            if terrain.grid_size.width != terrain.tiles.width
+                || terrain.grid_size.height != terrain.tiles.height
+            {
+                return Err(PcgError::terrain("地形尺寸与瓦片网格不一致"));
+            }
+            total_cells += terrain.tiles.data.len() as u64;
+            if total_cells > 64_000_000 {
+                return Err(PcgError::terrain("地形总格子数超出生成预算"));
+            }
+            let bounds = rooms
+                .get(terrain.room_id.as_str())
+                .and_then(|room| room.bounds)
+                .ok_or_else(|| PcgError::terrain("地形缺少对应的已布局房间"))?;
+            // 使用有符号宽算术，拒绝反向边界及会使 min + 瓦片坐标溢出的映射。
+            if i64::from(bounds.max.x) - i64::from(bounds.min.x) != i64::from(terrain.tiles.width)
+                || i64::from(bounds.max.y) - i64::from(bounds.min.y)
+                    != i64::from(terrain.tiles.height)
+            {
+                return Err(PcgError::terrain("房间边界与地形尺寸不一致"));
+            }
+        }
+        Ok(())
+    }
+
     /// 按 ID 查找房间
     ///
     /// 在 `rooms`（布局后的完整房间列表）中按 ID 线性查找。

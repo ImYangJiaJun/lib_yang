@@ -16,6 +16,7 @@ use super::points::{PcgPoint, PropertyValue};
 /// 当 `ResultMetadata.trace_id` 存在时，会将其写入每个通道的元数据中，
 /// 以便下游系统通过 `trace_id` 串联日志与导出结果。
 pub fn export_named_channels(result: &GenerationResult) -> PcgResult<Vec<NamedChannel>> {
+    result.validate_terrain_data()?;
     let mut channels = vec![
         export_room_channel(result),
         export_door_channel(result),
