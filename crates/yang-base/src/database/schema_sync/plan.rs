@@ -342,14 +342,24 @@ pub(crate) fn plan_table_sync(
             kind: SchemaSyncChangeKind::AddedIndex,
         });
         if desired.unique {
-            preflight.push(SchemaPreflightCheck::UniqueIndex {
-                object: desired.name,
-                columns: desired
-                    .columns
-                    .into_iter()
-                    .map(|column| existing_column_name(&column, &renamed_columns))
-                    .collect(),
-            });
+            // 新加的列还没有任何数据，不可能有重复值——跳过 preflight 检查，
+            // 否则 preflight SQL 会引用尚未添加的列，导致 "Unknown column" 报错。
+            let added_columns: std::collections::BTreeSet<&str> = changes
+                .iter()
+                .filter(|change| change.kind == SchemaSyncChangeKind::AddedColumn)
+                .map(|change| change.object.as_str())
+                .collect();
+            let all_new = desired.columns.iter().all(|column| added_columns.contains(column.as_str()));
+            if !all_new {
+                preflight.push(SchemaPreflightCheck::UniqueIndex {
+                    object: desired.name,
+                    columns: desired
+                        .columns
+                        .into_iter()
+                        .map(|column| existing_column_name(&column, &renamed_columns))
+                        .collect(),
+                });
+            }
         }
     }
 

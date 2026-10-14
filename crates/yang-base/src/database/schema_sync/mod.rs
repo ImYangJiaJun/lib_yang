@@ -16,7 +16,7 @@ mod sync;
 mod __tests__;
 
 #[cfg(test)]
-pub(super) use model::{ExistingIndex, ExistingTableSchema};
+pub(super) use model::{ExistingIndex, ExistingTableSchema, SchemaPreflightCheck, TableSyncPlan};
 #[cfg(test)]
 pub(super) use plan::plan_table_sync;
 
