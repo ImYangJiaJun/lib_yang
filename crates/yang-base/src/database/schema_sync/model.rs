@@ -74,7 +74,7 @@ impl ExistingTableSchema {
         }
     }
 
-    pub(super) fn with_rows(mut self, has_rows: bool) -> Self {
+    pub(crate) fn with_rows(mut self, has_rows: bool) -> Self {
         self.has_rows = has_rows;
         self
     }
@@ -94,11 +94,11 @@ impl ExistingTableSchema {
 pub(crate) struct TableSyncPlan {
     pub(crate) statements: Vec<String>,
     pub(crate) changes: Vec<SchemaSyncChange>,
-    pub(super) preflight: Vec<SchemaPreflightCheck>,
+    pub(crate) preflight: Vec<SchemaPreflightCheck>,
 }
 
 #[derive(Debug)]
-pub(super) enum SchemaPreflightCheck {
+pub(crate) enum SchemaPreflightCheck {
     ColumnPredicate {
         object: String,
         predicate: String,

@@ -1,4 +1,6 @@
-use super::super::schema_sync::{plan_table_sync, ExistingIndex, ExistingTableSchema};
+use super::super::schema_sync::{
+    plan_table_sync, ExistingIndex, ExistingTableSchema, SchemaPreflightCheck, TableSyncPlan,
+};
 use super::super::{DatabaseInitializer, SchemaSyncChangeKind, SchemaSyncReport};
 use crate::definition::{
     AddonName, AddonSpec, AppBuilder, FieldKind, FieldName, FieldSpec, ModuleName, ModuleSpec,
@@ -399,4 +401,99 @@ fn evolution_declarations_reject_ambiguous_legacy_column_sources() {
         Err(BaseError::ConfigError(message))
             if message.contains("username") && message.contains("重复")
     ));
+}
+
+#[test]
+fn new_unique_column_skips_unique_index_preflight() {
+    // 回归测试：在已有数据的表上新增 unique nullable 列时，unique 索引的 preflight
+    // 检查会引用尚未添加的列，导致 "Unknown column" 报错。新列没有任何数据，不可能
+    // 有重复值，应跳过 preflight。
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None)
+                .with_auto_increment(true),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_rows(true);
+
+    let table = Table::new("posts")
+        .fields([
+            Field::id("id"),
+            Field::string("slug", 64).unique(), // 新增 unique nullable 列
+        ])
+        .build()
+        .expect("表定义应有效");
+
+    let plan = plan_table_sync(&table, &existing).expect("增量计划应成功");
+
+    // 计划应包含 ADD COLUMN 和 ADD UNIQUE INDEX
+    assert!(
+        plan.changes
+            .iter()
+            .any(|c| c.kind == SchemaSyncChangeKind::AddedColumn && c.object == "slug"),
+        "应包含新增 slug 列"
+    );
+    assert!(
+        plan.changes
+            .iter()
+            .any(|c| c.kind == SchemaSyncChangeKind::AddedIndex),
+        "应包含新增唯一索引"
+    );
+
+    // 关键断言：preflight 不应包含 UniqueIndex 检查（新列无数据，无需查重）
+    let has_unique_preflight = plan.preflight.iter().any(|check| {
+        matches!(check, SchemaPreflightCheck::UniqueIndex { .. })
+    });
+    assert!(
+        !has_unique_preflight,
+        "新列的唯一索引不应生成 preflight 检查（列尚未存在，SQL 会报 Unknown column）"
+    );
+}
+
+#[test]
+fn existing_column_unique_index_keeps_preflight() {
+    // 对照测试：在已有列上加 unique 索引时，preflight 检查必须保留（旧数据可能有重复）。
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None)
+                .with_auto_increment(true),
+            SchemaColumn::new("slug", "varchar", "varchar(64)", false, Some(64), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(), // 没有索引
+    )
+    .with_rows(true);
+
+    let table = Table::new("posts")
+        .fields([
+            Field::id("id"),
+            Field::string("slug", 64).unique(), // 对已有列加 unique
+        ])
+        .build()
+        .expect("表定义应有效");
+
+    let plan = plan_table_sync(&table, &existing).expect("增量计划应成功");
+
+    // 计划应包含 ADD UNIQUE INDEX（列已存在，只加索引）
+    assert!(
+        plan.changes
+            .iter()
+            .any(|c| c.kind == SchemaSyncChangeKind::AddedIndex),
+        "应包含新增唯一索引"
+    );
+    assert!(
+        !plan.changes.iter().any(|c| c.kind == SchemaSyncChangeKind::AddedColumn),
+        "不应新增列（slug 已存在）"
+    );
+
+    // 关键断言：preflight 应包含 UniqueIndex 检查（旧数据可能有重复）
+    let has_unique_preflight = plan.preflight.iter().any(|check| {
+        matches!(check, SchemaPreflightCheck::UniqueIndex { .. })
+    });
+    assert!(
+        has_unique_preflight,
+        "已有列的唯一索引必须保留 preflight 检查（旧数据可能有重复）"
+    );
 }
