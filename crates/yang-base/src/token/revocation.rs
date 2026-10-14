@@ -206,6 +206,23 @@ impl TokenManager {
     /// 水位线 TTL 取 Access / Refresh 有效期的较大值（`TokenManager::revocation_watermark_ttl`），
     /// 确保覆盖撤销前签发的最长寿命 Token，避免 key 过早过期导致已撤销会话「复活」。
     ///
+    /// # 调用约束（架构门禁）
+    ///
+    /// 本方法设置 subject 水位线，立即杀死该用户全部已签发 Token（含 Access 与
+    /// Refresh），代价是该用户所有设备同时失效。**禁止在批量撤销路径中使用**——
+    /// 批量操作必须走 Outbox + 版本传播，参考 `batch_revoke_permissions.rs` 头部注释。
+    ///
+    /// yang-system 生产代码中仅允许以下两处调用（由 `scripts/check_architecture.py`
+    /// 的 `check_revoke_by_subject_placement` 门禁机械强制执行）：
+    ///
+    /// 1. `src/addon/access/grants/actions/revoke_permission.rs` — 单条撤销路径，
+    ///    事务提交后即时收敛 Redis；
+    /// 2. `src/addon/account/domain/context.rs` — `converge_revocation` 集中封装，
+    ///    供 logout / disable_self / change_password 等账号安全事件共享。
+    ///
+    /// 新增调用点前请先确认语义等价于「让该用户全部会话立即失效」，而非仅仅
+    /// 「撤销某条授权记录」；后者应走 Outbox 异步传播。
+    ///
     /// # 参数
     ///
     /// - `sub`: 用户主题标识（即 Token 的 `sub`）
