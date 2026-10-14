@@ -349,7 +349,10 @@ pub(crate) fn plan_table_sync(
                 .filter(|change| change.kind == SchemaSyncChangeKind::AddedColumn)
                 .map(|change| change.object.as_str())
                 .collect();
-            let all_new = desired.columns.iter().all(|column| added_columns.contains(column.as_str()));
+            let all_new = desired
+                .columns
+                .iter()
+                .all(|column| added_columns.contains(column.as_str()));
             if !all_new {
                 preflight.push(SchemaPreflightCheck::UniqueIndex {
                     object: desired.name,
