@@ -443,9 +443,10 @@ fn new_unique_column_skips_unique_index_preflight() {
     );
 
     // 关键断言：preflight 不应包含 UniqueIndex 检查（新列无数据，无需查重）
-    let has_unique_preflight = plan.preflight.iter().any(|check| {
-        matches!(check, SchemaPreflightCheck::UniqueIndex { .. })
-    });
+    let has_unique_preflight = plan
+        .preflight
+        .iter()
+        .any(|check| matches!(check, SchemaPreflightCheck::UniqueIndex { .. }));
     assert!(
         !has_unique_preflight,
         "新列的唯一索引不应生成 preflight 检查（列尚未存在，SQL 会报 Unknown column）"
@@ -484,14 +485,18 @@ fn existing_column_unique_index_keeps_preflight() {
         "应包含新增唯一索引"
     );
     assert!(
-        !plan.changes.iter().any(|c| c.kind == SchemaSyncChangeKind::AddedColumn),
+        !plan
+            .changes
+            .iter()
+            .any(|c| c.kind == SchemaSyncChangeKind::AddedColumn),
         "不应新增列（slug 已存在）"
     );
 
     // 关键断言：preflight 应包含 UniqueIndex 检查（旧数据可能有重复）
-    let has_unique_preflight = plan.preflight.iter().any(|check| {
-        matches!(check, SchemaPreflightCheck::UniqueIndex { .. })
-    });
+    let has_unique_preflight = plan
+        .preflight
+        .iter()
+        .any(|check| matches!(check, SchemaPreflightCheck::UniqueIndex { .. }));
     assert!(
         has_unique_preflight,
         "已有列的唯一索引必须保留 preflight 检查（旧数据可能有重复）"
