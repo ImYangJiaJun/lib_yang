@@ -29,6 +29,13 @@ target
 **/.env
 project/yang-system/config.toml
 project/yang-system/config.local.toml
+# 生产/财务配置与部署口令（deploy/ 下这些文件含明文凭据，绝不能进镜像上下文）
+project/yang-system/deploy/config.cloud*.toml
+project/yang-system/deploy/config.cloud*.toml.*
+project/yang-system/deploy/*.ssh-password*
+project/yang-system/deploy/.ssh-password*
+project/yang-system/deploy/*.mysql-root-password*
+project/yang-system/deploy/.mysql-root-password*
 
 # 压缩包与杂项
 *.7z
