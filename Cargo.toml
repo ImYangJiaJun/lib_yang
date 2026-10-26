@@ -117,7 +117,7 @@ axum = { version = "0.8.9", features = ["multipart"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors", "timeout", "compression-br", "compression-deflate", "compression-gzip"] }
 
 # tower Service 工具（测试 oneshot）
-tower = { version = "0.5", features = ["util", "limit"] }
+tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
 
 # 请求体上限错误识别（可选；yang-base transport-axum feature 使用）。
 # 版本必须与 axum 0.8.9 依赖的 http-body-util 统一到 Cargo.lock 已锁定的 0.1.3，
