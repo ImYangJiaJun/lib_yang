@@ -1,5 +1,5 @@
 use super::super::schema_sync::{
-    plan_table_sync, ExistingIndex, ExistingTableSchema, SchemaPreflightCheck, TableSyncPlan,
+    plan_table_sync, ExistingIndex, ExistingTableSchema, SchemaPreflightCheck,
 };
 use super::super::{DatabaseInitializer, SchemaSyncChangeKind, SchemaSyncReport};
 use crate::definition::{
