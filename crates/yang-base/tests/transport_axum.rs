@@ -24,8 +24,8 @@ use yang_base::action::{
     UploadedFile,
 };
 use yang_base::definition::{
-    AddonName, AddonSpec, AppBuilder, BuiltApp, ModuleName, ModuleSpec, ParamInput, Params,
-    UI_SCHEMA_VERSION,
+    AddonName, AddonSpec, AppBuilder, BuiltApp, HttpMethod, ModuleName, ModuleSpec, MultipartSpec,
+    ParamInput, Params, UI_SCHEMA_VERSION,
 };
 use yang_base::tools::ToolsBuilder;
 use yang_base::transport::axum::{router, AxumTransportConfig, CorsConfig};
@@ -1092,6 +1092,148 @@ async fn oversized_body_returns_413() {
     assert_eq!(json["code"], 700005);
 }
 
+#[tokio::test]
+async fn inbound_json_limit_is_independent_and_counts_streamed_bytes() {
+    let limit = 16 * 1024 * 1024;
+    let router = router(
+        build_app(),
+        AxumTransportConfig {
+            max_body_bytes: 17 * 1024 * 1024,
+            max_json_body_bytes: Some(limit),
+            ..AxumTransportConfig::default()
+        },
+    )
+    .expect("分层限额应构建");
+    // 不发送 Content-Length；合法 JSON 加空白恰好达到原有 16 MiB 上限。
+    let mut body = br#"{"value":1}"#.to_vec();
+    body.resize(limit, b' ');
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/api/test/echo")
+        .body(streamed_inbound_body(&body))
+        .expect("无长度请求");
+    assert_eq!(
+        oneshot(router.clone(), request).await.status(),
+        StatusCode::CREATED
+    );
+    body.push(b' ');
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/api/test/echo")
+        .body(streamed_inbound_body(&body))
+        .expect("超限请求");
+    let response = oneshot(router, request).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_error_envelope(response, None).await;
+}
+
+#[tokio::test]
+async fn inbound_multipart_exact_file_and_total_limits_include_framing() {
+    let module = ModuleSpec::new(ModuleName::new("upload.boundary").expect("模块名"))
+        .action_fn(
+            yang_base::action_name!("receive"),
+            |_, input: UploadInput| async move {
+                Ok::<_, BaseError>(ApiResponse::success_value(
+                    serde_json::json!({"size": input.file.size()}),
+                    "已接收",
+                ))
+            },
+        )
+        .route(HttpMethod::Post, "/api/upload/boundary")
+        .public()
+        .multipart(
+            MultipartSpec::new(["text/plain"])
+                .max_files(1)
+                .max_file_bytes(16 * 1024 * 1024)
+                .max_text_field_bytes(1024 * 1024)
+                .max_total_bytes(17 * 1024 * 1024),
+        )
+        .register();
+    let app = Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("upload").expect("Addon名")).module(module))
+            .build(Arc::new(ToolsBuilder::new().build().expect("Tools")))
+            .expect("App"),
+    );
+    let router = router(
+        app,
+        AxumTransportConfig {
+            max_body_bytes: 17 * 1024 * 1024,
+            max_json_body_bytes: Some(16 * 1024 * 1024),
+            ..AxumTransportConfig::default()
+        },
+    )
+    .expect("Router");
+    let boundary = "boundary";
+    let file = vec![b'x'; 16 * 1024 * 1024];
+    let minimal = multipart_payload(
+        boundary,
+        &[("title", "")],
+        &[("file", "large.txt", "text/plain", &file)],
+    );
+    let padding = " ".repeat(17 * 1024 * 1024 - minimal.len());
+    let exact = multipart_payload(
+        boundary,
+        &[("title", &padding)],
+        &[("file", "large.txt", "text/plain", &file)],
+    );
+    assert_eq!(exact.len(), 17 * 1024 * 1024);
+    for content_length in [false, true] {
+        for (body, expected) in [
+            (minimal.clone(), StatusCode::OK),
+            (exact.clone(), StatusCode::OK),
+            (
+                multipart_payload(
+                    boundary,
+                    &[("title", &(padding.clone() + " "))],
+                    &[("file", "large.txt", "text/plain", &file)],
+                ),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                multipart_payload(
+                    boundary,
+                    &[("title", "")],
+                    &[(
+                        "file",
+                        "large.txt",
+                        "text/plain",
+                        &vec![b'x'; 16 * 1024 * 1024 + 1],
+                    )],
+                ),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let length = body.len();
+            let mut request = multipart_request_to("/api/upload/boundary", boundary, body);
+            if content_length {
+                request
+                    .headers_mut()
+                    .insert("content-length", length.to_string().parse().expect("长度"));
+            } else {
+                let bytes = to_bytes(
+                    std::mem::replace(request.body_mut(), Body::empty()),
+                    usize::MAX,
+                )
+                .await
+                .expect("测试体");
+                *request.body_mut() = streamed_inbound_body(&bytes);
+            }
+            let response = oneshot(router.clone(), request).await;
+            assert_eq!(
+                response.status(),
+                expected,
+                "body={length}, Content-Length={content_length}"
+            );
+            if expected == StatusCode::OK {
+                assert_eq!(body_json(response).await["data"]["size"], 16 * 1024 * 1024);
+            } else {
+                assert_error_envelope(response, None).await;
+            }
+        }
+    }
+}
+
 /// 读体失败（底层流错误，非长度超限）必须报 400，不得冒充 413。
 ///
 /// 回归守卫：413 只能由 `http_body_util::LengthLimitError` 触发，其余 body 流错误
@@ -1729,6 +1871,208 @@ async fn timeout_layer_returns_408_for_slow_action() {
     .expect("Router 应构建成功");
     let response = oneshot(router, json_request("GET", "/api/test/slow", "")).await;
     assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    assert_error_envelope(response, None).await;
+}
+
+async fn assert_error_envelope(response: Response, request_id: Option<&str>) {
+    let id = response
+        .headers()
+        .get("x-request-id")
+        .expect("所有入站出口应有 request ID");
+    assert_eq!(id.as_bytes().len(), 32);
+    if let Some(expected) = request_id {
+        assert_eq!(id, expected);
+    }
+    assert_eq!(response.headers()["content-type"], "application/json");
+    let body = body_json(response).await;
+    assert!(body["code"].as_i64().is_some_and(|code| code != 0));
+    assert!(body["message"]
+        .as_str()
+        .is_some_and(|message| !message.is_empty()));
+    assert!(!body.to_string().contains("secret-in-uri"));
+}
+
+#[tokio::test]
+async fn inbound_fallbacks_keep_allow_request_id_and_strict_envelope() {
+    for (method, path, status) in [
+        (
+            "GET",
+            "/secret-in-uri?token=secret-in-uri",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "PATCH",
+            "/api/test/echo?token=secret-in-uri",
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+    ] {
+        let mut request = json_request(method, path, "");
+        request.headers_mut().insert(
+            "x-request-id",
+            "00112233445566778899aabbccddeeff".parse().expect("合法 ID"),
+        );
+        let response = oneshot(default_router(), request).await;
+        assert_eq!(response.status(), status);
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            assert_eq!(response.headers()["allow"], "POST");
+        }
+        assert_error_envelope(response, Some("00112233445566778899aabbccddeeff")).await;
+    }
+}
+
+#[test]
+fn inbound_invalid_body_limit_relationships_fail_at_construction() {
+    for (total, json) in [(0, None), (16, Some(0)), (16, Some(17))] {
+        assert!(router(
+            build_app(),
+            AxumTransportConfig {
+                max_body_bytes: total,
+                max_json_body_bytes: json,
+                ..AxumTransportConfig::default()
+            }
+        )
+        .is_err());
+    }
+    assert!(
+        router(
+            build_app(),
+            AxumTransportConfig {
+                max_body_bytes: 16,
+                ..AxumTransportConfig::default()
+            }
+        )
+        .is_ok(),
+        "未配置 JSON 独立限制时沿用旧合同"
+    );
+}
+
+#[tokio::test]
+async fn inbound_business_error_statuses_are_not_rewritten() {
+    let module = ModuleSpec::new(ModuleName::new("test.status").expect("模块"))
+        .action_fn(
+            yang_base::action_name!("status"),
+            |_, input: EchoInput| async move {
+                ApiResponse::fail(123456, "业务自定义状态")
+                    .with_http_status(input.value.as_u64().expect("状态码") as u16)?
+                    .with_header("allow", "CUSTOM")
+            },
+        )
+        .route(HttpMethod::Post, "/api/test/status")
+        .public()
+        .register();
+    let app = Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("test").expect("Addon")).module(module))
+            .build(Arc::new(ToolsBuilder::new().build().expect("Tools")))
+            .expect("App"),
+    );
+    let router = router(app, AxumTransportConfig::default()).expect("Router");
+    for status in [404, 405, 408, 413, 503] {
+        let response = oneshot(
+            router.clone(),
+            json_request(
+                "POST",
+                "/api/test/status",
+                &format!(r#"{{"value":{status}}}"#),
+            ),
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(response.headers()["allow"], "CUSTOM");
+        let body = body_json(response).await;
+        assert_eq!(body["code"], 123456);
+        assert_eq!(body["message"], "业务自定义状态");
+    }
+}
+
+struct PendingInboundBody(Arc<tokio::sync::Notify>);
+
+struct StreamedInboundBody(std::vec::IntoIter<axum::body::Bytes>);
+
+fn streamed_inbound_body(bytes: &[u8]) -> Body {
+    Body::new(StreamedInboundBody(
+        bytes
+            .chunks(64 * 1024)
+            .map(axum::body::Bytes::copy_from_slice)
+            .collect::<Vec<_>>()
+            .into_iter(),
+    ))
+}
+
+impl axum::body::HttpBody for StreamedInboundBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::BoxError;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::task::Poll::Ready(self.0.next().map(|bytes| Ok(http_body::Frame::data(bytes))))
+    }
+}
+
+impl axum::body::HttpBody for PendingInboundBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::BoxError;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        self.0.notify_one();
+        std::task::Poll::Pending
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn inbound_global_limit_sheds_other_paths_methods_and_fallbacks_before_body_read() {
+    let router = router(
+        build_app(),
+        AxumTransportConfig {
+            max_concurrency: Some(1),
+            request_timeout: Some(Duration::from_secs(1)),
+            ..AxumTransportConfig::default()
+        },
+    )
+    .expect("Router 构建");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/api/test/echo")
+        .body(Body::new(PendingInboundBody(entered.clone())))
+        .expect("请求构建");
+    let first = tokio::spawn(oneshot(router.clone(), request));
+    entered.notified().await;
+    for (method, path) in [
+        ("POST", "/api/test/echo"),
+        ("GET", "/api/test/echo"),
+        ("GET", "/api/test/slow"),
+        ("GET", "/health/live"),
+        ("GET", "/missing"),
+    ] {
+        let response = tokio::time::timeout(
+            Duration::from_millis(10),
+            oneshot(router.clone(), json_request(method, path, "{}")),
+        )
+        .await
+        .expect("过载应立即卸载，不进入等待队列");
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path}"
+        );
+        assert_error_envelope(response, None).await;
+    }
+    let timed_out = first.await.expect("首请求结束");
+    assert_eq!(timed_out.status(), StatusCode::REQUEST_TIMEOUT);
+    assert_error_envelope(timed_out, None).await;
+    assert_eq!(
+        oneshot(router, json_request("GET", "/health/live", ""))
+            .await
+            .status(),
+        StatusCode::OK,
+        "超时必须释放全局 permit"
+    );
 }
 
 #[tokio::test]

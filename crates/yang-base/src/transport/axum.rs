@@ -30,26 +30,30 @@ use crate::definition::{
 };
 use crate::error::{BaseError, ErrorCategory};
 use axum::body::{to_bytes, Body};
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::{
-    ConnectInfo, DefaultBodyLimit, FromRequest, Multipart, Path, Request as AxumRequest, State,
+    ConnectInfo, DefaultBodyLimit, FromRequest, MatchedPath, Multipart, Path,
+    Request as AxumRequest, State,
 };
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{on, MethodFilter};
-use axum::{Json, Router};
+use axum::{BoxError, Json, Router};
 use serde_json::json;
 use serde_json::{map::Entry, Map, Value};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
-use tower::limit::ConcurrencyLimitLayer;
+use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::load_shed::LoadShedLayer;
+use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tracing::Instrument;
 
 /// 默认请求体上限：2 MiB。
 const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
@@ -104,13 +108,15 @@ impl Default for CorsConfig {
 pub struct AxumTransportConfig {
     /// 请求体字节上限；超过返回 413。默认 2 MiB。
     pub max_body_bytes: usize,
+    /// JSON 请求体独立上限；`None` 沿用 `max_body_bytes`，不得大于总量上限。
+    pub max_json_body_bytes: Option<usize>,
     /// CORS 配置；默认不启用 CORS 层。
     pub cors: CorsConfig,
     /// 单请求总超时；`None`（默认）关闭超时层。
     pub request_timeout: Option<Duration>,
     /// 同时进入应用的最大请求数；`None`（默认）不额外限制。
     ///
-    /// 超出部分在 Tower 层等待，并由 `request_timeout` 限制最长等待时间。
+    /// 所有路径、方法和 Router 克隆共享容量，超出立即返回 503，不排队。
     pub max_concurrency: Option<usize>,
     /// 是否按 `Accept-Encoding` 协商压缩响应。默认开启。
     pub compression: bool,
@@ -122,6 +128,7 @@ impl Default for AxumTransportConfig {
     fn default() -> Self {
         Self {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_json_body_bytes: None,
             cors: CorsConfig::default(),
             request_timeout: None,
             max_concurrency: None,
@@ -138,6 +145,7 @@ struct HttpState {
     /// 实际监听地址（`serve` 填入；`router` 单独构建时为 None）。
     local_addr: Option<SocketAddr>,
     max_body_bytes: usize,
+    max_json_body_bytes: usize,
     max_attachment_bytes: Option<u64>,
 }
 
@@ -200,6 +208,19 @@ where
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| BaseError::ConfigError(format!("绑定 HTTP 地址失败 {bind}: {error}")))?;
+    serve_listener_with_shutdown(listener, app, config, shutdown).await
+}
+
+/// 服务调用方已经绑定的监听器，允许上层在确认端口占用成功后再开放 readiness。
+pub async fn serve_listener_with_shutdown<S>(
+    listener: tokio::net::TcpListener,
+    app: Arc<BuiltApp>,
+    config: AxumTransportConfig,
+    shutdown: S,
+) -> Result<(), BaseError>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let local_addr = listener
         .local_addr()
         .map_err(|error| BaseError::ConfigError(format!("读取 HTTP 监听地址失败: {error}")))?;
@@ -219,10 +240,20 @@ fn router_with_addr(
     config: AxumTransportConfig,
     local_addr: Option<SocketAddr>,
 ) -> Result<Router, BaseError> {
+    let max_json_body_bytes = config.max_json_body_bytes.unwrap_or(config.max_body_bytes);
+    if config.max_body_bytes == 0
+        || max_json_body_bytes == 0
+        || max_json_body_bytes > config.max_body_bytes
+    {
+        return Err(BaseError::ConfigError(
+            "HTTP 请求体上限必须大于 0，JSON 上限不得超过总量上限".to_string(),
+        ));
+    }
     let state = HttpState {
         app,
         local_addr,
         max_body_bytes: config.max_body_bytes,
+        max_json_body_bytes,
         max_attachment_bytes: config.max_attachment_bytes,
     };
 
@@ -252,7 +283,7 @@ fn router_with_addr(
                 })?;
                 let success_status = action.success_status;
                 let (decoder, body_limit) = match action.request_media_type {
-                    ActionMediaType::Json => (RequestDecoder::Json, state.max_body_bytes),
+                    ActionMediaType::Json => (RequestDecoder::Json, state.max_json_body_bytes),
                     ActionMediaType::Multipart => {
                         let spec = action.multipart.clone().ok_or_else(|| {
                             BaseError::ConfigError(format!(
@@ -309,9 +340,22 @@ fn router_with_addr(
         }
     }
 
-    let mut router = router.with_state(state);
+    let mut router = router
+        .fallback(|| async {
+            error_response(
+                StatusCode::NOT_FOUND,
+                BaseError::ActionNotFound("HTTP 路由".to_string()),
+            )
+        })
+        .method_not_allowed_fallback(|| async {
+            error_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                BaseError::ParamInvalid("method".to_string(), "请求方法不受支持".to_string()),
+            )
+        })
+        .with_state(state);
 
-    // 横切层：后调用者先生效，TraceLayer 置于最外层以覆盖全部处理耗时。
+    // 横切层：后调用者先生效；统计和 request ID 在最外层覆盖所有出口。
     if config.compression {
         router = router.layer(CompressionLayer::new());
     }
@@ -321,18 +365,80 @@ fn router_with_addr(
                 "HTTP max_concurrency 必须大于 0".to_string(),
             ));
         }
-        router = router.layer(ConcurrencyLimitLayer::new(max_concurrency));
+        // 必须在同一 ServiceBuilder：若分别 Router::layer，Axum Route 的
+        // poll_ready 永远 Ready，会隐藏 permit 等待，让 LoadShed 静默失效。
+        router = router.layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(|_: BoxError| async {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ApiResponse::fail(
+                            crate::error::NOT_READY_CODE,
+                            "服务繁忙，请稍后重试",
+                        )),
+                    )
+                        .into_response()
+                }))
+                .layer(LoadShedLayer::new())
+                .layer(GlobalConcurrencyLimitLayer::new(max_concurrency)),
+        );
     }
     if let Some(timeout) = config.request_timeout {
-        router = router.layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            timeout,
+        router = router.layer(middleware::from_fn(
+            move |request: AxumRequest, next: Next| async move {
+                match tokio::time::timeout(timeout, next.run(request)).await {
+                    Ok(response) => response,
+                    Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, BaseError::HttpTimeout),
+                }
+            },
         ));
     }
     if let Some(cors) = cors_layer(&config.cors)? {
         router = router.layer(cors);
     }
-    Ok(router.layer(TraceLayer::new_for_http()))
+    Ok(router.layer(middleware::from_fn(observe_inbound_request)))
+}
+
+async fn observe_inbound_request(mut request: AxumRequest, next: Next) -> Response {
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(RequestId::parse_hex)
+        .unwrap_or_default();
+    request.extensions_mut().insert(request_id);
+    // 只使用固定方法和匹配模板；未知路由不得把原始路径/query 变成日志或指标标签。
+    let method = match *request.method() {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::PATCH => "PATCH",
+        Method::DELETE => "DELETE",
+        Method::OPTIONS => "OPTIONS",
+        Method::CONNECT => "CONNECT",
+        Method::TRACE => "TRACE",
+        _ => "OTHER",
+    };
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str())
+        .unwrap_or("__unmatched")
+        .to_string();
+    let started = Instant::now();
+    let span = tracing::info_span!("http.request", %request_id, method, route);
+    let response = next.run(request).instrument(span).await;
+    let elapsed = started.elapsed().as_secs_f64();
+    let status = response.status().as_u16();
+    tracing::info!(target: "yang_base::transport::http", %request_id, method, route, status, elapsed_seconds = elapsed, "HTTP 入站请求完成");
+    #[cfg(feature = "metrics")]
+    {
+        let status = status.to_string();
+        metrics::counter!("yang_http_inbound_requests_total", "method" => method, "route" => route.clone(), "status" => status.clone()).increment(1);
+        metrics::histogram!("yang_http_inbound_request_duration_seconds", "method" => method, "route" => route, "status" => status).record(elapsed);
+    }
+    with_request_id_header(response, request_id)
 }
 
 /// 按 CORS 配置构建白名单层；空 origins 表示不启用。
@@ -445,9 +551,10 @@ async fn dispatch_request(
     // 每个进入 Action 传输边界的请求都只有一个确定 request_id：合法上游值规范化
     // 后沿用，否则在读取请求体前生成。这样即使 query/body 解码失败，调用方仍能用
     // 响应头关联服务端日志。
-    let request_id = headers
-        .get("x-request-id")
-        .and_then(|raw| RequestId::parse_hex(raw))
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .copied()
         .unwrap_or_default();
     let query = match uri.query() {
         Some(raw) => match serde_urlencoded::from_str::<HashMap<String, String>>(raw) {
@@ -557,11 +664,11 @@ async fn decode_request_body(
 ) -> Result<DecodedBody, (StatusCode, BaseError)> {
     match decoder {
         RequestDecoder::Json => {
-            let body = to_bytes(request.into_body(), state.max_body_bytes)
+            let body = to_bytes(request.into_body(), state.max_json_body_bytes)
                 .await
                 .map_err(|error| {
                     // to_bytes 内部有限性判定基于 http_body_util::Limited：只有真正超出
-                    // max_body_bytes 时错误源才是 LengthLimitError（见 axum::body::to_bytes
+                    // max_json_body_bytes 时错误源才是 LengthLimitError（见 axum::body::to_bytes
                     // 文档）；其余为底层 body 流失败（连接中止 / chunked 分帧损坏 / hyper IO 错误），
                     // 与 multipart 分支一致归入 400，不能冒充 413。
                     let limit_hit = std::error::Error::source(&error)
