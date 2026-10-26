@@ -2,6 +2,7 @@
 
 use super::logging::{LogIdentity, RuntimeMetricNames};
 use super::ObservabilitySettings;
+use crate::shutdown::OwnedTask;
 use anyhow::Context;
 use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
@@ -22,7 +23,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -30,7 +30,8 @@ use yang_base::action::ApiResponse;
 use yang_base::tools::{Tools, ToolsHealth};
 
 const HISTOGRAM_BUCKETS_SECONDS: &[f64] = &[
-    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+    120.0, 300.0,
 ];
 
 pub struct TelemetryRuntime {
@@ -170,8 +171,8 @@ impl TelemetryRuntime {
         });
         self.metrics_server = Some(MetricsServer {
             local_addr,
-            shutdown,
-            task,
+            shutdown: Some(shutdown),
+            task: OwnedTask::new(task),
         });
         tracing::info!(
             bind = %local_addr,
@@ -188,18 +189,38 @@ impl TelemetryRuntime {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        self.shutdown_before(tokio::time::Instant::now() + self.trace_export_timeout)
+            .await
+    }
+
+    /// 管理面与业务 worker 同时收到停机信号，不等 HTTP drain 完成。
+    pub fn request_management_shutdown(&mut self) {
         self.readiness_gate.mark_not_ready();
+        if let Some(server) = self.metrics_server.as_mut() {
+            server.request_shutdown();
+        }
+    }
+
+    pub async fn shutdown_management(&mut self) -> anyhow::Result<()> {
+        self.request_management_shutdown();
         if let Some(server) = self.metrics_server.take() {
             server.shutdown().await?;
         }
+        Ok(())
+    }
+
+    /// 同步 trace exporter 也只能使用进程绝对截止时间剩余的部分。
+    pub async fn shutdown_before(&mut self, deadline: tokio::time::Instant) -> anyhow::Result<()> {
+        let management = self.shutdown_management().await;
         if let Some(provider) = self.tracer_provider.take() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             provider
-                .shutdown_with_timeout(self.trace_export_timeout)
+                .shutdown_with_timeout(self.trace_export_timeout.min(remaining))
                 .map_err(|error| {
                     anyhow::anyhow!("关闭 OpenTelemetry tracer provider 失败: {error}")
                 })?;
         }
-        Ok(())
+        management
     }
 
     #[cfg(test)]
@@ -392,15 +413,22 @@ fn record_pool_status(
 
 struct MetricsServer {
     local_addr: SocketAddr,
-    shutdown: oneshot::Sender<()>,
-    task: JoinHandle<anyhow::Result<()>>,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: OwnedTask<anyhow::Result<()>>,
 }
 
 impl MetricsServer {
-    async fn shutdown(self) -> anyhow::Result<()> {
+    fn request_shutdown(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+
+    async fn shutdown(mut self) -> anyhow::Result<()> {
         tracing::info!(bind = %self.local_addr, "开始关闭管理面端点");
-        let _ = self.shutdown.send(());
+        self.request_shutdown();
         self.task
+            .join()
             .await
             .context("等待 Prometheus HTTP 服务退出失败")?
     }
@@ -412,6 +440,33 @@ mod tests {
     use std::future;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use yang_base::tools::{ToolsBuilder, ToolsState};
+
+    #[tokio::test]
+    async fn cancelled_management_shutdown_aborts_its_task() -> anyhow::Result<()> {
+        let (shutdown, _) = oneshot::channel();
+        let (started, ready) = oneshot::channel();
+        let (resource, released) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _resource = resource;
+            let _ = started.send(());
+            future::pending::<anyhow::Result<()>>().await
+        });
+        ready.await?;
+        let server = MetricsServer {
+            local_addr: "127.0.0.1:0".parse()?,
+            shutdown: Some(shutdown),
+            task: OwnedTask::new(task),
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), server.shutdown())
+                .await
+                .is_err()
+        );
+        assert!(tokio::time::timeout(Duration::from_secs(1), released)
+            .await
+            .is_ok());
+        Ok(())
+    }
 
     async fn get(address: SocketAddr, path: &str) -> String {
         let mut stream = tokio::net::TcpStream::connect(address)
