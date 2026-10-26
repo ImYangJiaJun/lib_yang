@@ -31,6 +31,14 @@ impl<T> OwnedTask<T> {
     pub fn abort(&self) {
         self.task.abort();
     }
+
+    /// 任务是否已经结束（正常返回、panic 或 abort）。
+    ///
+    /// 供运行期监督使用：worker 的句柄不进 `select!` 时，退出只会让
+    /// `JoinHandle` 完成，进程与 readiness 都感知不到。
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 impl<T> Drop for OwnedTask<T> {
@@ -300,6 +308,20 @@ mod tests {
         assert_eq!(success.join().await?, 42);
         let mut failure = OwnedTask::new(tokio::spawn(async { panic!("worker panic") }));
         assert!(failure.join().await.is_err_and(|error| error.is_panic()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn owned_task_reports_completion_for_supervision() -> anyhow::Result<()> {
+        let pending = OwnedTask::new(tokio::spawn(std::future::pending::<()>()));
+        assert!(!pending.is_finished());
+        let done = OwnedTask::new(tokio::spawn(async {}));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !done.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
         Ok(())
     }
 
