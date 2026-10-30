@@ -171,8 +171,14 @@ impl<'a> QueryBuilder<'a> {
                 Ok(last_insert_id)
             }
             Err(e) => {
-                log::error!("insert() 失败: {}", e);
-                Err(crate::error::DbError::from(e))
+                // 唯一键等约束冲突常被调用方当作预期业务分支，降为 warn 避免污染 ERROR 告警
+                let db_err = crate::error::DbError::from(e);
+                if matches!(db_err, crate::error::DbError::ConstraintError(_)) {
+                    log::warn!("insert() 失败: {}（约束冲突，可能为预期分支）", db_err);
+                } else {
+                    log::error!("insert() 失败: {}", db_err);
+                }
+                Err(db_err)
             }
         }
     }
@@ -686,8 +692,17 @@ impl<'a> QueryBuilder<'a> {
                 Ok(rows_affected)
             }
             Err(e) => {
-                log::error!("insert_chunk() 失败: {}", e);
-                Err(crate::error::DbError::from(e))
+                // 唯一键等约束冲突常被调用方当作预期业务分支，降为 warn 避免污染 ERROR 告警
+                let db_err = crate::error::DbError::from(e);
+                if matches!(db_err, crate::error::DbError::ConstraintError(_)) {
+                    log::warn!(
+                        "insert_chunk() 失败: {}（约束冲突，可能为预期分支）",
+                        db_err
+                    );
+                } else {
+                    log::error!("insert_chunk() 失败: {}", db_err);
+                }
+                Err(db_err)
             }
         }
     }
@@ -802,8 +817,14 @@ impl<'a> QueryBuilder<'a> {
                 Ok(rows_affected)
             }
             Err(e) => {
-                log::error!("update() 失败: {}", e);
-                Err(crate::error::DbError::from(e))
+                // 唯一键等约束冲突常被调用方当作预期业务分支，降为 warn 避免污染 ERROR 告警
+                let db_err = crate::error::DbError::from(e);
+                if matches!(db_err, crate::error::DbError::ConstraintError(_)) {
+                    log::warn!("update() 失败: {}（约束冲突，可能为预期分支）", db_err);
+                } else {
+                    log::error!("update() 失败: {}", db_err);
+                }
+                Err(db_err)
             }
         }
     }
@@ -952,8 +973,14 @@ impl<'a> QueryBuilder<'a> {
                 Ok(rows_affected)
             }
             Err(e) => {
-                log::error!("delete() 失败: {}", e);
-                Err(crate::error::DbError::from(e))
+                // 唯一键等约束冲突常被调用方当作预期业务分支，降为 warn 避免污染 ERROR 告警
+                let db_err = crate::error::DbError::from(e);
+                if matches!(db_err, crate::error::DbError::ConstraintError(_)) {
+                    log::warn!("delete() 失败: {}（约束冲突，可能为预期分支）", db_err);
+                } else {
+                    log::error!("delete() 失败: {}", db_err);
+                }
+                Err(db_err)
             }
         }
     }
