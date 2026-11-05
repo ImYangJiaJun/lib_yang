@@ -50,7 +50,7 @@ pwsh -NoProfile -File project/yang-system/scripts/setup_local.ps1 -CheckOnly
 
 ### 编译基础库
 
-根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-runtime` 和 `yang-pcg`：
+根 workspace 包含 `yang-base`、`yang-base-derive`、`yang-db`、`yang-runtime`、`yang-pcg` 和 `yang-feishu`：
 
 ```powershell
 cargo check --workspace --all-targets --locked

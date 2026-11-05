@@ -29,6 +29,8 @@ AUXILIARY_PACKAGE_FLAGS = (
     "yang-pcg",
     "-p",
     "yang-runtime",
+    "-p",
+    "yang-feishu",
 )
 
 STABLE_COMMANDS = (
@@ -87,6 +89,10 @@ STABLE_COMMANDS = (
     Command(
         "yang-runtime documentation tests",
         ("cargo", "test", "--doc", "-p", "yang-runtime", "--locked"),
+    ),
+    Command(
+        "yang-feishu documentation tests",
+        ("cargo", "test", "--doc", "-p", "yang-feishu", "--locked"),
     ),
 )
 
@@ -150,6 +156,11 @@ FEATURE_CASES = (
     ),
     ("yang-base-default", "yang-base", ()),
     ("yang-base-all", "yang-base", ("--all-features",)),
+    ("yang-feishu-none", "yang-feishu", ("--no-default-features",)),
+    ("yang-feishu-http", "yang-feishu", ("--no-default-features", "--features", "http")),
+    ("yang-feishu-redis", "yang-feishu", ("--no-default-features", "--features", "redis")),
+    ("yang-feishu-metrics", "yang-feishu", ("--no-default-features", "--features", "metrics")),
+    ("yang-feishu-all", "yang-feishu", ("--all-features",)),
 )
 
 INTEGRATION_COMMANDS = (
@@ -364,6 +375,11 @@ def self_test() -> None:
         "yang-base-admin-metadata",
         "yang-base-default",
         "yang-base-all",
+        "yang-feishu-none",
+        "yang-feishu-http",
+        "yang-feishu-redis",
+        "yang-feishu-metrics",
+        "yang-feishu-all",
     }
     actual_features = {name for name, _, _ in FEATURE_CASES}
     assert actual_features == expected_features

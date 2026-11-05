@@ -3,7 +3,7 @@
 **刷新日期:** 2026-09-05（对照 commit b8e511d 现场核实；上一版生成于 2026-07-16 / b65a50b）
 
 ## OVERVIEW
-YANG Rust workspace：五个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`）+ 独立嵌套应用 `project/yang-system` 用于本地联合调试。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
+YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system` 用于本地联合调试。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
 
 ## STRUCTURE
 ```text
@@ -18,7 +18,8 @@ lib_yang/
 │   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.3.0）
 │   ├── yang-base-derive/     # #[derive(Action)]/#[derive(TableEntity)] + params! 宏（v0.3.0）
 │   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.1.0）
-│   └── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.2.0）
+│   ├── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.2.0）
+│   └── yang-feishu/          # 飞书开放平台协议客户端（v0.1.0，0.1.0 不发布 crates.io）
 ├── project/yang-system/      # 嵌套独立 Git/Cargo 应用（有自己的 .git/AGENTS.md/compose.yaml）；不在 workspace
 ├── scripts/
 │   ├── run_ci.py             # quick/full/integration 统一入口（唯一 CI 门禁入口）
@@ -33,19 +34,19 @@ lib_yang/
 
 ```bash
 python scripts/run_ci.py quick        # fmt --check + 分 crate test + clippy -D warnings + doctest
-python scripts/run_ci.py full         # quick + cargo-deny + MSRV 1.80 check + 17 组 feature 矩阵
+python scripts/run_ci.py full         # quick + cargo-deny + MSRV 1.80 check + 22 组 feature 矩阵
 python scripts/run_ci.py integration  # 需 MySQL 8.0 / PostgreSQL 16 / Redis 7（带 --ignored 集成测试）
 
 # 与 CI 对齐的分 crate 手拼命令（三组跑法不同，别漏 auxiliary）
 cargo test --lib -p yang-db --locked
 cargo test --lib -p yang-base --locked
-cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime --locked
+cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu --locked
 
 cargo fmt --all -- --check
-cargo clippy -p yang-db -p yang-base -p yang-base-derive -p yang-pcg -p yang-runtime \
+cargo clippy -p yang-db -p yang-base -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu \
   --all-targets --all-features --locked -- -D warnings
 cargo check --workspace --all-targets --all-features --locked   # MSRV/feature 等效全量检查
-cargo test --doc -p yang-db -p yang-base -p yang-runtime --locked
+cargo test --doc -p yang-db -p yang-base -p yang-runtime -p yang-feishu --locked
 
 # 集成测试（需容器；Redis pipeline/script 两个测试不带 --ignored，服务可用时直接 --test-threads=1）
 cargo test --test <name> -- --ignored --test-threads=1
@@ -59,7 +60,7 @@ cargo run --example <name> -p <crate> --locked
 ```
 
 ## CI（.github/workflows/ci.yml）
-`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（17 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
+`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（22 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
