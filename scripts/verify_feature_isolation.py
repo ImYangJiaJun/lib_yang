@@ -31,6 +31,11 @@ CASES = (
     Case("yang-base-mysql", "yang-base", ("--no-default-features", "--features", "mysql"), frozenset({"sqlx", "sqlx-mysql"}), frozenset({"sqlx-postgres", "redis", "deadpool-redis", "reqwest", "jsonwebtoken", "axum", "tower-http"})),
     Case("yang-base-redis", "yang-base", ("--no-default-features", "--features", "redis"), frozenset({"redis", "deadpool-redis"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres", "reqwest", "jsonwebtoken", "axum", "tower-http"})),
     Case("yang-base-transport-axum", "yang-base", ("--no-default-features", "--features", "transport-axum"), frozenset({"axum", "tower-http"}), frozenset({"sqlx", "sqlx-mysql", "sqlx-postgres", "redis", "deadpool-redis", "reqwest", "jsonwebtoken"})),
+    Case("yang-feishu-none", "yang-feishu", ("--no-default-features",), frozenset({"aes", "cbc", "sha2", "base64", "subtle"}), frozenset({"reqwest", "rustls", "redis", "sqlx", "yang-base", "yang-db"})),
+    Case("yang-feishu-http", "yang-feishu", ("--no-default-features", "--features", "http"), frozenset({"reqwest", "rustls"}), frozenset({"redis", "sqlx", "yang-base", "yang-db"})),
+    Case("yang-feishu-redis", "yang-feishu", ("--no-default-features", "--features", "redis"), frozenset({"redis"}), frozenset({"reqwest", "rustls", "sqlx", "yang-base", "yang-db"})),
+    Case("yang-feishu-metrics", "yang-feishu", ("--no-default-features", "--features", "metrics"), frozenset({"metrics"}), frozenset({"reqwest", "rustls", "redis", "sqlx", "yang-base", "yang-db"})),
+    Case("yang-feishu-all", "yang-feishu", ("--all-features",), frozenset({"reqwest", "rustls", "redis", "metrics"}), frozenset({"sqlx", "yang-base", "yang-db"})),
 )
 
 
