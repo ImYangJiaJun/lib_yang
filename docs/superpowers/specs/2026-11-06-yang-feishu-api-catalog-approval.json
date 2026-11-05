@@ -1,0 +1,314 @@
+{
+  "domain": "approval",
+  "endpoints": [
+    {
+      "name": "create_instance",
+      "summary": "创建审批实例",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:instance"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/instance/create.md"
+    },
+    {
+      "name": "get_instance",
+      "summary": "获取单个审批实例详情",
+      "method": "GET",
+      "path": "/open-apis/approval/v4/instances/{instance_id}",
+      "path_params": [
+        "instance_id"
+      ],
+      "query_params": [
+        "locale",
+        "user_id",
+        "user_id_type",
+        "nested_mutable_group"
+      ],
+      "body": false,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:instance"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/instance/get.md"
+    },
+    {
+      "name": "cancel_instance",
+      "summary": "撤回审批实例",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/cancel",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:instance"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/instance/cancel.md"
+    },
+    {
+      "name": "cc_instance",
+      "summary": "抄送审批实例",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/cc",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:instance"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/instance/cc.md"
+    },
+    {
+      "name": "query_instances",
+      "summary": "按条件查询审批实例列表",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/query",
+      "path_params": [],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval.list:readonly"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/approval-search/query-2.md"
+    },
+    {
+      "name": "list_initiated_instances",
+      "summary": "获取用户已发起的审批列表",
+      "method": "GET",
+      "path": "/open-apis/approval/v4/instances/initiated",
+      "path_params": [],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "locale",
+        "definition_code",
+        "start_timestamp",
+        "end_timestamp",
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "user",
+      "scopes": [
+        "approval:instance:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/approval-v4/instance/initiated.md"
+    },
+    {
+      "name": "get_approval_definition",
+      "summary": "查看指定审批定义",
+      "method": "GET",
+      "path": "/open-apis/approval/v4/approvals/{approval_code}",
+      "path_params": [
+        "approval_code"
+      ],
+      "query_params": [
+        "locale",
+        "with_admin_id",
+        "user_id_type",
+        "with_option",
+        "user_id",
+        "nested_mutable_group"
+      ],
+      "body": false,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:definition"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/approval/get.md"
+    },
+    {
+      "name": "search_launchable_approvals",
+      "summary": "搜索当前用户可发起的审批定义",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/approvals/search_launchable",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "approval:approval:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/approval-v4/approval/search_launchable.md"
+    },
+    {
+      "name": "approve_task",
+      "summary": "同意审批任务",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/tasks/approve",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:task"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/task/approve.md"
+    },
+    {
+      "name": "reject_task",
+      "summary": "拒绝审批任务",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/tasks/reject",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:task"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/task/reject.md"
+    },
+    {
+      "name": "add_sign_task",
+      "summary": "审批任务加签",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/add_sign",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval:readonly"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/task/approval-task-addsign.md"
+    },
+    {
+      "name": "rollback_task",
+      "summary": "退回审批任务至已审批节点",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/specified_rollback",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:task"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/task/specified_rollback.md"
+    },
+    {
+      "name": "transfer_task",
+      "summary": "转交审批任务",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/tasks/transfer",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:approval:readonly",
+        "approval:task"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/task/transfer.md"
+    },
+    {
+      "name": "search_tasks",
+      "summary": "按条件查询审批任务列表",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/tasks/search",
+      "path_params": [],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval:readonly",
+        "approval:approval.list:readonly"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/approval-search/search.md"
+    },
+    {
+      "name": "query_user_tasks",
+      "summary": "查询用户的任务列表",
+      "method": "GET",
+      "path": "/open-apis/approval/v4/tasks/query",
+      "path_params": [],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "user_id",
+        "topic",
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "approval:approval:readonly"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/approval-search/query.md"
+    },
+    {
+      "name": "remind_instance",
+      "summary": "发送审批催办消息",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/instances/remind",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "approval:instance:write"
+      ],
+      "doc_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/approval-v4/instance/remind.md"
+    },
+    {
+      "name": "subscribe_approval_events",
+      "summary": "订阅审批事件",
+      "method": "POST",
+      "path": "/open-apis/approval/v4/approvals/{approval_code}/subscribe",
+      "path_params": [
+        "approval_code"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "tenant",
+      "scopes": [
+        "approval:approval",
+        "approval:definition"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/approval-v4/event/event-interface/subscribe.md"
+    }
+  ]
+}

@@ -38,6 +38,10 @@ pub enum Method {
     Post,
     /// PUT。
     Put,
+    /// PATCH。
+    Patch,
+    /// DELETE。
+    Delete,
 }
 
 /// 传输中立的请求描述。

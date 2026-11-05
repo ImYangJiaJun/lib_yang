@@ -1,0 +1,75 @@
+{
+  "domain": "contact",
+  "endpoints": [
+    {
+      "name": "get_user",
+      "summary": "获取通讯录中单个用户的信息",
+      "method": "GET",
+      "path": "/open-apis/contact/v3/users/{user_id}",
+      "path_params": ["user_id"],
+      "query_params": ["user_id_type", "department_id_type"],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "contact:contact.base:readonly",
+        "contact:contact:access_as_app",
+        "contact:contact:readonly",
+        "contact:contact:readonly_as_app"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/contact-v3/user/get.md"
+    },
+    {
+      "name": "search_users",
+      "summary": "按关键词搜索用户",
+      "method": "GET",
+      "path": "/open-apis/search/v1/user",
+      "path_params": [],
+      "query_params": ["query", "page_size", "page_token"],
+      "body": false,
+      "identity": "user",
+      "scopes": ["contact:user:search"],
+      "doc_url": "https://open.feishu.cn/document/server-docs/contact-v3/user/search-users.md"
+    },
+    {
+      "name": "search_bots",
+      "summary": "按关键词搜索可见的机器人/智能体",
+      "method": "POST",
+      "path": "/open-apis/bot/v4/bot/search",
+      "path_params": [],
+      "query_params": ["page_size", "page_token", "user_id_type"],
+      "body": true,
+      "identity": "user",
+      "scopes": ["search:bot"],
+      "doc_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/bot-v4/bot/search.md"
+    },
+    {
+      "name": "batch_query_user_profiles",
+      "summary": "批量获取用户个人资料（个人状态、个性签名）",
+      "method": "POST",
+      "path": "/open-apis/profile/v2/user_profiles/batch_query",
+      "path_params": [],
+      "query_params": ["user_id_type"],
+      "body": true,
+      "identity": "user",
+      "scopes": ["profile:user_profile:read"],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_query&project=profile&resource=user_profile&version=v2"
+    },
+    {
+      "name": "get_department",
+      "summary": "获取单个部门信息",
+      "method": "GET",
+      "path": "/open-apis/contact/v3/departments/{department_id}",
+      "path_params": ["department_id"],
+      "query_params": ["user_id_type", "department_id_type"],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "contact:contact.base:readonly",
+        "contact:contact:access_as_app",
+        "contact:contact:readonly",
+        "contact:contact:readonly_as_app"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/contact-v3/department/get.md"
+    }
+  ]
+}

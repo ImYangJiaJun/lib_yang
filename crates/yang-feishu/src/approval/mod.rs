@@ -1,6 +1,7 @@
 //! 审批相关客户端与表单契约。
 
 pub mod client;
+mod endpoints;
 pub mod form;
 pub mod idempotency;
 pub mod value;

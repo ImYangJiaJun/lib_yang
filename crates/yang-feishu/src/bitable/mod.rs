@@ -3,10 +3,12 @@
 pub mod cells;
 pub mod client;
 pub mod dto;
+mod endpoints;
 pub mod fields;
 pub mod filters;
 pub mod link;
 pub mod pagination;
+mod v3;
 
 pub use cells::{cell_label, CellValue};
 pub use client::BitableClient;
