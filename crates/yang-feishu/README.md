@@ -73,6 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `DateInterval` 是真实字段；外部选项 `linkage_params` 的真机值是文案，不是 `@i18n@id`。
 - 文本列含 URL 会被切成富文本分段，取第一段会丢正文。
 
+## 端点覆盖
+
+- **typed 核心**：记录全量/分页、字段/表/视图解析、审批建单/查单/定义/订阅、表单
+  值编码、IM post、附件搬运、事件与外部选项。
+- **官方端点薄封装**：bitable v1（42）、approval v4（13）、contact（5）、
+  IM（46）、Drive（25）；路径来自官方 markdown 文档或 `lark-cli` dry-run。
+- **Base v3 薄封装**（107）：对齐 `lark-cli base` 的 `/open-apis/base/v3/...`；
+  官方 llms 索引未完整收录的部分以 CLI 为准。
+- **二进制/多部分**：IM 文件/图片上传、消息资源下载；Drive 文件/素材上传与下载。
+
+长尾方法的路径参数是显式 `&str`，query 用 `&[(&str, &str)]`，body/response 为
+`serde_json::Value`；字段形状以官方文档为准。使用指南见 `AGENTS.md` 与
+`skills/yang-feishu/SKILL.md`。
+
 ## 已知缺口
 
 - `X-Lark-Signature` 未实现；`EventConfig::require_signature=true` 会显式失败。

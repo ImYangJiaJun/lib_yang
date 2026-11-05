@@ -1,0 +1,891 @@
+{
+  "domain": "im",
+  "endpoints": [
+    {
+      "name": "recall_message",
+      "summary": "撤回消息",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/messages/{message_id}",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message:recall",
+        "im:message",
+        "im:message:send_as_bot"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/delete"
+    },
+    {
+      "name": "forward_message",
+      "summary": "转发单条消息",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/{message_id}/forward",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "receive_id_type",
+        "uuid"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message:send_as_bot",
+        "im:message"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/forward"
+    },
+    {
+      "name": "merge_forward_message",
+      "summary": "合并转发多条消息",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/merge_forward",
+      "path_params": [],
+      "query_params": [
+        "receive_id_type",
+        "uuid"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:message:send_as_bot",
+        "im:message"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/merge_forward"
+    },
+    {
+      "name": "update_message_card",
+      "summary": "更新已发送的交互式消息卡片",
+      "method": "PATCH",
+      "path": "/open-apis/im/v1/messages/{message_id}",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message:update",
+        "im:message",
+        "im:message:send_as_bot"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message-card/patch"
+    },
+    {
+      "name": "batch_query_message_read_status",
+      "summary": "批量查询当前用户对消息的已读状态",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/read_status",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:message:get_as_user",
+        "im:message",
+        "im:message:readonly"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=read_status&project=im&resource=message&version=v1"
+    },
+    {
+      "name": "get_message_read_users",
+      "summary": "查询消息的已读用户列表",
+      "method": "GET",
+      "path": "/open-apis/im/v1/messages/{message_id}/read_users",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message:basic",
+        "im:message:readonly",
+        "im:message",
+        "im:message:get_as_user"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/read_users"
+    },
+    {
+      "name": "send_urgent_app",
+      "summary": "发送应用内加急",
+      "method": "PATCH",
+      "path": "/open-apis/im/v1/messages/{message_id}/urgent_app",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:message.urgent",
+        "im:message.urgent:app_send"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/buzz-messages/urgent_app"
+    },
+    {
+      "name": "send_urgent_phone",
+      "summary": "发送电话加急",
+      "method": "PATCH",
+      "path": "/open-apis/im/v1/messages/{message_id}/urgent_phone",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:message.urgent:phone",
+        "im:message.urgent:phone_send"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/buzz-messages/urgent_phone"
+    },
+    {
+      "name": "send_urgent_sms",
+      "summary": "发送短信加急",
+      "method": "PATCH",
+      "path": "/open-apis/im/v1/messages/{message_id}/urgent_sms",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:message.urgent:sms",
+        "im:message.urgent:sms_send"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/buzz-messages/urgent_sms"
+    },
+    {
+      "name": "create_chat",
+      "summary": "创建群聊",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats",
+      "path_params": [],
+      "query_params": [
+        "set_bot_manager",
+        "user_id_type",
+        "uuid"
+      ],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:chat",
+        "im:chat:create",
+        "im:chat:create_by_user"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/create"
+    },
+    {
+      "name": "get_chat",
+      "summary": "获取群信息",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/get-2"
+    },
+    {
+      "name": "get_chat_link",
+      "summary": "获取群分享链接",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats/{chat_id}/link",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/link"
+    },
+    {
+      "name": "update_chat",
+      "summary": "更新群信息",
+      "method": "PUT",
+      "path": "/open-apis/im/v1/chats/{chat_id}",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat:update"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/update-2"
+    },
+    {
+      "name": "list_chat_bots",
+      "summary": "获取群成员机器人列表",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}/members/bots",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.group_info:readonly",
+        "im:chat.members:read"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=bots&project=im&resource=chat.members&version=v1"
+    },
+    {
+      "name": "add_chat_members",
+      "summary": "将用户或机器人拉入群聊",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats/{chat_id}/members",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type",
+        "succeed_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat.members:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat-member/create"
+    },
+    {
+      "name": "remove_chat_members",
+      "summary": "将用户或机器人移出群聊",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/chats/{chat_id}/members",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat.members:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat-member/delete"
+    },
+    {
+      "name": "list_chat_members",
+      "summary": "获取群成员列表",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}/members",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type",
+        "page_size",
+        "page_token"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.group_info:readonly",
+        "im:chat.members:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat-member/get"
+    },
+    {
+      "name": "add_chat_managers",
+      "summary": "指定群管理员",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats/{chat_id}/managers/add_managers",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat.managers:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat-member/add_managers"
+    },
+    {
+      "name": "delete_chat_managers",
+      "summary": "删除群管理员",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats/{chat_id}/managers/delete_managers",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat.managers:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat-member/delete_managers"
+    },
+    {
+      "name": "handle_chat_join_requests",
+      "summary": "批量审批入群申请",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chats/{chat_id}/membership_applications/handle",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type"
+      ],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:chat.membership_application:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=handle&project=im&resource=chat.membership_application&version=v1"
+    },
+    {
+      "name": "list_chat_join_requests",
+      "summary": "列出群的待审批入群申请",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}/membership_applications",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "member_id_type",
+        "page_size",
+        "page_token"
+      ],
+      "body": false,
+      "identity": "user",
+      "scopes": [
+        "im:chat.membership_application:read"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=list&project=im&resource=chat.membership_application&version=v1"
+    },
+    {
+      "name": "get_chat_moderation",
+      "summary": "获取群成员发言权限",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}/moderation",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.moderation:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/get"
+    },
+    {
+      "name": "update_chat_moderation",
+      "summary": "更新群发言权限",
+      "method": "PUT",
+      "path": "/open-apis/im/v1/chats/{chat_id}/moderation",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:chat",
+        "im:chat:moderation:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/group/chat/update"
+    },
+    {
+      "name": "delete_chat_nickname",
+      "summary": "清空自己在群内的昵称",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/chats/{chat_id}/nickname",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "user",
+      "scopes": [
+        "im:chat",
+        "im:chat.nickname:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=delete&project=im&resource=chat.nickname&version=v1"
+    },
+    {
+      "name": "get_chat_nickname",
+      "summary": "获取自己在群内的昵称",
+      "method": "GET",
+      "path": "/open-apis/im/v1/chats/{chat_id}/nickname",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "user",
+      "scopes": [
+        "im:chat",
+        "im:chat:read",
+        "im:chat:readonly",
+        "im:chat.nickname:read"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=get&project=im&resource=chat.nickname&version=v1"
+    },
+    {
+      "name": "update_chat_nickname",
+      "summary": "设置自己在群内的昵称",
+      "method": "PUT",
+      "path": "/open-apis/im/v1/chats/{chat_id}/nickname",
+      "path_params": [
+        "chat_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:chat",
+        "im:chat.nickname:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=update&project=im&resource=chat.nickname&version=v1"
+    },
+    {
+      "name": "batch_query_chat_user_settings",
+      "summary": "批量查询当前用户在群内的个人偏好设置",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chat_user_setting/batch_query",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:chat:read",
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.user_setting:read"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_query&project=im&resource=chat_user_setting&version=v1"
+    },
+    {
+      "name": "batch_update_chat_user_settings",
+      "summary": "批量更新当前用户在群内的个人偏好设置",
+      "method": "POST",
+      "path": "/open-apis/im/v1/chat_user_setting/batch_update",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:chat",
+        "im:chat.user_setting:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_update&project=im&resource=chat_user_setting&version=v1"
+    },
+    {
+      "name": "create_file",
+      "summary": "上传文件",
+      "method": "POST",
+      "path": "/open-apis/im/v1/files",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:resource:upload",
+        "im:resource"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/file/create"
+    },
+    {
+      "name": "list_file_folder",
+      "summary": "获取消息或消息链接中资源文件夹的子文件列表",
+      "method": "GET",
+      "path": "/open-apis/im/v1/files/{file_key}/folder",
+      "path_params": [
+        "file_key"
+      ],
+      "query_params": [
+        "recursive",
+        "srcid",
+        "srctype"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message.history:readonly",
+        "im:message:readonly",
+        "im:message"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=folder&project=im&resource=file&version=v1"
+    },
+    {
+      "name": "create_image",
+      "summary": "上传图片",
+      "method": "POST",
+      "path": "/open-apis/im/v1/images",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:resource:upload",
+        "im:resource"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/image/create"
+    },
+    {
+      "name": "create_pin",
+      "summary": "Pin 消息",
+      "method": "POST",
+      "path": "/open-apis/im/v1/pins",
+      "path_params": [],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message:send_as_bot",
+        "im:message",
+        "im:message.pins:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/pin/create"
+    },
+    {
+      "name": "delete_pin",
+      "summary": "移除 Pin 消息",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/pins/{message_id}",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message:send_as_bot",
+        "im:message",
+        "im:message.pins:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/pin/delete"
+    },
+    {
+      "name": "list_pins",
+      "summary": "获取群内 Pin 消息",
+      "method": "GET",
+      "path": "/open-apis/im/v1/pins",
+      "path_params": [],
+      "query_params": [
+        "chat_id",
+        "end_time",
+        "page_size",
+        "page_token",
+        "start_time"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message:readonly",
+        "im:message",
+        "im:message.pins:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/pin/list"
+    },
+    {
+      "name": "batch_query_reactions",
+      "summary": "批量获取消息表情回复",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/reactions/batch_query",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message:readonly",
+        "im:message.reactions:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/batch_query"
+    },
+    {
+      "name": "create_reaction",
+      "summary": "添加消息表情回复",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/{message_id}/reactions",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message",
+        "im:message.reactions:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/create"
+    },
+    {
+      "name": "delete_reaction",
+      "summary": "删除消息表情回复",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}",
+      "path_params": [
+        "message_id",
+        "reaction_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message",
+        "im:message.reactions:write_only"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/delete"
+    },
+    {
+      "name": "list_reactions",
+      "summary": "获取消息表情回复",
+      "method": "GET",
+      "path": "/open-apis/im/v1/messages/{message_id}/reactions",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [
+        "page_size",
+        "page_token",
+        "reaction_type",
+        "user_id_type"
+      ],
+      "body": false,
+      "identity": "either",
+      "scopes": [
+        "im:message:readonly",
+        "im:message.reactions:read"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/list"
+    },
+    {
+      "name": "forward_thread",
+      "summary": "转发话题",
+      "method": "POST",
+      "path": "/open-apis/im/v1/threads/{thread_id}/forward",
+      "path_params": [
+        "thread_id"
+      ],
+      "query_params": [
+        "receive_id_type",
+        "uuid"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message:send_as_bot",
+        "im:message"
+      ],
+      "doc_url": "https://open.feishu.cn/document/im-v1/message/forward-2"
+    },
+    {
+      "name": "create_feed_group",
+      "summary": "创建 Feed 分组",
+      "method": "POST",
+      "path": "/open-apis/im/v1/groups",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=create&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "update_feed_group",
+      "summary": "更新 Feed 分组",
+      "method": "PUT",
+      "path": "/open-apis/im/v1/groups/{feed_group_id}",
+      "path_params": [
+        "feed_group_id"
+      ],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=update&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "delete_feed_group",
+      "summary": "删除 Feed 分组",
+      "method": "DELETE",
+      "path": "/open-apis/im/v1/groups/{feed_group_id}",
+      "path_params": [
+        "feed_group_id"
+      ],
+      "query_params": [],
+      "body": false,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=delete&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "batch_query_feed_groups",
+      "summary": "批量查询 Feed 分组",
+      "method": "POST",
+      "path": "/open-apis/im/v1/groups/batch_query",
+      "path_params": [],
+      "query_params": [
+        "user_id_type"
+      ],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:read"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_query&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "batch_add_feed_group_item",
+      "summary": "批量添加 Feed 分组项",
+      "method": "POST",
+      "path": "/open-apis/im/v1/groups/{feed_group_id}/batch_add_item",
+      "path_params": [
+        "feed_group_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_add_item&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "batch_remove_feed_group_item",
+      "summary": "批量移除 Feed 分组项",
+      "method": "POST",
+      "path": "/open-apis/im/v1/groups/{feed_group_id}/batch_remove_item",
+      "path_params": [
+        "feed_group_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "user",
+      "scopes": [
+        "im:feed_group_v1:write"
+      ],
+      "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=batch_remove_item&project=im&resource=feed_group&version=v1"
+    },
+    {
+      "name": "send_message",
+      "summary": "发送消息",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages",
+      "path_params": [],
+      "query_params": [
+        "receive_id_type"
+      ],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message",
+        "im:message:send_as_bot",
+        "im:message:send",
+        "im:message.send_as_user"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/create"
+    },
+    {
+      "name": "reply_message",
+      "summary": "回复消息",
+      "method": "POST",
+      "path": "/open-apis/im/v1/messages/{message_id}/reply",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "either",
+      "scopes": [
+        "im:message",
+        "im:message:send_as_bot",
+        "im:message:send",
+        "im:message.send_as_user"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/reply"
+    },
+    {
+      "name": "edit_message",
+      "summary": "编辑已发送的文本或富文本消息",
+      "method": "PUT",
+      "path": "/open-apis/im/v1/messages/{message_id}",
+      "path_params": [
+        "message_id"
+      ],
+      "query_params": [],
+      "body": true,
+      "identity": "tenant",
+      "scopes": [
+        "im:message",
+        "im:message:send_as_bot",
+        "im:message:update"
+      ],
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message/update"
+    }
+  ]
+}

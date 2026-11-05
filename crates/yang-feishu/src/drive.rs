@@ -9,7 +9,8 @@ use serde::Deserialize;
 
 use crate::client::ClientCore;
 use crate::error::{Error, Result};
-use crate::path::validate_path_segment;
+use crate::multipart::Multipart;
+use crate::path::{validate_opaque_path_segment, validate_path_segment};
 use crate::transport::{Method, Request, MEDIA_REQUEST_TIMEOUT_SECS, PULL_RETRY};
 
 /// 审批附件上传路径（挂在 `upload` 域名下）。
@@ -242,6 +243,114 @@ impl DriveClient {
             })
             .map(str::to_string)
             .ok_or_else(|| Error::retry("审批附件/图片上传响应缺少成功标记或 file code"))
+    }
+
+    /// 上传文件到云空间（`/files/upload_all`），返回 `file_token`。
+    pub async fn upload_file(
+        &self,
+        file_name: &str,
+        parent_type: &str,
+        parent_node: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        self.upload_all(
+            "/open-apis/drive/v1/files/upload_all",
+            file_name,
+            parent_type,
+            parent_node,
+            bytes,
+        )
+        .await
+    }
+
+    /// 上传素材到云空间（`/medias/upload_all`），返回 `file_token`。
+    pub async fn upload_media(
+        &self,
+        file_name: &str,
+        parent_type: &str,
+        parent_node: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        self.upload_all(
+            "/open-apis/drive/v1/medias/upload_all",
+            file_name,
+            parent_type,
+            parent_node,
+            bytes,
+        )
+        .await
+    }
+
+    async fn upload_all(
+        &self,
+        path: &str,
+        file_name: &str,
+        parent_type: &str,
+        parent_node: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        let mut form = Multipart::new();
+        form.text("file_name", file_name)
+            .text("parent_type", parent_type)
+            .text("parent_node", parent_node)
+            .text("size", &bytes.len().to_string())
+            .file("file", file_name, "application/octet-stream", bytes);
+        let (content_type, body) = form.finish();
+        let response = self
+            .core
+            .send_tenant(
+                Request {
+                    method: Method::Post,
+                    url: format!("{}{path}", self.core.endpoints().open.as_str()),
+                    query: Vec::new(),
+                    bearer_token: None,
+                    json_body: None,
+                    raw_body: Some((content_type, body)),
+                    binary_limit: None,
+                    timeout_secs: Some(MEDIA_REQUEST_TIMEOUT_SECS),
+                    // 上传无幂等键，重试交给任务下一轮。
+                    idempotent: false,
+                },
+                &PULL_RETRY,
+            )
+            .await?;
+        let value: serde_json::Value = serde_json::from_str(&response.body)
+            .map_err(|_| Error::retry("云空间上传响应不是 JSON"))?;
+        value["data"]["file_token"]
+            .as_str()
+            .filter(|token| !token.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| Error::retry("云空间上传响应缺少 file_token"))
+    }
+
+    /// 下载云空间文件；`max_bytes` 是二进制上限。
+    pub async fn download_file(&self, file_token: &str, max_bytes: usize) -> Result<Vec<u8>> {
+        validate_opaque_path_segment("file_token", file_token)
+            .map_err(|error| Error::fatal(error.to_string()))?;
+        let response = self
+            .core
+            .send_tenant(
+                Request {
+                    method: Method::Get,
+                    url: format!(
+                        "{}/open-apis/drive/v1/files/{file_token}/download",
+                        self.core.endpoints().open.as_str()
+                    ),
+                    query: Vec::new(),
+                    bearer_token: None,
+                    json_body: None,
+                    raw_body: None,
+                    binary_limit: Some(max_bytes),
+                    timeout_secs: Some(MEDIA_REQUEST_TIMEOUT_SECS),
+                    idempotent: true,
+                },
+                &PULL_RETRY,
+            )
+            .await?;
+        response
+            .bytes
+            .filter(|_| response.status == 200)
+            .ok_or_else(|| Error::retry("云空间文件下载不是完整二进制文件"))
     }
 }
 

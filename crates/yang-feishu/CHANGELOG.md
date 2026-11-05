@@ -18,5 +18,8 @@
   兼容；0.x 的破坏性变更走 minor。
 - `FormInput` / `GroupFormInput` 增加 `approval_app_id: Option<&str>`：关联审批的
   AppLink 解析不再硬编码产品 appId；传 `None` 时只接受 36 位实例 Code。
+- 按官方文档 + `lark-cli 1.0.98` 目录补全长尾端点薄封装：bitable v1 42、approval v4
+  13、contact 5、IM 46、Drive 25、Base v3 107；另加 IM/Drive 二进制上传下载 6 个。
+- 新增 crate 级 `AGENTS.md` 与 `skills/yang-feishu/SKILL.md` 使用指南。
 - 不依赖 `yang-base` / `yang-db` / `schemars` / `anyhow`。
 - 已知缺口：`X-Lark-Signature`、Lark 国际版 `upload` 域真机验证。

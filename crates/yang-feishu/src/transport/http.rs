@@ -111,6 +111,8 @@ impl Transport for ReqwestTransport {
             Method::Get => self.client.get(&request.url),
             Method::Post => self.client.post(&request.url),
             Method::Put => self.client.put(&request.url),
+            Method::Patch => self.client.patch(&request.url),
+            Method::Delete => self.client.delete(&request.url),
         };
 
         if !request.query.is_empty() {

@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::ClientCore;
 use crate::error::{Error, FailureKind, Result};
-use crate::transport::{Method, Request, MESSAGE_REQUEST_TIMEOUT_SECS, MESSAGE_RETRY};
+use crate::multipart::Multipart;
+use crate::path::validate_opaque_path_segment;
+use crate::transport::{
+    Method, Request, MEDIA_REQUEST_TIMEOUT_SECS, MESSAGE_REQUEST_TIMEOUT_SECS, MESSAGE_RETRY,
+};
 
 /// 消息接收人类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -180,6 +184,112 @@ impl ImClient {
         };
         self.send_message(request).await.map(|_| ())
     }
+
+    /// 上传消息文件，返回 `file_key`。
+    pub async fn upload_file(
+        &self,
+        file_name: &str,
+        file_type: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        let mut form = Multipart::new();
+        form.text("file_type", file_type)
+            .text("file_name", file_name)
+            .file("file", file_name, "application/octet-stream", bytes);
+        let (content_type, body) = form.finish();
+        let response = self
+            .core
+            .send_tenant(
+                Request {
+                    method: Method::Post,
+                    url: format!("{}/open-apis/im/v1/files", self.open_base()),
+                    query: Vec::new(),
+                    bearer_token: None,
+                    json_body: None,
+                    raw_body: Some((content_type, body)),
+                    binary_limit: None,
+                    timeout_secs: Some(MEDIA_REQUEST_TIMEOUT_SECS),
+                    // 上传无幂等键，重试交给任务下一轮。
+                    idempotent: false,
+                },
+                &MESSAGE_RETRY,
+            )
+            .await?;
+        response_key(&response.body, "file_key")
+    }
+
+    /// 上传消息图片，返回 `image_key`。
+    pub async fn upload_image(&self, image_type: &str, bytes: &[u8]) -> Result<String> {
+        let mut form = Multipart::new();
+        form.text("image_type", image_type)
+            .file("image", "image.png", "image/png", bytes);
+        let (content_type, body) = form.finish();
+        let response = self
+            .core
+            .send_tenant(
+                Request {
+                    method: Method::Post,
+                    url: format!("{}/open-apis/im/v1/images", self.open_base()),
+                    query: Vec::new(),
+                    bearer_token: None,
+                    json_body: None,
+                    raw_body: Some((content_type, body)),
+                    binary_limit: None,
+                    timeout_secs: Some(MEDIA_REQUEST_TIMEOUT_SECS),
+                    idempotent: false,
+                },
+                &MESSAGE_RETRY,
+            )
+            .await?;
+        response_key(&response.body, "image_key")
+    }
+
+    /// 下载消息里的图片/文件资源。
+    pub async fn download_message_resource(
+        &self,
+        message_id: &str,
+        file_key: &str,
+        resource_type: &str,
+    ) -> Result<Vec<u8>> {
+        if !valid_message_id(message_id) {
+            return Err(Error::fatal("消息 ID 非法"));
+        }
+        validate_opaque_path_segment("file_key", file_key)
+            .map_err(|error| Error::fatal(error.to_string()))?;
+        let response = self
+            .core
+            .send_tenant(
+                Request {
+                    method: Method::Get,
+                    url: format!(
+                        "{}/open-apis/im/v1/messages/{message_id}/resources/{file_key}",
+                        self.open_base()
+                    ),
+                    query: vec![("type".to_string(), resource_type.to_string())],
+                    bearer_token: None,
+                    json_body: None,
+                    raw_body: None,
+                    binary_limit: Some(200 * 1024 * 1024),
+                    timeout_secs: Some(MEDIA_REQUEST_TIMEOUT_SECS),
+                    idempotent: true,
+                },
+                &MESSAGE_RETRY,
+            )
+            .await?;
+        response
+            .bytes
+            .filter(|_| response.status == 200)
+            .ok_or_else(|| Error::retry("消息资源下载不是完整二进制文件"))
+    }
+}
+
+fn response_key(body: &str, key: &str) -> Result<String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|_| invalid_response())?;
+    value["data"][key]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(invalid_response)
 }
 
 #[cfg(test)]

@@ -29,7 +29,8 @@ use crate::endpoints::Endpoints;
 use crate::error::Result;
 use crate::im::ImClient;
 use crate::transport::{
-    send_with_retry, Request, Response, RetryPolicy, Sleeper, TokioSleeper, Transport,
+    send_with_retry, Method, Request, Response, RetryPolicy, Sleeper, TokioSleeper, Transport,
+    PULL_RETRY,
 };
 
 /// 客户端静态配置。
@@ -226,6 +227,71 @@ impl ClientCore {
             }
         }
     }
+
+    /// 长尾端点：tenant token + JSON 响应。
+    pub(crate) async fn call_json(
+        &self,
+        method: Method,
+        url: String,
+        query: Vec<(String, String)>,
+        body: Option<serde_json::Value>,
+        timeout_secs: u64,
+        idempotent: bool,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .send_tenant(
+                Request {
+                    method,
+                    url,
+                    query,
+                    bearer_token: None,
+                    json_body: body,
+                    raw_body: None,
+                    binary_limit: None,
+                    timeout_secs: Some(timeout_secs),
+                    idempotent,
+                },
+                &PULL_RETRY,
+            )
+            .await?;
+        parse_json_body(&response.body)
+    }
+
+    /// 长尾端点：调用方自带 user_access_token + JSON 响应。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn call_json_user(
+        &self,
+        bearer_token: &str,
+        method: Method,
+        url: String,
+        query: Vec<(String, String)>,
+        body: Option<serde_json::Value>,
+        timeout_secs: u64,
+        idempotent: bool,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .send_raw(
+                Request {
+                    method,
+                    url,
+                    query,
+                    bearer_token: Some(bearer_token.to_string()),
+                    json_body: body,
+                    raw_body: None,
+                    binary_limit: None,
+                    timeout_secs: Some(timeout_secs),
+                    idempotent,
+                },
+                &PULL_RETRY,
+            )
+            .await?;
+        parse_json_body(&response.body)
+    }
+}
+
+fn parse_json_body(body: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(body)
+        .map_err(|error| crate::error::Error::fatal(format!("解析飞书响应失败: {error}")))
 }
 
 /// 飞书开放平台客户端。
