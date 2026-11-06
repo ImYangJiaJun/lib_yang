@@ -1,0 +1,432 @@
+{
+  "source": "official llms-docs / API Explorer pages confirmed by the 2026-11-06 audit workflow",
+  "description": "Legacy or version-specific official REST endpoints absent from the Go SDK catalogue.",
+  "endpoints": [
+    {
+      "domain": "meeting_room",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/meeting_room/freebusy/batch_get",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询会议室忙闲信息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "meeting_room",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/meeting_room/instance/reply",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "回复会议室日程实例",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "meeting_room",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/meeting_room/summary/batch_get",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "查询会议室日程摘要",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "search",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/search/v2/data_sources/:data_source_id/items/batch_create",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "批量创建搜索数据项",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "ephemeral",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/ephemeral/v1/send",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "发送仅特定人可见的消息卡片",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "ephemeral",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/ephemeral/v1/delete",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "删除仅特定人可见的消息卡片",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "message",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/message/v4/batch_send",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "批量发送消息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "search",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/search/v1/user",
+      "tokens": [
+        "User"
+      ],
+      "summary": "搜索用户",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "bot",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/bot/v3/info",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取机器人信息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "approval",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/approval/v1/message/send",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "发送审批 Bot 消息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "approval",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/approval/v1/message/update",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "更新审批 Bot 消息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "corehr",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/corehr/v2/onboarding_qr_codes",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "创建入职二维码",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "corehr",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/corehr/v2/onboarding_qr_codes/dimension",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取入职二维码维度",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "corehr",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/corehr/v2/onboarding_flows",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取入职流程列表",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "drive",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/drive/explorer/v2/root_folder/meta",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取根文件夹元信息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "drive",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/drive/explorer/v2/folder/:folderToken/meta",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取文件夹元信息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "hire",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/hire/v2/interview_records",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取面试记录列表",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "application",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/application/v2/app/visibility",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取应用可用范围",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "application",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/application/v3/is_user_admin",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "判断用户是否为应用管理员",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "application",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/application/v1/user/visible_apps",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取用户可用应用",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "suite",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/suite/docs-api/search/object",
+      "tokens": [
+        "User"
+      ],
+      "summary": "搜索云文档",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "authen",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/authen/v2/oauth/token",
+      "tokens": [
+        "App"
+      ],
+      "summary": "获取 user_access_token（v2）",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "face_verify",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/face_verify/v1/query_auth_result",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "查询实名认证结果",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "face_verify",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/face_verify/v1/crop_face_image",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "裁剪人脸图片",
+      "doc_url": "",
+      "binary": false,
+      "multipart": true
+    },
+    {
+      "domain": "face_verify",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/face_verify/v1/upload_face_image",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "上传人脸基准图片",
+      "doc_url": "",
+      "binary": false,
+      "multipart": true
+    },
+    {
+      "domain": "pay",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/pay/v1/order/get",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "查询订单信息",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "user",
+      "resource": "",
+      "go_method": "",
+      "method": "GET",
+      "path": "/open-apis/user/v4/app_admin_user/list",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "查询应用管理员列表",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "jssdk",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/jssdk/ticket/get",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "获取 JSAPI 临时授权凭证",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "attendance",
+      "resource": "",
+      "go_method": "",
+      "method": "POST",
+      "path": "/open-apis/attendance/v1/archive_rule/upload_report",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "写入归档报表",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "",
+      "go_method": "",
+      "method": "PATCH",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "修改电子表格属性",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false
+    }
+  ]
+}

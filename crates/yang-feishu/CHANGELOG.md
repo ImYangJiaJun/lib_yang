@@ -20,6 +20,11 @@
   AppLink 解析不再硬编码产品 appId；传 `None` 时只接受 36 位实例 Code。
 - 按官方文档 + `lark-cli 1.0.98` 目录补全长尾端点薄封装：bitable v1 42、approval v4
   13、contact 5、IM 46、Drive 25、Base v3 107；另加 IM/Drive 二进制上传下载 6 个。
+- 新增 `client.api()` 全量官方端点：覆盖官方 SDK、llms 文档与历史版本中的 1709 个
+  REST 端点，按 66 个域生成 2367 个方法（tenant/user/app/public 身份变体）；包含
+  multipart 上传（`content_type` + `&[u8]`）与二进制下载（原始 `Response`）。
+  目录与生成/校验脚本见 `docs/superpowers/specs/2026-11-06-yang-feishu-openapi-*.json`
+  与 `scripts/generate_openapi_endpoints.py`、`scripts/verify_openapi_coverage.py`。
 - 新增 crate 级 `AGENTS.md` 与 `skills/yang-feishu/SKILL.md` 使用指南。
 - 不依赖 `yang-base` / `yang-db` / `schemars` / `anyhow`。
 - 已知缺口：`X-Lark-Signature`、Lark 国际版 `upload` 域真机验证。

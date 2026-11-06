@@ -37,6 +37,12 @@
 //! - `metrics`：启用 `feishu_outbound_request_total` / `feishu_outbound_token_total`。
 //! - `full`：以上三者。
 //!
+//! # 全量官方端点
+//!
+//! [`OpenApiClient::api`] 返回 [`api::ApiClient`]，覆盖官方 SDK、llms 文档与历史
+//! 版本中的 1709 个 REST 端点，按 66 个域生成 2367 个薄封装方法；typed 核心链路
+//! 仍走 [`OpenApiClient::bitable`] / [`OpenApiClient::approval`] 等客户端。
+//!
 //! # 平台事实（最容易踩的坑）
 //!
 //! - 成败判据是响应体业务码，**不是 HTTP 状态码**；大量错误是 HTTP 200 + 非 0 码。
@@ -71,6 +77,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 飞书开放平台域名（中国站）。
 pub const FEISHU_OPEN_BASE: &str = "https://open.feishu.cn";
 
+pub mod api;
 pub mod approval;
 pub mod auth;
 pub mod bitable;
@@ -90,6 +97,7 @@ pub mod options;
 pub mod path;
 pub mod transport;
 
+pub use api::ApiClient;
 pub use client::{OpenApiClient, OpenApiClientBuilder, OpenApiConfig};
 pub use endpoints::{BaseUrl, Endpoints};
 pub use error::{Error, FailureKind, Result};

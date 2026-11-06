@@ -43,6 +43,7 @@ STABLE_COMMANDS = (
         "Feature isolation self-test",
         ("python", "scripts/verify_feature_isolation.py", "--self-test"),
     ),
+    Command("OpenAPI coverage", ("python", "scripts/verify_openapi_coverage.py")),
     Command("Formatting", ("cargo", "fmt", "--all", "--", "--check")),
     Command(
         "Performance shadow self-test",
