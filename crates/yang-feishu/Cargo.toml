@@ -9,7 +9,6 @@ repository.workspace = true
 description = "飞书开放平台协议客户端：传输、令牌、多维表格、审批、事件、外部选项"
 keywords = ["feishu", "lark", "openapi", "bitable", "approval"]
 categories = ["api-bindings", "asynchronous"]
-publish = false
 
 [features]
 default = []

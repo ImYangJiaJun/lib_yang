@@ -2,9 +2,9 @@
 
 当前仓库基线：
 
-- `yang-base` 0.3.0
+- `yang-base` 0.4.0
 - `yang-base-derive` 0.3.0
-- `yang-db` 0.2.0
+- `yang-db` 0.2.1
 
 0.x 仍允许在次版本中发布 breaking change，但本仓库继续把 patch 版本用于兼容增强；任何有意删除、重命名或收紧公共契约的变化必须集中到明确的升级版本，并提供迁移说明和契约测试。
 
@@ -31,7 +31,7 @@
 
 ## yang-db 0.1.x 规则
 
-`yang-db` 仍处于 0.2.0：
+`yang-db` 仍处于 0.2.1：
 
 - 允许新增类型、方言能力、checked identifier 入口和结构化错误；已有入口保持可编译。
 - 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和兼容测试。
@@ -126,3 +126,41 @@ unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新
 > 注意：`crates/yang-base/tests/*.rs` **不被 `run_ci.py` 执行**（quick/full 对 yang-base
 > 只跑 `--lib`）。验证传输层行为需显式运行
 > `cargo test --test transport_axum -p yang-base --features transport-axum --locked`。
+
+## yang-base 0.4.0 迁移说明
+
+0.4.0 汇总了 0.3.0 之后的一批公共契约变化。`yang-db` 同步发布 0.2.1（仅新增 batch upsert）。
+
+### 破坏性变更
+
+- **`TotpVerifier::verify` 签名收紧**：由 `verify(&self, secret, code)` 改为
+  `verify(&self, ctx: &ActionContext, subject: &str, secret: &str, code: &str)`。
+  实现方必须改用 `ctx.tools().cache()` 读写消费状态，并在 `subject` 上保持稳定。
+  **迁移**：更新所有实现与调用点；默认实现 `TotpLiteVerifier` 现在要求 Redis 可用，
+  不可用时校验失败（fail-closed）。
+- **新增公共字段**：`AxumTransportConfig` 新增 `max_json_body_bytes`，
+  `ModulePresentationSpec` / `ModulePresentationSchema` 新增 `app_route`。
+  这些结构没有 `#[non_exhaustive]`，使用结构体字面量的下游代码需补字段或改用
+  `Default` / builder。
+- **UI 线契约升级**：`UI_SCHEMA_VERSION` 由 `2.3` 升到 `2.4`，Module 投影固定输出
+  `app_route`（默认 `null`）。前端契约应同步版本号。
+- **传输语义**：`max_concurrency` 超限改为立即 503（不再排队）；`request_timeout`
+  与未匹配路由/方法改为统一 JSON 错误信封（404/405）。
+- **错误分类**：唯一键冲突由 `DatabaseExecuteFailed` 改为 `ParamInvalid`；
+  邮件投递失败改为 `UpstreamUnavailable`（code 300009，HTTP 503）。
+- **认证行为**：匿名 `logout` 要求目标 token 仍有效；TOTP secret 严格校验 Base32。
+
+### 兼容新增
+
+- `BaseError::UpstreamUnavailable`（`BaseError` 已 `#[non_exhaustive]`，下游 match 不受影响）。
+- `serve_listener_with_shutdown`、`TableQuery::upsert_batch_in_tx`、
+  `ModulePresentationSpec::app_route`。
+- `yang-db` 新增 `QueryBuilder::upsert_batch` / `upsert_batch_with_size`，
+  以及 `BackendCapability::BatchUpsert`（`#[non_exhaustive]` 枚举）。
+
+### 契约测试
+
+- `crates/yang-base/tests/compatibility_contract.rs`、`release_docs_contract.rs`：
+  版本号与文档一致性。
+- 传输、认证与错误分类行为分别由 `tests/transport_axum.rs`、
+  `tests/token_revocation_integration.rs`、`tests/error_test.rs` 覆盖。
