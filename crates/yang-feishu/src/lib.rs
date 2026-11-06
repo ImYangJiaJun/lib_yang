@@ -40,8 +40,11 @@
 //! # 全量官方端点
 //!
 //! [`OpenApiClient::api`] 返回 [`api::ApiClient`]，覆盖官方 SDK、llms 文档与历史
-//! 版本中的 1709 个 REST 端点，按 66 个域生成 2367 个薄封装方法；typed 核心链路
-//! 仍走 [`OpenApiClient::bitable`] / [`OpenApiClient::approval`] 等客户端。
+//! 版本中的 1713 个 REST 端点，按 66 个域生成 2372 个薄封装方法；typed 核心链路
+//! 仍走 `OpenApiClient::bitable` / `OpenApiClient::approval` 等客户端。
+//!
+//! 每个生成域由 `api-<domain>` feature 门控；typed 模块由 `bitable` /
+//! `approval` / `contact` / `im` / `drive` 门控。默认不启用任何域，按需开启。
 //!
 //! # 平台事实（最容易踩的坑）
 //!
@@ -78,21 +81,29 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const FEISHU_OPEN_BASE: &str = "https://open.feishu.cn";
 
 pub mod api;
+#[cfg(feature = "approval")]
 pub mod approval;
 pub mod auth;
+#[cfg(feature = "bitable")]
 pub mod bitable;
 pub mod client;
+#[cfg(feature = "contact")]
 pub mod contact;
+#[cfg(feature = "contact")]
 mod contact_endpoints;
 pub mod crypto;
+#[cfg(feature = "drive")]
 pub mod drive;
+#[cfg(feature = "drive")]
 mod drive_endpoints;
 pub mod endpoints;
 pub mod error;
 pub mod event;
+#[cfg(feature = "im")]
 pub mod im;
+#[cfg(feature = "im")]
 mod im_endpoints;
-mod multipart;
+pub mod multipart;
 pub mod options;
 pub mod path;
 pub mod transport;

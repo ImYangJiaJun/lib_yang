@@ -870,7 +870,12 @@ impl BitableClient {
     /// Create a form in a Base table
     ///
     /// 来源: `lark-cli base +form-create`（Base v3）。
-    pub async fn v3_form_create(&self, base_token: &str, table_id: &str) -> Result<Value> {
+    pub async fn v3_form_create(
+        &self,
+        base_token: &str,
+        table_id: &str,
+        body: &Value,
+    ) -> Result<Value> {
         validate_opaque_path_segment("base_token", base_token)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
         validate_opaque_path_segment("table_id", table_id)
@@ -879,7 +884,7 @@ impl BitableClient {
         let url = format!("{}{}", self.core.endpoints().open.as_str(), path);
         let query = Vec::new();
         self.core
-            .call_json(Method::Post, url, query, None, 20, false)
+            .call_json(Method::Post, url, query, Some(body.clone()), 20, false)
             .await
     }
 
@@ -1052,6 +1057,7 @@ impl BitableClient {
         base_token: &str,
         table_id: &str,
         form_id: &str,
+        body: &Value,
     ) -> Result<Value> {
         validate_opaque_path_segment("base_token", base_token)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
@@ -1065,7 +1071,7 @@ impl BitableClient {
         let url = format!("{}{}", self.core.endpoints().open.as_str(), path);
         let query = Vec::new();
         self.core
-            .call_json(Method::Patch, url, query, None, 20, true)
+            .call_json(Method::Patch, url, query, Some(body.clone()), 20, true)
             .await
     }
 
@@ -1140,6 +1146,7 @@ impl BitableClient {
         base_token: &str,
         table_id: &str,
         form_id: &str,
+        body: &Value,
     ) -> Result<Value> {
         validate_opaque_path_segment("base_token", base_token)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
@@ -1152,7 +1159,7 @@ impl BitableClient {
         let url = format!("{}{}", self.core.endpoints().open.as_str(), path);
         let query = Vec::new();
         self.core
-            .call_json(Method::Patch, url, query, None, 20, true)
+            .call_json(Method::Patch, url, query, Some(body.clone()), 20, true)
             .await
     }
 
@@ -1268,14 +1275,22 @@ impl BitableClient {
     /// List records in a table
     ///
     /// 来源: `lark-cli base +record-list`（Base v3）。
-    pub async fn v3_record_list(&self, base_token: &str, table_id: &str) -> Result<Value> {
+    pub async fn v3_record_list(
+        &self,
+        base_token: &str,
+        table_id: &str,
+        query: &[(&str, &str)],
+    ) -> Result<Value> {
         validate_opaque_path_segment("base_token", base_token)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
         validate_opaque_path_segment("table_id", table_id)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        let path = format!("/open-apis/base/v3/bases/{base_token}/tables/{table_id}/records?field_id=TEST&filter=%7B%7D&limit=1&offset=1&view_id=TEST");
+        let path = format!("/open-apis/base/v3/bases/{base_token}/tables/{table_id}/records");
         let url = format!("{}{}", self.core.endpoints().open.as_str(), path);
-        let query = Vec::new();
+        let query = query
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect();
         self.core
             .call_json(Method::Get, url, query, None, 20, true)
             .await

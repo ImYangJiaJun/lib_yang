@@ -24,6 +24,8 @@ pub enum ReceiveIdType {
     UnionId,
     /// `email`。
     Email,
+    /// `chat_id`（群聊）。
+    ChatId,
 }
 
 impl ReceiveIdType {
@@ -34,6 +36,7 @@ impl ReceiveIdType {
             Self::UserId => "user_id",
             Self::UnionId => "union_id",
             Self::Email => "email",
+            Self::ChatId => "chat_id",
         }
     }
 }
@@ -59,6 +62,7 @@ impl MessageRecipient {
             ReceiveIdType::Email => id.split_once('@').is_some_and(|(local, domain)| {
                 !local.is_empty() && domain.contains('.') && !domain.contains('@')
             }),
+            ReceiveIdType::ChatId => id.is_ascii() && id.starts_with("oc_") && id.len() > 3,
         };
         if id.is_empty()
             || id.len() > 320
@@ -193,9 +197,9 @@ impl ImClient {
         bytes: &[u8],
     ) -> Result<String> {
         let mut form = Multipart::new();
-        form.text("file_type", file_type)
-            .text("file_name", file_name)
-            .file("file", file_name, "application/octet-stream", bytes);
+        form.text("file_type", file_type)?
+            .text("file_name", file_name)?
+            .file("file", file_name, "application/octet-stream", bytes)?;
         let (content_type, body) = form.finish();
         let response = self
             .core
@@ -221,8 +225,8 @@ impl ImClient {
     /// 上传消息图片，返回 `image_key`。
     pub async fn upload_image(&self, image_type: &str, bytes: &[u8]) -> Result<String> {
         let mut form = Multipart::new();
-        form.text("image_type", image_type)
-            .file("image", "image.png", "image/png", bytes);
+        form.text("image_type", image_type)?
+            .file("image", "image.png", "image/png", bytes)?;
         let (content_type, body) = form.finish();
         let response = self
             .core
@@ -318,6 +322,18 @@ mod tests {
         assert!(MessageRecipient {
             receive_id_type: ReceiveIdType::Email,
             receive_id: "a@b".into(),
+        }
+        .validate()
+        .is_err());
+        assert!(MessageRecipient {
+            receive_id_type: ReceiveIdType::ChatId,
+            receive_id: "oc_123".into(),
+        }
+        .validate()
+        .is_ok());
+        assert!(MessageRecipient {
+            receive_id_type: ReceiveIdType::ChatId,
+            receive_id: "ou_123".into(),
         }
         .validate()
         .is_err());

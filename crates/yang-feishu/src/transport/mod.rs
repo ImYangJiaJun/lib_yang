@@ -268,6 +268,12 @@ pub fn classify(
             return Some(FailureKind::UuidConflict);
         } else if code == CODE_INSTANCE_NOT_FOUND {
             return Some(FailureKind::InstanceNotFound);
+        } else if (500..=599).contains(&status) {
+            // 服务端 5xx 即使带业务码也按瞬态失败重试；只按业务码判 Fatal 会把
+            // 网关/后端超时误判成永久的配置错误。
+            return Some(FailureKind::Retry {
+                retry_after_seconds: rate_limit_reset_seconds(headers),
+            });
         } else {
             return Some(FailureKind::Fatal { code });
         }
@@ -475,6 +481,7 @@ pub(crate) async fn send_with_retry(
 }
 
 /// 取出飞书信封里的 `data` 并序列化为文本（审批/通讯录共用）。
+#[allow(dead_code)] // 只在启用 typed 域 feature 时使用
 pub(crate) fn decode_data(response: &str) -> Result<String> {
     #[derive(serde::Deserialize)]
     struct Envelope {
@@ -578,6 +585,22 @@ mod tests {
         assert_eq!(
             classify(400, &headers(&[]), r#"{"code":1254024}"#),
             Some(FailureKind::Fatal { code: 1254024 })
+        );
+    }
+
+    #[test]
+    fn server_errors_with_business_codes_are_retryable() {
+        assert_eq!(
+            classify(503, &headers(&[]), r#"{"code":20072}"#),
+            Some(FailureKind::Retry {
+                retry_after_seconds: None
+            })
+        );
+        assert_eq!(
+            classify(200, &headers(&[]), r#"{"code":1254291}"#),
+            Some(FailureKind::Retry {
+                retry_after_seconds: None
+            })
         );
     }
 

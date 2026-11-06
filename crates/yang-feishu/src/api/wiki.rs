@@ -35,6 +35,32 @@ impl ApiClient {
             .await
     }
 
+    /// 搜索 Wiki
+    ///
+    /// 官方文档: <https://open.feishu.cn/document/server-docs/docs/wiki-v2/search_wiki.md>
+    /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
+    pub async fn wiki_nodes_search_v2_user(
+        &self,
+        bearer_token: &str,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let path = "/open-apis/wiki/v2/nodes/search".to_string();
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json_user(
+                bearer_token,
+                Method::Post,
+                url,
+                query,
+                Some(body.clone()),
+                20,
+                false,
+            )
+            .await
+    }
+
     /// List 获取知识空间列表
     ///
     /// 官方文档: <https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=list&project=wiki&resource=space&version=v2>

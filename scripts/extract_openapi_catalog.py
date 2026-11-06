@@ -33,7 +33,11 @@ MULTIPART = re.compile(r"WithFileUpload\(\)|FormData")
 
 def extract(sdk: Path) -> list[dict]:
     rows: list[dict] = []
-    for f in sorted((sdk / "service").rglob("resource.go")):
+    files = sorted(
+        set((sdk / "service").rglob("resource.go"))
+        | set((sdk / "service").rglob("api.go"))
+    )
+    for f in files:
         lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
         i = 0
         while i < len(lines):
@@ -80,7 +84,10 @@ def extract(sdk: Path) -> list[dict]:
                         "summary": summary,
                         "doc_url": link,
                         "binary": bool(BIN.search(text)),
-                        "multipart": bool(MULTIPART.search(text)),
+                        # `WithFileUpload()` 也用于下载拿原始 body；GET 端点不是
+                        # multipart 上传，避免把 spark storage 下载标成 multipart。
+                        "multipart": bool(MULTIPART.search(text))
+                        and hm.group(1).upper() != "GET",
                     }
                 )
             i = j + 1

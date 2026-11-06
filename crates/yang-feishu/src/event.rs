@@ -50,9 +50,9 @@ pub enum EventError {
 /// 事件回调的可信信封。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallbackEnvelope {
-    /// 事件 id（顶层 `uuid`，不是 `event.uuid`）。
+    /// 事件 id（v1 取顶层 `uuid`，v2 取 `header.event_id`）。
     pub event_id: String,
-    /// 事件类型（`event.type`）。
+    /// 事件类型（v1 取 `event.type`，v2 取 `header.event_type`）。
     pub event_type: String,
     /// `event` 嵌套层的原始 JSON。
     pub event: Value,
@@ -97,7 +97,7 @@ impl EventVerifier {
         let r#type = body.get("type").and_then(Value::as_str).unwrap_or("");
         let challenge = body.get("challenge").and_then(Value::as_str).unwrap_or("");
 
-        if r#type == "event_callback" {
+        if r#type == "event_callback" || body.get("schema").and_then(Value::as_str) == Some("2.0") {
             // 共用订阅 URL：body 已在本函数解密，委托给回调提取时不能再按
             // 「已配置 Encrypt Key 却收到明文」拒绝。
             return decode_callback_body(&body, &self.config.verification_token)
@@ -168,6 +168,10 @@ fn decode_callback_body(
     body: &Value,
     expected_token: &str,
 ) -> Result<CallbackEnvelope, EventError> {
+    if body.get("schema").and_then(Value::as_str) == Some("2.0") {
+        return decode_callback_v2(body, expected_token);
+    }
+
     let actual_token = body
         .get("token")
         .and_then(Value::as_str)
@@ -209,6 +213,55 @@ fn decode_callback_body(
         .unwrap_or("unknown")
         .to_string();
 
+    Ok(CallbackEnvelope {
+        event_id: event_id.to_string(),
+        event_type,
+        event,
+        payload,
+    })
+}
+
+/// v2.0 事件信封：`schema=2.0`，身份在 `header`，`token` 也在 `header.token`。
+fn decode_callback_v2(body: &Value, expected_token: &str) -> Result<CallbackEnvelope, EventError> {
+    let header = body
+        .get("header")
+        .and_then(Value::as_object)
+        .ok_or_else(|| EventError::InvalidBody {
+            field: "header",
+            message: "v2.0 事件缺少 header 对象".to_string(),
+        })?;
+    let actual_token = header
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| EventError::Unauthorized("飞书 v2.0 事件缺少 header.token".to_string()))?;
+    if !tokens_equal(actual_token, expected_token) {
+        return Err(EventError::Unauthorized(
+            "飞书 v2.0 事件 verification_token 不匹配".to_string(),
+        ));
+    }
+    let event_id = header.get("event_id").and_then(Value::as_str).unwrap_or("");
+    if event_id.trim().is_empty() || event_id.chars().count() > 128 {
+        return Err(EventError::InvalidBody {
+            field: "header.event_id",
+            message: "必须非空且最多 128 字符".to_string(),
+        });
+    }
+    let event_type = header
+        .get("event_type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let event = body
+        .get("event")
+        .cloned()
+        .ok_or_else(|| EventError::InvalidBody {
+            field: "event",
+            message: "缺少 event 对象".to_string(),
+        })?;
+    let mut payload = body.clone();
+    if let Some(header) = payload.get_mut("header").and_then(Value::as_object_mut) {
+        header.remove("token");
+    }
     Ok(CallbackEnvelope {
         event_id: event_id.to_string(),
         event_type,
@@ -300,6 +353,37 @@ mod tests {
         assert_eq!(envelope.event_type, "approval_instance");
         assert!(envelope.payload.get("token").is_none());
         assert_eq!(envelope.event["instance_code"], "ABC");
+    }
+
+    #[test]
+    fn callback_v2_extracts_header_identity_and_strips_token() {
+        let body = serde_json::json!({
+            "schema": "2.0",
+            "header": {
+                "event_id": "evt-v2",
+                "event_type": "im.message.receive_v1",
+                "token": "token-1",
+                "app_id": "cli_x"
+            },
+            "event": {"message": {"message_id": "om_1"}}
+        });
+        let envelope = verifier()
+            .decode_callback(body.to_string().as_bytes())
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(envelope.event_id, "evt-v2");
+        assert_eq!(envelope.event_type, "im.message.receive_v1");
+        assert!(envelope.payload["header"].get("token").is_none());
+        assert_eq!(envelope.event["message"]["message_id"], "om_1");
+
+        let wrong = serde_json::json!({
+            "schema": "2.0",
+            "header": {"event_id": "evt-v2", "event_type": "x", "token": "bad"},
+            "event": {}
+        });
+        assert!(matches!(
+            verifier().decode_callback(wrong.to_string().as_bytes()),
+            Err(EventError::Unauthorized(_))
+        ));
     }
 
     #[test]

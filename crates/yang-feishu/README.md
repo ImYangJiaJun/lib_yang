@@ -10,17 +10,21 @@ Action、产品表与中文运维文案都留在宿主。
 
 ```toml
 [dependencies]
-yang-feishu = { path = "../../crates/yang-feishu", default-features = false, features = ["metrics"] }
+yang-feishu = { path = "../../crates/yang-feishu", default-features = false, features = ["bitable", "approval", "metrics"] }
 ```
 
-独立使用者：
+默认不启用任何 API 域；按需开启 typed 模块或官方域：
 
 | feature | 内容 |
 |---|---|
 | `http` | `transport::http::ReqwestTransport`（自带 rustls） |
 | `redis` | `auth::redis::RedisTokenCache` |
 | `metrics` | `feishu_outbound_request_total` / `feishu_outbound_token_total` |
-| `full` | 以上三者 |
+| `bitable` / `approval` / `contact` / `im` / `drive` | typed 核心链路 + 对应官方域 |
+| `docs` / `calendar` / `task` / `mail` / `attendance` / `hr` / `ai` / `admin` / `auth` | 官方文档能力分组 |
+| `api-<domain>` | 单个官方生成域（如 `api-docx`、`api-sheets`） |
+| `api-all` | 全部 66 个生成域 |
+| `full` | 全部能力 + `http` + `redis` + `metrics` |
 
 宿主已有 HTTP/Redis 时**不要**开 `http` / `redis`，实现 `Transport` / `TokenCache`
 注入即可。
@@ -56,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-（需要 `--features http`，见 `examples/bitable_pull.rs`。）
+（需要 `--features http,bitable`，见 `examples/bitable_pull.rs`。）
 
 ## 平台事实（mock 永远绿、真机才红）
 
@@ -78,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **typed 核心**：记录全量/分页、字段/表/视图解析、审批建单/查单/定义/订阅、表单
   值编码、IM post、附件搬运、事件与外部选项。
 - **全量官方端点**：`client.api()` 覆盖官方 SDK、llms 文档与历史版本中的
-  **1709 个 REST 端点**，按 66 个域生成 **2367 个方法**（tenant/user/app 身份变体
+  **1713 个 REST 端点**，按 66 个域生成 **2372 个方法**（tenant/user/app 身份变体
   分别计数）。生成源码在 `src/api/`，目录在
   `docs/superpowers/specs/2026-11-06-yang-feishu-openapi-catalog.json`、
   `...-openapi-manual.json` 与 `...-openapi-legacy.json`。

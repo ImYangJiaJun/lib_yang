@@ -32,20 +32,6 @@
     },
     {
       "domain": "sheets",
-      "resource": "updatespreadsheet",
-      "go_method": "Update",
-      "method": "PUT",
-      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token",
-      "tokens": [
-        "Tenant",
-        "User"
-      ],
-      "summary": "修改电子表格属性",
-      "doc_url": "",
-      "binary": false
-    },
-    {
-      "domain": "sheets",
       "resource": "batchupdatesheets",
       "go_method": "BatchUpdate",
       "method": "POST",
@@ -609,7 +595,7 @@
       "resource": "updatedatavalidation",
       "go_method": "Update",
       "method": "PUT",
-      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation/:sheetId/:dataValidationId",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation/:sheetId",
       "tokens": [
         "Tenant",
         "User"
@@ -866,7 +852,7 @@
         "Tenant",
         "User"
       ],
-      "summary": "渲染幻灯片图片",
+      "summary": "获取幻灯片截图",
       "doc_url": "",
       "binary": false
     },
@@ -911,6 +897,83 @@
       "summary": "回滚状态查询",
       "doc_url": "",
       "binary": false
+    },
+    {
+      "domain": "im",
+      "resource": "tag",
+      "go_method": "List",
+      "method": "GET",
+      "path": "/open-apis/im/v2/tags",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "查询标签信息",
+      "doc_url": "https://open.feishu.cn/document/tenant-tag/list.md",
+      "binary": false,
+      "multipart": false,
+      "name": "im_tags_list"
+    },
+    {
+      "domain": "im",
+      "resource": "card",
+      "go_method": "Update",
+      "method": "POST",
+      "path": "/open-apis/interactive/v1/card/update",
+      "tokens": [
+        "Tenant"
+      ],
+      "summary": "延时更新消息卡片",
+      "doc_url": "https://open.feishu.cn/document/server-docs/im-v1/message-card/delay-update-message-card.md",
+      "binary": false,
+      "multipart": false,
+      "name": "im_interactive_card_update"
+    },
+    {
+      "domain": "wiki",
+      "resource": "node",
+      "go_method": "Search",
+      "method": "POST",
+      "path": "/open-apis/wiki/v2/nodes/search",
+      "tokens": [
+        "User"
+      ],
+      "summary": "搜索 Wiki",
+      "doc_url": "https://open.feishu.cn/document/server-docs/docs/wiki-v2/search_wiki.md",
+      "binary": false,
+      "multipart": false,
+      "name": "wiki_nodes_search_v2"
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "slide_image",
+      "go_method": "Render",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/slide_image/render",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "渲染页面截图为图片",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false,
+      "name": "slides_ai_slide_image_render"
+    },
+    {
+      "domain": "drive",
+      "resource": "explorer_file",
+      "go_method": "CreateFile",
+      "method": "POST",
+      "path": "/open-apis/drive/explorer/v2/file/:folderToken",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "在指定文件夹创建文件/文件夹（explorer v2）",
+      "doc_url": "",
+      "binary": false,
+      "multipart": false,
+      "name": "drive_explorer_file_create"
     }
   ]
 }

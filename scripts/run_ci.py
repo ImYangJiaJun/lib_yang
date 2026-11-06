@@ -60,7 +60,24 @@ STABLE_COMMANDS = (
             "cargo",
             "test",
             "--all-targets",
-            *AUXILIARY_PACKAGE_FLAGS,
+            "-p",
+            "yang-base-derive",
+            "-p",
+            "yang-pcg",
+            "-p",
+            "yang-runtime",
+            "--locked",
+        ),
+    ),
+    Command(
+        "yang-feishu all-target tests",
+        (
+            "cargo",
+            "test",
+            "--all-targets",
+            "-p",
+            "yang-feishu",
+            "--all-features",
             "--locked",
         ),
     ),
@@ -158,6 +175,10 @@ FEATURE_CASES = (
     ("yang-base-default", "yang-base", ()),
     ("yang-base-all", "yang-base", ("--all-features",)),
     ("yang-feishu-none", "yang-feishu", ("--no-default-features",)),
+    ("yang-feishu-default", "yang-feishu", ()),
+    ("yang-feishu-bitable", "yang-feishu", ("--no-default-features", "--features", "bitable")),
+    ("yang-feishu-docs", "yang-feishu", ("--no-default-features", "--features", "docs")),
+    ("yang-feishu-api-all", "yang-feishu", ("--no-default-features", "--features", "api-all")),
     ("yang-feishu-http", "yang-feishu", ("--no-default-features", "--features", "http")),
     ("yang-feishu-redis", "yang-feishu", ("--no-default-features", "--features", "redis")),
     ("yang-feishu-metrics", "yang-feishu", ("--no-default-features", "--features", "metrics")),
@@ -377,6 +398,10 @@ def self_test() -> None:
         "yang-base-default",
         "yang-base-all",
         "yang-feishu-none",
+        "yang-feishu-default",
+        "yang-feishu-bitable",
+        "yang-feishu-docs",
+        "yang-feishu-api-all",
         "yang-feishu-http",
         "yang-feishu-redis",
         "yang-feishu-metrics",
@@ -439,7 +464,7 @@ def self_test() -> None:
         *feature_commands(),
         *INTEGRATION_COMMANDS,
     ):
-        if command.argv[0] == "cargo":
+        if command.argv[0] == "cargo" and command.argv[1] != "fmt":
             assert "--locked" in command.argv, f"命令缺少 --locked: {command.name}"
     print("local CI runner self-test passed")
 

@@ -131,10 +131,9 @@ impl ApiClient {
 
     /// 获取 user_access_token（v2）
     ///
-    /// 需要 `app_access_token`，由调用方传入 `app_access_token`。
-    pub async fn authen_oauth_token_app(
+    /// 无鉴权；请求体需自带应用凭证。
+    pub async fn authen_oauth_token_public(
         &self,
-        app_access_token: &str,
         query: &[(&str, &str)],
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
@@ -142,15 +141,7 @@ impl ApiClient {
         let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
         let query = crate::api::query_vec(query);
         self.core
-            .call_json_user(
-                app_access_token,
-                Method::Post,
-                url,
-                query,
-                Some(body.clone()),
-                20,
-                false,
-            )
+            .call_json_public(Method::Post, url, query, Some(body.clone()), 20, false)
             .await
     }
 }

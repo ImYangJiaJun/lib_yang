@@ -14,6 +14,7 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from collections import Counter
 from pathlib import Path
 
@@ -82,6 +83,7 @@ def main() -> int:
             catalog[key] = e
 
     generated: Counter = Counter()
+    generated_flags: dict[tuple, tuple[bool, bool]] = {}
     files = sorted(Path(args.src).glob("*.rs"))
     for file in files:
         text = file.read_text(encoding="utf-8")
@@ -93,16 +95,35 @@ def main() -> int:
             http_match = HTTP_CALL.search(body)
             if not http_match:
                 continue
-            generated[(norm(path_match.group(1)), http_match.group(1).upper(), identity(body))] += 1
+            key = (norm(path_match.group(1)), http_match.group(1).upper(), identity(body))
+            generated[key] += 1
+            generated_flags.setdefault(
+                key,
+                (
+                    "binary_limit: Some(" in body,
+                    "content_type: &str" in body and "body: &[u8]" in body,
+                ),
+            )
 
     expected: Counter = Counter()
     missing: list[tuple] = []
+    flag_issues: list[tuple] = []
     for (path, method), endpoint in catalog.items():
         for kind in variants(endpoint.get("tokens") or []):
             key = (path, method, kind)
             expected[key] += 1
             if generated[key] == 0:
                 missing.append((endpoint["domain"], method, endpoint["path"], kind))
+            flags = generated_flags.get(key)
+            if flags is not None:
+                expected_flags = (
+                    bool(endpoint.get("binary")),
+                    bool(endpoint.get("multipart")),
+                )
+                if flags != expected_flags:
+                    flag_issues.append(
+                        (endpoint["domain"], method, endpoint["path"], kind, expected_flags, flags)
+                    )
 
     extra = [key for key in generated if expected[key] == 0]
     print(f"catalog endpoints={len(catalog)} expected variants={sum(expected.values())}")
@@ -113,7 +134,30 @@ def main() -> int:
     print(f"unexpected generated variants={len(extra)}")
     for key in extra[:20]:
         print("EXTRA", key)
-    return 1 if missing or extra else 0
+    print(f"binary/multipart mismatches={len(flag_issues)}")
+    for item in flag_issues[:40]:
+        print("FLAGS", *item)
+
+    domains = sorted({file.stem for file in files if file.stem != "mod"})
+    cargo = tomllib.loads(
+        (ROOT / "crates/yang-feishu/Cargo.toml").read_text(encoding="utf-8")
+    )
+    features = cargo["features"]
+    mod_text = (Path(args.src) / "mod.rs").read_text(encoding="utf-8")
+    api_all = set(features.get("api-all", []))
+    feature_issues: list[str] = []
+    for domain in domains:
+        feature = f"api-{domain}"
+        if f'#[cfg(feature = "{feature}")]' not in mod_text:
+            feature_issues.append(f"{domain}: mod.rs 缺少 {feature} cfg")
+        if feature not in features:
+            feature_issues.append(f"{domain}: Cargo.toml 缺少 {feature}")
+        if feature not in api_all:
+            feature_issues.append(f"{domain}: api-all 未包含 {feature}")
+    print(f"feature gate checks={len(domains)} issues={len(feature_issues)}")
+    for issue in feature_issues[:40]:
+        print("FEATURE", issue)
+    return 1 if missing or extra or feature_issues or flag_issues else 0
 
 
 if __name__ == "__main__":

@@ -290,11 +290,11 @@ impl DriveClient {
         bytes: &[u8],
     ) -> Result<String> {
         let mut form = Multipart::new();
-        form.text("file_name", file_name)
-            .text("parent_type", parent_type)
-            .text("parent_node", parent_node)
-            .text("size", &bytes.len().to_string())
-            .file("file", file_name, "application/octet-stream", bytes);
+        form.text("file_name", file_name)?
+            .text("parent_type", parent_type)?
+            .text("parent_node", parent_node)?
+            .text("size", &bytes.len().to_string())?
+            .file("file", file_name, "application/octet-stream", bytes)?;
         let (content_type, body) = form.finish();
         let response = self
             .core

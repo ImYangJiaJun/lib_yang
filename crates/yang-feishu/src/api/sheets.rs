@@ -339,7 +339,6 @@ impl ApiClient {
         &self,
         spreadsheet_token: &str,
         sheet_id: &str,
-        data_validation_id: &str,
         query: &[(&str, &str)],
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
@@ -347,9 +346,9 @@ impl ApiClient {
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
         validate_opaque_path_segment("sheetId", sheet_id)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        validate_opaque_path_segment("dataValidationId", data_validation_id)
-            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        let path = format!("/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/dataValidation/{sheet_id}/{data_validation_id}");
+        let path = format!(
+            "/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/dataValidation/{sheet_id}"
+        );
         let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
         let query = crate::api::query_vec(query);
         self.core
@@ -365,7 +364,6 @@ impl ApiClient {
         bearer_token: &str,
         spreadsheet_token: &str,
         sheet_id: &str,
-        data_validation_id: &str,
         query: &[(&str, &str)],
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
@@ -373,9 +371,9 @@ impl ApiClient {
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
         validate_opaque_path_segment("sheetId", sheet_id)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        validate_opaque_path_segment("dataValidationId", data_validation_id)
-            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        let path = format!("/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/dataValidation/{sheet_id}/{data_validation_id}");
+        let path = format!(
+            "/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/dataValidation/{sheet_id}"
+        );
         let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
         let query = crate::api::query_vec(query);
         self.core
@@ -1453,53 +1451,6 @@ impl ApiClient {
             .call_json_user(
                 bearer_token,
                 Method::Patch,
-                url,
-                query,
-                Some(body.clone()),
-                20,
-                false,
-            )
-            .await
-    }
-
-    /// 修改电子表格属性
-    ///
-    /// 需要 `tenant_access_token`（客户端自动获取）。
-    pub async fn sheets_spreadsheets_update_1(
-        &self,
-        spreadsheet_token: &str,
-        query: &[(&str, &str)],
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        validate_opaque_path_segment("spreadsheet_token", spreadsheet_token)
-            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        let path = format!("/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}");
-        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
-        let query = crate::api::query_vec(query);
-        self.core
-            .call_json(Method::Put, url, query, Some(body.clone()), 20, false)
-            .await
-    }
-
-    /// 修改电子表格属性
-    ///
-    /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
-    pub async fn sheets_spreadsheets_update_1_user(
-        &self,
-        bearer_token: &str,
-        spreadsheet_token: &str,
-        query: &[(&str, &str)],
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        validate_opaque_path_segment("spreadsheet_token", spreadsheet_token)
-            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
-        let path = format!("/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}");
-        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
-        let query = crate::api::query_vec(query);
-        self.core
-            .call_json_user(
-                bearer_token,
-                Method::Put,
                 url,
                 query,
                 Some(body.clone()),

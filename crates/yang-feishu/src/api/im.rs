@@ -2595,6 +2595,19 @@ impl ApiClient {
             .await
     }
 
+    /// 查询标签信息
+    ///
+    /// 官方文档: <https://open.feishu.cn/document/tenant-tag/list.md>
+    /// 需要 `tenant_access_token`（客户端自动获取）。
+    pub async fn im_tags_list(&self, query: &[(&str, &str)]) -> Result<serde_json::Value> {
+        let path = "/open-apis/im/v2/tags".to_string();
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json(Method::Get, url, query, None, 20, true)
+            .await
+    }
+
     /// Create 创建标签
     ///
     /// 官方文档: <https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=create&project=im&resource=tag&version=v2>
@@ -2642,6 +2655,23 @@ impl ApiClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let path = "/open-apis/im/v2/url_previews/batch_update".to_string();
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json(Method::Post, url, query, Some(body.clone()), 20, false)
+            .await
+    }
+
+    /// 延时更新消息卡片
+    ///
+    /// 官方文档: <https://open.feishu.cn/document/server-docs/im-v1/message-card/delay-update-message-card.md>
+    /// 需要 `tenant_access_token`（客户端自动获取）。
+    pub async fn im_interactive_card_update(
+        &self,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let path = "/open-apis/interactive/v1/card/update".to_string();
         let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
         let query = crate::api::query_vec(query);
         self.core

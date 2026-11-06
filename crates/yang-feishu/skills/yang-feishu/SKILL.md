@@ -13,11 +13,15 @@ metadata:
 
 ## 1. 判断项目形态
 
-- **独立 Rust 项目**：`yang-feishu = { path/git = ..., features = ["http"] }`，
+- **独立 Rust 项目**：`yang-feishu = { path/git = ..., features = ["http", "bitable"] }`，
   builder 不传 transport，默认 `ReqwestTransport`；令牌缓存用 `MemoryTokenCache`
   或 `RedisTokenCache`（`redis` feature）。
-- **已有 HTTP/Redis 的宿主**：`default-features = false, features = ["metrics"]`，
+- **已有 HTTP/Redis 的宿主**：`default-features = false, features = ["bitable", "metrics"]`，
   注入自己的 `Transport` / `TokenCache`，不要启用 `http`/`redis`。
+
+默认 `default = []`，不编译任何 API 域。按需开启 typed feature（`bitable` /
+`approval` / `contact` / `im` / `drive`）、单域 feature（`api-docx` 等）或分组
+feature（`docs` / `hr` / `ai` / `admin` 等）；全量用 `full`。
 
 ```rust
 let client = OpenApiClient::builder(
@@ -31,10 +35,11 @@ let client = OpenApiClient::builder(
 
 ## 2. 选接口
 
-1. **任意官方端点**：先查 `client.api()`。它覆盖 1709 个官方 REST 端点、2367 个
-   方法；方法名带域前缀（如 `docx_documents_create`、`calendar_calendars_list`）。
-   tenant 方法直接调用；user 端点用 `_user` 后缀并传 `bearer_token`；multipart
-   传 `content_type` + `&[u8]`；二进制返回原始 `Response`。
+1. **任意官方端点**：先查 `client.api()`。它覆盖 1713 个官方 REST 端点、2372 个
+   方法；调用前必须开启对应 `api-<domain>`（或 `api-all`）。方法名带域前缀
+   （如 `docx_documents_create`、`calendar_calendars_list`）。tenant 方法直接调用；
+   user 端点用 `_user` 后缀并传 `bearer_token`；multipart 传 `content_type` +
+   `&[u8]`；二进制返回原始 `Response`。
 2. 核心链路优先用 typed 方法（`AGENTS.md` 的模块导航）：多维表格、审批、表单、
    IM post、附件搬运都有强类型 DTO 与收敛断言。
 3. 仍没有的端点：用 `client.send_tenant(Request{...}, &PULL_RETRY)` 裸调；不要猜

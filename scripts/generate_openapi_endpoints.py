@@ -71,6 +71,8 @@ def load_endpoints(paths: list[Path]) -> list[dict]:
                     old["summary"] = endpoint["summary"]
                 if not old.get("doc_url") and endpoint.get("doc_url"):
                     old["doc_url"] = endpoint["doc_url"]
+                if endpoint.get("name") and not old.get("name"):
+                    old["name"] = endpoint["name"]
                 if endpoint.get("multipart"):
                     old["multipart"] = True
                 if endpoint.get("binary"):
@@ -87,6 +89,7 @@ def load_endpoints(paths: list[Path]) -> list[dict]:
                 "doc_url": endpoint.get("doc_url", ""),
                 "binary": bool(endpoint.get("binary")),
                 "multipart": bool(endpoint.get("multipart")),
+                "name": endpoint.get("name", ""),
             }
     return sorted(
         merged.values(),
@@ -161,11 +164,13 @@ def parse_path(path: str) -> tuple[list[tuple[str, str]], str]:
 
 def render_method(endpoint: dict, name: str, suffix: str, identity: str) -> list[str]:
     method = endpoint["method"]
-    multipart = endpoint.get("multipart", False)
+    # binary 优先：Go SDK 的 WithFileUpload() 也会出现在“下载原始 body”的
+    # GET 端点上，此时不是 multipart 上传。
+    binary = endpoint["binary"]
+    multipart = endpoint.get("multipart", False) and not binary
     has_body = method != "GET" or multipart
     idempotent = method in ("GET", "DELETE")
     params, format_path = parse_path(endpoint["path"])
-    binary = endpoint["binary"] and not multipart
 
     args: list[str] = []
     if identity == "user":
@@ -315,7 +320,7 @@ def generate(endpoints: list[dict], out_dir: Path) -> dict:
         for endpoint in sorted(
             by_domain[domain], key=lambda e: (e["path"], e["method"], e["tokens"])
         ):
-            base = base_name(endpoint)
+            base = endpoint.get("name") or base_name(endpoint)
             suffixes = variants(endpoint["tokens"])
             candidate = base
             index = 0
@@ -346,6 +351,8 @@ def generate(endpoints: list[dict], out_dir: Path) -> dict:
         "/// 通用 OpenAPI 客户端。",
         "#[derive(Clone)]",
         "pub struct ApiClient {",
+        "    // 只在启用生成域时被方法读取；默认空 feature 下保留装配面。",
+        "    #[allow(dead_code)]",
         "    pub(crate) core: Arc<ClientCore>,",
         "}",
         "",
@@ -356,8 +363,10 @@ def generate(endpoints: list[dict], out_dir: Path) -> dict:
         "}",
         "",
         "/// 二进制响应上限（64 MiB）。",
+        "#[allow(dead_code)]",
         "pub(crate) const MAX_BINARY_BYTES: usize = 64 * 1024 * 1024;",
         "",
+        "#[allow(dead_code)]",
         "pub(crate) fn query_vec(query: &[(&str, &str)]) -> Vec<(String, String)> {",
         "    query",
         "        .iter()",
@@ -365,6 +374,7 @@ def generate(endpoints: list[dict], out_dir: Path) -> dict:
         "        .collect()",
         "}",
         "",
+        "#[allow(dead_code)]",
         "pub(crate) fn join_url(base: &str, path: &str) -> String {",
         "    if path.starts_with(\"http://\") || path.starts_with(\"https://\") {",
         "        path.to_string()",
@@ -376,6 +386,7 @@ def generate(endpoints: list[dict], out_dir: Path) -> dict:
     ]
     for domain in sorted(by_domain):
         mod_lines.append(f"/// `{domain}` 端点。")
+        mod_lines.append(f'#[cfg(feature = "api-{domain}")]')
         mod_lines.append(f"pub mod {domain};")
         mod_lines.append("")
     (out_dir / "mod.rs").write_text("\n".join(mod_lines).rstrip() + "\n", encoding="utf-8")
