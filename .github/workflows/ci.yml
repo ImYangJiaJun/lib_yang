@@ -54,7 +54,9 @@ jobs:
       - name: yang-base library tests
         run: cargo test --lib -p yang-base --locked
       - name: Auxiliary workspace all-target tests
-        run: cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu --locked
+        run: cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime --locked
+      - name: yang-feishu all-target tests
+        run: cargo test --all-targets -p yang-feishu --all-features --locked
       - name: Clippy all targets and features
         run: cargo clippy -p yang-db -p yang-base -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu --all-targets --all-features --locked -- -D warnings
       - name: yang-db documentation tests
@@ -170,6 +172,18 @@ jobs:
           - name: yang-feishu-none
             package: yang-feishu
             args: --no-default-features
+          - name: yang-feishu-default
+            package: yang-feishu
+            args: ""
+          - name: yang-feishu-bitable
+            package: yang-feishu
+            args: --no-default-features --features bitable
+          - name: yang-feishu-docs
+            package: yang-feishu
+            args: --no-default-features --features docs
+          - name: yang-feishu-api-all
+            package: yang-feishu
+            args: --no-default-features --features api-all
           - name: yang-feishu-http
             package: yang-feishu
             args: --no-default-features --features http

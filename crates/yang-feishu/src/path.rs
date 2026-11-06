@@ -64,7 +64,8 @@ pub fn validate_path_segment(name: &str, value: &str) -> std::result::Result<(),
 
 /// 宽松校验一个要拼进 URL 路径段的值（审批/通讯录用）。
 ///
-/// 只拒绝 `/ ? # 空格 \`，保留审批侧历史上允许的 `.` `:` `@` 等字符。
+/// 只拒绝 `/ ? # 空格 \` 与可被 URL 规范化成路径分隔/回退的 `.`、`..`、
+/// `%2e`、`%2f`、`%5c`；保留审批侧历史上允许的 `.` `:` `@` 等字符。
 pub fn validate_opaque_path_segment(name: &str, value: &str) -> std::result::Result<(), PathError> {
     if value.is_empty() {
         return Err(PathError::new(name, "不能为空"));
@@ -77,6 +78,15 @@ pub fn validate_opaque_path_segment(name: &str, value: &str) -> std::result::Res
     }
     if value.contains(['/', '?', '#', ' ', '\\']) {
         return Err(PathError::new(name, format!("含非法字符：{value}")));
+    }
+    let lower = value.to_ascii_lowercase();
+    if value == "."
+        || value == ".."
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+    {
+        return Err(PathError::new(name, format!("含路径回退片段：{value}")));
     }
     Ok(())
 }
@@ -116,6 +126,12 @@ mod tests {
             assert!(
                 validate_opaque_path_segment("id", value).is_err(),
                 "应拒绝 {value:?}"
+            );
+        }
+        for value in [".", "..", "%2e", "%2E%2E", "a%2fb", "a%5Cb"] {
+            assert!(
+                validate_opaque_path_segment("id", value).is_err(),
+                "应拒绝路径回退片段 {value:?}"
             );
         }
     }

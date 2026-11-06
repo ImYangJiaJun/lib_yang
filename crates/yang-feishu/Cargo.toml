@@ -1,6 +1,6 @@
 [package]
 name = "yang-feishu"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,7 +19,222 @@ http = ["dep:reqwest", "dep:rustls"]
 redis = ["dep:redis"]
 # 出站指标埋点（feishu_outbound_request_total / feishu_outbound_token_total）。
 metrics = ["dep:metrics"]
-full = ["http", "redis", "metrics"]
+
+# typed 核心链路
+bitable = ["api-bitable", "api-base"]
+approval = ["api-approval"]
+contact = ["api-contact", "api-user", "api-directory", "api-trust_party"]
+im = ["api-im", "api-message", "api-bot", "api-cardkit", "api-event", "api-ephemeral"]
+drive = ["api-drive"]
+
+# 官方文档能力分组
+docs = [
+    "drive",
+    "api-docx",
+    "api-docs",
+    "api-wiki",
+    "api-sheets",
+    "api-slides_ai",
+    "api-block",
+    "api-board",
+    "api-lingo",
+    "api-suite",
+]
+calendar = ["api-calendar", "api-vc", "api-meeting_room", "api-minutes"]
+task = ["api-task"]
+mail = ["api-mail"]
+attendance = ["api-attendance"]
+hr = [
+    "api-corehr",
+    "api-ehr",
+    "api-hire",
+    "api-payroll",
+    "api-compensation",
+    "api-performance",
+    "api-okr",
+]
+ai = [
+    "api-aily",
+    "api-spark",
+    "api-document_ai",
+    "api-optical_char_recognition",
+    "api-speech_to_text",
+    "api-translation",
+    "api-baike",
+]
+admin = [
+    "api-admin",
+    "api-tenant",
+    "api-application",
+    "api-security_and_compliance",
+    "api-unified_kms",
+    "api-verification",
+    "api-human_authentication",
+    "api-face_verify",
+    "api-personal_settings",
+    "api-workplace",
+    "api-moments",
+    "api-report",
+    "api-search",
+    "api-helpdesk",
+    "api-acs",
+    "api-passport",
+    "api-mdm",
+    "api-jssdk",
+    "api-pay",
+    "api-apaas",
+]
+auth = ["api-auth", "api-authen"]
+
+# 单个官方域：只编译该域的生成方法
+api-acs = []
+api-admin = []
+api-aily = []
+api-apaas = []
+api-application = []
+api-approval = []
+api-attendance = []
+api-auth = []
+api-authen = []
+api-baike = []
+api-base = []
+api-bitable = []
+api-block = []
+api-board = []
+api-bot = []
+api-calendar = []
+api-cardkit = []
+api-compensation = []
+api-contact = []
+api-corehr = []
+api-directory = []
+api-docs = []
+api-document_ai = []
+api-docx = []
+api-drive = []
+api-ehr = []
+api-ephemeral = []
+api-event = []
+api-face_verify = []
+api-helpdesk = []
+api-hire = []
+api-human_authentication = []
+api-im = []
+api-jssdk = []
+api-lingo = []
+api-mail = []
+api-mdm = []
+api-meeting_room = []
+api-message = []
+api-minutes = []
+api-moments = []
+api-okr = []
+api-optical_char_recognition = []
+api-passport = []
+api-pay = []
+api-payroll = []
+api-performance = []
+api-personal_settings = []
+api-report = []
+api-search = []
+api-security_and_compliance = []
+api-sheets = []
+api-slides_ai = []
+api-spark = []
+api-speech_to_text = []
+api-suite = []
+api-task = []
+api-tenant = []
+api-translation = []
+api-trust_party = []
+api-unified_kms = []
+api-user = []
+api-vc = []
+api-verification = []
+api-wiki = []
+api-workplace = []
+
+api-all = [
+    "api-acs",
+    "api-admin",
+    "api-aily",
+    "api-apaas",
+    "api-application",
+    "api-approval",
+    "api-attendance",
+    "api-auth",
+    "api-authen",
+    "api-baike",
+    "api-base",
+    "api-bitable",
+    "api-block",
+    "api-board",
+    "api-bot",
+    "api-calendar",
+    "api-cardkit",
+    "api-compensation",
+    "api-contact",
+    "api-corehr",
+    "api-directory",
+    "api-docs",
+    "api-document_ai",
+    "api-docx",
+    "api-drive",
+    "api-ehr",
+    "api-ephemeral",
+    "api-event",
+    "api-face_verify",
+    "api-helpdesk",
+    "api-hire",
+    "api-human_authentication",
+    "api-im",
+    "api-jssdk",
+    "api-lingo",
+    "api-mail",
+    "api-mdm",
+    "api-meeting_room",
+    "api-message",
+    "api-minutes",
+    "api-moments",
+    "api-okr",
+    "api-optical_char_recognition",
+    "api-passport",
+    "api-pay",
+    "api-payroll",
+    "api-performance",
+    "api-personal_settings",
+    "api-report",
+    "api-search",
+    "api-security_and_compliance",
+    "api-sheets",
+    "api-slides_ai",
+    "api-spark",
+    "api-speech_to_text",
+    "api-suite",
+    "api-task",
+    "api-tenant",
+    "api-translation",
+    "api-trust_party",
+    "api-unified_kms",
+    "api-user",
+    "api-vc",
+    "api-verification",
+    "api-wiki",
+    "api-workplace",
+]
+
+# 全部能力（旧 full 的超集）
+full = [
+    "api-all",
+    "bitable",
+    "approval",
+    "contact",
+    "im",
+    "drive",
+    "http",
+    "redis",
+    "metrics",
+]
 
 [dependencies]
 async-trait.workspace = true
@@ -48,7 +263,27 @@ tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "time"] }
 
 [[example]]
 name = "bitable_pull"
-required-features = ["http"]
+required-features = ["http", "bitable"]
+
+[[test]]
+name = "api_surface"
+required-features = ["api-auth", "api-contact", "api-docx", "api-im"]
+
+[[test]]
+name = "approval_contract"
+required-features = ["approval"]
+
+[[test]]
+name = "bitable_pagination"
+required-features = ["bitable"]
+
+[[test]]
+name = "endpoints_contract"
+required-features = ["im"]
+
+[[test]]
+name = "public_api"
+required-features = ["drive", "im"]
 
 [lints]
 workspace = true

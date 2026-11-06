@@ -20654,7 +20654,7 @@
       "summary": "Download 下载文件",
       "doc_url": "https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=download&project=spark&resource=app.storage&version=v1",
       "binary": true,
-      "multipart": true
+      "multipart": false
     },
     {
       "domain": "spark",

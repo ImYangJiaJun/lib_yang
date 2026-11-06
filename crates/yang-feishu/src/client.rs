@@ -19,15 +19,20 @@
 use std::sync::Arc;
 
 use crate::api::ApiClient;
+#[cfg(feature = "approval")]
 use crate::approval::ApprovalClient;
 use crate::auth::oauth::OAuthClient;
 use crate::auth::token::{MemoryTokenCache, TokenCache, TokenProvider};
 use crate::auth::{Credentials, CredentialsProvider, SecretString, StaticCredentials};
+#[cfg(feature = "bitable")]
 use crate::bitable::BitableClient;
+#[cfg(feature = "contact")]
 use crate::contact::ContactClient;
+#[cfg(feature = "drive")]
 use crate::drive::DriveClient;
 use crate::endpoints::Endpoints;
 use crate::error::Result;
+#[cfg(feature = "im")]
 use crate::im::ImClient;
 use crate::transport::{
     send_with_retry, Method, Request, Response, RetryPolicy, Sleeper, TokioSleeper, Transport,
@@ -230,6 +235,7 @@ impl ClientCore {
     }
 
     /// 长尾端点：tenant token + JSON 响应。
+    #[allow(dead_code)] // 只在启用 typed/API 域 feature 时使用
     pub(crate) async fn call_json(
         &self,
         method: Method,
@@ -259,6 +265,7 @@ impl ClientCore {
     }
 
     /// 长尾端点：无鉴权调用（应用凭证放在请求体），返回 JSON 响应。
+    #[allow(dead_code)] // 只在启用相关 API 域 feature 时使用
     pub(crate) async fn call_json_public(
         &self,
         method: Method,
@@ -289,6 +296,7 @@ impl ClientCore {
 
     /// 长尾端点：tenant token + 原始请求体（multipart/form-data），JSON 响应。
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // 只在启用 typed/API 域 feature 时使用
     pub(crate) async fn call_raw_json(
         &self,
         method: Method,
@@ -319,6 +327,7 @@ impl ClientCore {
 
     /// 长尾端点：调用方自带 bearer token + 原始请求体，JSON 响应。
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // 只在启用相关 API 域 feature 时使用
     pub(crate) async fn call_raw_json_user(
         &self,
         bearer_token: &str,
@@ -350,6 +359,7 @@ impl ClientCore {
 
     /// 长尾端点：调用方自带 user_access_token + JSON 响应。
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // 只在启用 typed/API 域 feature 时使用
     pub(crate) async fn call_json_user(
         &self,
         bearer_token: &str,
@@ -381,6 +391,7 @@ impl ClientCore {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // 只在启用相关 API 域 feature 时使用
 fn raw_request(
     method: Method,
     url: String,
@@ -404,6 +415,7 @@ fn raw_request(
     }
 }
 
+#[allow(dead_code)] // 只在启用 typed/API 域 feature 时使用
 fn parse_json_body(body: &str) -> Result<serde_json::Value> {
     serde_json::from_str(body)
         .map_err(|error| crate::error::Error::fatal(format!("解析飞书响应失败: {error}")))
@@ -437,26 +449,31 @@ impl OpenApiClient {
     }
 
     /// 多维表格客户端。
+    #[cfg(feature = "bitable")]
     pub fn bitable(&self) -> BitableClient {
         BitableClient::new(self.core.clone())
     }
 
     /// 审批客户端。
+    #[cfg(feature = "approval")]
     pub fn approval(&self) -> ApprovalClient {
         ApprovalClient::new(self.core.clone())
     }
 
     /// 通讯录客户端。
+    #[cfg(feature = "contact")]
     pub fn contact(&self) -> ContactClient {
         ContactClient::new(self.core.clone())
     }
 
     /// IM 客户端。
+    #[cfg(feature = "im")]
     pub fn im(&self) -> ImClient {
         ImClient::new(self.core.clone())
     }
 
     /// 云盘/附件客户端。
+    #[cfg(feature = "drive")]
     pub fn drive(&self) -> DriveClient {
         DriveClient::new(self.core.clone())
     }

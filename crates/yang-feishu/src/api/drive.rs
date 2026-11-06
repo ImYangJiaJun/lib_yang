@@ -9,6 +9,53 @@ use crate::path::validate_opaque_path_segment;
 use crate::transport::Method;
 
 impl ApiClient {
+    /// 在指定文件夹创建文件/文件夹（explorer v2）
+    ///
+    /// 需要 `tenant_access_token`（客户端自动获取）。
+    pub async fn drive_explorer_file_create(
+        &self,
+        folder_token: &str,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        validate_opaque_path_segment("folderToken", folder_token)
+            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
+        let path = format!("/open-apis/drive/explorer/v2/file/{folder_token}");
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json(Method::Post, url, query, Some(body.clone()), 20, false)
+            .await
+    }
+
+    /// 在指定文件夹创建文件/文件夹（explorer v2）
+    ///
+    /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
+    pub async fn drive_explorer_file_create_user(
+        &self,
+        bearer_token: &str,
+        folder_token: &str,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        validate_opaque_path_segment("folderToken", folder_token)
+            .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
+        let path = format!("/open-apis/drive/explorer/v2/file/{folder_token}");
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json_user(
+                bearer_token,
+                Method::Post,
+                url,
+                query,
+                Some(body.clone()),
+                20,
+                false,
+            )
+            .await
+    }
+
     /// 获取文件夹元信息
     ///
     /// 需要 `tenant_access_token`（客户端自动获取）。

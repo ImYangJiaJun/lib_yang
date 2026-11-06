@@ -30,11 +30,24 @@ let client = OpenApiClient::builder(
 - 子客户端：`bitable()`、`approval()`、`contact()`、`im()`、`drive()`、`oauth()`、
   `api()`（全量官方端点薄封装）
 
+## Feature 门控（0.2.0 起）
+
+`default = []`：默认只编译协议核心，不编译任何 typed 模块或生成域。
+
+- typed：`bitable` / `approval` / `contact` / `im` / `drive`
+- 单域：`api-<domain>`（如 `api-docx`、`api-sheets`）
+- 分组：`docs` / `calendar` / `task` / `mail` / `attendance` / `hr` / `ai` /
+  `admin` / `auth`
+- 全量：`api-all`（66 个生成域）或 `full`（全部能力 + http/redis/metrics）
+
+独立项目最小组合：`features = ["http", "bitable"]`。宿主已有 HTTP/Redis 时不要
+开 `http` / `redis`。
+
 ## 模块导航
 
 | 需求 | 入口 | 关键方法 |
 |---|---|---|
-| 任意官方 REST 端点 | `client.api()` | `docx_*` / `sheets_*` / `calendar_*` / `task_*` / `mail_*` / `corehr_*` 等 2367 个方法 |
+| 任意官方 REST 端点 | `client.api()` | `docx_*` / `sheets_*` / `calendar_*` / `task_*` / `mail_*` / `corehr_*` 等 2372 个方法 |
 | 多维表格读 | `client.bitable()` | `list_all_records` / `list_all_fields` / `list_all_tables` / `list_all_views` / `search_records` / `get_records_by_ids` / `record_row_numbers` |
 | 多维表格写 | `client.bitable()` | `batch_update_records`；生成的长尾方法 `record_create` / `record_batch_create` / `record_delete` 等 |
 | 审批建单/查单 | `client.approval()` | `create_instance` / `get_instance` / `get_approval_definition` / `subscribe_approval` |
@@ -42,6 +55,7 @@ let client = OpenApiClient::builder(
 | 部门名/姓名→open_id | `client.contact()` | `resolve_department_name` / `resolve_applicant` |
 | IM 发/改富文本 | `client.im()` | `send_post` / `edit_post`；长尾 `delete_message` / `reply_message` / `forward_message` 等 |
 | 附件下载/上传 | `client.drive()` | `download_media` / `upload_approval_file` |
+| multipart 构造 | `yang_feishu::multipart` | `Multipart::new` / `text` / `file` / `finish`（返回 `Result`，校验 CRLF） |
 | 事件入站 | `yang_feishu::event` | `EventVerifier::decode_challenge` / `decode_callback` |
 | 外部选项 | `yang_feishu::options` | `build_result_body` / `encode_cursor` / `decode_cursor` |
 | AES/SHA-256 | `yang_feishu::crypto` | `derive_key` / `encrypt_bytes` / `decrypt_bytes` / `hash_token` / `verify_token` |
@@ -166,7 +180,7 @@ pub enum FailureKind {
 
 1. **typed 核心链路**：记录读取/分页、审批建单/查单/表单、IM post、附件搬运。
 2. **全量官方端点**（`client.api()`，`src/api/*.rs`）：官方 SDK、llms 文档与历史
-   版本中的 1709 个 REST 端点，按 66 个域生成 2367 个方法。方法名带域前缀，例如
+   版本中的 1713 个 REST 端点，按 66 个域生成 2372 个方法。方法名带域前缀，例如
    `docx_documents_create`、`sheets_spreadsheets_values_get`、
    `calendar_calendars_events_create`。
 3. **官方 v1/v4 薄封装**（`src/bitable/endpoints.rs`、`src/approval/endpoints.rs`、

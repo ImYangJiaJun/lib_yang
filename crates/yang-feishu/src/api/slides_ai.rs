@@ -9,6 +9,47 @@ use crate::path::validate_opaque_path_segment;
 use crate::transport::Method;
 
 impl ApiClient {
+    /// 渲染页面截图为图片
+    ///
+    /// 需要 `tenant_access_token`（客户端自动获取）。
+    pub async fn slides_ai_slide_image_render(
+        &self,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let path = "/open-apis/slides_ai/v1/slide_image/render".to_string();
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json(Method::Post, url, query, Some(body.clone()), 20, false)
+            .await
+    }
+
+    /// 渲染页面截图为图片
+    ///
+    /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
+    pub async fn slides_ai_slide_image_render_user(
+        &self,
+        bearer_token: &str,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let path = "/open-apis/slides_ai/v1/slide_image/render".to_string();
+        let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
+        let query = crate::api::query_vec(query);
+        self.core
+            .call_json_user(
+                bearer_token,
+                Method::Post,
+                url,
+                query,
+                Some(body.clone()),
+                20,
+                false,
+            )
+            .await
+    }
+
     /// 创建演示文稿
     ///
     /// 需要 `tenant_access_token`（客户端自动获取）。
@@ -400,7 +441,7 @@ impl ApiClient {
             .await
     }
 
-    /// 渲染幻灯片图片
+    /// 获取幻灯片截图
     ///
     /// 需要 `tenant_access_token`（客户端自动获取）。
     pub async fn slides_ai_xml_presentations_slide_images_render(
@@ -420,7 +461,7 @@ impl ApiClient {
             .await
     }
 
-    /// 渲染幻灯片图片
+    /// 获取幻灯片截图
     ///
     /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
     pub async fn slides_ai_xml_presentations_slide_images_render_user(

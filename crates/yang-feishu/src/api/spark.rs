@@ -206,32 +206,36 @@ impl ApiClient {
     ///
     /// 官方文档: <https://open.feishu.cn/api-explorer?from=op_doc_tab&apiName=download&project=spark&resource=app.storage&version=v1>
     /// 需要 `user_access_token`，由调用方传入 `bearer_token`。
-    /// `multipart/form-data` 上传：调用方传入 `Content-Type` 与完整请求体。
+    /// 二进制响应：返回原始 `Response`，由调用方读取 `bytes`。
     pub async fn spark_apps_storage_download_user(
         &self,
         bearer_token: &str,
         app_id: &str,
         query: &[(&str, &str)],
-        content_type: &str,
-        body: &[u8],
-    ) -> Result<serde_json::Value> {
+    ) -> Result<crate::transport::Response> {
         validate_opaque_path_segment("app_id", app_id)
             .map_err(|error| crate::error::Error::fatal(error.to_string()))?;
         let path = format!("/open-apis/spark/v1/apps/{app_id}/storage");
         let url = crate::api::join_url(self.core.endpoints().open.as_str(), &path);
         let query = crate::api::query_vec(query);
-        self.core
-            .call_raw_json_user(
-                bearer_token,
-                Method::Get,
-                url,
-                query,
-                content_type,
-                body,
-                20,
-                true,
+        let response = self
+            .core
+            .send_raw(
+                crate::transport::Request {
+                    method: Method::Get,
+                    url,
+                    query,
+                    bearer_token: Some(bearer_token.to_string()),
+                    json_body: None,
+                    raw_body: None,
+                    binary_limit: Some(crate::api::MAX_BINARY_BYTES),
+                    timeout_secs: Some(20),
+                    idempotent: true,
+                },
+                &crate::transport::PULL_RETRY,
             )
-            .await
+            .await?;
+        Ok(response)
     }
 
     /// Upload 上传文件
