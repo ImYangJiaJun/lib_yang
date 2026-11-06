@@ -450,7 +450,7 @@ impl<'a> QueryBuilder<'a> {
         Ok(total_affected)
     }
 
-    /// 批量 UPSERT（`INSERT ... ON DUPLICATE KEY UPDATE`），每批最多 [`INSERT_BATCH_SIZE`] 行。
+    /// 批量 UPSERT（`INSERT ... ON DUPLICATE KEY UPDATE`），每批最多 INSERT_BATCH_SIZE 行。
     ///
     /// 委托给 [`Self::upsert_batch_with_size`]；空数据与参数校验全部由它统一处理。
     #[tracing::instrument(
@@ -477,7 +477,7 @@ impl<'a> QueryBuilder<'a> {
     /// 会静默改写归属）。
     ///
     /// ODKU 尾巴不产生占位符，参数数 = 行数 × 列数，故批大小只按列数收敛
-    /// （[`derive_upsert_batch_size`]）。一条语句本身原子：单批走裸连接、多批才包事务
+    /// （derive_upsert_batch_size）。一条语句本身原子：单批走裸连接、多批才包事务
     /// （`QueryExecutor::Transaction` 分支不 begin 也不 commit，失败由调用方整体回滚）。
     ///
     /// # 参数

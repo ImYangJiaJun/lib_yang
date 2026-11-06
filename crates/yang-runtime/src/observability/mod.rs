@@ -1,4 +1,7 @@
-//! JSON 日志、Prometheus 管理面与 OpenTelemetry 运行时。
+//! 日志、Prometheus 管理面与 OpenTelemetry 运行时。
+//!
+//! 日志层当前使用人读的多行格式；接入日志采集器前必须先换回单行 JSON，
+//! 见 `docs/operations/LOG_SHIPPING.md`。
 
 pub mod logging;
 pub mod telemetry;

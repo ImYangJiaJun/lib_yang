@@ -1,6 +1,6 @@
 # yang-db — 数据库基础库文档
 
-版本：0.2.0 | 许可：MIT OR Apache-2.0
+版本：0.2.1 | 许可：MIT OR Apache-2.0
 
 ## 概述
 
