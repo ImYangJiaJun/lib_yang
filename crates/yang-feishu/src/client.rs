@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use crate::api::ApiClient;
 use crate::approval::ApprovalClient;
 use crate::auth::oauth::OAuthClient;
 use crate::auth::token::{MemoryTokenCache, TokenCache, TokenProvider};
@@ -257,6 +258,96 @@ impl ClientCore {
         parse_json_body(&response.body)
     }
 
+    /// 长尾端点：无鉴权调用（应用凭证放在请求体），返回 JSON 响应。
+    pub(crate) async fn call_json_public(
+        &self,
+        method: Method,
+        url: String,
+        query: Vec<(String, String)>,
+        body: Option<serde_json::Value>,
+        timeout_secs: u64,
+        idempotent: bool,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .send_raw(
+                Request {
+                    method,
+                    url,
+                    query,
+                    bearer_token: None,
+                    json_body: body,
+                    raw_body: None,
+                    binary_limit: None,
+                    timeout_secs: Some(timeout_secs),
+                    idempotent,
+                },
+                &PULL_RETRY,
+            )
+            .await?;
+        parse_json_body(&response.body)
+    }
+
+    /// 长尾端点：tenant token + 原始请求体（multipart/form-data），JSON 响应。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn call_raw_json(
+        &self,
+        method: Method,
+        url: String,
+        query: Vec<(String, String)>,
+        content_type: &str,
+        body: &[u8],
+        timeout_secs: u64,
+        idempotent: bool,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .send_tenant(
+                raw_request(
+                    method,
+                    url,
+                    query,
+                    content_type,
+                    body,
+                    timeout_secs,
+                    idempotent,
+                    None,
+                ),
+                &PULL_RETRY,
+            )
+            .await?;
+        parse_json_body(&response.body)
+    }
+
+    /// 长尾端点：调用方自带 bearer token + 原始请求体，JSON 响应。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn call_raw_json_user(
+        &self,
+        bearer_token: &str,
+        method: Method,
+        url: String,
+        query: Vec<(String, String)>,
+        content_type: &str,
+        body: &[u8],
+        timeout_secs: u64,
+        idempotent: bool,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .send_raw(
+                raw_request(
+                    method,
+                    url,
+                    query,
+                    content_type,
+                    body,
+                    timeout_secs,
+                    idempotent,
+                    Some(bearer_token),
+                ),
+                &PULL_RETRY,
+            )
+            .await?;
+        parse_json_body(&response.body)
+    }
+
     /// 长尾端点：调用方自带 user_access_token + JSON 响应。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn call_json_user(
@@ -286,6 +377,30 @@ impl ClientCore {
             )
             .await?;
         parse_json_body(&response.body)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raw_request(
+    method: Method,
+    url: String,
+    query: Vec<(String, String)>,
+    content_type: &str,
+    body: &[u8],
+    timeout_secs: u64,
+    idempotent: bool,
+    bearer_token: Option<&str>,
+) -> Request {
+    Request {
+        method,
+        url,
+        query,
+        bearer_token: bearer_token.map(str::to_string),
+        json_body: None,
+        raw_body: Some((content_type.to_string(), body.to_vec())),
+        binary_limit: None,
+        timeout_secs: Some(timeout_secs),
+        idempotent,
     }
 }
 
@@ -344,6 +459,11 @@ impl OpenApiClient {
     /// 云盘/附件客户端。
     pub fn drive(&self) -> DriveClient {
         DriveClient::new(self.core.clone())
+    }
+
+    /// 官方 OpenAPI 全量端点薄封装。
+    pub fn api(&self) -> ApiClient {
+        ApiClient::new(self.core.clone())
     }
 
     /// 用户 OAuth 客户端。

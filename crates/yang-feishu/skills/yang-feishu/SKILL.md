@@ -31,9 +31,12 @@ let client = OpenApiClient::builder(
 
 ## 2. 选接口
 
-1. 先查 typed 方法（`AGENTS.md` 的模块导航）；核心链路都有强类型 DTO。
-2. 长尾端点用 `src/*_endpoints.rs` 生成的薄封装：路径参数显式，query/body/response
-   为 `serde_json::Value`，注释里有官方 doc URL 与 scope。
+1. **任意官方端点**：先查 `client.api()`。它覆盖 1709 个官方 REST 端点、2367 个
+   方法；方法名带域前缀（如 `docx_documents_create`、`calendar_calendars_list`）。
+   tenant 方法直接调用；user 端点用 `_user` 后缀并传 `bearer_token`；multipart
+   传 `content_type` + `&[u8]`；二进制返回原始 `Response`。
+2. 核心链路优先用 typed 方法（`AGENTS.md` 的模块导航）：多维表格、审批、表单、
+   IM post、附件搬运都有强类型 DTO 与收敛断言。
 3. 仍没有的端点：用 `client.send_tenant(Request{...}, &PULL_RETRY)` 裸调；不要猜
    路径，先查官方文档。
 

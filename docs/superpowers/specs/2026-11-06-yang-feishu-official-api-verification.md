@@ -56,7 +56,8 @@
 ## 3. 未生成的 CLI 命令
 
 以下命令属于 CLI 组合命令、仅 BaseApp/工作区/模板/区块等非官方 llms 表面，
-或需要真实文件/输出路径，未生成薄封装：
+或需要真实文件/输出路径；其底层官方 REST 端点已由第 5 节的 `client.api()` 覆盖，
+CLI 专属的组合流程仍不生成：
 
 - `lark-cli base`：`app-block-create`、`app-block-get`（保留为字段解析辅助）、
   `button-rule-bind/unbind/get`、`dashboard-block-create`、`record-upload-attachment`、
@@ -69,6 +70,41 @@
 
 ## 4. 重新生成
 
-目录生成脚本与端点生成脚本目前是本次施工的临时工具；如需长期维护，建议把
-`lark-cli <domain> --help/--dry-run` 的采集与 `src/*_endpoints.rs` 的生成固化到
-`scripts/`（本次未提交临时脚本，避免把 CLI 版本耦合进 CI）。
+全量端点目录与生成脚本已固化到 `scripts/`，见第 5 节。`src/bitable/v3.rs` 仍按
+`lark-cli base` 的 dry-run 结果维护；升级 CLI 后重新采集。
+
+## 5. 全量官方端点补齐（2026-11-06）
+
+在上述 5 个核心域之外，以官方 Go SDK（`larksuite/oapi-sdk-go`）的
+`service/**/resource.go` 为机器可读目录，提取全部 REST 端点，并补入官方 llms
+文档中 SDK 未覆盖的 Sheets v2 与 Slides：
+
+| 来源 | 端点数 |
+|---|---:|
+| 官方 Go SDK 提取 | 1643 |
+| llms 手工补充（Sheets v2/v3、Slides slides_ai v1） | 39（去重后） |
+| 官方文档核验补充（meeting_room、ephemeral、application v1/v2/v3、face_verify、pay、user v4、jssdk、suite 等） | 27（去重后） |
+| **合计** | **1709** |
+
+生成结果：66 个域、2367 个方法（tenant/user/app/public 身份变体分别计数）。
+源码在 `crates/yang-feishu/src/api/`，通过 `client.api()` 使用。
+
+> 2026-11-06 的多代理审计对 8 个域组做了官方文档对照与对抗核验，确认 30 个
+> SDK 目录缺失或身份不一致的端点（meeting_room、ephemeral、application v1/v2/v3、
+> face_verify、pay、user v4、jssdk、suite 等），已写入 legacy 目录。
+
+- 目录：`2026-11-06-yang-feishu-openapi-catalog.json`、
+  `2026-11-06-yang-feishu-openapi-manual.json`、
+  `2026-11-06-yang-feishu-openapi-legacy.json`
+- 提取：`scripts/extract_openapi_catalog.py`
+- 生成：`scripts/generate_openapi_endpoints.py`
+- 覆盖率校验：`scripts/verify_openapi_coverage.py`（CI `quick` 已接入）
+
+已知边界：
+
+- `docs-add-ons`（云文档小组件）与 `base-extension`（多维表格插件）是客户端 JS
+  SDK，没有服务端 HTTP method/path，不计入 REST 覆盖。
+- eLearning 域只有事件，没有 REST API；会议室接口在 `vc` 域。
+- Base v3（`src/bitable/v3.rs`）仍是 CLI 对齐面，不在官方 llms 索引中。
+- 1709 个端点全部为薄封装：multipart 端点接收 `content_type` + `&[u8]`，二进制端点
+  返回原始 `Response`；业务级幂等、重试与字段映射仍由宿主负责。

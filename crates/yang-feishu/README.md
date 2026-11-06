@@ -77,6 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **typed 核心**：记录全量/分页、字段/表/视图解析、审批建单/查单/定义/订阅、表单
   值编码、IM post、附件搬运、事件与外部选项。
+- **全量官方端点**：`client.api()` 覆盖官方 SDK、llms 文档与历史版本中的
+  **1709 个 REST 端点**，按 66 个域生成 **2367 个方法**（tenant/user/app 身份变体
+  分别计数）。生成源码在 `src/api/`，目录在
+  `docs/superpowers/specs/2026-11-06-yang-feishu-openapi-catalog.json`、
+  `...-openapi-manual.json` 与 `...-openapi-legacy.json`。
 - **官方端点薄封装**：bitable v1（42）、approval v4（13）、contact（5）、
   IM（46）、Drive（25）；路径来自官方 markdown 文档或 `lark-cli` dry-run。
 - **Base v3 薄封装**（107）：对齐 `lark-cli base` 的 `/open-apis/base/v3/...`；
@@ -84,8 +89,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **二进制/多部分**：IM 文件/图片上传、消息资源下载；Drive 文件/素材上传与下载。
 
 长尾方法的路径参数是显式 `&str`，query 用 `&[(&str, &str)]`，body/response 为
-`serde_json::Value`；字段形状以官方文档为准。使用指南见 `AGENTS.md` 与
-`skills/yang-feishu/SKILL.md`。
+`serde_json::Value`；multipart 端点接收 `content_type` 与 `&[u8]`，二进制端点返回
+原始 `Response`。使用指南见 `AGENTS.md` 与 `skills/yang-feishu/SKILL.md`。
+
+全量端点由脚本维护：
+
+```bash
+python -I scripts/generate_openapi_endpoints.py \
+  --catalog docs/superpowers/specs/2026-11-06-yang-feishu-openapi-catalog.json \
+  --catalog docs/superpowers/specs/2026-11-06-yang-feishu-openapi-manual.json \
+  --catalog docs/superpowers/specs/2026-11-06-yang-feishu-openapi-legacy.json \
+  --out crates/yang-feishu/src/api
+python -I scripts/verify_openapi_coverage.py
+```
 
 ## 已知缺口
 

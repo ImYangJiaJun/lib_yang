@@ -27,12 +27,14 @@ let client = OpenApiClient::builder(
 - `client.app_id()` / `client.endpoints()` / `client.tokens()`
 - `client.send_raw(request, &policy)`：不带鉴权（OAuth、用户 token）
 - `client.send_tenant(request, &policy)`：自动取 tenant token，失效强刷一次
-- 子客户端：`bitable()`、`approval()`、`contact()`、`im()`、`drive()`、`oauth()`
+- 子客户端：`bitable()`、`approval()`、`contact()`、`im()`、`drive()`、`oauth()`、
+  `api()`（全量官方端点薄封装）
 
 ## 模块导航
 
 | 需求 | 入口 | 关键方法 |
 |---|---|---|
+| 任意官方 REST 端点 | `client.api()` | `docx_*` / `sheets_*` / `calendar_*` / `task_*` / `mail_*` / `corehr_*` 等 2367 个方法 |
 | 多维表格读 | `client.bitable()` | `list_all_records` / `list_all_fields` / `list_all_tables` / `list_all_views` / `search_records` / `get_records_by_ids` / `record_row_numbers` |
 | 多维表格写 | `client.bitable()` | `batch_update_records`；生成的长尾方法 `record_create` / `record_batch_create` / `record_delete` 等 |
 | 审批建单/查单 | `client.approval()` | `create_instance` / `get_instance` / `get_approval_definition` / `subscribe_approval` |
@@ -160,34 +162,52 @@ pub enum FailureKind {
 
 `Error::Display` 固定 `飞书出站调用失败: {message}`；中文 hint 由宿主展示层补。
 
-## 生成的长尾接口
-
-本 crate 的端点覆盖分为三层：
+## 端点覆盖（四层）
 
 1. **typed 核心链路**：记录读取/分页、审批建单/查单/表单、IM post、附件搬运。
-2. **官方 v1/v4 薄封装**（`src/bitable/endpoints.rs`、`src/approval/endpoints.rs`、
+2. **全量官方端点**（`client.api()`，`src/api/*.rs`）：官方 SDK、llms 文档与历史
+   版本中的 1709 个 REST 端点，按 66 个域生成 2367 个方法。方法名带域前缀，例如
+   `docx_documents_create`、`sheets_spreadsheets_values_get`、
+   `calendar_calendars_events_create`。
+3. **官方 v1/v4 薄封装**（`src/bitable/endpoints.rs`、`src/approval/endpoints.rs`、
    `src/contact_endpoints.rs`、`src/im_endpoints.rs`、`src/drive_endpoints.rs`）：
    路径逐条来自官方 markdown 文档或 lark-cli dry-run，覆盖 App/表/视图/字段/记录/
    仪表盘/表单/工作流/角色、审批实例/定义/任务、通讯录、IM 消息/群聊/Pin/表情、
    云文档文件/权限/评论等。
-3. **Base v3 薄封装**（`src/bitable/v3.rs`，107 个方法）：对齐本地 `lark-cli base`
+4. **Base v3 薄封装**（`src/bitable/v3.rs`，107 个方法）：对齐本地 `lark-cli base`
    使用的 `/open-apis/base/v3/...` 路径；这部分官方 llms 索引未完整收录，升级
    lark-cli 后应重新生成。方法名统一 `v3_` 前缀，避免与 bitable v1 冲突。
 
-方法签名约定：
+全量端点的方法签名约定：
 
 ```rust
-pub async fn record_create(&self, app_token: &str, table_id: &str,
-    query: &[(&str, &str)], body: &serde_json::Value) -> Result<serde_json::Value>
+// tenant 身份（客户端自动取 token）
+pub async fn docx_documents_create(&self, query: &[(&str, &str)],
+    body: &serde_json::Value) -> Result<serde_json::Value>
+
+// user 身份：第一个参数是调用方 token，方法名带 _user
+pub async fn contact_departments_list_user(&self, bearer_token: &str,
+    query: &[(&str, &str)]) -> Result<serde_json::Value>
+
+// app 身份：方法名带 _app；无鉴权端点带 _public
+pub async fn authen_access_token_create_app(&self, app_access_token: &str, ...)
+
+// multipart 上传：传 Content-Type 与完整请求体
+pub async fn im_files_create(&self, query: &[(&str, &str)],
+    content_type: &str, body: &[u8]) -> Result<serde_json::Value>
+
+// 二进制下载：返回原始 Response，由调用方读取 bytes
+pub async fn im_files_get(&self, file_key: &str,
+    query: &[(&str, &str)]) -> Result<Response>
 ```
 
-- 路径参数是显式 `&str`；query 用 `&[(&str, &str)]`；body/response 是 `Value`。
-- `identity: user` 的方法第一个参数是 `bearer_token: &str`；其余走 tenant token。
-- 文档注释里带官方 doc URL 与 scope；`Value` 字段形状以官方文档为准。
+- 路径参数是显式 `&str` 并做注入校验；query 用 `&[(&str, &str)]`。
+- 二元身份端点同时生成基础方法（tenant）与 `_user`；只有 user 的端点只生成 `_user`。
+- 文档注释带官方 API Explorer URL；`Value` 字段形状以官方文档为准。
 - 写接口不会自动确认业务意图；调用方负责幂等键与重试策略。
-- 二进制/多部分端点单独实现：`im::upload_file` / `im::upload_image` /
-  `im::download_message_resource`、`drive::upload_file` / `drive::upload_media` /
-  `drive::download_file`。
+- 重新生成与校验：
+  `python -I scripts/generate_openapi_endpoints.py --catalog ... --out crates/yang-feishu/src/api`
+  与 `python -I scripts/verify_openapi_coverage.py`。
 
 端点目录与覆盖说明见
 `docs/superpowers/specs/2026-11-06-yang-feishu-official-api-verification.md`。
@@ -214,6 +234,7 @@ cargo test -p yang-feishu --doc
 ## 不要做
 
 - 不要为了「统一」把 `PaginationState` 的三条硬失败改成 break。
+- 不要手工编辑 `src/api/*.rs`；改端点目录后运行生成脚本并跑覆盖率校验。
 - 不要把 `FailureKind::UuidConflict` / `InstanceNotFound` 折成 `Fatal`。
 - 不要在 crate 里硬编码产品 appId、宿主表名、中文运维 hint。
 - 不要给 `connect` 的 AppLink 解析硬编码 appId；用 `FormInput::approval_app_id`。

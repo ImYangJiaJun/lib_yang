@@ -1,0 +1,916 @@
+{
+  "source": "official llms-docs (Sheets v2/v3, Slides slides_ai v1)",
+  "description": "Official REST endpoints missing from the Go SDK catalogue.",
+  "endpoints": [
+    {
+      "domain": "sheets",
+      "resource": "createspreadsheet",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建电子表格",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getspreadsheet",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取电子表格信息",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatespreadsheet",
+      "go_method": "Update",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "修改电子表格属性",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchupdatesheets",
+      "go_method": "BatchUpdate",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/sheets_batch_update",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "操作工作表（含更新工作表属性）",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "querysheets",
+      "go_method": "Query",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取工作表",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getsheet",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询工作表",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "adddimension",
+      "go_method": "Add",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dimension_range",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "增加行列",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "insertdimension",
+      "go_method": "Insert",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/insert_dimension_range",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "插入行列",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatedimension",
+      "go_method": "Update",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dimension_range",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新行列",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "movedimension",
+      "go_method": "Move",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/move_dimension",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "移动行列",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletedimension",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dimension_range",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除行列",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "mergecells",
+      "go_method": "Merge",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/merge_cells",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "合并单元格",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "unmergecells",
+      "go_method": "Unmerge",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/unmerge_cells",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "拆分单元格",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "find",
+      "go_method": "Find",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/find",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查找单元格",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "replace",
+      "go_method": "Replace",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/replace",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "替换单元格",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "setstyle",
+      "go_method": "Set",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/style",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "设置单元格样式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchupdatestyles",
+      "go_method": "BatchUpdate",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/styles_batch_update",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "批量设置单元格样式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "prependvalues",
+      "go_method": "Prepend",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_prepend",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "插入数据",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "appendvalues",
+      "go_method": "Append",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_append",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "追加数据",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "writeimage",
+      "go_method": "Write",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_image",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "写入图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getvalues",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values/:range",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "读取单个范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchgetvalues",
+      "go_method": "BatchGet",
+      "method": "GET",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_batch_get",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "读取多个范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "writevalues",
+      "go_method": "Write",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "向单个范围写入数据",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchupdatevalues",
+      "go_method": "BatchUpdate",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_batch_update",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "向多个范围写入数据",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "createfilter",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建筛选",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatefilter",
+      "go_method": "Update",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新筛选",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getfilter",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取筛选",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletefilter",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除筛选",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "createfilterview",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建筛选视图",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatefilterview",
+      "go_method": "Update",
+      "method": "PATCH",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新筛选视图",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "queryfilterviews",
+      "go_method": "Query",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/query",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询筛选视图",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getfilterview",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取筛选视图",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletefilterview",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除筛选视图",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "createfiltercondition",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id/conditions",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建筛选条件",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatefiltercondition",
+      "go_method": "Update",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id/conditions/:condition_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新筛选条件",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "queryfilterconditions",
+      "go_method": "Query",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id/conditions/query",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询筛选条件",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getfiltercondition",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id/conditions/:condition_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取筛选条件",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletefiltercondition",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/filter_views/:filter_view_id/conditions/:condition_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除筛选条件",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "addprotectedrange",
+      "go_method": "Add",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/protected_dimension",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "增加保护范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updateprotectedrange",
+      "go_method": "Update",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/protected_range_batch_update",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "修改保护范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getprotectedranges",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/protected_range_batch_get",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取保护范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deleteprotectedranges",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/protected_range_batch_del",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除保护范围",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "setdatavalidation",
+      "go_method": "Set",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "设置下拉列表",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatedatavalidation",
+      "go_method": "Update",
+      "method": "PUT",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation/:sheetId/:dataValidationId",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新下拉列表设置",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getdatavalidation",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询下拉列表设置",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletedatavalidation",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/dataValidation",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除下拉列表设置",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchcreateconditionformats",
+      "go_method": "BatchCreate",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/condition_formats/batch_create",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "批量创建条件格式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchupdateconditionformats",
+      "go_method": "BatchUpdate",
+      "method": "POST",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/condition_formats/batch_update",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "批量更新条件格式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getconditionformats",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/condition_formats",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "批量获取条件格式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "batchdeleteconditionformats",
+      "go_method": "BatchDelete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/condition_formats/batch_delete",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "批量删除条件格式",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "createfloatimage",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/float_images",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建浮动图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "updatefloatimage",
+      "go_method": "Update",
+      "method": "PATCH",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/float_images/:float_image_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "更新浮动图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "getfloatimage",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/float_images/:float_image_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取浮动图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "queryfloatimages",
+      "go_method": "Query",
+      "method": "GET",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/float_images/query",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "查询浮动图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "sheets",
+      "resource": "deletefloatimage",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/float_images/:float_image_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除浮动图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "createpresentation",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/xml_presentations",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建演示文稿",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "getpresentation",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取演示文稿",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "createslide",
+      "go_method": "Create",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/slide",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "创建幻灯片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "getslide",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/slide",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "获取幻灯片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "deleteslide",
+      "go_method": "Delete",
+      "method": "DELETE",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/slide",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "删除幻灯片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "replaceslide",
+      "go_method": "Replace",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/slide/replace",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "替换幻灯片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "renderslideimages",
+      "go_method": "Render",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/slide_images",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "渲染幻灯片图片",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "listhistories",
+      "go_method": "List",
+      "method": "GET",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/histories",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "历史版本列表",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "reverthistory",
+      "go_method": "Revert",
+      "method": "POST",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/history/revert",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "历史版本回滚",
+      "doc_url": "",
+      "binary": false
+    },
+    {
+      "domain": "slides_ai",
+      "resource": "getrevertstatus",
+      "go_method": "Get",
+      "method": "GET",
+      "path": "/open-apis/slides_ai/v1/xml_presentations/:xml_presentation_id/history/revert_status",
+      "tokens": [
+        "Tenant",
+        "User"
+      ],
+      "summary": "回滚状态查询",
+      "doc_url": "",
+      "binary": false
+    }
+  ]
+}
