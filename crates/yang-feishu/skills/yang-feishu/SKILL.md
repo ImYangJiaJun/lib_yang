@@ -59,7 +59,9 @@ let client = OpenApiClient::builder(
 - 通知：`im().send_post(recipient, &content, &uuid)`
 - 附件：`drive().download_media` → `drive().upload_approval_file`
 - 事件：`EventVerifier::decode_challenge` / `decode_callback`
-- 外部选项：`options::build_result_body` + `crypto::encrypt_json`
+- 外部选项：`options::build_result_body(&rows, locale, next_page_token)`（`has_more`
+  由游标派生）+ `crypto::encrypt_json`
+- 关联列签名：`relation_record_ids` → `build_signature`（内部排序去重）
 
 ## 5. 排查
 

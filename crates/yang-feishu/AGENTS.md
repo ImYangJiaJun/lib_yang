@@ -49,13 +49,16 @@ let client = OpenApiClient::builder(
 |---|---|---|
 | 任意官方 REST 端点 | `client.api()` | `docx_*` / `sheets_*` / `calendar_*` / `task_*` / `mail_*` / `corehr_*` 等 2372 个方法 |
 | 多维表格读 | `client.bitable()` | `list_all_records` / `list_all_fields` / `list_all_tables` / `list_all_views` / `search_records` / `get_records_by_ids` / `record_row_numbers` |
-| 多维表格写 | `client.bitable()` | `batch_update_records`；生成的长尾方法 `record_create` / `record_batch_create` / `record_delete` 等 |
+| 多维表格写 | `client.bitable()` | `batch_update_records`；v1 `create_record` / `batch_create_records` / `delete_record`，v3 `v3_record_batch_create` / `v3_record_delete` |
 | 审批建单/查单 | `client.approval()` | `create_instance` / `get_instance` / `get_approval_definition` / `subscribe_approval` |
 | 审批任务/撤回/抄送 | `client.approval()` | 生成的长尾方法 `cancel_instance` / `cc_instance` / `approve_task` / `reject_task` / `transfer_task` 等 |
 | 部门名/姓名→open_id | `client.contact()` | `resolve_department_name` / `resolve_applicant` |
-| IM 发/改富文本 | `client.im()` | `send_post` / `edit_post`；长尾 `delete_message` / `reply_message` / `forward_message` 等 |
+| IM 发/改富文本 | `client.im()` | `send_post` / `edit_post`；长尾 `recall_message` / `reply_message` / `forward_message` 等 |
 | 附件下载/上传 | `client.drive()` | `download_media` / `upload_approval_file` |
-| multipart 构造 | `yang_feishu::multipart` | `Multipart::new` / `text` / `file` / `finish`（返回 `Result`，校验 CRLF） |
+| 关联列取 record_id | `yang_feishu::approval` | `relation_record_ids`（`{"link_record_ids":[…]}` / `[{"id":"rec…"}]` / `["rec…"]`） |
+| 单格 AppLink / 实例 Code 解析 | `yang_feishu::approval` | `connection_codes`（传 `None` 时只接受 36 位实例 Code） |
+| 写方向单元格编码 | `yang_feishu::bitable` | `encode_cell_value`（`None` = 该值不该写，`Err` = 类型/形态错误） |
+| multipart 构造 | `yang_feishu::multipart` | `Multipart::new` / `text` / `file`（返回 `Result`，校验 CRLF）/ `finish`（返回 `(String, Vec<u8>)`） |
 | 事件入站 | `yang_feishu::event` | `EventVerifier::decode_challenge` / `decode_callback` |
 | 外部选项 | `yang_feishu::options` | `build_result_body` / `encode_cursor` / `decode_cursor` |
 | AES/SHA-256 | `yang_feishu::crypto` | `derive_key` / `encrypt_bytes` / `decrypt_bytes` / `hash_token` / `verify_token` |
@@ -142,16 +145,55 @@ match verifier.decode_challenge(&raw_body)? {
 ### 5. 外部选项响应
 
 ```rust
+use yang_feishu::crypto;
 use yang_feishu::options::{build_result_body, OptionRow, FeishuEnvelope};
 
-let body = build_result_body(&rows, "zh_cn", has_more, next_page_token);
+let body = build_result_body(&rows, "zh_cn", next_page_token);
 let response = if encryption_key {
-    FeishuEnvelope::encrypted(crypto::encrypt_json(&body, &key)?)
+    // encrypt_json 只收 &serde_json::Value，FeishuResultBody 需先 to_value。
+    let plain = serde_json::to_value(&body)?;
+    FeishuEnvelope::encrypted(crypto::encrypt_json(&plain, &key)?)
 } else {
     FeishuEnvelope::ok(body)
 };
 let text = response.to_json()?;
 ```
+
+`has_more` 由 `next_page_token.is_some()` 派生，无需单独传；空结果用
+`FeishuResultBody::empty(default_locale)`（仍带默认语言）。
+
+### 6. 用户 OAuth
+
+```rust
+use yang_feishu::auth::{
+    build_authorize_url, reauth_reminder_due, InMemoryStateStore, StateStore,
+};
+
+// 1. 发起授权：state 一次性，TTL 600s（STATE_TTL_SECONDS）。
+let store = InMemoryStateStore::default();
+let state = store.mint(now);
+let url = build_authorize_url(app_id, redirect_uri, scope, &state);
+
+// 2. 回调：先消费 state（命中即删），再用 code 换令牌。
+if !store.consume(&state, now) { /* 400：state 无效/过期/已用过 */ }
+let bundle = client.oauth().exchange_code(&code, redirect_uri, now).await?;
+
+// 3. 刷新：refresh_token 一次性，旧的立即作废。
+let next = client.oauth().refresh_tokens(&bundle.refresh_token, now).await?;
+
+// 4. 用户信息与重新授权提醒线（授权满 350 天）。
+let (open_id, name) = client.oauth().fetch_user_info(&next.access_token).await?;
+if reauth_reminder_due(authorized_at, now) { /* 提醒管理员重新授权 */ }
+```
+
+- `build_authorize_url` 用中国站 `accounts.feishu.cn`；私有化/Lark 用
+  `yang_feishu::auth::oauth::build_authorize_url_with_base`。
+- `StateStore`：`mint(now)` 签发、`consume(state, now)` 校验并消费；TTL 600s，
+  过期/未签发一律不认。
+- 用户 token 的单行表持久化、刷新事务与提醒 worker 留宿主；crate 只给协议与
+  `StateStore` 原语。
+- `TokenEndpointError::needs_reauth()` 标记只能重新授权补救的一族
+  （20037 / 20026 / 20064 / 20073）。
 
 ## 错误模型
 
@@ -252,4 +294,5 @@ cargo test -p yang-feishu --doc
 - 不要把 `FailureKind::UuidConflict` / `InstanceNotFound` 折成 `Fatal`。
 - 不要在 crate 里硬编码产品 appId、宿主表名、中文运维 hint。
 - 不要给 `connect` 的 AppLink 解析硬编码 appId；用 `FormInput::approval_app_id`。
+- 不要给关联列签名传未排序的 record_id；必须先排序去重（同一批行必须同一签名）。
 - 不要把 `X-Lark-Signature` 宣称已实现；`require_signature=true` 会显式失败。

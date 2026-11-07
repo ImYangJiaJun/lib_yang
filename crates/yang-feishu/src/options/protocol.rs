@@ -50,6 +50,13 @@ pub struct FeishuResultBody {
     pub next_page_token: Option<String>,
 }
 
+impl FeishuResultBody {
+    /// 空结果集：仍带默认语言（飞书要求 `i18nResources` 至少一项）。
+    pub fn empty(default_locale: &str) -> Self {
+        super::i18n::build_result_body(&[], default_locale, None)
+    }
+}
+
 /// 单个选项。
 #[derive(Debug, Clone, Serialize)]
 pub struct FeishuOption {

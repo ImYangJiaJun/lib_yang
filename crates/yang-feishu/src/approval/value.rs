@@ -385,6 +385,48 @@ pub fn build_signature(input: &FormInput<'_>) -> Result<String, ConvertError> {
     })
 }
 
+/// 从关联列（单向 type 18 / 双向 type 21）的单元格里取 record_id。
+///
+/// 官方形态是 `{"link_record_ids": ["rec…"]}`；lark-cli 一类工具会归一化成
+/// `[{"id": "rec…"}]`，也接受 `["rec…"]`。其它形态返回 `None`——普通超链接 /
+/// 文本单元格仍走 [`connection_codes`]，不能被误当成关联列。
+pub fn relation_record_ids(cell: &Value) -> Option<Vec<String>> {
+    fn is_record_id(text: &str) -> bool {
+        text.starts_with("rec") && text.len() > 3
+    }
+    match cell {
+        Value::Object(map) => {
+            // 键本身已经说明这是关联列，值不再套 `rec` 前缀猜测。
+            let ids = map.get("link_record_ids")?.as_array()?;
+            let ids: Vec<String> = ids
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+            (!ids.is_empty()).then_some(ids)
+        }
+        Value::Array(items) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::Object(map) => {
+                        let id = map.get("id")?.as_str()?;
+                        if !is_record_id(id) {
+                            return None;
+                        }
+                        ids.push(id.to_string());
+                    }
+                    Value::String(id) if is_record_id(id) => ids.push(id.clone()),
+                    _ => return None,
+                }
+            }
+            (!ids.is_empty()).then_some(ids)
+        }
+        _ => None,
+    }
+}
+
 fn collect_signature(
     nodes: &[FormWidget],
     mappings: &BTreeMap<&str, &WidgetMap>,
@@ -404,16 +446,30 @@ fn collect_signature(
         };
         let mut mapping = (*mapping).clone();
         mapping.required |= node.required;
-        let value = match assemble_widget(
-            &mapping,
-            input.cells,
-            input.attachment_codes,
-            input.timezone_offset,
-            input.approval_app_id,
-        ) {
-            Ok(Some(value)) => value,
-            Ok(None) | Err(ConvertError::MissingRequired { .. }) => Value::Null,
-            Err(error) => return Err(error),
+        // 关联列存的是 record_id，提交值却要是被关联行的实例 Code——那需要异步读
+        // 记录，而签名阶段禁止网络副作用。签名只比「还是不是同一批行」，用排序去重
+        // 后的 record_id 既稳定又不依赖 Code 是否已回填。
+        let relation = input
+            .cells
+            .get(&mapping.source_field)
+            .and_then(relation_record_ids);
+        let value = match (mapping.widget_type.as_str(), relation) {
+            ("connect", Some(mut ids)) => {
+                ids.sort();
+                ids.dedup();
+                Value::Array(ids.into_iter().map(Value::String).collect())
+            }
+            _ => match assemble_widget(
+                &mapping,
+                input.cells,
+                input.attachment_codes,
+                input.timezone_offset,
+                input.approval_app_id,
+            ) {
+                Ok(Some(value)) => value,
+                Ok(None) | Err(ConvertError::MissingRequired { .. }) => Value::Null,
+                Err(error) => return Err(error),
+            },
         };
         let value = canonical_signature_value(value);
         if values.insert(node.id.clone(), value).is_some() {
@@ -723,7 +779,10 @@ fn assemble_direct(
 ///
 /// `approval_app_id` 由调用方传入（设计 §0.3 #9 不把产品 appId 硬编码进 crate）。
 /// 传 `None` 时只接受 36 位实例 Code，AppLink 由调用方预解析。
-fn connection_codes(cell: &Value, approval_app_id: Option<&str>) -> Result<Vec<String>, String> {
+pub fn connection_codes(
+    cell: &Value,
+    approval_app_id: Option<&str>,
+) -> Result<Vec<String>, String> {
     fn query_pairs(query: &str) -> Result<Vec<(String, String)>, String> {
         fn decode(raw: &str) -> Result<String, String> {
             let mut decoded = Vec::new();
@@ -757,14 +816,16 @@ fn connection_codes(cell: &Value, approval_app_id: Option<&str>) -> Result<Vec<S
         if raw.len() == 36 && uuid::Uuid::parse_str(raw).is_ok() {
             return Ok(raw.to_ascii_uppercase());
         }
+        let query = raw
+            .strip_prefix("https://applink.feishu.cn/client/mini_program/open?")
+            .ok_or_else(|| "请填写飞书审批 AppLink 或实例 Code，不能仅填申请编号".to_string())?;
+        // None 判定放在形态判定之后：普通非法文本仍回宿主的可行动文案，
+        // 只有「确是 AppLink 但没给 appId」才提示调用方补参数。
         let Some(approval_app_id) = approval_app_id else {
             return Err(
                 "关联审批的 AppLink 需由调用方提供审批应用 appId 或预解析为实例 Code".to_string(),
             );
         };
-        let query = raw
-            .strip_prefix("https://applink.feishu.cn/client/mini_program/open?")
-            .ok_or_else(|| "请填写飞书审批 AppLink 或实例 Code，不能仅填申请编号".to_string())?;
         let params = query_pairs(query.split('#').next().unwrap_or_default())?;
         let apps: Vec<_> = params.iter().filter(|(key, _)| key == "appId").collect();
         if apps.len() != 1 || apps[0].1 != approval_app_id {
@@ -1315,6 +1376,66 @@ mod tests {
     }
 
     #[test]
+    fn relation_cells_sign_by_sorted_deduped_record_ids() {
+        let widgets = vec![widget(
+            "w_relation",
+            "connect",
+            "f_relation",
+            Converter::Direct,
+        )];
+        let snapshot = serde_json::json!([{"id": "w_relation", "type": "connect"}]).to_string();
+        let attachments = BTreeMap::new();
+        let sign = |cell: Value| {
+            let mut cells = Map::new();
+            cells.insert("f_relation".into(), cell);
+            let input = FormInput {
+                widgets: &widgets,
+                form_snapshot: &snapshot,
+                cells: &cells,
+                attachment_codes: &attachments,
+                timezone_offset: shanghai(),
+                approval_app_id: None,
+            };
+            build_signature(&input).unwrap_or_else(|error| panic!("{error}"))
+        };
+
+        // 顺序无关、重复折叠：同一批行必须得到同一签名。
+        assert_eq!(
+            sign(json!({"link_record_ids": ["recB", "recA", "recA"]})),
+            r#"{"w_relation":["recA","recB"]}"#
+        );
+        assert_eq!(
+            sign(json!({"link_record_ids": ["recA", "recB"]})),
+            r#"{"w_relation":["recA","recB"]}"#
+        );
+        // 换一批行就必须换签名。
+        assert_eq!(
+            sign(json!({"link_record_ids": ["recA", "recC"]})),
+            r#"{"w_relation":["recA","recC"]}"#
+        );
+    }
+
+    #[test]
+    fn relation_record_ids_accept_both_cell_shapes() {
+        assert_eq!(
+            relation_record_ids(&json!({"link_record_ids": ["recB", "recA"]})),
+            Some(vec!["recB".to_string(), "recA".to_string()])
+        );
+        assert_eq!(
+            relation_record_ids(&json!([{"id": "recA"}, {"id": "recB"}])),
+            Some(vec!["recA".to_string(), "recB".to_string()])
+        );
+        assert_eq!(
+            relation_record_ids(&json!(["recA", "recB"])),
+            Some(vec!["recA".to_string(), "recB".to_string()])
+        );
+        assert_eq!(relation_record_ids(&json!({"link_record_ids": []})), None);
+        assert_eq!(relation_record_ids(&json!([{"id": "not-a-record"}])), None);
+        assert_eq!(relation_record_ids(&json!("recA")), None);
+        assert_eq!(relation_record_ids(&json!([{"text": "审批单"}])), None);
+    }
+
+    #[test]
     fn connect_applink_is_parsed_with_the_caller_supplied_app_id() {
         let instance_id = "4202ad96-9ec1-4f0a-8f7e-123456789abc";
         let mut cells = Map::new();
@@ -1367,6 +1488,74 @@ mod tests {
         assert_eq!(
             format_local(1_790_750_400, FixedOffset::from_seconds(0).unwrap()),
             "2026-09-30 06:40:00"
+        );
+    }
+
+    #[test]
+    fn connection_codes_keeps_the_actionable_message_when_no_app_id_is_given() {
+        let app_link = "https://applink.feishu.cn/client/mini_program/open?appId=cli_app&path=pages/detail/index?instanceId=4202ad96-9ec1-4f0a-8f7e-123456789abc&source=bitable";
+        assert_eq!(
+            connection_codes(&json!([{"text": "审批单", "link": app_link}]), None),
+            Err("关联审批的 AppLink 需由调用方提供审批应用 appId 或预解析为实例 Code".to_string())
+        );
+        assert_eq!(
+            connection_codes(&json!([{"text": "123"}]), None),
+            Err("请填写飞书审批 AppLink 或实例 Code，不能仅填申请编号".to_string())
+        );
+        assert_eq!(
+            connection_codes(
+                &json!([{"text": "4202ad96-9ec1-4f0a-8f7e-123456789abc"}]),
+                None
+            ),
+            Ok(vec!["4202AD96-9EC1-4F0A-8F7E-123456789ABC".to_string()])
+        );
+    }
+
+    #[test]
+    fn group_form_passes_the_approval_app_id_into_detail_rows() {
+        let instance_id = "4202ad96-9ec1-4f0a-8f7e-123456789abc";
+        let mut cells = Map::new();
+        cells.insert(
+            "f_connect".into(),
+            json!([{
+                "text": "审批单",
+                "link": format!(
+                    "https://applink.feishu.cn/client/mini_program/open?appId=cli_app&path=pages/detail/index?instanceId={instance_id}&source=bitable"
+                )
+            }]),
+        );
+        let snapshot = serde_json::json!([{
+            "id": "w_detail", "name": "明细", "type": "fieldList", "required": false,
+            "children": [{
+                "id": "w_connect", "name": "关联审批", "type": "connect",
+                "required": true, "value": ["cli_app"]
+            }]
+        }])
+        .to_string();
+        let widgets = vec![widget(
+            "w_connect",
+            "connect",
+            "f_connect",
+            Converter::Direct,
+        )];
+        let attachments = BTreeMap::new();
+        let rows = [GroupFormRow {
+            record_id: "rec1",
+            cells: &cells,
+            attachment_codes: &attachments,
+        }];
+        let input = GroupFormInput {
+            widgets: &widgets,
+            form_snapshot: &snapshot,
+            rows: &rows,
+            timezone_offset: shanghai(),
+            approval_app_id: Some("cli_app"),
+        };
+        let form = build_group_form(&input).unwrap_or_else(|error| panic!("{error}"));
+        let parsed: Value = serde_json::from_str(&form).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            parsed[0]["value"][0][0]["value"][0],
+            instance_id.to_uppercase()
         );
     }
 }

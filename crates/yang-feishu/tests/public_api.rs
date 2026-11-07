@@ -17,7 +17,7 @@ use yang_feishu::drive::{
 use yang_feishu::im::{valid_message_id, MessageRecipient};
 use yang_feishu::options::{
     build_result_body, decode_cursor, encode_cursor, normalize_linkage_value, FeishuEnvelope,
-    DEFAULT_LOCALE,
+    FeishuResultBody, DEFAULT_LOCALE,
 };
 use yang_feishu::path::{validate_opaque_path_segment, validate_path_segment};
 use yang_feishu::{
@@ -164,7 +164,7 @@ fn token_digests_are_lowercase_sha256_and_fail_closed() {
 
 #[test]
 fn envelope_serializes_msg_key_and_result_shapes() {
-    let ok_body = build_result_body(&[], DEFAULT_LOCALE, false, None);
+    let ok_body = build_result_body(&[], DEFAULT_LOCALE, None);
     let ok: serde_json::Value =
         serde_json::from_str(&FeishuEnvelope::ok(ok_body).to_json().unwrap_or_default())
             .unwrap_or_else(|error| panic!("{error}"));
@@ -197,7 +197,7 @@ fn envelope_serializes_msg_key_and_result_shapes() {
 
 #[test]
 fn build_result_body_always_emits_the_default_locale() {
-    let body = build_result_body(&[], DEFAULT_LOCALE, true, Some("next-page".into()));
+    let body = build_result_body(&[], DEFAULT_LOCALE, Some("next-page".into()));
     assert_eq!(body.i18n_resources.len(), 1, "即使没有选项也要有默认语言");
     assert_eq!(body.i18n_resources[0].locale, DEFAULT_LOCALE);
     assert!(body.i18n_resources[0].is_default);
@@ -207,10 +207,22 @@ fn build_result_body_always_emits_the_default_locale() {
     assert_eq!(body.next_page_token.as_deref(), Some("next-page"));
 
     // 默认语言由调用方指定；它同样必须恒存在并标记 isDefault。
-    let english = build_result_body(&[], "en_us", false, None);
+    let english = build_result_body(&[], "en_us", None);
     assert_eq!(english.i18n_resources.len(), 1);
     assert_eq!(english.i18n_resources[0].locale, "en_us");
     assert!(english.i18n_resources[0].is_default);
+    assert_eq!(body.has_more, body.next_page_token.is_some());
+}
+
+#[test]
+fn empty_result_body_still_carries_the_default_locale() {
+    let body = FeishuResultBody::empty(DEFAULT_LOCALE);
+    assert!(body.options.is_empty());
+    assert!(body.next_page_token.is_none());
+    assert!(!body.has_more);
+    assert_eq!(body.i18n_resources.len(), 1);
+    assert_eq!(body.i18n_resources[0].locale, DEFAULT_LOCALE);
+    assert!(body.i18n_resources[0].is_default);
 }
 
 #[test]

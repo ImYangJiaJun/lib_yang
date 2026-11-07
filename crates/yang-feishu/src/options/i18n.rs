@@ -42,11 +42,11 @@ pub struct OptionRow {
 /// 组装 `data.result` 的明文内容。
 ///
 /// 语言集合 = 默认语言 ∪ 各行额外语言；默认语言恒存在并标记 `isDefault`；
-/// 某语言缺某条文案时回退默认文案。
+/// 某语言缺某条文案时回退默认文案。`hasMore` 由 `next_page_token.is_some()` 派生，
+/// 避免两个参数互相矛盾。
 pub fn build_result_body(
     rows: &[OptionRow],
     default_locale: &str,
-    has_more: bool,
     next_page_token: Option<String>,
 ) -> FeishuResultBody {
     let options = rows
@@ -97,7 +97,7 @@ pub fn build_result_body(
     FeishuResultBody {
         options,
         i18n_resources,
-        has_more,
+        has_more: next_page_token.is_some(),
         next_page_token,
     }
 }
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn default_locale_always_exists_and_keys_align() {
         let rows = vec![row("1", "A", &[("en_us", "A-en")]), row("2", "B", &[])];
-        let body = build_result_body(&rows, DEFAULT_LOCALE, false, None);
+        let body = build_result_body(&rows, DEFAULT_LOCALE, None);
         assert_eq!(body.i18n_resources.len(), 2);
         assert_eq!(body.i18n_resources[0].locale, "zh_cn");
         assert!(body.i18n_resources[0].is_default);
@@ -136,9 +136,17 @@ mod tests {
 
     #[test]
     fn empty_rows_still_emit_the_default_locale() {
-        let body = build_result_body(&[], DEFAULT_LOCALE, false, None);
+        let body = build_result_body(&[], DEFAULT_LOCALE, None);
         assert_eq!(body.i18n_resources.len(), 1);
         assert!(body.i18n_resources[0].texts.is_empty());
+    }
+
+    #[test]
+    fn has_more_is_derived_from_the_cursor() {
+        assert!(!build_result_body(&[], DEFAULT_LOCALE, None).has_more);
+        let body = build_result_body(&[], DEFAULT_LOCALE, Some("next".into()));
+        assert!(body.has_more);
+        assert_eq!(body.next_page_token.as_deref(), Some("next"));
     }
 
     #[test]

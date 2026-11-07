@@ -1,7 +1,7 @@
 //! 多维表格响应 DTO。
 //!
-//! 全部 `#[non_exhaustive]`：0.x 期间允许加字段而不破坏调用方。不要给它们实现
-//! `Default`——「默认空快照」正是调用方要拒绝的形态。
+//! 刻意**不**标 `#[non_exhaustive]`：宿主用结构体字面量构造，0.x 的破坏性变更
+//! 走 minor。不要给它们实现 `Default`——「默认空快照」正是调用方要拒绝的形态。
 
 use std::collections::BTreeMap;
 
@@ -154,6 +154,9 @@ pub struct FieldProperty {
     /// 选项列表。
     #[serde(default)]
     pub options: Vec<PropertyOption>,
+    /// 单向/双向关联列（type 18/21）指向的数据表 id。
+    #[serde(default)]
+    pub table_id: Option<String>,
 }
 
 /// 一个字段选项。
@@ -210,4 +213,31 @@ pub struct BatchGetRecordsData {
     /// 表里已经不存在的记录 id。
     #[serde(default)]
     pub absent_record_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_property_reads_table_id_and_defaults_to_none() {
+        let field: FieldItem = serde_json::from_value(serde_json::json!({
+            "field_id": "fld1", "field_name": "关联", "type": 18,
+            "property": {"table_id": "tblTarget"}
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            field
+                .property
+                .and_then(|property| property.table_id)
+                .as_deref(),
+            Some("tblTarget")
+        );
+
+        let field: FieldItem = serde_json::from_value(serde_json::json!({
+            "field_id": "fld2", "field_name": "文本", "type": 1
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(field.property.is_none());
+    }
 }

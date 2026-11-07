@@ -17,9 +17,10 @@ pub use form::{
 };
 pub use idempotency::{derive_idempotency_key, derive_uuid};
 pub use value::{
-    amount_currency, build_form, build_group_form, build_signature, labels_equivalent,
-    labels_from_cell, normalize_decimal_label, unwrap_typed_cell, ConvertError, Converter,
-    FixedOffset, FormInput, GroupFormInput, GroupFormRow, WidgetMap,
+    amount_currency, build_form, build_group_form, build_signature, connection_codes,
+    labels_equivalent, labels_from_cell, normalize_decimal_label, relation_record_ids,
+    unwrap_typed_cell, ConvertError, Converter, FixedOffset, FormInput, GroupFormInput,
+    GroupFormRow, WidgetMap,
 };
 pub use widget_rules::*;
 

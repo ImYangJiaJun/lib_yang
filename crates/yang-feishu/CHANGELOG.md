@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0
+
+- 新增 `approval::relation_record_ids(cell)`：从关联列单元格取 record_id，接受
+  `{"link_record_ids":[...]}`、`[{"id":"rec…"}]` 与 `["rec…"]`；其它形态返回
+  `None`，不会把普通超链接/文本误当成关联列。
+- `build_signature` 对 `connect` 控件 + 关联列单元格改用**排序去重**后的
+  record_id 作签名值（与宿主 2026-11-06 关联列功能对齐）：顺序与重复不影响签名，
+  换一批行必换签名。
+- `approval::connection_codes(cell, approval_app_id)` 由私有改为公开：单格
+  AppLink / 36 位实例 Code → Code 数组；传 `None` 时只接受实例 Code。
+- `bitable::dto::FieldProperty` 新增 `table_id: Option<String>`：单向/双向关联列
+  （type 18/21）指向的数据表 id。
+- 新增 `bitable::encode_cell_value(field_type, value)`：写方向单元格编码（单选裸串、
+  日期毫秒、人员数组、链接对象、文本取 `text`）；`None` 表示「该值不该写」，
+  与 `Err(CellEncodeError)` 刻意区分。人员数组的元素必须带非空 `id`（空数组仍
+  合法，用于清空），`["ou_1"]` / `[{"text":"张三"}]` 直接 `Err` 而不是等平台拒绝。
+- `connection_codes` 的 `None` 判定下移到「确是 AppLink」之后：普通非法文本
+  （只填了申请编号等）仍返回可行动原文案，不再被内部措辞覆盖。
+- **破坏性变更**：`options::build_result_body` 去掉 `has_more` 参数，改由
+  `next_page_token.is_some()` 派生，避免两个参数互相矛盾；新增
+  `FeishuResultBody::empty(default_locale)`。
+- 文档修正：`bitable/dto.rs` 不再声称全部 `#[non_exhaustive]`（实际不标，保证结构体
+  字面量 drop-in）；补用户 OAuth 配方；`AGENTS.md` 的方法名与 `has_more`/加密示例
+  改为可直接编译的写法。
+
 ## 0.2.0
 
 - **破坏性变更**：`default = []`。typed 模块与 66 个官方生成域全部改为 feature

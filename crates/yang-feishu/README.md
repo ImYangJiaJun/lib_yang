@@ -6,7 +6,7 @@
 **只包含平台契约，不包含业务**：审批派发状态机、字段映射、数据源拉取编排、控制台
 Action、产品表与中文运维文案都留在宿主。
 
-## 安装（0.1.0 仅 path 依赖）
+## 安装（0.3.0 仅 path 依赖）
 
 ```toml
 [dependencies]
@@ -80,7 +80,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 端点覆盖
 
 - **typed 核心**：记录全量/分页、字段/表/视图解析、审批建单/查单/定义/订阅、表单
-  值编码、IM post、附件搬运、事件与外部选项。
+  值编码与关联列签名、IM post、附件搬运、事件。
+- **外部选项**：独立模块 `yang_feishu::options`（`build_result_body`、`@i18n@` 装配、
+  keyset 游标），**不属于 typed 核心**；HTTP 入口与鉴权需宿主自己接。
 - **全量官方端点**：`client.api()` 覆盖官方 SDK、llms 文档与历史版本中的
   **1713 个 REST 端点**，按 66 个域生成 **2372 个方法**（tenant/user/app 身份变体
   分别计数）。生成源码在 `src/api/`，目录在

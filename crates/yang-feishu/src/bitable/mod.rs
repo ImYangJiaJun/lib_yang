@@ -10,7 +10,7 @@ pub mod link;
 pub mod pagination;
 mod v3;
 
-pub use cells::{cell_label, CellValue};
+pub use cells::{cell_label, encode_cell_value, CellEncodeError, CellValue};
 pub use client::BitableClient;
 pub use dto::{
     BatchGetRecordsData, BitableTableItem, BitableTablesData, BitableViewItem, BitableViewsData,
