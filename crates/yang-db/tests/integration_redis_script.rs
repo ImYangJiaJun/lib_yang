@@ -8,33 +8,31 @@ use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_db::RedisClient;
 
 /// 启动 Redis 容器并返回连接 URL
-async fn setup_redis_container() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+async fn setup_redis_container() -> (Option<testcontainers::ContainerAsync<GenericImage>>, String) {
+    // 优先复用外部测试专用实例（本地 docker / CI service）
+    if let Ok(url) = std::env::var("REDIS_TEST_URL") {
+        return (None, url);
+    }
+
     let redis_image = GenericImage::new("redis", "7-alpine").with_wait_for(
         testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
     );
-
-    match redis_image.start().await {
-        Ok(container) => {
-            let port = container.get_host_port_ipv4(6379).await.ok()?;
-            let url = format!("redis://127.0.0.1:{}", port);
-
-            // 等待 Redis 完全启动
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-            Some((container, url))
-        }
-        Err(e) => {
-            eprintln!("无法启动 Redis 容器: {}. 跳过集成测试。", e);
-            None
-        }
-    }
+    let container = redis_image
+        .start()
+        .await
+        .expect("无法启动 Redis 测试容器；请设置 REDIS_TEST_URL 复用已有实例");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("无法获取 Redis 容器端口");
+    let url = format!("redis://127.0.0.1:{}", port);
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    (Some(container), url)
 }
 
 #[tokio::test]
 async fn test_simple_script_execution() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建简单脚本：返回字符串
@@ -48,9 +46,7 @@ async fn test_simple_script_execution() {
 
 #[tokio::test]
 async fn test_script_with_keys_parameter() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 设置初始值
@@ -70,9 +66,7 @@ async fn test_script_with_keys_parameter() {
 
 #[tokio::test]
 async fn test_script_with_args_parameter() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建脚本：使用 ARGV 参数
@@ -98,9 +92,7 @@ async fn test_script_with_args_parameter() {
 
 #[tokio::test]
 async fn test_script_return_number() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建脚本：返回数字
@@ -114,9 +106,7 @@ async fn test_script_return_number() {
 
 #[tokio::test]
 async fn test_script_atomic_counter_increment() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 初始化计数器
@@ -158,9 +148,7 @@ async fn test_script_atomic_counter_increment() {
 
 #[tokio::test]
 async fn test_script_conditional_update() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 初始化余额
@@ -204,10 +192,14 @@ async fn test_script_conditional_update() {
 
 #[tokio::test]
 async fn test_script_multiple_keys() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
+
+    // 共享测试容器可能残留上次运行的计数，先清理再断言绝对初值
+    client
+        .del(&["counter1".to_string(), "counter2".to_string()])
+        .await
+        .unwrap();
 
     // 创建脚本：原子性地增加两个计数器
     let script = client.script(
@@ -247,9 +239,7 @@ async fn test_script_multiple_keys() {
 
 #[tokio::test]
 async fn test_script_return_array() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建脚本：返回数组
@@ -263,9 +253,7 @@ async fn test_script_return_array() {
 
 #[tokio::test]
 async fn test_script_with_loop() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建脚本：计算 1 到 N 的和
@@ -290,9 +278,7 @@ async fn test_script_with_loop() {
 
 #[tokio::test]
 async fn test_script_atomicity() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 初始化两个账户
@@ -336,9 +322,7 @@ async fn test_script_atomicity() {
 
 #[tokio::test]
 async fn test_script_evalsha_caching() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建脚本
@@ -358,9 +342,7 @@ async fn test_script_evalsha_caching() {
 
 #[tokio::test]
 async fn test_script_error_handling() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 创建包含错误的脚本（尝试对非数字进行算术运算）
@@ -382,9 +364,7 @@ async fn test_script_error_handling() {
 
 #[tokio::test]
 async fn test_script_with_table_operations() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
     let client = RedisClient::connect(&url).await.unwrap();
 
     // 设置多个键

@@ -4,10 +4,17 @@
 #![allow(unused_results)]
 use yang_db::RedisClient;
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试 GETRANGE 命令
 #[tokio::test]
 async fn test_getrange() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -59,7 +66,7 @@ async fn test_getrange() {
 /// 测试 SETRANGE 命令
 #[tokio::test]
 async fn test_setrange() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -119,7 +126,7 @@ async fn test_setrange() {
 /// 测试 INCRBYFLOAT 命令
 #[tokio::test]
 async fn test_incrbyfloat() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -167,7 +174,7 @@ async fn test_incrbyfloat() {
 /// 测试 PSETEX 命令
 #[tokio::test]
 async fn test_psetex() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -207,7 +214,7 @@ async fn test_psetex() {
 /// 测试 String 操作的边界情况
 #[tokio::test]
 async fn test_string_ops_edge_cases() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -249,7 +256,7 @@ async fn test_string_ops_edge_cases() {
 /// 测试 String 操作的并发安全性
 #[tokio::test]
 async fn test_string_ops_concurrent() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 

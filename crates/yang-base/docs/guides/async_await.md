@@ -1,5 +1,9 @@
 # Rust 异步编程：.await 和 ? 操作符详解
 
+> 迁移提示：`GlobalRedis` / `GlobalDatabase` 已在 0.4.0 删除。Redis 资源通过
+> `ToolsBuilder::cache_from_url` 注入、经 `Tools::cache()` 获取；缓存/锁/限流见
+> [redis.md](redis.md)。
+
 ## 基础概念
 
 ### 1. `.await` 操作符
@@ -134,22 +138,22 @@ async fn get_user(user_id: i32) -> Result<User, BaseError> {
 #### 示例 2：Redis 操作
 
 ```rust
-use yang_base::database::GlobalRedis;
 use yang_base::error::BaseError;
+use yang_db::RedisClient;
 
 // 设置缓存
-async fn set_cache(key: &str, value: &str) -> Result<(), BaseError> {
+async fn set_cache(redis: &RedisClient, key: &str, value: &str) -> Result<(), BaseError> {
     // .await? 做了两件事：
     // 1. .await - 等待 Redis 操作完成
     // 2. ? - 如果失败，立即返回错误
-    GlobalRedis::set(key, value, Some(300)).await?;
+    redis.setex(key, 300, value).await?;
     Ok(())
 }
 
 // 获取缓存
-async fn get_cache(key: &str) -> Result<Option<String>, BaseError> {
+async fn get_cache(redis: &RedisClient, key: &str) -> Result<Option<String>, BaseError> {
     // 同样，等待并处理错误
-    let value = GlobalRedis::get(key).await?;
+    let value = redis.get(key).await?;
     Ok(value)
 }
 ```
@@ -159,42 +163,35 @@ async fn get_cache(key: &str) -> Result<Option<String>, BaseError> {
 ### 示例：完整的错误处理链
 
 ```rust
-use yang_base::database::{GlobalDatabase, GlobalRedis};
 use yang_base::error::BaseError;
+use yang_db::RedisClient;
 
-async fn get_user_with_cache(user_id: i32) -> Result<User, BaseError> {
+async fn get_user_with_cache(redis: &RedisClient, user_id: i32) -> Result<User, BaseError> {
     let cache_key = format!("user:{}", user_id);
-    
+
     // 步骤 1：尝试从 Redis 获取缓存
     // .await? 会：
     // - 等待 Redis 操作完成
     // - 如果 Redis 连接失败，立即返回 Err
-    if let Some(cached) = GlobalRedis::get(&cache_key).await? {
+    if let Some(cached) = redis.get(&cache_key).await? {
         // 步骤 2：反序列化缓存数据
         // ? 会：
         // - 如果反序列化失败，立即返回 Err
         return Ok(serde_json::from_str(&cached)?);
     }
-    
-    // 步骤 3：缓存未命中，查询数据库
-    // .await? 会：
-    // - 等待数据库查询完成
-    // - 如果查询失败，立即返回 Err
-    let users = GlobalDatabase::table("users")?
-        .where_and("id", "=", user_id)
-        .select::<User>()
-        .await?;
-    
-    let user = users.into_iter().next()
+
+    // 步骤 3：缓存未命中，回源数据库（此处以应用自己的加载函数表示）
+    let user = load_user_from_db(user_id)
+        .await?
         .ok_or(BaseError::RecordNotFound(format!("用户 {}", user_id)))?;
-    
+
     // 步骤 4：写入缓存
     // .await? 会：
     // - 等待 Redis 写入完成
     // - 如果写入失败，立即返回 Err
     let user_json = serde_json::to_string(&user)?;
-    GlobalRedis::set(&cache_key, user_json, Some(300)).await?;
-    
+    redis.setex(&cache_key, 300, user_json).await?;
+
     Ok(user)
 }
 ```
@@ -205,9 +202,9 @@ async fn get_user_with_cache(user_id: i32) -> Result<User, BaseError> {
 // 函数 A 调用函数 B，函数 B 调用函数 C
 // 错误会自动向上传播
 
-async fn function_c() -> Result<String, BaseError> {
+async fn function_c(redis: &RedisClient) -> Result<String, BaseError> {
     // 如果这里失败，错误会返回给 function_b
-    GlobalRedis::get("key").await?
+    redis.get("key").await?
         .ok_or(BaseError::RecordNotFound("键不存在".to_string()))
 }
 
@@ -291,23 +288,22 @@ async fn chain_example() -> Result<User, BaseError> {
 ### 模式 2：提前返回
 
 ```rust
-async fn early_return_example(user_id: i32) -> Result<User, BaseError> {
+async fn early_return_example(
+    redis: &yang_db::RedisClient,
+    user_id: i32,
+) -> Result<User, BaseError> {
     // 先检查缓存
     let cache_key = format!("user:{}", user_id);
-    if let Some(cached) = GlobalRedis::get(&cache_key).await? {
+    if let Some(cached) = redis.get(&cache_key).await? {
         // 找到缓存，提前返回
         return Ok(serde_json::from_str(&cached)?);
     }
-    
-    // 缓存未命中，继续查询数据库
-    let user = GlobalDatabase::table("users")?
-        .where_and("id", "=", user_id)
-        .select::<User>()
+
+    // 缓存未命中，回源（应用自己的加载函数）
+    let user = load_user_from_db(user_id)
         .await?
-        .into_iter()
-        .next()
         .ok_or(BaseError::RecordNotFound(format!("用户 {}", user_id)))?;
-    
+
     Ok(user)
 }
 ```
@@ -320,11 +316,9 @@ async fn loop_example() -> Result<(), BaseError> {
     
     for user_id in user_ids {
         // 每次循环都会等待操作完成
-        let user = GlobalDatabase::table("users")?
-            .where_and("id", "=", user_id)
-            .select::<User>()
-            .await?;  // 等待当前查询完成
-        
+        let user = load_user_from_db(user_id)
+            .await?
+            .ok_or(BaseError::RecordNotFound(format!("用户 {}", user_id)))?;
         println!("用户: {:?}", user);
     }
     

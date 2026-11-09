@@ -1,5 +1,6 @@
 use crate::{DbError, RedisClient, RedisValue, Result};
 use redis::FromRedisValue;
+use std::time::Duration;
 
 /// Redis 事务构建器
 ///
@@ -52,12 +53,9 @@ fn is_watch_conflict(raw: &redis::Value, has_watched_keys: bool) -> bool {
     has_watched_keys && matches!(raw, redis::Value::Nil)
 }
 
-/// 判定 Redis 是否明确报告 EXECABORT。
-///
-/// 枚举是主判据；字符串只兼容少数代理或旧服务端把错误降级为普通响应错误的情况。
-fn is_exec_abort_error(error: &redis::RedisError) -> bool {
-    matches!(error.kind(), redis::ErrorKind::ExecAbortError)
-        || error.to_string().contains("EXECABORT")
+/// WATCH 冲突重试的线性退避（避免 100 次冲突在极短时间内空转）。
+fn transaction_backoff(base_ms: u64, retries: u32) -> Duration {
+    Duration::from_millis(base_ms.saturating_mul(u64::from(retries)))
 }
 
 impl RedisTransaction {
@@ -310,16 +308,10 @@ impl RedisTransaction {
         fields(db.system = "redis", db.operation = "transaction", otel.kind = "client")
     )]
     pub async fn exec<T: FromRedisValue>(self) -> Result<T> {
-        let mut conn = self
-            .client
-            .pool()
-            .get()
-            .await
-            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
-
-        // 最大重试次数
-        const MAX_RETRIES: usize = 100;
-        let mut retries = 0;
+        let max_retries = self.client.config().transaction_retries;
+        let backoff_ms = self.client.config().transaction_retry_backoff_ms;
+        let mut conn = self.client.connection().await?;
+        let mut retries = 0u32;
 
         loop {
             // WATCH 指定的键
@@ -328,62 +320,46 @@ impl RedisTransaction {
                 for key in &self.watched_keys {
                     watch_cmd.arg(key);
                 }
-                watch_cmd
-                    .query_async::<()>(&mut *conn)
-                    .await
-                    .map_err(|e| DbError::RedisCommandError(format!("WATCH 命令失败: {}", e)))?;
+                conn.query::<()>(&watch_cmd).await.map_err(DbError::from)?;
             }
 
             // 执行事务：先解码为原始 redis::Value，以便在协议层检测 WATCH 冲突。
             // redis-rs 对 `Vec<T>`/`()` 会把 EXEC 的 Nil 回复无声解码成 Ok(空)，
             // 使 WATCH 冲突被吞掉、乐观锁失效（DB-2）。故先取 Value 判定冲突，再转 T。
-            match self.pipe.query_async::<redis::Value>(&mut *conn).await {
+            match conn.query_pipeline::<redis::Value>(&self.pipe).await {
                 Ok(raw) => {
                     // WATCH 冲突：被监视键在 EXEC 前被改写时，Redis 返回 Nil。
                     // 仅在存在监视键时才把整体 Nil 判为冲突；无监视键时 Nil 正常透传
                     // （如普通 pipeline 中 GET 不存在的键）。
                     if is_watch_conflict(&raw, !self.watched_keys.is_empty()) {
                         retries += 1;
-                        if retries >= MAX_RETRIES {
+                        if retries >= max_retries {
                             return Err(DbError::RedisCommandError(format!(
                                 "事务执行失败：WATCH 冲突已重试 {} 次",
-                                MAX_RETRIES
+                                max_retries
                             )));
                         }
-                        // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
-                        conn = self.client.pool().get().await.map_err(|e| {
-                            DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
-                        })?;
+                        // 必须先释放旧连接再取新连接：`conn = pool.get()` 会先对 RHS
+                        // 求值，旧连接在整个等待期间仍被本任务占用，高并发冲突时会
+                        // 因池耗尽而等待超时，而不是完成重试（P1-13）。
+                        drop(conn);
+                        tokio::time::sleep(transaction_backoff(backoff_ms, retries)).await;
+                        conn = self.client.connection().await?;
                         continue;
                     }
-                    // 非冲突：解码为调用方期望的类型 T
-                    return T::from_redis_value(&raw).map_err(|e| {
-                        DbError::RedisCommandError(format!("事务结果解码失败: {}", e))
+                    // 非冲突：解码为调用方期望的类型 T。
+                    // 解码错误不拼接 redis-rs 的 Display（可能包含原始 Value）。
+                    return T::from_redis_value(&raw).map_err(|_| {
+                        DbError::RedisTypeConversionError(
+                            "事务结果类型与调用方期望不匹配（原始响应已省略）".to_string(),
+                        )
                     });
                 }
-                Err(e) => {
-                    // 检查是否是 WATCH 冲突导致的失败（EXECABORT）
-                    // 优先使用枚举匹配，避免依赖错误消息字符串（版本升级/i18n 可能改变文案）
-                    let is_exec_abort = is_exec_abort_error(&e);
-                    // 仅在存在监视键时才把 EXECABORT 判为 WATCH 冲突；
-                    // 无监视键时 EXECABORT 可能源于其他原因（如脚本中止），直接透传错误。
-                    if is_exec_abort && !self.watched_keys.is_empty() {
-                        retries += 1;
-                        if retries >= MAX_RETRIES {
-                            return Err(DbError::RedisCommandError(format!(
-                                "事务执行失败，已重试 {} 次: {}",
-                                MAX_RETRIES, e
-                            )));
-                        }
-                        // WATCH 冲突，重试——重新获取连接以避免复用已断开的连接
-                        conn = self.client.pool().get().await.map_err(|e| {
-                            DbError::RedisPoolError(format!("重试获取连接失败: {}", e))
-                        })?;
-                        continue;
-                    } else {
-                        // 其他错误，直接返回
-                        return Err(DbError::RedisCommandError(format!("事务执行失败: {}", e)));
-                    }
+                Err(error) => {
+                    // EXECABORT 表示排队阶段已有命令失败（语法/参数/只读等），
+                    // 重放同一批命令不会成功；WATCH 冲突由 EXEC 返回 Nil 表示，
+                    // 已在 Ok(Nil) 分支处理。直接透传，避免约 100 次空转。
+                    return Err(DbError::from(error));
                 }
             }
         }
@@ -441,7 +417,7 @@ impl RedisTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_exec_abort_error, is_watch_conflict};
+    use super::is_watch_conflict;
 
     #[test]
     fn test_transaction_creation() {
@@ -462,16 +438,5 @@ mod tests {
             &redis::Value::Array(vec![redis::Value::Int(1)]),
             true
         ));
-    }
-
-    /// 对抗性验证：只有 EXECABORT（或明确包含该协议码）才进入重试分支，类型错误不能误判。
-    #[test]
-    fn test_is_exec_abort_error_distinguishes_error_kinds() {
-        let exec_abort =
-            redis::RedisError::from((redis::ErrorKind::ExecAbortError, "事务因先前错误被丢弃"));
-        let type_error = redis::RedisError::from((redis::ErrorKind::TypeError, "返回值类型不匹配"));
-
-        assert!(is_exec_abort_error(&exec_abort));
-        assert!(!is_exec_abort_error(&type_error));
     }
 }

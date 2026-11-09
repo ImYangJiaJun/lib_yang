@@ -2,12 +2,19 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use yang_db::RedisClient;
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试基础事务执行
 ///
 /// 验证事务能够正确执行多个命令并返回结果
 #[tokio::test]
 async fn test_basic_transaction() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -43,7 +50,7 @@ async fn test_basic_transaction() {
 /// 验证事务能够正确执行 INCR 等数值操作
 #[tokio::test]
 async fn test_transaction_counter() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -77,7 +84,7 @@ async fn test_transaction_counter() {
 /// 验证当 WATCH 的键未被修改时，事务能够成功执行
 #[tokio::test]
 async fn test_transaction_watch_success() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -124,7 +131,7 @@ async fn test_transaction_watch_success() {
 /// 验证使用 WATCH 机制实现乐观锁的余额扣减场景
 #[tokio::test]
 async fn test_transaction_optimistic_lock_balance() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -164,7 +171,7 @@ async fn test_transaction_optimistic_lock_balance() {
 /// 验证多个并发事务能够正确执行
 #[tokio::test]
 async fn test_transaction_concurrent() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -235,7 +242,7 @@ async fn test_transaction_concurrent() {
 /// 验证事务中的所有命令要么全部执行，要么全部不执行
 #[tokio::test]
 async fn test_transaction_atomicity() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -294,7 +301,7 @@ async fn test_transaction_atomicity() {
 /// 验证空事务（不包含任何命令）能够正常执行
 #[tokio::test]
 async fn test_empty_transaction() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -311,7 +318,7 @@ async fn test_empty_transaction() {
 /// 验证事务能够正确执行 Hash 相关命令
 #[tokio::test]
 async fn test_transaction_hash_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 

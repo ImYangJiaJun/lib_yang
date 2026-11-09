@@ -503,6 +503,8 @@ impl From<yang_db::DbError> for BaseError {
             // Redis 操作类：保留底层 DbError 错误链
             D::RedisCommandError(_)
             | D::RedisPoolError(_)
+            | D::RedisPoolClosed
+            | D::RedisError(_)
             | D::RedisTypeConversionError(_)
             | D::RedisTimeoutError(_) => BaseError::RedisOperationFailed(err),
 

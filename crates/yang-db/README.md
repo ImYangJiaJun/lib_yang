@@ -24,6 +24,13 @@ yang-db = { version = "0.2.1", default-features = false, features = ["postgres"]
 
 # 仅 Redis
 yang-db = { version = "0.2.1", default-features = false, features = ["redis"] }
+
+# Redis 扩展能力（按需组合）
+# redis-tls         : rediss://（rustls + 系统根证书）
+# redis-cluster     : Redis Cluster（槽位路由、MOVED/ASK）
+# redis-sentinel    : Sentinel（master 发现与故障转移）
+# metrics           : 命令级延迟/错误指标
+yang-db = { version = "0.2.1", default-features = false, features = ["redis", "redis-tls"] }
 ```
 
 无 feature 组合仍提供 `DbError`、`DbErrorCategory`、`IsolationLevel` 与 `PoolStatus` 等后端无关契约。docs.rs 使用 all-features 构建完整 API。
@@ -36,7 +43,13 @@ yang-db = { version = "0.2.1", default-features = false, features = ["redis"] }
 |---|---|---|
 | MySQL 8 | 支持 | 参数化 CRUD、事务、子查询、UNION、行锁、原子更新 |
 | PostgreSQL 16 / 17 | 支持 | 与 MySQL 对称的查询/事务 API，使用 `$N` 占位符与 `RETURNING`；PG17 由独立 CI job 验证 |
-| Redis 7 | 支持 | 连接池、常用数据结构、Pipeline、WATCH 事务与 Lua |
+| Redis 6.2 / 7.x / 8.x（standalone） | 支持 | 连接池、分级超时、二进制安全、Pipeline（含逐条容错）、WATCH 事务、Lua、Pub/Sub、Streams/消费者组、分布式锁、JSON codec、SCAN/HSCAN 遍历 |
+| Redis Cluster | opt-in（`redis-cluster`） | 槽位路由、MOVED/ASK、拓扑刷新 |
+| Redis Sentinel | opt-in（`redis-sentinel`） | master 发现、故障转移 |
+| TLS（`rediss://`） | opt-in（`redis-tls`） | rustls，默认校验证书 |
+| 协议 | RESP2 默认；RESP3 通过 URL `?protocol=resp3` | RESP3 Map/Set/Attribute 已纳入 `RedisValue` |
+
+主流支持版本为 Redis 7；6.2 / 8.x 使用同一命令面（差异命令通过 `execute(&Cmd)` 逃生口）。
 
 - SQLite 与 MSSQL 是当前 non-goal，不提供 feature、驱动或兼容承诺。出现真实消费者后必须通过独立 RFC 评估驱动、类型映射、DDL、事务和 CI 成本，不能只复制方法清单。
 - `backup`、`restore`、`database-create` 等数据库运维能力不进入 `QueryBuilder`。这类操作优先使用数据库原生工具，并由部署/运维层管理权限、审计、加密与生命周期。
@@ -46,6 +59,8 @@ yang-db = { version = "0.2.1", default-features = false, features = ["redis"] }
 - 多主机 / 故障转移（`target_session_attrs` 等运行时选主）：由部署层连接串、代理或服务发现处理。
 - PgBouncer / 事务池模式：不承诺 prepared statement 与事务池的兼容组合；部署层需选择会话池或关闭服务端预编译。
 - 原生 SQL 入口仅作为明确标注的逃生舱；面向外部输入的查询应使用 checked identifier API 和绑定参数。
+- Redis 的 `redis-test` mock crate 未引入：crates.io 当前版本为 2.0.0-rc.1（面向 redis 2.0），与 `redis 0.32` 不兼容。测试使用真实 Redis（`REDIS_TEST_URL` 或 testcontainers）。
+- 凭据轮换/动态 AUTH、`RESET` 连接状态清理、IPv6 字面量 DNS 重解析为后续增强；当前可通过 `execute(&Cmd)` 逃生口完成，不阻塞既有能力。
 
 ### PostgreSQL 能力与限制
 
@@ -96,7 +111,10 @@ PG_TEST_URL=postgres://postgres:postgres@127.0.0.1:55432/test \
 ## 依赖
 
 - `sqlx`: 可选异步 SQL 工具包，按 feature 启用 MySQL/PostgreSQL
-- `redis` / `deadpool-redis`: 仅 `redis` feature 启用
+- `redis` / `deadpool-redis`: 仅 `redis` feature 启用；TLS/Cluster/Sentinel 由独立 feature 透传
+- `futures-util`: Pub/Sub 消息流迭代（仅 `redis` feature）
+- `uuid`: 分布式锁 owner token（仅 `redis` feature）
+- `metrics`: 可选指标门面（仅 `metrics` feature）
 - `tokio`: 异步运行时
 - `serde`: 序列化/反序列化
 - `thiserror`: 错误处理

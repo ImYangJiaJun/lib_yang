@@ -47,22 +47,31 @@ impl RegistrationEmailSender for CapturingSender {
 }
 
 struct Fixture {
-    _container: testcontainers::ContainerAsync<GenericImage>,
+    _container: Option<testcontainers::ContainerAsync<GenericImage>>,
     cache: RedisClient,
     ctx: ActionContext,
     sender: CapturingSender,
 }
 
 async fn fixture() -> Fixture {
-    let image = GenericImage::new("redis", "7-alpine").with_wait_for(
-        testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
-    );
-    let container = image.start().await.expect("应能启动 Redis 7 测试容器");
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("应能读取 Redis 映射端口");
-    let cache = RedisClient::connect(format!("redis://127.0.0.1:{port}"))
+    let (container, redis_url) = match std::env::var("REDIS_TEST_URL") {
+        Ok(url) => (None, url),
+        Err(_) => {
+            let image = GenericImage::new("redis", "7-alpine").with_wait_for(
+                testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
+            );
+            let container = image
+                .start()
+                .await
+                .expect("应能启动 Redis 7 测试容器；请设置 REDIS_TEST_URL 复用已有实例");
+            let port = container
+                .get_host_port_ipv4(6379)
+                .await
+                .expect("应能读取 Redis 映射端口");
+            (Some(container), format!("redis://127.0.0.1:{port}"))
+        }
+    };
+    let cache = RedisClient::connect(redis_url)
         .await
         .expect("应能连接 Redis 测试容器");
     let sender = CapturingSender::default();

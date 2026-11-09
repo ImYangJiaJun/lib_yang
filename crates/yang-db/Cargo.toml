@@ -26,7 +26,17 @@ postgres = [
     "dep:uuid",
     "dep:bigdecimal",
 ]
-redis = ["dep:deadpool-redis", "dep:redis"]
+redis = ["dep:deadpool-redis", "dep:redis", "dep:futures-util", "dep:uuid"]
+# TLS：rediss:// 需要该 feature（rustls + 系统根证书）
+redis-tls = ["redis", "deadpool-redis/tokio-rustls-comp"]
+# Redis Cluster 拓扑（槽位路由、MOVED/ASK）
+redis-cluster = ["redis", "deadpool-redis/cluster"]
+# Redis Sentinel 拓扑（master 发现与故障转移）
+redis-sentinel = ["redis", "deadpool-redis/sentinel"]
+# Redis 客户端指标埋点（可选）
+metrics = ["dep:metrics"]
+# 仅测试用：允许 rediss://...#insecure 连接自签名 TLS 服务；生产构建不要启用
+redis-tls-insecure-test = ["redis", "deadpool-redis/tls-rustls-insecure"]
 
 # yang-db lint 配置：
 # - unsafe_code 已升级为 deny，测试中的 MaybeUninit unsafe 已全部替换为 connect_lazy
@@ -45,12 +55,19 @@ large_enum_variant = "warn"
 [dependencies]
 # Redis 连接池
 deadpool-redis = { version = "=0.22.0", optional = true }
-# Redis 客户端
-redis = { version = "0.32", optional = true }
+# Redis 客户端（aio/tokio-comp 供 Pub/Sub 专用连接使用）
+redis = { workspace = true, optional = true, features = ["aio", "tokio-comp"] }
+# Pub/Sub 消息流迭代
+futures-util = { workspace = true, optional = true }
+# 指标门面（可选，feature "metrics" 启用）
+metrics = { workspace = true, optional = true }
+# UUID（redis 分布式锁 owner token / postgres 类型支持）
+uuid = { workspace = true, optional = true }
 # MySQL 异步驱动
 sqlx = { workspace = true, optional = true }
 # 异步运行时
 tokio = { workspace = true }
+async-trait = { workspace = true }
 # 序列化
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -58,9 +75,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # 时间处理
 chrono = { workspace = true }
-# 精确十进制与 UUID（仅 postgres feature）
+# 精确十进制（仅 postgres feature）
 bigdecimal = { workspace = true, optional = true }
-uuid = { workspace = true, optional = true }
 # 日志
 log = { workspace = true }
 # 结构化数据库边界；只记录后端、操作与受控表名，不记录 SQL/参数/Redis key。

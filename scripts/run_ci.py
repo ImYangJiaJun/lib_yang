@@ -801,6 +801,89 @@ INTEGRATION_COMMANDS = (
             "--test-threads=1",
         ),
     ),
+    Command(
+        "Redis transaction integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-db",
+            "--test",
+            "integration_redis_transaction",
+            "--locked",
+            "--",
+            "--include-ignored",
+            "--test-threads=1",
+        ),
+    ),
+    Command(
+        "Redis string/list integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-db",
+            "--test",
+            "integration_redis_string_list_ops",
+            "--locked",
+            "--",
+            "--include-ignored",
+            "--test-threads=1",
+        ),
+    ),
+    Command(
+        "Redis mature capability integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-db",
+            "--test",
+            "integration_redis_mature",
+            "--locked",
+            "--",
+            "--include-ignored",
+            "--test-threads=1",
+        ),
+    ),
+    Command(
+        "yang-base cache integration",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-base",
+            "--test",
+            "cache_integration",
+            "--locked",
+            "--",
+            "--test-threads=1",
+        ),
+    ),
+) + tuple(
+    Command(
+        f"Redis command suite {suite}",
+        (
+            "cargo",
+            "test",
+            "-p",
+            "yang-db",
+            "--test",
+            suite,
+            "--locked",
+            "--",
+            "--include-ignored",
+            "--test-threads=1",
+        ),
+    )
+    for suite in (
+        "test_redis_client",
+        "test_redis_config",
+        "test_redis_list_ops",
+        "test_redis_pipeline",
+        "test_redis_script",
+        "test_redis_string_ops",
+    )
 )
 
 

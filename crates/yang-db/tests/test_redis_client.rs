@@ -2,12 +2,19 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use yang_db::{RedisClient, RedisConfig, RedisValue};
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试 Redis 连接
 ///
 /// 需要本地 Redis 服务器运行在 127.0.0.1:6379
 #[tokio::test]
 async fn test_redis_connect() {
-    let result = RedisClient::connect("redis://127.0.0.1:6379").await;
+    let result = RedisClient::connect(redis_test_url()).await;
     assert!(result.is_ok(), "Redis 连接失败: {:?}", result.err());
 }
 
@@ -18,18 +25,18 @@ async fn test_redis_connect_with_config() {
         .with_max_connections(5)
         .with_connect_timeout(3)
         .with_wait_timeout(5);
-    let result = RedisClient::connect_with_config("redis://127.0.0.1:6379", config).await;
+    let result = RedisClient::connect_with_config(redis_test_url(), config).await;
     assert!(result.is_ok(), "使用自定义配置连接失败: {:?}", result.err());
 }
 
 /// 测试连接池功能
 #[tokio::test]
 async fn test_redis_pool() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
-    let pool = client.pool();
+    let pool = client.pool().expect("standalone Redis pool");
     let conn_result = pool.get().await;
     assert!(conn_result.is_ok(), "从连接池获取连接失败");
 }
@@ -37,7 +44,7 @@ async fn test_redis_pool() {
 /// 测试执行 PING 命令
 #[tokio::test]
 async fn test_redis_execute_ping() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -52,7 +59,7 @@ async fn test_redis_execute_ping() {
 /// 测试执行 SET 和 GET 命令
 #[tokio::test]
 async fn test_redis_execute_set_get() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -92,7 +99,7 @@ async fn test_redis_execute_set_get() {
 /// 测试并发连接
 #[tokio::test]
 async fn test_redis_concurrent_connections() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -134,7 +141,7 @@ async fn test_redis_invalid_url() {
 /// 测试错误处理 - 无效的命令
 #[tokio::test]
 async fn test_redis_invalid_command() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 

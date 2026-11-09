@@ -4,35 +4,32 @@ use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_db::{RedisClient, RedisValue};
 
 /// 启动 Redis 容器并返回连接 URL
-async fn setup_redis_container() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+async fn setup_redis_container() -> (Option<testcontainers::ContainerAsync<GenericImage>>, String) {
+    // 优先复用外部测试专用实例（本地 docker / CI service）
+    if let Ok(url) = std::env::var("REDIS_TEST_URL") {
+        return (None, url);
+    }
+
     let redis_image = GenericImage::new("redis", "7-alpine").with_wait_for(
         testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
     );
-
-    match redis_image.start().await {
-        Ok(container) => {
-            let port = container.get_host_port_ipv4(6379).await.ok()?;
-            let url = format!("redis://127.0.0.1:{}", port);
-
-            // 等待 Redis 完全启动
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-            Some((container, url))
-        }
-        Err(e) => {
-            eprintln!("无法启动 Redis 容器: {}. 跳过集成测试。", e);
-            None
-        }
-    }
+    let container = redis_image
+        .start()
+        .await
+        .expect("无法启动 Redis 测试容器；请设置 REDIS_TEST_URL 复用已有实例");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("无法获取 Redis 容器端口");
+    let url = format!("redis://127.0.0.1:{}", port);
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    (Some(container), url)
 }
 
 /// 测试 Pipeline 批量 SET/GET 操作（100+ 命令）
 #[tokio::test]
 async fn test_pipeline_batch_operations_100_plus() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -85,10 +82,7 @@ async fn test_pipeline_batch_operations_100_plus() {
 /// 测试 Pipeline 混合命令类型（大规模）
 #[tokio::test]
 async fn test_pipeline_mixed_command_types() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -151,10 +145,7 @@ async fn test_pipeline_mixed_command_types() {
 /// 测试 Pipeline 单次网络往返（性能测试）
 #[tokio::test]
 async fn test_pipeline_single_round_trip_performance() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -206,10 +197,7 @@ async fn test_pipeline_single_round_trip_performance() {
 /// 测试 Pipeline 类型化结果提取（大规模）
 #[tokio::test]
 async fn test_pipeline_typed_query_large_scale() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -248,10 +236,7 @@ async fn test_pipeline_typed_query_large_scale() {
 /// 测试 Pipeline 并发执行
 #[tokio::test]
 async fn test_pipeline_concurrent_execution() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -297,10 +282,7 @@ async fn test_pipeline_concurrent_execution() {
 /// 测试 Pipeline 错误恢复
 #[tokio::test]
 async fn test_pipeline_error_recovery() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -341,10 +323,7 @@ async fn test_pipeline_error_recovery() {
 /// 测试 Pipeline 空操作
 #[tokio::test]
 async fn test_pipeline_empty_operations() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -365,10 +344,7 @@ async fn test_pipeline_empty_operations() {
 /// 测试 Pipeline 大批量操作（1000+ 命令）
 #[tokio::test]
 async fn test_pipeline_very_large_batch() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await
@@ -405,10 +381,7 @@ async fn test_pipeline_very_large_batch() {
 /// 测试 Pipeline 顺序性（验证结果按添加顺序返回）
 #[tokio::test]
 async fn test_pipeline_result_ordering() {
-    let Some((_container, url)) = setup_redis_container().await else {
-        eprintln!("跳过测试：无法启动 Redis 容器");
-        return;
-    };
+    let (_container, url) = setup_redis_container().await;
 
     let client = RedisClient::connect(&url)
         .await

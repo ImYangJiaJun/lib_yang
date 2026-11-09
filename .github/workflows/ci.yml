@@ -401,6 +401,18 @@ jobs:
   docker-redis:
     name: Redis 7 integration
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      REDIS_TEST_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -410,10 +422,23 @@ jobs:
       - name: Pin Redis image
         run: docker pull redis:7-alpine
       - name: Redis pipeline integration
-        run: cargo test -p yang-db --test integration_redis_pipeline --locked -- --test-threads=1
+        run: cargo test -p yang-db --test integration_redis_pipeline --locked -- --include-ignored --test-threads=1
+      - name: Redis script integration
+        run: cargo test -p yang-db --test integration_redis_script --locked -- --include-ignored --test-threads=1
+      - name: Redis transaction integration
+        run: cargo test -p yang-db --test integration_redis_transaction --locked -- --include-ignored --test-threads=1
+      - name: Redis string/list integration
+        run: cargo test -p yang-db --test integration_redis_string_list_ops --locked -- --include-ignored --test-threads=1
+      - name: Redis mature capability integration
+        run: cargo test -p yang-db --test integration_redis_mature --locked -- --include-ignored --test-threads=1
+      - name: Redis command suites
+        run: |
+          for suite in test_redis_client test_redis_config test_redis_list_ops test_redis_pipeline test_redis_script test_redis_string_ops; do
+            cargo test -p yang-db --test "$suite" --locked -- --include-ignored --test-threads=1
+          done
+      - name: yang-base cache integration
+        run: cargo test -p yang-base --test cache_integration --locked -- --test-threads=1
       - name: Token revocation integration
         run: cargo test -p yang-base --test token_revocation_integration --locked -- --ignored --test-threads=1
       - name: Email verification integration
         run: cargo test -p yang-base --test email_verification_integration --locked -- --ignored --test-threads=1
-      - name: Redis script integration
-        run: cargo test -p yang-db --test integration_redis_script --locked -- --test-threads=1

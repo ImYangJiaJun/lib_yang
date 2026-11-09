@@ -51,6 +51,15 @@ pub enum DbError {
     #[error("Redis 超时错误: {0}")]
     RedisTimeoutError(String),
 
+    /// 结构化 Redis 错误：保留协议层 `ErrorKind` 与重试建议，避免把
+    /// `LOADING`/`TRYAGAIN`/`NOSCRIPT` 等可重试错误压成不可重试的字符串。
+    #[error("Redis 错误: {0}")]
+    RedisError(RedisErrorInfo),
+
+    /// Redis 连接池已关闭（不可重试）。
+    #[error("Redis 连接池已关闭")]
+    RedisPoolClosed,
+
     #[error("HAVING 子句需要 GROUP BY 子句")]
     MissingGroupByClause,
 
@@ -312,6 +321,78 @@ pub enum DbErrorCategory {
     Server,
 }
 
+/// Redis 协议层错误类别（与 `redis::ErrorKind` 对齐，但不暴露上游类型）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RedisErrorKind {
+    /// 超时
+    Timeout,
+    /// 连接断开 / 连接拒绝
+    Connection,
+    /// IO 错误
+    Io,
+    /// 类型不匹配
+    Type,
+    /// 事务因先前错误被丢弃
+    ExecAbort,
+    /// 服务端正在加载数据
+    BusyLoading,
+    /// 服务端要求重试
+    TryAgain,
+    /// 脚本不存在
+    NoScript,
+    /// 其他服务端响应错误
+    Response,
+    /// 认证失败
+    Authentication,
+    /// Cluster 拓扑错误（MOVED/ASK/CLUSTERDOWN 等）
+    Cluster,
+    /// 其他
+    Other,
+}
+
+/// Redis 建议的重试方式（与 `redis::RetryMethod` 对齐）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RedisRetryMethod {
+    /// 不重试（永久错误）
+    NoRetry,
+    /// 立即重试
+    RetryImmediately,
+    /// 延迟后重试
+    WaitAndRetry,
+    /// 重新建立连接后重试
+    Reconnect,
+}
+
+/// 结构化 Redis 错误信息。
+#[derive(Debug, Clone)]
+pub struct RedisErrorInfo {
+    /// 协议层错误类别
+    pub kind: RedisErrorKind,
+    /// 建议的重试方式
+    pub retry_method: RedisRetryMethod,
+    /// 错误消息（不含命令参数与 key）
+    pub message: String,
+}
+
+impl RedisErrorInfo {
+    /// 是否为可重试错误。
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self.retry_method, RedisRetryMethod::NoRetry)
+    }
+}
+
+impl std::fmt::Display for RedisErrorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{:?}/{:?}] {}",
+            self.kind, self.retry_method, self.message
+        )
+    }
+}
+
 impl DbError {
     /// 稳定错误码（8xxxxx 段，独立于 yang-base 的 BaseError 码命名空间）。
     ///
@@ -333,6 +414,8 @@ impl DbError {
             DbError::RedisPoolError(_) => 810003,
             DbError::RedisTypeConversionError(_) => 810004,
             DbError::RedisTimeoutError(_) => 810005,
+            DbError::RedisError(_) => 810006,
+            DbError::RedisPoolClosed => 810007,
             DbError::MissingGroupByClause => 800011,
             DbError::UnsupportedOperator(_) => 800012,
             DbError::InvalidArgument(_) => 800013,
@@ -351,6 +434,9 @@ impl DbError {
             | DbError::RedisConnectionError(_)
             | DbError::RedisPoolError(_)
             | DbError::RedisTimeoutError(_) => C::Transient,
+            // 结构化 Redis 错误：按协议层建议的重试方式分类
+            DbError::RedisError(info) if info.is_retryable() => C::Transient,
+            DbError::RedisError(_) | DbError::RedisPoolClosed => C::Server,
             // 约束冲突
             DbError::ConstraintError(_) => C::Conflict,
             // 不存在
@@ -542,6 +628,47 @@ impl From<sqlx::Error> for DbError {
     }
 }
 
+/// 将 redis 协议层的 `ErrorKind` 映射为稳定的 [`RedisErrorKind`]。
+#[cfg(feature = "redis")]
+pub fn map_redis_error_kind(kind: redis::ErrorKind) -> RedisErrorKind {
+    use redis::ErrorKind;
+    match kind {
+        ErrorKind::ResponseError => RedisErrorKind::Response,
+        ErrorKind::ParseError => RedisErrorKind::Other,
+        ErrorKind::AuthenticationFailed => RedisErrorKind::Authentication,
+        ErrorKind::TypeError => RedisErrorKind::Type,
+        ErrorKind::ExecAbortError => RedisErrorKind::ExecAbort,
+        ErrorKind::BusyLoadingError => RedisErrorKind::BusyLoading,
+        ErrorKind::NoScriptError => RedisErrorKind::NoScript,
+        ErrorKind::Moved
+        | ErrorKind::Ask
+        | ErrorKind::ClusterDown
+        | ErrorKind::CrossSlot
+        | ErrorKind::MasterDown
+        | ErrorKind::ClusterConnectionNotFound => RedisErrorKind::Cluster,
+        ErrorKind::TryAgain => RedisErrorKind::TryAgain,
+        ErrorKind::IoError => RedisErrorKind::Io,
+        _ => RedisErrorKind::Other,
+    }
+}
+
+/// 将 redis 协议层的 `RetryMethod` 映射为稳定的 [`RedisRetryMethod`]。
+#[cfg(feature = "redis")]
+pub fn map_redis_retry_method(method: redis::RetryMethod) -> RedisRetryMethod {
+    use redis::RetryMethod;
+    match method {
+        RetryMethod::NoRetry => RedisRetryMethod::NoRetry,
+        RetryMethod::RetryImmediately => RedisRetryMethod::RetryImmediately,
+        RetryMethod::WaitAndRetry => RedisRetryMethod::WaitAndRetry,
+        RetryMethod::Reconnect
+        | RetryMethod::ReconnectFromInitialConnections
+        | RetryMethod::MovedRedirect
+        | RetryMethod::AskRedirect => RedisRetryMethod::Reconnect,
+        // RetryMethod 是 non_exhaustive：未知策略按不可重试处理，避免误重试。
+        _ => RedisRetryMethod::NoRetry,
+    }
+}
+
 /// 从 redis::RedisError 转换为 DbError
 #[cfg(feature = "redis")]
 impl From<redis::RedisError> for DbError {
@@ -550,16 +677,34 @@ impl From<redis::RedisError> for DbError {
         // - 超时优先（is_timeout 涵盖连接超时与响应超时）
         // - 连接断开 / IO / 连接拒绝 → 连接错误
         // - 类型不匹配（TypeError）→ 类型转换错误
-        // - 其余 → 命令错误（兜底）
+        // - 服务端明确要求重试（LOADING/TRYAGAIN/MOVED 等）→ 结构化可重试错误
+        // - 其余响应错误 → 命令错误（不可重试兜底）
         use redis::ErrorKind;
         if err.is_timeout() {
-            DbError::RedisTimeoutError(format!("超时错误: {}", err))
-        } else if err.is_connection_dropped() || err.is_io_error() || err.is_connection_refusal() {
-            DbError::RedisConnectionError(format!("连接错误: {}", err))
-        } else if matches!(err.kind(), ErrorKind::TypeError) {
-            DbError::RedisTypeConversionError(format!("类型错误: {}", err))
-        } else {
-            DbError::RedisCommandError(format!("Redis 错误: {}", err))
+            return DbError::RedisTimeoutError(format!("超时错误: {}", err));
+        }
+        if err.is_connection_dropped() || err.is_io_error() || err.is_connection_refusal() {
+            return DbError::RedisConnectionError(format!("连接错误: {}", err));
+        }
+        let kind = err.kind();
+        if matches!(kind, ErrorKind::TypeError) {
+            // redis-rs 的 Display 会附带 `(response was <Value>)`，可能包含缓存值/
+            // token。类型错误只返回固定文案，绝不拼接原始响应。
+            return DbError::RedisTypeConversionError(
+                "Redis 响应类型不匹配（原始响应已省略）".to_string(),
+            );
+        }
+        let info = RedisErrorInfo {
+            kind: map_redis_error_kind(kind),
+            retry_method: map_redis_retry_method(err.retry_method()),
+            message: err.to_string(),
+        };
+        match kind {
+            // 保留历史变体：普通响应错误与事务中止仍归为命令错误。
+            ErrorKind::ResponseError | ErrorKind::ExecAbortError | ErrorKind::ExtensionError => {
+                DbError::RedisCommandError(format!("Redis 错误: {}", err))
+            }
+            _ => DbError::RedisError(info),
         }
     }
 }
@@ -572,9 +717,8 @@ impl From<deadpool_redis::PoolError> for DbError {
             deadpool_redis::PoolError::Timeout(_) => {
                 DbError::RedisTimeoutError("连接池获取连接超时".to_string())
             }
-            deadpool_redis::PoolError::Closed => {
-                DbError::RedisPoolError("连接池已关闭".to_string())
-            }
+            // 关闭是确定性状态，不能归入「可重试的瞬时错误」。
+            deadpool_redis::PoolError::Closed => DbError::RedisPoolClosed,
             deadpool_redis::PoolError::NoRuntimeSpecified => {
                 DbError::RedisPoolError("未指定运行时".to_string())
             }
@@ -609,6 +753,12 @@ mod tests {
             DbError::RedisPoolError("测试".to_string()),
             DbError::RedisTypeConversionError("测试".to_string()),
             DbError::RedisTimeoutError("测试".to_string()),
+            DbError::RedisError(RedisErrorInfo {
+                kind: RedisErrorKind::TryAgain,
+                retry_method: RedisRetryMethod::WaitAndRetry,
+                message: "测试".to_string(),
+            }),
+            DbError::RedisPoolClosed,
             DbError::MissingGroupByClause,
             DbError::UnsupportedOperator("测试".to_string()),
             DbError::InvalidArgument("测试".to_string()),
@@ -753,7 +903,8 @@ mod tests {
         // 测试 deadpool_redis::PoolError 转换
         let pool_err = deadpool_redis::PoolError::Closed;
         let db_err: DbError = pool_err.into();
-        assert!(matches!(db_err, DbError::RedisPoolError(_)));
+        assert!(matches!(db_err, DbError::RedisPoolClosed));
+        assert!(!db_err.is_retryable());
     }
 
     // 验证需求: 4.4 — UnsupportedOperator 变体错误消息格式测试
@@ -813,6 +964,26 @@ mod tests {
             DbError::RedisTimeoutError("t".into()).category(),
             C::Transient
         );
+        assert_eq!(
+            DbError::RedisError(RedisErrorInfo {
+                kind: RedisErrorKind::TryAgain,
+                retry_method: RedisRetryMethod::WaitAndRetry,
+                message: "t".into(),
+            })
+            .category(),
+            C::Transient
+        );
+        assert_eq!(
+            DbError::RedisError(RedisErrorInfo {
+                kind: RedisErrorKind::Response,
+                retry_method: RedisRetryMethod::NoRetry,
+                message: "r".into(),
+            })
+            .category(),
+            C::Server
+        );
+        assert_eq!(DbError::RedisPoolClosed.category(), C::Server);
+        assert!(!DbError::RedisPoolClosed.is_retryable());
         // Conflict：约束冲突
         assert_eq!(DbError::ConstraintError("c".into()).category(), C::Conflict);
         // NotFound：表不存在
@@ -995,6 +1166,13 @@ mod tests {
             DbError::RedisPoolError("".into()).code(),
             DbError::RedisTypeConversionError("".into()).code(),
             DbError::RedisTimeoutError("".into()).code(),
+            DbError::RedisError(RedisErrorInfo {
+                kind: RedisErrorKind::Other,
+                retry_method: RedisRetryMethod::NoRetry,
+                message: "".into(),
+            })
+            .code(),
+            DbError::RedisPoolClosed.code(),
             DbError::MissingGroupByClause.code(),
             DbError::UnsupportedOperator("".into()).code(),
             DbError::InvalidArgument("".into()).code(),
@@ -1005,7 +1183,7 @@ mod tests {
         let mut sorted = codes.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(codes.len(), sorted.len(), "全部变体的 code 应唯一");
+        assert_eq!(codes.len(), sorted.len(), "所有变体的 code 应全部唯一");
         // 所有码在 8xxxxx 段
         for &c in &codes {
             assert!((800000..900000).contains(&c), "code {} 不在 8xxxxx 段", c);

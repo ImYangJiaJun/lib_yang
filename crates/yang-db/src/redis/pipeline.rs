@@ -265,6 +265,18 @@ impl RedisPipeline {
         self
     }
 
+    /// 校验 Pipeline 命令数是否超过配置上限。
+    fn ensure_within_limit(&self) -> Result<()> {
+        let count = self.pipe.cmd_iter().count();
+        let max = self.client.config().pipeline_max_commands;
+        if count > max {
+            return Err(DbError::InvalidArgument(format!(
+                "Pipeline 命令数 {count} 超过上限 {max}"
+            )));
+        }
+        Ok(())
+    }
+
     /// 执行 Pipeline 中的所有命令（类型化版本）
     ///
     /// # 类型参数
@@ -275,7 +287,8 @@ impl RedisPipeline {
     /// - `Err(DbError)`: 执行失败
     ///
     /// # 错误处理
-    /// 如果某个命令失败，返回错误并指明失败的命令索引
+    /// 任一命令失败时整体返回一个错误（redis-rs 的限制，不携带命令索引）；
+    /// 需要逐条结果请使用 [`execute_tolerant`](Self::execute_tolerant)。
     ///
     /// # 示例
     /// ```no_run
@@ -299,20 +312,11 @@ impl RedisPipeline {
         fields(db.system = "redis", db.operation = "pipeline", otel.kind = "client")
     )]
     pub async fn query<T: FromRedisValue>(self) -> Result<Vec<T>> {
-        let mut conn = self
-            .client
-            .pool()
-            .get()
+        self.ensure_within_limit()?;
+        let mut conn = self.client.connection().await?;
+        conn.query_pipeline::<Vec<T>>(&self.pipe)
             .await
-            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
-
-        let results: Vec<T> = self
-            .pipe
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| DbError::RedisCommandError(format!("Pipeline 执行失败: {}", e)))?;
-
-        Ok(results)
+            .map_err(DbError::from)
     }
 
     /// 执行 Pipeline 中的所有命令（兼容模式）
@@ -347,20 +351,34 @@ impl RedisPipeline {
         fields(db.system = "redis", db.operation = "pipeline", otel.kind = "client")
     )]
     pub async fn execute(self) -> Result<Vec<RedisValue>> {
-        let mut conn = self
-            .client
-            .pool()
-            .get()
+        self.ensure_within_limit()?;
+        let mut conn = self.client.connection().await?;
+        let results: Vec<redis::Value> = conn
+            .query_pipeline(&self.pipe)
             .await
-            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
-
-        let results: Vec<redis::Value> = self
-            .pipe
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| DbError::RedisCommandError(format!("Pipeline 执行失败: {}", e)))?;
-
+            .map_err(DbError::from)?;
         Ok(results.into_iter().map(RedisValue::from).collect())
+    }
+
+    /// 容错执行：逐条返回每个命令的结果，单条错误不会吞掉其他命令的结果。
+    ///
+    /// 该方法是「正确性优先」的实现：它不把命令打包为一次网络往返，而是逐条执行，
+    /// 因此缺少 Pipeline 的吞吐优势。常规路径请使用 [`execute`](Self::execute)。
+    ///
+    /// 返回的外层 `Result` 只表示连接/类型级失败；内层 `Result` 表示单条命令结果。
+    pub async fn execute_tolerant(self) -> Result<Vec<Result<RedisValue>>> {
+        self.ensure_within_limit()?;
+        let mut conn = self.client.connection().await?;
+        let mut results = Vec::with_capacity(self.pipe.cmd_iter().count());
+        for cmd in self.pipe.cmd_iter() {
+            let result = conn
+                .query::<redis::Value>(cmd)
+                .await
+                .map(RedisValue::from)
+                .map_err(DbError::from);
+            results.push(result);
+        }
+        Ok(results)
     }
 
     /// 获取 Pipeline 中的命令数量

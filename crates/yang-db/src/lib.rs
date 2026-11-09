@@ -4,6 +4,9 @@ extern crate self as yang_db;
 // 后端能力契约
 pub mod capability;
 
+// 跨后端统一管理面（health/pool_status/close）
+pub mod backend_api;
+
 /// 当前 yang-db crate 版本。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -43,11 +46,15 @@ pub mod redis;
 mod sql_types;
 
 // 重新导出错误类型
+pub use backend_api::Backend;
 pub use capability::{
     BackendCapabilities, BackendCapability, BackendKind, PlaceholderStyle, SafetyConstraint,
     MYSQL_CAPABILITIES, POSTGRES_CAPABILITIES, REDIS_CAPABILITIES,
 };
-pub use error::{DbError, DbErrorCategory, SqlErrorInfo, SqlErrorKind};
+pub use error::{
+    DbError, DbErrorCategory, RedisErrorInfo, RedisErrorKind, RedisRetryMethod, SqlErrorInfo,
+    SqlErrorKind,
+};
 
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
@@ -103,9 +110,17 @@ pub use postgres::{
     TransactionOptions as PgTransactionOptions,
 };
 
+// 重新导出底层 redis crate，便于调用方构造 `redis::Cmd`（逃生口/新命令）
+#[cfg(feature = "redis")]
+pub use ::redis as redis_crate;
+
 // 重新导出 Redis 核心类型
 #[cfg(feature = "redis")]
-pub use redis::{RedisClient, RedisConfig, RedisPipeline, RedisTransaction, RedisValue};
+pub use redis::{
+    GetExOption, JsonCodec, KeyNamespace, RedisClient, RedisCodec, RedisConfig, RedisHealth,
+    RedisLock, RedisLockGuard, RedisMessage, RedisPipeline, RedisPubSub, RedisTopology,
+    RedisTransaction, RedisValue, SetOptions, XReadGroupOptions, ZAddOptions,
+};
 
 // 类型别名
 pub type Result<T> = std::result::Result<T, DbError>;

@@ -59,6 +59,8 @@ extern crate self as yang_base;
 pub mod action;
 #[cfg(feature = "admin-metadata")]
 pub mod admin;
+#[cfg(feature = "redis")]
+pub mod cache;
 pub mod config;
 pub mod database;
 pub mod definition;

@@ -4,10 +4,17 @@
 #![allow(unused_results)]
 use yang_db::RedisClient;
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试 LINSERT 命令
 #[tokio::test]
 async fn test_linsert() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -69,7 +76,7 @@ async fn test_linsert() {
 /// 测试 LREM 命令
 #[tokio::test]
 async fn test_lrem() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -161,7 +168,7 @@ async fn test_lrem() {
 /// 测试 RPOPLPUSH 命令
 #[tokio::test]
 async fn test_rpoplpush() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -251,7 +258,7 @@ async fn test_rpoplpush() {
 /// 测试 BLPOP 命令
 #[tokio::test]
 async fn test_blpop() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -307,7 +314,7 @@ async fn test_blpop() {
 /// 测试 BRPOP 命令
 #[tokio::test]
 async fn test_brpop() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -363,7 +370,7 @@ async fn test_brpop() {
 /// 测试 List 操作的边界情况
 #[tokio::test]
 async fn test_list_ops_edge_cases() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -414,7 +421,7 @@ async fn test_list_ops_edge_cases() {
 /// 测试 List 操作的并发安全性
 #[tokio::test]
 async fn test_list_ops_concurrent() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -456,7 +463,7 @@ async fn test_blocking_ops_timeout() {
         .with_max_connections(10)
         .with_connect_timeout(60)
         .with_wait_timeout(60);
-    let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
+    let client = RedisClient::connect_with_config(redis_test_url(), config)
         .await
         .expect("连接失败");
 

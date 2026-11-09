@@ -93,25 +93,47 @@ fn parse_subject_min_iat_pipeline_results(
     parse_subject_min_iat_value(value)
 }
 
-/// 解析固定的 EXISTS + GET pipeline 结果，任何形态歧义均失败关闭。
-fn parse_revocation_pipeline_results(
-    results: &[RedisValue],
+/// 原子读取「jti 黑名单 + subject 水位线」的 Lua 脚本。
+///
+/// 单条脚本避免了 EXISTS + GET 两条命令之间的 TOCTOU 窗口（NEW-44）。
+const REVOCATION_LOOKUP_SCRIPT: &str = r#"
+local blacklisted = redis.call('EXISTS', KEYS[1])
+local watermark = redis.call('GET', KEYS[2])
+local has_watermark = redis.call('EXISTS', KEYS[2])
+if not watermark then
+    watermark = ''
+end
+return {blacklisted, has_watermark, watermark}
+"#;
+
+/// 解析 Lua 脚本返回值（blacklisted, has_watermark, watermark 原值）。
+///
+/// 必须用 EXISTS 单独区分「key 不存在」与「key 存在但值为空字符串」：
+/// 后者是损坏状态，必须失败关闭，不能当作无水位线放行。
+fn parse_revocation_script_results(
+    blacklisted: i64,
+    has_watermark: i64,
+    watermark: String,
 ) -> Result<(bool, Option<u64>), BaseError> {
-    let [blacklist_result, watermark_result] = results else {
-        return Err(invalid_revocation_state(
-            "Token 撤销查询 pipeline 返回数量不是 2",
-        ));
-    };
-    let blacklisted = match blacklist_result {
-        RedisValue::Int(0) => false,
-        RedisValue::Int(1) => true,
+    let blacklisted = match blacklisted {
+        0 => false,
+        1 => true,
         _ => {
             return Err(invalid_revocation_state(
                 "Token 黑名单 EXISTS 结果不是 0/1 整数",
             ))
         }
     };
-    Ok((blacklisted, parse_subject_min_iat_value(watermark_result)?))
+    let min_iat = match has_watermark {
+        0 => None,
+        1 => Some(parse_subject_min_iat(&watermark)?),
+        _ => {
+            return Err(invalid_revocation_state(
+                "Token 水位线 EXISTS 结果不是 0/1 整数",
+            ))
+        }
+    };
+    Ok((blacklisted, min_iat))
 }
 
 impl TokenManager {
@@ -145,13 +167,15 @@ impl TokenManager {
     pub async fn revoke_claims(&self, claims: &TokenClaims) -> Result<(), BaseError> {
         let now = current_unix_timestamp()?;
         // 剩余有效期；已过期则无需写黑名单
-        let ttl = claims.exp.saturating_sub(now);
-        if ttl == 0 {
+        let remaining = claims.exp.saturating_sub(now);
+        if remaining == 0 {
             return Ok(());
         }
+        let ttl = i64::try_from(remaining)
+            .map_err(|_| BaseError::ConfigError("Token 剩余有效期超出 i64 范围".to_string()))?;
 
         self.revocation_cache()?
-            .setex(blacklist_key(&claims.jti), ttl as i64, "1")
+            .setex(blacklist_key(&claims.jti), ttl, "1")
             .await
             .map_err(BaseError::RedisOperationFailed)?;
         Ok(())
@@ -237,9 +261,11 @@ impl TokenManager {
     /// 依赖 `ToolsBuilder` 已为 TokenManager 连接 Redis 撤销存储。
     pub async fn revoke_by_subject(&self, sub: &str) -> Result<(), BaseError> {
         let now = current_unix_timestamp()?;
-        let ttl = self.revocation_watermark_ttl();
+        let ttl = i64::try_from(self.revocation_watermark_ttl()).map_err(|_| {
+            BaseError::ConfigError("Token 撤销水位线 TTL 超出 i64 范围".to_string())
+        })?;
         self.revocation_cache()?
-            .setex(subject_min_iat_key(sub), ttl as i64, now.to_string())
+            .setex(subject_min_iat_key(sub), ttl, now.to_string())
             .await
             .map_err(BaseError::RedisOperationFailed)?;
         Ok(())
@@ -289,8 +315,10 @@ impl TokenManager {
         if ttl == 0 {
             return Ok(false);
         }
+        let ttl = i64::try_from(ttl)
+            .map_err(|_| BaseError::ConfigError("jti 黑名单 TTL 超出 i64 范围".to_string()))?;
         self.revocation_cache()?
-            .set_nx_ex(blacklist_key(jti), "1", ttl as i64)
+            .set_nx_ex(blacklist_key(jti), "1", ttl)
             .await
             .map_err(BaseError::RedisOperationFailed)
     }
@@ -318,6 +346,11 @@ impl TokenManager {
     /// - `Err(BaseError::TokenRevoked)`: Token 已被撤销（命中黑名单或不晚于用户水位线）
     /// - `Err(BaseError::RedisOperationFailed)`: 黑名单查询失败
     /// - `Err(BaseError::TokenRevocationStateInvalid)`: 撤销查询结果或水位线损坏
+    ///
+    /// # Cluster
+    ///
+    /// Cluster 拓扑下两个 key 通常不同槽，无法用单条 Lua 原子读取；本方法会退化
+    /// 为两次单 key 读（接受亚毫秒 TOCTOU 窗口），不会因 CROSSSLOT 让鉴权整体失败。
     pub async fn verify_token_checked(
         &self,
         token: &str,
@@ -329,18 +362,36 @@ impl TokenManager {
             return Err(BaseError::TokenTypeInvalid("Token 类型不匹配".to_string()));
         }
 
-        // PERF-2: 将两次 Redis 读（EXISTS + GET）合并为一条 pipeline，2 RTT → 1 RTT。
-        // 对已黑名单 token 会失去短路（不再提前返回），但撤销场景罕见，可接受。
-        let mut pipeline = self.revocation_cache()?.pipeline();
-        pipeline
-            .exists(blacklist_key(&claims.jti))
-            .get(subject_min_iat_key(&claims.sub));
-        let results = pipeline
-            .execute()
-            .await
-            .map_err(BaseError::RedisOperationFailed)?;
-
-        let (blacklisted, min_iat) = parse_revocation_pipeline_results(&results)?;
+        // PERF-2 + NEW-44：EXISTS 与 GET 必须原子读取，避免两条命令之间的
+        // TOCTOU 窗口；单条 Lua 脚本同时完成两次读，只有 1 RTT。
+        let cache = self.revocation_cache()?;
+        let (blacklisted, min_iat) = if cache.is_cluster() {
+            // Cluster 下两个 key 通常不在同一槽，跨槽 EVAL 会被 CROSSSLOT 拒绝。
+            // 退化为两次单 key 读（各自原子），接受这段 TOCTOU 窗口；不再多 key 脚本。
+            let blacklisted = cache
+                .exists(&[blacklist_key(&claims.jti)])
+                .await
+                .map_err(BaseError::RedisOperationFailed)?
+                > 0;
+            let min_iat = self.subject_min_iat(&claims.sub).await?;
+            (blacklisted, min_iat)
+        } else {
+            let script = cache.script(REVOCATION_LOOKUP_SCRIPT);
+            let (blacklisted, has_watermark, watermark): (i64, i64, String) = cache
+                .eval_script(
+                    &script,
+                    &[blacklist_key(&claims.jti), subject_min_iat_key(&claims.sub)],
+                    &[],
+                )
+                .await
+                .map_err(|error| match error {
+                    yang_db::DbError::RedisTypeConversionError(_) => {
+                        invalid_revocation_state("Token 撤销查询返回非法类型")
+                    }
+                    other => BaseError::RedisOperationFailed(other),
+                })?;
+            parse_revocation_script_results(blacklisted, has_watermark, watermark)?
+        };
         if blacklisted {
             return Err(BaseError::TokenRevoked);
         }
@@ -472,46 +523,33 @@ mod tests {
     }
 
     #[test]
-    fn revocation_pipeline_parser_rejects_ambiguous_results() {
-        for values in [
-            vec![],
-            vec![yang_db::RedisValue::Int(0)],
-            vec![
-                yang_db::RedisValue::Int(0),
-                yang_db::RedisValue::Nil,
-                yang_db::RedisValue::Nil,
-            ],
-            vec![
-                yang_db::RedisValue::String("0".to_string()),
-                yang_db::RedisValue::Nil,
-            ],
-            vec![yang_db::RedisValue::Int(-1), yang_db::RedisValue::Nil],
-            vec![yang_db::RedisValue::Int(2), yang_db::RedisValue::Nil],
+    fn revocation_script_parser_accepts_valid_and_rejects_corrupt() {
+        assert_eq!(
+            parse_revocation_script_results(0, 0, String::new())
+                .expect("黑名单未命中且无水位线是合法状态"),
+            (false, None)
+        );
+        assert_eq!(
+            parse_revocation_script_results(1, 1, "42".to_string())
+                .expect("黑名单命中且水位线合法"),
+            (true, Some(42))
+        );
+
+        for (blacklisted, has_watermark, watermark) in [
+            (-1, 0, String::new()),
+            (2, 0, String::new()),
+            (0, 2, String::new()),
+            // key 存在但值为空字符串：损坏状态，必须失败关闭
+            (0, 1, String::new()),
+            (0, 1, "secret-corrupt-watermark".to_string()),
         ] {
+            let error = parse_revocation_script_results(blacklisted, has_watermark, watermark)
+                .expect_err("非法脚本结果必须失败关闭");
+            assert!(matches!(error, BaseError::TokenRevocationStateInvalid(_)));
             assert!(
-                matches!(
-                    parse_revocation_pipeline_results(&values),
-                    Err(BaseError::TokenRevocationStateInvalid(_))
-                ),
-                "不明确的撤销查询结果必须失败关闭: {values:?}"
+                !error.to_string().contains("secret-corrupt-watermark"),
+                "错误不得回显 Redis 中的损坏原值"
             );
         }
-
-        assert_eq!(
-            parse_revocation_pipeline_results(&[
-                yang_db::RedisValue::Int(0),
-                yang_db::RedisValue::String("42".to_string()),
-            ])
-            .expect("固定合法结果应通过"),
-            (false, Some(42))
-        );
-        assert_eq!(
-            parse_revocation_pipeline_results(&[
-                yang_db::RedisValue::Int(1),
-                yang_db::RedisValue::Nil,
-            ])
-            .expect("黑名单命中且无水位线是合法状态"),
-            (true, None)
-        );
     }
 }

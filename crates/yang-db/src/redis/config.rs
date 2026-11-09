@@ -45,6 +45,21 @@ pub struct RedisConfig {
     pub test_before_acquire: bool,
     /// 是否启用日志
     pub enable_logging: bool,
+    /// 单条命令的响应超时（毫秒）。
+    ///
+    /// `None` 表示不限制（保持历史行为）。设置后，每次从池中取出的连接都会应用
+    /// 该超时；阻塞命令（BLPOP/BRPOP/XREAD BLOCK）需要调用方自行评估是否应放宽。
+    pub response_timeout_ms: Option<u64>,
+    /// 连接断开时的最大重连重试次数（仅对连接类错误生效）。
+    pub reconnect_retries: u32,
+    /// 重连重试的最大退避（毫秒）。
+    pub reconnect_max_delay_ms: u64,
+    /// Pipeline 允许累积的最大命令数。
+    pub pipeline_max_commands: usize,
+    /// 事务 WATCH 冲突的最大重试次数。
+    pub transaction_retries: u32,
+    /// 事务 WATCH 冲突重试的基础退避（毫秒）。
+    pub transaction_retry_backoff_ms: u64,
 }
 
 impl Default for RedisConfig {
@@ -69,6 +84,12 @@ impl Default for RedisConfig {
             max_lifetime: None,
             test_before_acquire: false,
             enable_logging: false,
+            response_timeout_ms: None,
+            reconnect_retries: 2,
+            reconnect_max_delay_ms: 200,
+            pipeline_max_commands: 10_000,
+            transaction_retries: 100,
+            transaction_retry_backoff_ms: 1,
         }
     }
 }
@@ -108,6 +129,12 @@ impl RedisConfig {
             max_lifetime: None,
             test_before_acquire: false,
             enable_logging,
+            response_timeout_ms: None,
+            reconnect_retries: 2,
+            reconnect_max_delay_ms: 200,
+            pipeline_max_commands: 10_000,
+            transaction_retries: 100,
+            transaction_retry_backoff_ms: 1,
         }
     }
 
@@ -169,6 +196,122 @@ impl RedisConfig {
         self
     }
 
+    /// 设置单条命令的响应超时（毫秒）；`None` 表示不限制。
+    pub fn with_response_timeout_ms(mut self, millis: Option<u64>) -> Self {
+        self.response_timeout_ms = millis;
+        self
+    }
+
+    /// 设置连接断开时的重连重试次数。
+    pub fn with_reconnect_retries(mut self, retries: u32) -> Self {
+        self.reconnect_retries = retries;
+        self
+    }
+
+    /// 设置重连重试的最大退避（毫秒）。
+    pub fn with_reconnect_max_delay_ms(mut self, millis: u64) -> Self {
+        self.reconnect_max_delay_ms = millis;
+        self
+    }
+
+    /// 设置 Pipeline 允许累积的最大命令数。
+    pub fn with_pipeline_max_commands(mut self, max: usize) -> Self {
+        self.pipeline_max_commands = max;
+        self
+    }
+
+    /// 设置事务 WATCH 冲突的最大重试次数。
+    pub fn with_transaction_retries(mut self, retries: u32) -> Self {
+        self.transaction_retries = retries;
+        self
+    }
+
+    /// 设置事务 WATCH 冲突重试的基础退避（毫秒）。
+    pub fn with_transaction_retry_backoff_ms(mut self, millis: u64) -> Self {
+        self.transaction_retry_backoff_ms = millis;
+        self
+    }
+
+    /// 校验 Redis URL 的 scheme、host 与 port。
+    ///
+    /// 支持 `redis://`、`rediss://`（需启用 `redis-tls` feature）与
+    /// `redis+unix:///path`。在创建连接池之前调用，避免把非法配置下推到运行时。
+    pub fn validate_url(url: &str) -> std::result::Result<(), crate::error::DbError> {
+        use crate::error::DbError;
+        let (scheme, rest) = url.split_once("://").ok_or_else(|| {
+            DbError::InvalidArgument(
+                "Redis URL 缺少 scheme（期望 redis:// 或 rediss://）".to_string(),
+            )
+        })?;
+
+        match scheme {
+            "redis" | "rediss" | "valkey" | "valkeys" => {
+                if matches!(scheme, "rediss" | "valkeys") && !cfg!(feature = "redis-tls") {
+                    return Err(DbError::InvalidArgument(format!(
+                        "{scheme}:// 需要启用 yang-db 的 redis-tls feature"
+                    )));
+                }
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                let authority = authority.rsplit('@').next().unwrap_or(authority);
+                // IPv6 字面量必须按 [addr] 或 [addr]:port 解析，不能按最后一个冒号切分。
+                let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+                    let (host, tail) = bracketed.split_once(']').ok_or_else(|| {
+                        DbError::InvalidArgument("Redis URL IPv6 地址缺少 ]".to_string())
+                    })?;
+                    (host, tail.strip_prefix(':'))
+                } else {
+                    match authority.rsplit_once(':') {
+                        Some((host, port)) => (host, Some(port)),
+                        None => (authority, None),
+                    }
+                };
+                if host.is_empty() {
+                    return Err(DbError::InvalidArgument("Redis URL 缺少 host".to_string()));
+                }
+                if let Some(port) = port {
+                    if port.is_empty() || port.parse::<u16>().is_err() {
+                        return Err(DbError::InvalidArgument(format!(
+                            "Redis URL 端口非法: {port}"
+                        )));
+                    }
+                }
+            }
+            "redis+unix" | "valkey+unix" | "unix" => {
+                if rest.is_empty() || rest == "/" {
+                    return Err(DbError::InvalidArgument(
+                        "Redis Unix socket URL 缺少路径".to_string(),
+                    ));
+                }
+            }
+            other => {
+                return Err(DbError::InvalidArgument(format!(
+                    "不支持的 Redis URL scheme: {other}"
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    /// 返回可安全写入日志的连接目标（去掉 userinfo 与查询参数）。
+    ///
+    /// `redis://user:password@host:6379/2` → `redis://host:6379/2`。
+    pub fn redacted_target(url: &str) -> String {
+        let Some((scheme, rest)) = url.split_once("://") else {
+            return "<invalid-url>".to_string();
+        };
+        // 查询参数/片段也可能含凭据（如 ?password=...），日志里必须一并去掉。
+        let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+        if scheme == "redis+unix" {
+            return format!("{scheme}://{rest}");
+        }
+        let (authority, tail) = match rest.find('/') {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        format!("{scheme}://{authority}{tail}")
+    }
+
     /// 校验 Redis 连接池配置是否适合生产运行。
     ///
     /// Builder 方法保持纯赋值以兼容历史调用；真正建池前由调用方显式校验，避免将明显
@@ -192,6 +335,33 @@ impl RedisConfig {
         if self.idle_timeout == 0 {
             return Err(crate::error::DbError::InvalidArgument(
                 "Redis idle_timeout 必须大于 0 秒".to_string(),
+            ));
+        }
+        // 以下参数 deadpool 0.12 无对应实现。显式失败而不是静默忽略，避免调用方
+        // 误以为配置已生效。
+        if self.min_connections != 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis min_connections 不被 deadpool 0.12 支持，请保持为 0".to_string(),
+            ));
+        }
+        if self.max_lifetime.is_some() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis max_lifetime 不被 deadpool 0.12 支持，请保持为 None".to_string(),
+            ));
+        }
+        if self.test_before_acquire {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis test_before_acquire 不被 deadpool 0.12 支持，请保持为 false".to_string(),
+            ));
+        }
+        if matches!(self.response_timeout_ms, Some(0)) {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis response_timeout_ms 必须大于 0（None 表示不限制）".to_string(),
+            ));
+        }
+        if self.pipeline_max_commands == 0 {
+            return Err(crate::error::DbError::InvalidArgument(
+                "Redis pipeline_max_commands 必须大于 0".to_string(),
             ));
         }
         Ok(())
@@ -415,5 +585,96 @@ mod tests {
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("RedisConfig"));
         assert!(debug_str.contains("max_connections"));
+    }
+
+    #[test]
+    fn test_validate_rejects_silently_ignored_pool_params() {
+        for config in [
+            RedisConfig::default().with_min_connections(4),
+            RedisConfig::default().with_max_lifetime(Some(3600)),
+            RedisConfig::default().with_test_before_acquire(true),
+        ] {
+            assert!(
+                matches!(config.validate(), Err(crate::DbError::InvalidArgument(_))),
+                "deadpool 0.12 不支持的参数必须显式失败"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_response_timeout_and_pipeline_cap() {
+        assert!(matches!(
+            RedisConfig::default()
+                .with_response_timeout_ms(Some(0))
+                .validate(),
+            Err(crate::DbError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            RedisConfig::default()
+                .with_pipeline_max_commands(0)
+                .validate(),
+            Err(crate::DbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_url_accepts_common_forms() {
+        for url in [
+            "redis://127.0.0.1:6379",
+            "redis://user:pass@redis.example.com:6380/2",
+            "redis://[::1]:6379",
+            "redis://[::1]",
+            "valkey://127.0.0.1:6379",
+            "valkey+unix:///tmp/redis.sock",
+            "unix:///tmp/redis.sock",
+            "redis+unix:///tmp/redis.sock",
+        ] {
+            RedisConfig::validate_url(url)
+                .unwrap_or_else(|error| panic!("URL 应合法 {url}: {error}"));
+        }
+    }
+
+    #[test]
+    fn test_validate_url_rejects_invalid_forms() {
+        for url in [
+            "127.0.0.1:6379",
+            "http://127.0.0.1:6379",
+            "redis://",
+            "redis://host:not-a-port",
+            "redis+unix://",
+        ] {
+            assert!(
+                matches!(
+                    RedisConfig::validate_url(url),
+                    Err(crate::DbError::InvalidArgument(_))
+                ),
+                "URL 应被拒绝: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_redacted_target_removes_userinfo() {
+        assert_eq!(
+            RedisConfig::redacted_target("redis://user:secret@redis.example.com:6380/2"),
+            "redis://redis.example.com:6380/2"
+        );
+        assert_eq!(
+            RedisConfig::redacted_target("redis://secret-host:6379"),
+            "redis://secret-host:6379"
+        );
+        assert_eq!(
+            RedisConfig::redacted_target("redis://host:6379/0?password=secret"),
+            "redis://host:6379/0"
+        );
+        assert_eq!(
+            RedisConfig::redacted_target("redis://host:6379?password=secret"),
+            "redis://host:6379"
+        );
+        assert_eq!(
+            RedisConfig::redacted_target("redis+unix:///run/redis.sock?password=secret"),
+            "redis+unix:///run/redis.sock"
+        );
+        assert_eq!(RedisConfig::redacted_target("not-a-url"), "<invalid-url>");
     }
 }

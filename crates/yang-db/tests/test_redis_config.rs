@@ -3,6 +3,13 @@
 use std::time::Instant;
 use yang_db::{RedisClient, RedisConfig};
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试连接池最大连接数配置
 ///
 /// 验证 max_connections 参数是否生效
@@ -13,11 +20,11 @@ async fn test_max_connections_config() {
         .with_max_connections(2)
         .with_connect_timeout(5)
         .with_wait_timeout(10);
-    let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
+    let client = RedisClient::connect_with_config(redis_test_url(), config)
         .await
         .expect("连接失败");
 
-    let pool = client.pool();
+    let pool = client.pool().expect("standalone Redis pool");
 
     // 获取 2 个连接（应该成功）
     let conn1 = pool.get().await.expect("获取第一个连接失败");
@@ -48,11 +55,11 @@ async fn test_wait_timeout_config() {
         .with_max_connections(1)
         .with_connect_timeout(5)
         .with_wait_timeout(2);
-    let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
+    let client = RedisClient::connect_with_config(redis_test_url(), config)
         .await
         .expect("连接失败");
 
-    let pool = client.pool();
+    let pool = client.pool().expect("standalone Redis pool");
 
     // 获取唯一的连接
     let _conn1 = pool.get().await.expect("获取连接失败");
@@ -159,11 +166,11 @@ async fn test_concurrent_connection_limit() {
         .with_max_connections(3)
         .with_connect_timeout(5)
         .with_wait_timeout(10);
-    let client = RedisClient::connect_with_config("redis://127.0.0.1:6379", config)
+    let client = RedisClient::connect_with_config(redis_test_url(), config)
         .await
         .expect("连接失败");
 
-    let pool = client.pool();
+    let pool = client.pool().expect("standalone Redis pool");
 
     // 获取 3 个连接
     let conn1 = pool.get().await.expect("获取连接 1 失败");
@@ -213,8 +220,7 @@ async fn test_logging_config() {
         .with_connect_timeout(5)
         .with_wait_timeout(10)
         .with_enable_logging(true);
-    let result =
-        RedisClient::connect_with_config("redis://127.0.0.1:6379", config_with_logging).await;
+    let result = RedisClient::connect_with_config(redis_test_url(), config_with_logging).await;
     assert!(result.is_ok(), "启用日志时连接应该成功");
 
     // 测试禁用日志
@@ -222,7 +228,6 @@ async fn test_logging_config() {
         .with_max_connections(10)
         .with_connect_timeout(5)
         .with_wait_timeout(10);
-    let result =
-        RedisClient::connect_with_config("redis://127.0.0.1:6379", config_without_logging).await;
+    let result = RedisClient::connect_with_config(redis_test_url(), config_without_logging).await;
     assert!(result.is_ok(), "禁用日志时连接应该成功");
 }

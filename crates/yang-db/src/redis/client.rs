@@ -1,16 +1,105 @@
+use crate::redis::backend::{reconnect_delay, should_reconnect, RedisBackend, RedisConn};
+use crate::redis::namespace::KeyNamespace;
 use crate::redis::{RedisPipeline, RedisTransaction};
 use crate::{
     BackendCapabilities, DbError, PoolStatus, RedisConfig, RedisValue, Result, REDIS_CAPABILITIES,
 };
 use deadpool_redis::{Config, Pool, Runtime};
+use std::time::{Duration, Instant};
+
+/// Redis 拓扑。
+///
+/// 通过 [`RedisClient::connect_topology`] 选择 standalone / cluster / sentinel。
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum RedisTopology {
+    /// 单机（含 TLS）
+    Standalone {
+        /// 连接 URL
+        url: String,
+    },
+    /// Redis Cluster
+    #[cfg(feature = "redis-cluster")]
+    Cluster {
+        /// 初始节点 URL 列表
+        urls: Vec<String>,
+    },
+    /// Redis Sentinel
+    #[cfg(feature = "redis-sentinel")]
+    Sentinel {
+        /// 哨兵 URL 列表
+        sentinel_urls: Vec<String>,
+        /// master 服务名
+        master_name: String,
+    },
+}
+
+impl std::fmt::Debug for RedisTopology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RedisTopology::Standalone { url } => f
+                .debug_struct("Standalone")
+                .field("url", &RedisConfig::redacted_target(url))
+                .finish(),
+            #[cfg(feature = "redis-cluster")]
+            RedisTopology::Cluster { urls } => f
+                .debug_struct("Cluster")
+                .field("nodes", &urls.len())
+                .finish(),
+            #[cfg(feature = "redis-sentinel")]
+            RedisTopology::Sentinel {
+                sentinel_urls,
+                master_name,
+            } => f
+                .debug_struct("Sentinel")
+                .field("sentinels", &sentinel_urls.len())
+                .field("master_name", master_name)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for RedisClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisClient")
+            .field("target", &self.redacted_target)
+            .field("config", &self.config)
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Redis 健康快照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedisHealth {
+    /// PING 是否成功
+    pub ping: bool,
+    /// 节点角色（master/replica/sentinel）
+    pub role: Option<String>,
+    /// 已连接客户端数
+    pub connected_clients: Option<u64>,
+    /// 已用内存（字节）
+    pub used_memory: Option<u64>,
+    /// 复制状态摘要
+    pub replication: Option<String>,
+}
 
 /// Redis 客户端
 ///
-/// 提供 Redis 数据库操作的统一接口，支持连接池管理
+/// 提供 Redis 数据库操作的统一接口，支持连接池、命令级超时、连接断开重试，
+/// 以及 standalone / cluster / sentinel 三种拓扑。
 #[derive(Clone)]
 pub struct RedisClient {
-    /// 连接池
-    pool: Pool,
+    /// 拓扑后端
+    backend: RedisBackend,
+    /// 配置
+    config: RedisConfig,
+    /// 直连客户端（仅 standalone；Pub/Sub 需要独立连接）
+    direct: Option<redis::Client>,
+    /// 日志用的脱敏目标
+    redacted_target: String,
+    /// 可选的 key 命名空间（类型化 API 使用）
+    namespace: Option<KeyNamespace>,
 }
 
 impl RedisClient {
@@ -70,19 +159,8 @@ impl RedisClient {
     /// ```
     pub async fn connect_with_config(url: impl Into<String>, config: RedisConfig) -> Result<Self> {
         config.validate()?;
-
-        // min_connections / max_lifetime / test_before_acquire 不被 deadpool 0.12 支持，
-        // 这里把「静默忽略」变成显式告警，避免调用方误以为已生效。
-        if config.min_connections != 0
-            || config.max_lifetime.is_some()
-            || config.test_before_acquire
-        {
-            log::warn!(
-                "RedisConfig 的 min_connections/max_lifetime/test_before_acquire 不被 deadpool 0.12 支持，将被忽略"
-            );
-        }
-
         let url_str = url.into();
+        RedisConfig::validate_url(&url_str)?;
 
         // 使用 from_url 创建配置，然后设置连接池参数
         let mut cfg = Config::from_url(url_str.clone());
@@ -93,47 +171,213 @@ impl RedisClient {
             .create_pool(Some(Runtime::Tokio1))
             .map_err(|e| DbError::RedisConnectionError(format!("创建连接池失败: {}", e)))?;
 
-        // 测试连接
-        let mut conn = pool
-            .get()
-            .await
-            .map_err(|e| DbError::RedisConnectionError(format!("获取连接失败: {}", e)))?;
-
-        // 执行 PING 命令测试连接
-        redis::cmd("PING")
-            .query_async::<String>(&mut *conn)
-            .await
-            .map_err(|e| DbError::RedisConnectionError(format!("连接测试失败: {}", e)))?;
-
-        if config.enable_logging {
-            log::info!("Redis 连接成功: {}", url_str);
-        }
-
-        Ok(Self { pool })
+        let client = Self {
+            backend: RedisBackend::Single(pool),
+            config,
+            direct: redis::Client::open(url_str.as_str()).ok(),
+            redacted_target: RedisConfig::redacted_target(&url_str),
+            namespace: None,
+        };
+        client.verify_connection().await?;
+        client.log_connected();
+        Ok(client)
     }
 
-    /// 获取连接池引用
+    /// 按拓扑连接 Redis。
     ///
-    /// # 返回
-    /// 连接池的引用
-    pub fn pool(&self) -> &Pool {
-        &self.pool
+    /// Cluster / Sentinel 需要在 `redis-cluster` / `redis-sentinel` feature 下编译。
+    pub async fn connect_topology(topology: RedisTopology) -> Result<Self> {
+        Self::connect_topology_with_config(topology, RedisConfig::default()).await
+    }
+
+    /// 按拓扑连接 Redis，并应用自定义配置。
+    pub async fn connect_topology_with_config(
+        topology: RedisTopology,
+        config: RedisConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        match topology {
+            RedisTopology::Standalone { url } => Self::connect_with_config(url, config).await,
+            #[cfg(feature = "redis-cluster")]
+            RedisTopology::Cluster { urls } => {
+                if urls.is_empty() {
+                    return Err(DbError::InvalidArgument(
+                        "Redis Cluster 至少需要一个节点 URL".to_string(),
+                    ));
+                }
+                let mut cfg = deadpool_redis::cluster::Config::from_urls(urls.clone());
+                cfg.pool = Some(config.build_pool_config());
+                let pool = cfg.create_pool(Some(Runtime::Tokio1)).map_err(|e| {
+                    DbError::RedisConnectionError(format!("创建 Cluster 连接池失败: {}", e))
+                })?;
+                let client = Self {
+                    backend: RedisBackend::Cluster(pool),
+                    config,
+                    direct: None,
+                    redacted_target: format!("redis-cluster://{} 个节点", urls.len()),
+                    namespace: None,
+                };
+                client.verify_connection().await?;
+                client.log_connected();
+                Ok(client)
+            }
+            #[cfg(feature = "redis-sentinel")]
+            RedisTopology::Sentinel {
+                sentinel_urls,
+                master_name,
+            } => {
+                if sentinel_urls.is_empty() {
+                    return Err(DbError::InvalidArgument(
+                        "Redis Sentinel 至少需要一个哨兵 URL".to_string(),
+                    ));
+                }
+                let mut cfg = deadpool_redis::sentinel::Config::from_urls(
+                    sentinel_urls.clone(),
+                    master_name.clone(),
+                    deadpool_redis::sentinel::SentinelServerType::Master,
+                );
+                cfg.pool = Some(config.build_pool_config());
+                let pool = cfg.create_pool(Some(Runtime::Tokio1)).map_err(|e| {
+                    DbError::RedisConnectionError(format!("创建 Sentinel 连接池失败: {}", e))
+                })?;
+                let client = Self {
+                    backend: RedisBackend::Sentinel(pool),
+                    config,
+                    direct: None,
+                    redacted_target: format!(
+                        "redis-sentinel://{} 个哨兵 (master={})",
+                        sentinel_urls.len(),
+                        master_name
+                    ),
+                    namespace: None,
+                };
+                client.verify_connection().await?;
+                client.log_connected();
+                Ok(client)
+            }
+        }
+    }
+
+    /// 当前是否为 Redis Cluster 拓扑。
+    pub fn is_cluster(&self) -> bool {
+        #[cfg(feature = "redis-cluster")]
+        {
+            matches!(&self.backend, RedisBackend::Cluster(_))
+        }
+        #[cfg(not(feature = "redis-cluster"))]
+        {
+            false
+        }
+    }
+
+    /// 从当前拓扑池中借出一个连接，并应用命令级响应超时。
+    pub(crate) async fn connection(&self) -> Result<RedisConn> {
+        let mut conn = self.backend.get().await?;
+        if let Some(millis) = self.config.response_timeout_ms {
+            conn.set_response_timeout(Duration::from_millis(millis));
+        }
+        Ok(conn)
+    }
+
+    /// 当前配置。
+    pub(crate) fn config(&self) -> &RedisConfig {
+        &self.config
+    }
+
+    /// 直连客户端（Pub/Sub 使用）；非 standalone 拓扑返回错误。
+    pub(crate) fn direct_client(&self) -> Result<&redis::Client> {
+        self.direct.as_ref().ok_or_else(|| {
+            DbError::RedisConnectionError("Pub/Sub 仅支持 standalone 拓扑".to_string())
+        })
+    }
+
+    /// 设置 key 命名空间（仅影响类型化 API）。
+    pub fn with_namespace(mut self, namespace: KeyNamespace) -> Self {
+        self.namespace = Some(namespace);
+        self
+    }
+
+    /// 当前 key 命名空间。
+    pub fn namespace(&self) -> Option<&KeyNamespace> {
+        self.namespace.as_ref()
+    }
+
+    /// 返回应用命名空间后的 key（未配置命名空间时原样返回）。
+    pub fn key_for(&self, key: impl AsRef<[u8]>) -> Vec<u8> {
+        match &self.namespace {
+            Some(namespace) => namespace.key(key),
+            None => key.as_ref().to_vec(),
+        }
+    }
+
+    /// PING 校验连接。
+    async fn verify_connection(&self) -> Result<()> {
+        let mut conn = self
+            .connection()
+            .await
+            .map_err(|e| DbError::RedisConnectionError(format!("获取连接失败: {}", e)))?;
+        conn.query::<String>(&redis::cmd("PING"))
+            .await
+            .map_err(|e| DbError::RedisConnectionError(format!("连接测试失败: {}", e)))?;
+        Ok(())
+    }
+
+    /// 连接成功日志（只输出脱敏目标，绝不输出 userinfo）。
+    fn log_connected(&self) {
+        if self.config.enable_logging {
+            log::info!("Redis 连接成功: {}", self.redacted_target);
+        }
+    }
+
+    /// 脱敏后的连接目标（可用于日志/健康输出）。
+    pub fn redacted_target(&self) -> &str {
+        &self.redacted_target
+    }
+
+    /// 获取 standalone 连接池引用。
+    ///
+    /// cluster / sentinel 拓扑返回 `None`；需要统一操作时请使用客户端方法。
+    pub fn pool(&self) -> Option<&Pool> {
+        match &self.backend {
+            RedisBackend::Single(pool) => Some(pool),
+            #[cfg(feature = "redis-cluster")]
+            RedisBackend::Cluster(_) => None,
+            #[cfg(feature = "redis-sentinel")]
+            RedisBackend::Sentinel(_) => None,
+        }
     }
 
     /// 优雅关闭连接池（I3）：关闭后无法再借出连接，已借出的连接归还时被丢弃。
     ///
     /// 与 `Database::close` 对称，供编排式停机调用。幂等；close 后再用会返回连接池
     /// 错误而非 panic（deadpool `Pool::get` 在关闭后返回错误）。
-    ///
-    /// 为了让编排层可以用同一调用形态关闭所有后端，本方法与 SQL 后端一样为 async；
-    /// deadpool 的实际关闭动作仍在当前调用内同步完成。
     pub async fn close(&self) {
-        self.pool.close();
+        self.backend.close();
+    }
+
+    /// 关闭连接池并等待借出连接归还，最多等待 `deadline`。
+    ///
+    /// 阻塞命令（BLPOP/BRPOP/XREAD BLOCK）可能被该等待截断；调用方应同时配置
+    /// 命令级响应超时或使用有限阻塞时间。
+    pub async fn close_and_wait(&self, deadline: Duration) {
+        let started = Instant::now();
+        self.backend.close();
+        loop {
+            let status = self.backend.status();
+            if status.size == 0 {
+                return;
+            }
+            if started.elapsed() >= deadline {
+                log::warn!("Redis 关闭等待超时，仍有 {} 个借出连接未归还", status.size);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// 连接池是否已关闭（I3）。
     pub fn is_closed(&self) -> bool {
-        self.pool.is_closed()
+        self.backend.is_closed()
     }
 
     /// 创建 Pipeline 批量操作
@@ -257,18 +501,63 @@ impl RedisClient {
         fields(db.system = "redis", db.operation = "command", otel.kind = "client")
     )]
     pub async fn execute(&self, cmd: &redis::Cmd) -> Result<RedisValue> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
+        let started = Instant::now();
+        let operation = command_name(cmd);
+        let result = self.execute_with_retry(cmd).await;
+        record_metrics(operation, started, &result);
+        result
+    }
 
-        let value: redis::Value = cmd
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| DbError::RedisCommandError(format!("命令执行失败: {}", e)))?;
+    /// 带连接级重试的命令执行。
+    ///
+    /// 只对连接已不可用类错误重新取连接重试；超时不重试，避免非幂等命令被
+    /// 重复执行。重试语义为 at-least-once，调用方需自行保证幂等。
+    async fn query_with_retry<T>(&self, cmd: &redis::Cmd) -> Result<T>
+    where
+        T: redis::FromRedisValue,
+    {
+        let mut attempt = 0u32;
+        loop {
+            let mut conn = self.connection().await?;
+            match conn.query::<T>(cmd).await {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if attempt < self.config.reconnect_retries && should_reconnect(&error) =>
+                {
+                    attempt += 1;
+                    let delay = reconnect_delay(attempt, self.config.reconnect_max_delay_ms);
+                    log::warn!(
+                        "Redis 命令连接失败，第 {}/{} 次重试: {}",
+                        attempt,
+                        self.config.reconnect_retries,
+                        error
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(DbError::from(error)),
+            }
+        }
+    }
 
-        Ok(RedisValue::from(value))
+    async fn execute_with_retry(&self, cmd: &redis::Cmd) -> Result<RedisValue> {
+        self.query_with_retry::<redis::Value>(cmd)
+            .await
+            .map(RedisValue::from)
+    }
+
+    /// 执行命令并解码为调用方指定的类型。
+    ///
+    /// 与 [`execute`](Self::execute) 共享超时、重连与指标逻辑；适用于需要
+    /// `FromRedisValue` 结构化回复的命令（如 Streams）。
+    pub async fn execute_typed<T>(&self, cmd: &redis::Cmd) -> Result<T>
+    where
+        T: redis::FromRedisValue,
+    {
+        let started = Instant::now();
+        let operation = command_name(cmd);
+        let result = self.query_with_retry::<T>(cmd).await;
+        record_operation_metrics(operation, started, result.is_ok());
+        result
     }
 
     // ==================== String 操作 ====================
@@ -302,7 +591,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("GET");
         cmd.arg(key.into());
         let value = self.execute(&cmd).await?;
-        Ok(value.as_string())
+        optional_string(&value)
     }
 
     /// SETEX - 设置键值并指定过期时间（秒）
@@ -378,7 +667,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("GETSET");
         cmd.arg(key.into()).arg(value.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// MGET - 批量获取多个键的值
@@ -386,16 +675,28 @@ impl RedisClient {
     /// # 返回
     /// 返回值数组，不存在的键返回 None
     pub async fn mget(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut cmd = redis::cmd("MGET");
         for key in keys {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        let arr = result
+            .as_array()
+            .ok_or_else(|| DbError::RedisTypeConversionError("MGET 结果不是数组".to_string()))?;
+        arr.iter()
+            .map(|value| match value {
+                RedisValue::Nil => Ok(None),
+                _ => value.as_string().map(Some).ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "MGET 值不是 UTF-8 字符串，请使用 mget_bytes".to_string(),
+                    )
+                }),
+            })
+            .collect()
     }
 
     /// MSET - 批量设置多个键值对
@@ -403,6 +704,10 @@ impl RedisClient {
     /// # 参数
     /// - `pairs`: 键值对数组
     pub async fn mset(&self, pairs: &[(String, String)]) -> Result<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+
         let mut cmd = redis::cmd("MSET");
         for (key, value) in pairs {
             cmd.arg(key).arg(value);
@@ -507,7 +812,13 @@ impl RedisClient {
         let mut cmd = redis::cmd("GETRANGE");
         cmd.arg(key.into()).arg(start).arg(end);
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string().unwrap_or_default())
+        match result {
+            RedisValue::Nil => Ok(String::new()),
+            RedisValue::String(value) => Ok(value),
+            _ => Err(DbError::RedisTypeConversionError(
+                "GETRANGE 返回值不是 UTF-8 字符串，请使用 execute 原始命令".to_string(),
+            )),
+        }
     }
 
     /// SETRANGE - 从指定偏移量开始替换字符串内容
@@ -649,7 +960,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HGET");
         cmd.arg(key.into()).arg(field.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// HDEL - 删除哈希表的一个或多个字段
@@ -657,6 +968,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被删除字段的数量
     pub async fn hdel(&self, key: impl Into<String>, fields: &[String]) -> Result<i64> {
+        if fields.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("HDEL");
         cmd.arg(key.into());
         for field in fields {
@@ -680,6 +995,10 @@ impl RedisClient {
 
     /// HMSET - 批量设置哈希表的多个字段
     pub async fn hmset(&self, key: impl Into<String>, fields: &[(String, String)]) -> Result<()> {
+        if fields.is_empty() {
+            return Ok(());
+        }
+
         let mut cmd = redis::cmd("HMSET");
         cmd.arg(key.into());
         for (field, value) in fields {
@@ -698,17 +1017,28 @@ impl RedisClient {
         key: impl Into<String>,
         fields: &[String],
     ) -> Result<Vec<Option<String>>> {
+        if fields.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut cmd = redis::cmd("HMGET");
         cmd.arg(key.into());
         for field in fields {
             cmd.arg(field);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            Ok(arr.iter().map(|v| v.as_string()).collect())
-        } else {
-            Ok(vec![])
-        }
+        let arr = result
+            .as_array()
+            .ok_or_else(|| DbError::RedisTypeConversionError("HMGET 结果不是数组".to_string()))?;
+        arr.iter()
+            .map(|value| match value {
+                RedisValue::Nil => Ok(None),
+                _ => value.as_string().map(Some).ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "HMGET 值不是 UTF-8 字符串，请使用 hmget_bytes".to_string(),
+                    )
+                }),
+            })
+            .collect()
     }
 
     /// HGETALL - 获取哈希表的所有字段和值
@@ -719,20 +1049,29 @@ impl RedisClient {
         let mut cmd = redis::cmd("HGETALL");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            let mut pairs = Vec::new();
-            for i in (0..arr.len()).step_by(2) {
-                if i + 1 < arr.len() {
-                    if let (Some(field), Some(value)) = (arr[i].as_string(), arr[i + 1].as_string())
-                    {
-                        pairs.push((field, value));
-                    }
-                }
-            }
-            Ok(pairs)
-        } else {
-            Ok(vec![])
+        let arr = result
+            .as_array()
+            .ok_or_else(|| DbError::RedisTypeConversionError("HGETALL 结果不是数组".to_string()))?;
+        if arr.len() % 2 != 0 {
+            return Err(DbError::RedisTypeConversionError(
+                "HGETALL 返回的字段/值数量不是偶数".to_string(),
+            ));
         }
+        arr.chunks_exact(2)
+            .map(|pair| {
+                let field = pair[0].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "HGETALL 字段不是 UTF-8 字符串，请使用 hgetall_bytes".to_string(),
+                    )
+                })?;
+                let value = pair[1].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "HGETALL 值不是 UTF-8 字符串，请使用 hgetall_bytes".to_string(),
+                    )
+                })?;
+                Ok((field, value))
+            })
+            .collect()
     }
 
     /// HLEN - 获取哈希表的字段数量
@@ -748,7 +1087,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HKEYS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// HVALS - 获取哈希表的所有值
@@ -756,7 +1095,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("HVALS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// HINCRBY - 将哈希表字段的整数值增加指定数量
@@ -800,6 +1139,10 @@ impl RedisClient {
     /// # 返回
     /// 返回插入后列表的长度
     pub async fn lpush(&self, key: impl Into<String>, values: &[String]) -> Result<i64> {
+        if values.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("LPUSH");
         cmd.arg(key.into());
         for value in values {
@@ -814,6 +1157,10 @@ impl RedisClient {
     /// # 返回
     /// 返回插入后列表的长度
     pub async fn rpush(&self, key: impl Into<String>, values: &[String]) -> Result<i64> {
+        if values.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("RPUSH");
         cmd.arg(key.into());
         for value in values {
@@ -832,7 +1179,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LPOP");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// RPOP - 移除并返回列表的尾元素
@@ -844,7 +1191,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("RPOP");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// LRANGE - 获取列表指定范围内的元素
@@ -861,7 +1208,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// LLEN - 获取列表长度
@@ -881,7 +1228,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("LINDEX");
         cmd.arg(key.into()).arg(index);
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// LSET - 设置列表指定索引的元素值
@@ -1017,7 +1364,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("RPOPLPUSH");
         cmd.arg(source.into()).arg(destination.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// BLPOP - 阻塞式地从列表头部弹出元素
@@ -1030,6 +1377,11 @@ impl RedisClient {
     /// - `Ok(Some((String, String)))`: (键名, 元素值)
     /// - `Ok(None)`: 超时
     ///
+    /// # 连接池占用
+    /// 阻塞期间会一直占用一个池连接；`timeout=0` 表示无限等待。消费者数量应
+    /// 小于 `max_connections`，或为阻塞消费者使用独立 `RedisClient`/专用池。
+    /// 配置 `response_timeout_ms` 会在客户端侧截断阻塞等待。
+    ///
     /// # 示例
     /// ```no_run
     /// use yang_db::RedisClient;
@@ -1037,7 +1389,7 @@ impl RedisClient {
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
-    ///     
+    ///
     ///     let result = client.blpop(&["queue1".to_string(), "queue2".to_string()], 5).await?;
     ///     if let Some((key, value)) = result {
     ///         println!("从 {} 弹出: {}", key, value);
@@ -1057,9 +1409,17 @@ impl RedisClient {
         // BLPOP 返回数组 [key, value] 或 nil
         if let Some(arr) = result.as_array() {
             if arr.len() == 2 {
-                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
-                    return Ok(Some((key, value)));
-                }
+                let key = arr[0].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "阻塞弹出返回的键不是 UTF-8 字符串".to_string(),
+                    )
+                })?;
+                let value = arr[1].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "阻塞弹出返回值不是 UTF-8 字符串，请使用原始命令/bytes API".to_string(),
+                    )
+                })?;
+                return Ok(Some((key, value)));
             }
         }
         Ok(None)
@@ -1099,9 +1459,17 @@ impl RedisClient {
         // BRPOP 返回数组 [key, value] 或 nil
         if let Some(arr) = result.as_array() {
             if arr.len() == 2 {
-                if let (Some(key), Some(value)) = (arr[0].as_string(), arr[1].as_string()) {
-                    return Ok(Some((key, value)));
-                }
+                let key = arr[0].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "阻塞弹出返回的键不是 UTF-8 字符串".to_string(),
+                    )
+                })?;
+                let value = arr[1].as_string().ok_or_else(|| {
+                    DbError::RedisTypeConversionError(
+                        "阻塞弹出返回值不是 UTF-8 字符串，请使用原始命令/bytes API".to_string(),
+                    )
+                })?;
+                return Ok(Some((key, value)));
             }
         }
         Ok(None)
@@ -1114,6 +1482,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被添加到集合中的新元素数量
     pub async fn sadd(&self, key: impl Into<String>, members: &[String]) -> Result<i64> {
+        if members.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("SADD");
         cmd.arg(key.into());
         for member in members {
@@ -1128,6 +1500,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被移除的元素数量
     pub async fn srem(&self, key: impl Into<String>, members: &[String]) -> Result<i64> {
+        if members.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("SREM");
         cmd.arg(key.into());
         for member in members {
@@ -1142,7 +1518,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SMEMBERS");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// SISMEMBER - 检查元素是否是集合的成员
@@ -1178,7 +1554,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SPOP");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// SRANDMEMBER - 返回集合中的一个随机元素（不移除）
@@ -1190,7 +1566,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("SRANDMEMBER");
         cmd.arg(key.into());
         let result = self.execute(&cmd).await?;
-        Ok(result.as_string())
+        optional_string(&result)
     }
 
     /// SINTER - 返回多个集合的交集
@@ -1213,12 +1589,16 @@ impl RedisClient {
     /// # }
     /// ```
     pub async fn sinter(&self, keys: &[String]) -> Result<Vec<String>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut cmd = redis::cmd("SINTER");
         for key in keys {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// SUNION - 返回多个集合的并集
@@ -1231,12 +1611,16 @@ impl RedisClient {
     /// # 返回
     /// 所有集合的成员合并列表（去重）
     pub async fn sunion(&self, keys: &[String]) -> Result<Vec<String>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut cmd = redis::cmd("SUNION");
         for key in keys {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// SDIFF - 返回多个集合的差集
@@ -1249,12 +1633,16 @@ impl RedisClient {
     /// # 返回
     /// 仅存在于第一个集合中的成员列表
     pub async fn sdiff(&self, keys: &[String]) -> Result<Vec<String>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut cmd = redis::cmd("SDIFF");
         for key in keys {
             cmd.arg(key);
         }
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// SMOVE - 将指定成员从源集合移动到目标集合
@@ -1290,14 +1678,14 @@ impl RedisClient {
     /// - `count`: 可选的每批返回数量提示
     ///
     /// # 返回
-    /// - `Ok((i64, Vec<String>))`: (下一游标, 本批成员列表)
+    /// - `Ok((u64, Vec<String>))`: (下一游标, 本批成员列表)
     pub async fn sscan(
         &self,
         key: impl Into<String>,
-        cursor: i64,
+        cursor: u64,
         pattern: Option<&str>,
         count: Option<i64>,
-    ) -> Result<(i64, Vec<String>)> {
+    ) -> Result<(u64, Vec<String>)> {
         let mut cmd = redis::cmd("SSCAN");
         cmd.arg(key.into()).arg(cursor);
         if let Some(p) = pattern {
@@ -1310,6 +1698,45 @@ impl RedisClient {
         parse_scan_result(&result)
     }
 
+    /// HSCAN - 增量式迭代哈希表的字段与值
+    ///
+    /// # 参数
+    /// - `key`: 哈希表键
+    /// - `cursor`: 游标（初始传 0）
+    /// - `pattern`: 可选的匹配模式
+    /// - `count`: 可选的每批返回数量提示
+    ///
+    /// # 返回
+    /// - `Ok((u64, Vec<(String, String)>))`: (下一游标, 字段-值对列表)
+    pub async fn hscan(
+        &self,
+        key: impl Into<String>,
+        cursor: u64,
+        pattern: Option<&str>,
+        count: Option<i64>,
+    ) -> Result<(u64, Vec<(String, String)>)> {
+        let mut cmd = redis::cmd("HSCAN");
+        cmd.arg(key.into()).arg(cursor);
+        if let Some(p) = pattern {
+            cmd.arg("MATCH").arg(p);
+        }
+        if let Some(c) = count {
+            cmd.arg("COUNT").arg(c);
+        }
+        let result = self.execute(&cmd).await?;
+        let (next_cursor, fields) = parse_scan_result(&result)?;
+        if fields.len() % 2 != 0 {
+            return Err(DbError::RedisTypeConversionError(
+                "HSCAN 返回的字段/值数量不是偶数".to_string(),
+            ));
+        }
+        let pairs = fields
+            .chunks_exact(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect();
+        Ok((next_cursor, pairs))
+    }
+
     // ==================== Sorted Set 操作 ====================
 
     /// ZADD - 向有序集合添加一个或多个成员
@@ -1317,6 +1744,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被添加的新成员数量
     pub async fn zadd(&self, key: impl Into<String>, members: &[(f64, String)]) -> Result<i64> {
+        if members.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("ZADD");
         cmd.arg(key.into());
         for (score, member) in members {
@@ -1331,6 +1762,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被移除的成员数量
     pub async fn zrem(&self, key: impl Into<String>, members: &[String]) -> Result<i64> {
+        if members.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("ZREM");
         cmd.arg(key.into());
         for member in members {
@@ -1382,7 +1817,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// ZRANGEBYSCORE - 按分数范围获取有序集合的成员
@@ -1399,7 +1834,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZRANGEBYSCORE");
         cmd.arg(key.into()).arg(min).arg(max);
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// ZCOUNT - 计算分数范围内的成员数量
@@ -1499,7 +1934,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZREVRANGE");
         cmd.arg(key.into()).arg(start).arg(stop);
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// ZRANGE WITHSCORES - 按索引范围获取有序集合的成员及其分数
@@ -1520,7 +1955,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZRANGE");
         cmd.arg(key.into()).arg(start).arg(stop).arg("WITHSCORES");
         let result = self.execute(&cmd).await?;
-        Ok(parse_with_scores(&result))
+        parse_with_scores(&result)
     }
 
     /// ZREVRANGE WITHSCORES - 按索引范围从高到低获取有序集合的成员及其分数
@@ -1541,7 +1976,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("ZREVRANGE");
         cmd.arg(key.into()).arg(start).arg(stop).arg("WITHSCORES");
         let result = self.execute(&cmd).await?;
-        Ok(parse_with_scores(&result))
+        parse_with_scores(&result)
     }
 
     /// ZREMRANGEBYRANK - 移除有序集合中指定排名范围的成员
@@ -1595,14 +2030,14 @@ impl RedisClient {
     /// - `count`: 可选的每批返回数量提示
     ///
     /// # 返回
-    /// - `Ok((i64, Vec<(String, f64)>))`: (下一游标, 成员-分数对列表)
+    /// - `Ok((u64, Vec<(String, f64)>))`: (下一游标, 成员-分数对列表)
     pub async fn zscan(
         &self,
         key: impl Into<String>,
-        cursor: i64,
+        cursor: u64,
         pattern: Option<&str>,
         count: Option<i64>,
-    ) -> Result<(i64, Vec<(String, f64)>)> {
+    ) -> Result<(u64, Vec<(String, f64)>)> {
         let mut cmd = redis::cmd("ZSCAN");
         cmd.arg(key.into()).arg(cursor);
         if let Some(p) = pattern {
@@ -1612,21 +2047,22 @@ impl RedisClient {
             cmd.arg("COUNT").arg(c);
         }
         let result = self.execute(&cmd).await?;
-        if let Some(arr) = result.as_array() {
-            let next_cursor = arr
-                .first()
-                .and_then(|v| v.as_string())
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0);
-            if let Some(inner) = arr.get(1) {
-                let pairs = parse_with_scores(inner);
-                Ok((next_cursor, pairs))
-            } else {
-                Ok((next_cursor, vec![]))
-            }
-        } else {
-            Ok((0, vec![]))
+        let (next_cursor, fields) = parse_scan_result(&result)?;
+        if fields.len() % 2 != 0 {
+            return Err(DbError::RedisTypeConversionError(
+                "ZSCAN 返回的成员/分数数量不是偶数".to_string(),
+            ));
         }
+        let pairs = fields
+            .chunks_exact(2)
+            .map(|pair| {
+                let score = pair[1].parse::<f64>().map_err(|_| {
+                    DbError::RedisTypeConversionError("ZSCAN 分数不是合法数字".to_string())
+                })?;
+                Ok((pair[0].clone(), score))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((next_cursor, pairs))
     }
 
     // ==================== 通用键操作 ====================
@@ -1636,6 +2072,10 @@ impl RedisClient {
     /// # 返回
     /// 返回被删除的键数量
     pub async fn del(&self, keys: &[String]) -> Result<i64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("DEL");
         for key in keys {
             cmd.arg(key);
@@ -1649,6 +2089,10 @@ impl RedisClient {
     /// # 返回
     /// 返回存在的键数量
     pub async fn exists(&self, keys: &[String]) -> Result<i64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+
         let mut cmd = redis::cmd("EXISTS");
         for key in keys {
             cmd.arg(key);
@@ -1705,7 +2149,7 @@ impl RedisClient {
         let mut cmd = redis::cmd("KEYS");
         cmd.arg(pattern.into());
         let result = self.execute(&cmd).await?;
-        Ok(collect_string_array(&result))
+        collect_string_array(&result)
     }
 
     /// SCAN - 增量式迭代数据库中的所有键
@@ -1718,7 +2162,7 @@ impl RedisClient {
     /// - `count`: 可选的每批返回数量提示
     ///
     /// # 返回
-    /// - `Ok((i64, Vec<String>))`: (下一游标, 本批键列表)
+    /// - `Ok((u64, Vec<String>))`: (下一游标, 本批键列表)
     /// - 游标为 0 表示完整迭代完成
     ///
     /// # 示例
@@ -1726,7 +2170,7 @@ impl RedisClient {
     /// # use yang_db::RedisClient;
     /// # async fn example() -> Result<(), yang_db::DbError> {
     /// # let client = RedisClient::connect("redis://127.0.0.1:6379").await?;
-    /// let mut cursor = 0i64;
+    /// let mut cursor = 0u64;
     /// loop {
     ///     let (next, keys) = client.scan(cursor, Some("user:*"), Some(100)).await?;
     ///     // 处理 keys...
@@ -1738,10 +2182,10 @@ impl RedisClient {
     /// ```
     pub async fn scan(
         &self,
-        cursor: i64,
+        cursor: u64,
         pattern: Option<&str>,
         count: Option<i64>,
-    ) -> Result<(i64, Vec<String>)> {
+    ) -> Result<(u64, Vec<String>)> {
         let mut cmd = redis::cmd("SCAN");
         cmd.arg(cursor);
         if let Some(p) = pattern {
@@ -1788,18 +2232,44 @@ impl RedisClient {
         Ok(!result.is_nil())
     }
 
+    /// 详细健康检查：PING + INFO 关键字段。
+    ///
+    /// PING 失败直接返回错误；INFO 字段缺失不视为失败（部分托管服务会裁剪
+    /// INFO 输出），以 `None` 表示。
+    pub async fn health_check_detailed(&self) -> Result<RedisHealth> {
+        self.health_check().await?;
+
+        let mut health = RedisHealth {
+            ping: true,
+            role: None,
+            connected_clients: None,
+            used_memory: None,
+            replication: None,
+        };
+        let mut cmd = redis::cmd("INFO");
+        cmd.arg("server")
+            .arg("clients")
+            .arg("memory")
+            .arg("replication");
+        if let Ok(value) = self.execute(&cmd).await {
+            if let Some(info) = value.as_string() {
+                health.role = info_field(&info, "role");
+                health.connected_clients =
+                    info_field(&info, "connected_clients").and_then(|v| v.parse().ok());
+                health.used_memory = info_field(&info, "used_memory").and_then(|v| v.parse().ok());
+                health.replication = info_field(&info, "master_repl_offset")
+                    .map(|offset| format!("offset={offset}"));
+            }
+        }
+        Ok(health)
+    }
+
     /// 获取连接池当前状态
     ///
     /// # 返回
     /// PoolStatus 结构体，包含 max_size、size、available、waiting 统计信息
     pub fn pool_status(&self) -> PoolStatus {
-        let s = self.pool.status();
-        PoolStatus {
-            max_size: s.max_size,
-            size: s.size,
-            available: s.available,
-            waiting: s.waiting,
-        }
+        self.backend.status()
     }
 
     // ==================== Lua 脚本操作 ====================
@@ -1947,30 +2417,112 @@ impl RedisClient {
     where
         T: redis::FromRedisValue,
     {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| DbError::RedisPoolError(format!("获取连接失败: {}", e)))?;
+        let mut attempt = 0u32;
+        loop {
+            let mut conn = self.connection().await?;
 
-        // 准备脚本调用
-        let mut invocation = script.prepare_invoke();
+            // 每次尝试都重新构建 invocation（invoke_async 会消费它）
+            let mut invocation = script.prepare_invoke();
+            for key in keys {
+                invocation.key(key);
+            }
+            for arg in args {
+                invocation.arg(arg);
+            }
 
-        // 添加 KEYS 参数
-        for key in keys {
-            invocation.key(key);
+            match conn.invoke_script::<T>(invocation).await {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if attempt < self.config.reconnect_retries && should_reconnect(&error) =>
+                {
+                    attempt += 1;
+                    let delay = reconnect_delay(attempt, self.config.reconnect_max_delay_ms);
+                    log::warn!(
+                        "Redis 脚本连接失败，第 {}/{} 次重试: {}",
+                        attempt,
+                        self.config.reconnect_retries,
+                        error
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(DbError::from(error)),
+            }
         }
+    }
+}
 
-        // 添加 ARGV 参数
-        for arg in args {
-            invocation.arg(arg);
-        }
+/// 从命令参数中提取命令名（只用于指标/tracing，绝不包含 key 或参数）。
+fn command_name(cmd: &redis::Cmd) -> &str {
+    match cmd.args_iter().next() {
+        Some(redis::Arg::Simple(bytes)) => std::str::from_utf8(bytes).unwrap_or("unknown"),
+        _ => "unknown",
+    }
+}
 
-        // 执行脚本
-        invocation
-            .invoke_async(&mut *conn)
-            .await
-            .map_err(|e| DbError::RedisCommandError(format!("Lua 脚本执行失败: {}", e)))
+/// 记录命令级指标（仅 `metrics` feature）。
+#[cfg(feature = "metrics")]
+fn record_metrics(operation: &str, started: Instant, result: &Result<RedisValue>) {
+    metrics::histogram!(
+        "db.client.operation.duration",
+        "db.system" => "redis",
+        "db.operation" => operation.to_string()
+    )
+    .record(started.elapsed().as_secs_f64());
+
+    if let Err(error) = result {
+        metrics::counter!(
+            "db.client.operation.errors",
+            "db.system" => "redis",
+            "db.operation" => operation.to_string(),
+            "error.type" => format!("{:?}", error.category())
+        )
+        .increment(1);
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn record_metrics(_operation: &str, _started: Instant, _result: &Result<RedisValue>) {}
+
+/// 记录类型化命令的指标（不区分错误类别）。
+#[cfg(feature = "metrics")]
+fn record_operation_metrics(operation: &str, started: Instant, ok: bool) {
+    metrics::histogram!(
+        "db.client.operation.duration",
+        "db.system" => "redis",
+        "db.operation" => operation.to_string()
+    )
+    .record(started.elapsed().as_secs_f64());
+    if !ok {
+        metrics::counter!(
+            "db.client.operation.errors",
+            "db.system" => "redis",
+            "db.operation" => operation.to_string()
+        )
+        .increment(1);
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn record_operation_metrics(_operation: &str, _started: Instant, _ok: bool) {}
+
+/// 从 INFO 文本中提取单个字段。
+fn info_field(info: &str, field: &str) -> Option<String> {
+    info.lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, _)| key.trim() == field)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 将 RedisValue 提取为可选字符串：Nil → None，非 UTF-8 → 明确错误。
+pub(crate) fn optional_string(value: &RedisValue) -> Result<Option<String>> {
+    match value {
+        RedisValue::Nil => Ok(None),
+        _ => value.as_string().map(Some).ok_or_else(|| {
+            DbError::RedisTypeConversionError(
+                "Redis 值不是 UTF-8 字符串，请使用 bytes API".to_string(),
+            )
+        }),
     }
 }
 
@@ -1986,49 +2538,79 @@ fn require_i64(value: &RedisValue) -> Result<i64> {
 /// 将 RedisValue 数组中的元素收集为字符串列表，非数组时返回空列表
 ///
 /// 抽出 client 中大量重复的 `as_array → filter_map(as_string) → collect` 样板
-fn collect_string_array(value: &RedisValue) -> Vec<String> {
-    match value.as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_string()).collect(),
-        None => Vec::new(),
-    }
+pub(crate) fn collect_string_array(value: &RedisValue) -> Result<Vec<String>> {
+    let Some(items) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    items
+        .iter()
+        .map(|item| {
+            item.as_string().ok_or_else(|| {
+                DbError::RedisTypeConversionError(
+                    "Redis 数组包含非 UTF-8/非字符串元素，请使用 bytes API".to_string(),
+                )
+            })
+        })
+        .collect()
 }
 
-/// 解析 SCAN/SSCAN 结果
-fn parse_scan_result(result: &RedisValue) -> crate::Result<(i64, Vec<String>)> {
-    if let Some(arr) = result.as_array() {
-        let cursor = arr
-            .first()
-            .and_then(|v| v.as_string())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        let members = arr
-            .get(1)
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_string()).collect())
-            .unwrap_or_default();
-        Ok((cursor, members))
-    } else {
-        Ok((0, vec![]))
-    }
+/// 解析 SCAN/SSCAN/HSCAN 结果。
+///
+/// 游标在 Redis 协议中是 u64 十进制字符串；解析失败必须报错，不能静默当作 0，
+/// 否则会把「遍历未完成」误判为「遍历结束」。
+pub(crate) fn parse_scan_result(result: &RedisValue) -> crate::Result<(u64, Vec<String>)> {
+    let Some(arr) = result.as_array() else {
+        return Err(DbError::RedisTypeConversionError(
+            "Redis SCAN 结果不是数组".to_string(),
+        ));
+    };
+    let cursor_raw = arr
+        .first()
+        .ok_or_else(|| DbError::RedisTypeConversionError("Redis SCAN 结果缺少游标".to_string()))?;
+    // RESP2 返回 bulk string；部分 RESP3/代理实现可能返回整数，两者都接受。
+    let cursor = cursor_raw
+        .as_string()
+        .or_else(|| cursor_raw.as_i64().map(|value| value.to_string()))
+        .ok_or_else(|| {
+            DbError::RedisTypeConversionError("Redis SCAN 结果游标类型非法".to_string())
+        })?;
+    let cursor = cursor
+        .parse::<u64>()
+        .map_err(|_| DbError::RedisTypeConversionError(format!("Redis SCAN 游标非法: {cursor}")))?;
+    let members = arr
+        .get(1)
+        .map(collect_string_array)
+        .transpose()?
+        .unwrap_or_default();
+    Ok((cursor, members))
 }
 
 /// 解析 WITHSCORES 结果（交替的成员/分数对）
-fn parse_with_scores(result: &RedisValue) -> Vec<(String, f64)> {
-    if let Some(arr) = result.as_array() {
-        let mut pairs = Vec::new();
-        let mut i = 0;
-        while i + 1 < arr.len() {
-            if let (Some(member), Some(score_str)) = (arr[i].as_string(), arr[i + 1].as_string()) {
-                if let Ok(score) = score_str.parse::<f64>() {
-                    pairs.push((member, score));
-                }
-            }
-            i += 2;
-        }
-        pairs
-    } else {
-        vec![]
+pub(crate) fn parse_with_scores(result: &RedisValue) -> Result<Vec<(String, f64)>> {
+    let Some(arr) = result.as_array() else {
+        return Ok(Vec::new());
+    };
+    if arr.len() % 2 != 0 {
+        return Err(DbError::RedisTypeConversionError(
+            "WITHSCORES 返回的成员/分数数量不是偶数".to_string(),
+        ));
     }
+    arr.chunks_exact(2)
+        .map(|pair| {
+            let member = pair[0].as_string().ok_or_else(|| {
+                DbError::RedisTypeConversionError("WITHSCORES 成员不是 UTF-8 字符串".to_string())
+            })?;
+            let score = pair[1].as_f64().or_else(|| {
+                pair[1]
+                    .as_string()
+                    .and_then(|value| value.parse::<f64>().ok())
+            });
+            let score = score.ok_or_else(|| {
+                DbError::RedisTypeConversionError("WITHSCORES 分数不是合法数字".to_string())
+            })?;
+            Ok((member, score))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2133,9 +2715,19 @@ mod tests {
         let pool = pool_config
             .create_pool(Some(Runtime::Tokio1))
             .expect("无法创建测试连接池");
-        let client = RedisClient { pool };
+        let client = test_client(pool);
 
         assert_eq!(client.pool_status().max_size, 25);
+    }
+
+    fn test_client(pool: Pool) -> RedisClient {
+        RedisClient {
+            backend: RedisBackend::Single(pool),
+            config: RedisConfig::default(),
+            direct: None,
+            redacted_target: "redis://127.0.0.1:6379".to_string(),
+            namespace: None,
+        }
     }
 
     #[tokio::test]
@@ -2144,20 +2736,17 @@ mod tests {
         let pool = config
             .create_pool(Some(Runtime::Tokio1))
             .expect("应能创建无需立即连接的测试池");
-        let client = RedisClient { pool };
+        let client = test_client(pool);
 
         client.close().await;
 
         assert!(client.is_closed());
         let result = client.health_check().await;
         assert!(
-            matches!(
-                &result,
-                Err(DbError::RedisPoolError(message))
-                    if message.starts_with("获取连接失败:") && message.contains("closed")
-            ),
-            "关闭后的健康检查应保留连接池错误，实际为: {result:?}"
+            matches!(&result, Err(DbError::RedisPoolClosed)),
+            "关闭后的健康检查应返回不可重试的 RedisPoolClosed，实际为: {result:?}"
         );
+        assert!(!result.unwrap_err().is_retryable());
     }
 
     #[tokio::test]
@@ -2194,6 +2783,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_scan_result_rejects_invalid_cursor() {
+        let result = RedisValue::Array(vec![
+            RedisValue::String("not-a-cursor".to_string()),
+            RedisValue::Array(vec![]),
+        ]);
+        assert!(matches!(
+            parse_scan_result(&result),
+            Err(DbError::RedisTypeConversionError(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_scan_result_rejects_non_utf8_members() {
+        let result = RedisValue::Array(vec![
+            RedisValue::String("0".to_string()),
+            RedisValue::Array(vec![RedisValue::Bytes(vec![0xFF])]),
+        ]);
+        assert!(matches!(
+            parse_scan_result(&result),
+            Err(DbError::RedisTypeConversionError(_))
+        ));
+    }
+
+    #[test]
     fn test_parse_with_scores_valid() {
         let result = RedisValue::Array(vec![
             RedisValue::String("alice".to_string()),
@@ -2201,7 +2814,7 @@ mod tests {
             RedisValue::String("bob".to_string()),
             RedisValue::String("95.5".to_string()),
         ]);
-        let pairs = parse_with_scores(&result);
+        let pairs = parse_with_scores(&result).expect("valid withscores");
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ("alice".to_string(), 100.0));
         assert_eq!(pairs[1], ("bob".to_string(), 95.5));
@@ -2210,7 +2823,7 @@ mod tests {
     #[test]
     fn test_parse_with_scores_empty() {
         let result = RedisValue::Array(vec![]);
-        let pairs = parse_with_scores(&result);
+        let pairs = parse_with_scores(&result).expect("empty withscores");
         assert!(pairs.is_empty());
     }
 }

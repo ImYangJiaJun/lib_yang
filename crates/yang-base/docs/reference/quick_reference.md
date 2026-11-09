@@ -1,25 +1,25 @@
 # yang-base 快速参考
+> **迁移提示（0.4.0）**：`GlobalRedis` / `GlobalDatabase` 已删除。Redis 新用法见
+> [guides/redis.md](../guides/redis.md)；MySQL 请使用 `yang_db::Database` +
+> `ToolsBuilder`。下文如出现这两个类型，均为历史 API，不能直接编译。
+
 
 ## 初始化
 
 ```rust
-use yang_base::database::{GlobalDatabase, GlobalRedis};
 use yang_base::http::HttpClient;
-use yang_base::token::TokenManager;
 use yang_base::tools::ToolsBuilder;
-use yang_db::{DatabaseConfig, redis::RedisConfig};
+use yang_db::RedisConfig;
 
-// MySQL
-GlobalDatabase::init("mysql://root:pass@localhost/db", DatabaseConfig::default()).await?;
+// Redis / HTTP 等资源统一由 ToolsBuilder 注入并冻结为 Tools
+let tools = ToolsBuilder::new()
+    .cache_from_url("redis://127.0.0.1:6379", RedisConfig::default())
+    .await?
+    .http(HttpClient::new(30)?)
+    .build()?;
 
-// Redis
-GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
-
-// HTTP 客户端（注册进 Tools 资源槽，运行期经 tools.http()? 获取）
-let tools = ToolsBuilder::new().http(HttpClient::new(30)?).build()?;
-
-// Token 管理
-TokenManager::init("secret-key")?;
+// 运行期从 Tools 获取（Action 内用 ctx.tools().cache()?）
+let redis = tools.cache()?;
 ```
 
 ## MySQL 常用操作
@@ -55,33 +55,60 @@ tx.commit().await?;
 ## Redis 常用操作
 
 ```rust
+let redis = tools.cache()?;
+
 // String
-GlobalRedis::set("key", "value", Some(60)).await?;  // 60秒过期
-let val = GlobalRedis::get("key").await?;
+redis.setex("key", 60, "value").await?;  // 60 秒过期
+let val = redis.get("key").await?;
 
 // Hash
-GlobalRedis::hset("user:1", "name", "张三").await?;
-let name = GlobalRedis::hget("user:1", "name").await?;
-let all = GlobalRedis::hgetall("user:1").await?;
+redis.hset("user:1", "name", "张三").await?;
+let name = redis.hget("user:1", "name").await?;
+let all = redis.hgetall("user:1").await?;
 
-// List (队列)
-GlobalRedis::lpush("queue", &["task1".to_string()]).await?;
-let task = GlobalRedis::rpop("queue").await?;
-
-// Set (集合)
-GlobalRedis::sadd("tags", &["rust".to_string()]).await?;
-let tags = GlobalRedis::smembers("tags").await?;
-
-// Sorted Set (排行榜)
-GlobalRedis::zadd("scores", &[(100.0, "player1".to_string())]).await?;
-let top = GlobalRedis::zrange("scores", 0, 9).await?;
+// List / Set / Sorted Set
+redis.lpush("queue", &["task1".to_string()]).await?;
+let task = redis.rpop("queue").await?;
+redis.sadd("tags", &["rust".to_string()]).await?;
+let tags = redis.smembers("tags").await?;
+redis.zadd("scores", &[(100.0, "player1".to_string())]).await?;
+let top = redis.zrange("scores", 0, 9).await?;
 
 // 通用操作
-GlobalRedis::del(&["key".to_string()]).await?;
-GlobalRedis::exists(&["key".to_string()]).await?;
-GlobalRedis::expire("key", 3600).await?;
-GlobalRedis::ttl("key").await?;
-GlobalRedis::keys("user:*").await?;
+redis.del(&["key".to_string()]).await?;
+redis.exists(&["key".to_string()]).await?;
+redis.expire("key", 3600).await?;
+redis.ttl("key").await?;
+redis.scan_all(Some("user:*"), Some(100)).await?; // 生产安全，替代 KEYS
+
+// 二进制安全
+redis.set_bytes("blob", &[0u8, 0xFF, 0x80]).await?;
+let blob = redis.get_bytes("blob").await?;
+
+// JSON / 命名空间
+use yang_db::KeyNamespace;
+let redis = redis.clone().with_namespace(KeyNamespace::new("myapp", "prod")?);
+redis.set_json("user:1", &user, Some(300)).await?;
+let user: User = redis.get_json("user:1").await?.unwrap();
+
+// 缓存门面（cache-aside / single-flight / 空值缓存）
+use yang_base::cache::{Cache, CacheConfig};
+let cache = Cache::new(redis, CacheConfig::default());
+let user: User = cache
+    .get_or_load("user:1", None, || async { load_user(1).await })
+    .await?;
+
+// 分布式锁
+let guard = cache.client().lock("job:1")
+    .with_ttl(std::time::Duration::from_secs(30))
+    .acquire(std::time::Duration::from_secs(5))
+    .await?;
+guard.release().await?;
+
+// 固定窗口限流
+use yang_base::cache::RateLimiter;
+let limiter = RateLimiter::new(cache.client().clone(), "api");
+let decision = limiter.check("user:1", 100, std::time::Duration::from_secs(60)).await?;
 ```
 
 ## HTTP 请求
@@ -129,52 +156,49 @@ let code = error.code();
 ## 缓存模式
 
 ```rust
-async fn get_with_cache<T>(key: &str, fetch: impl Future<Output = Result<T, BaseError>>) 
-    -> Result<T, BaseError>
+use yang_base::cache::Cache;
+
+async fn get_with_cache<T>(
+    cache: &Cache,
+    key: &str,
+    fetch: impl Future<Output = Result<T, BaseError>>,
+) -> Result<T, BaseError>
 where
     T: Serialize + DeserializeOwned,
 {
-    // 查缓存
-    if let Some(cached) = GlobalRedis::get(key).await? {
-        if let Ok(value) = serde_json::from_str(&cached) {
-            return Ok(value);
-        }
-    }
-    
-    // 查数据库
-    let value = fetch.await?;
-    
-    // 写缓存
-    GlobalRedis::set(key, &serde_json::to_string(&value)?, Some(300)).await?;
-    
-    Ok(value)
+    // single-flight + TTL 抖动 + 空值策略由 Cache 统一处理
+    cache.get_or_load(key, None, move || fetch).await
 }
 ```
 
 ## 完整示例
 
 ```rust
+use std::time::Duration;
+use yang_base::cache::{Cache, CacheConfig};
+use yang_base::tools::ToolsBuilder;
+use yang_db::RedisConfig;
+
 #[tokio::main]
 async fn main() -> Result<(), BaseError> {
-    // 初始化
-    GlobalDatabase::init("mysql://root:pass@localhost/db", DatabaseConfig::default()).await?;
-    GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
-    
-    // 查询用户（带缓存）
-    let cache_key = "user:1";
-    let user = if let Some(cached) = GlobalRedis::get(cache_key).await? {
-        serde_json::from_str(&cached)?
-    } else {
-        let user: User = GlobalDatabase::table("users")?
-            .where_and("id", "=", 1)
-            .select().await?
-            .into_iter().next()
-            .ok_or(BaseError::RecordNotFound("用户1".into()))?;
-        
-        GlobalRedis::set(cache_key, &serde_json::to_string(&user)?, Some(300)).await?;
-        user
-    };
-    
+    let tools = ToolsBuilder::new()
+        .cache_from_url("redis://127.0.0.1:6379", RedisConfig::default())
+        .await?
+        .build()?;
+
+    let cache = Cache::new(
+        tools.cache()?.clone(),
+        CacheConfig {
+            default_ttl: Duration::from_secs(300),
+            ..CacheConfig::default()
+        },
+    );
+
+    // 查询用户（cache-aside）
+    let user: User = cache
+        .get_or_load("user:1", None, || async { load_user(1).await })
+        .await?;
+
     println!("用户: {:?}", user);
     Ok(())
 }
@@ -191,12 +215,11 @@ DatabaseConfig {
     enable_logging: false,    // 生产环境关闭
 }
 
-RedisConfig::new(
-    10,     // max_connections
-    5,      // connect_timeout
-    300,    // idle_timeout
-    false   // enable_logging
-)
+RedisConfig::default()
+    .with_max_connections(10)
+    .with_connect_timeout(5)
+    .with_wait_timeout(10)
+    .with_enable_logging(false)
 ```
 
 ## 常见错误码

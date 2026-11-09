@@ -4,9 +4,9 @@
 [advisories]
 unused-ignored-advisory = "deny"
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "scope=sqlx-mysql only calls RsaPublicKey::encrypt for MySQL password exchange and the workspace has no RSA private-key operation; review-by=2026-10-31; exit=rsa or sqlx publishes a fix, the dependency path changes, or private-key use is introduced" },
-    { id = "RUSTSEC-2025-0134", reason = "scope=reqwest 0.12.16 removed the production edge and only testcontainers 0.22.0 via bollard 0.17.1 remains as a dev dependency under MSRV 1.80; review-by=2026-10-31; exit=testcontainers offers an MSRV-compatible removal or the workspace MSRV reaches 1.88" },
-    { id = "RUSTSEC-2026-0009", reason = "scope=time is only reached through simple_asn1 fixed ASN.1 time formats and no Rfc2822 parser is used; review-by=2026-10-31; exit=the dependency path changes or the workspace MSRV reaches 1.88 and time can be upgraded to 0.3.47 or later" },
+    { id = "RUSTSEC-2023-0071", reason = "scope=sqlx-mysql only calls RsaPublicKey::encrypt for MySQL password exchange and the workspace has no RSA private-key operation; review-by=2027-01-31; exit=rsa or sqlx publishes a fix, the dependency path changes, or private-key use is introduced" },
+    { id = "RUSTSEC-2025-0134", reason = "scope=reqwest 0.12.16 removed the production edge and only testcontainers 0.22.0 via bollard 0.17.1 remains as a dev dependency under MSRV 1.80; review-by=2027-01-31; exit=testcontainers offers an MSRV-compatible removal or the workspace MSRV reaches 1.88" },
+    { id = "RUSTSEC-2026-0009", reason = "scope=time is only reached through simple_asn1 fixed ASN.1 time formats and no Rfc2822 parser is used; review-by=2027-01-31; exit=the dependency path changes or the workspace MSRV reaches 1.88 and time can be upgraded to 0.3.47 or later" },
 ]
 
 [licenses]

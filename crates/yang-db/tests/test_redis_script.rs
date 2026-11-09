@@ -1,222 +1,159 @@
-#![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-#![allow(dead_code)]
-#![allow(unused_results)]
-//! Lua 脚本单元测试
+//! Lua 脚本真实集成测试。
 //!
-//! 测试 Redis Lua 脚本功能的基础行为
+//! 连接 `REDIS_TEST_URL`（未设置时回退 `redis://127.0.0.1:6379`）；
+//! 连接失败必须失败，不做软跳过。
 
-#[cfg(test)]
-mod tests {
-    use redis::Script;
+use yang_db::RedisClient;
 
-    /// 测试脚本对象创建
-    #[test]
-    fn test_script_creation() {
-        let code = r#"
-            return "Hello, Lua!"
-        "#;
+fn redis_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
 
-        let script = Script::new(code);
+async fn client() -> RedisClient {
+    RedisClient::connect(redis_url())
+        .await
+        .expect("连接测试 Redis 失败")
+}
 
-        // 验证脚本对象可以创建
-        // Script 没有公开的字段，所以我们只能验证它能被创建
-        drop(script);
-    }
+fn key(suffix: &str) -> String {
+    format!("yang:test:script:{suffix}:{}", std::process::id())
+}
 
-    /// 测试简单脚本执行（返回字符串）
-    #[test]
-    fn test_simple_script_return_string() {
-        let code = r#"
-            return "Hello from Lua"
-        "#;
+#[tokio::test]
+async fn test_script_creation_and_execution() {
+    let client = client().await;
+    let script = client.script(r#"return "Hello, Lua!""#);
+    let value: String = client.eval_script(&script, &[], &[]).await.unwrap();
+    assert_eq!(value, "Hello, Lua!");
+}
 
-        let script = Script::new(code);
+#[tokio::test]
+async fn test_script_with_keys_and_args() {
+    let client = client().await;
+    let script = client.script(r#"return KEYS[1] .. ":" .. ARGV[1]"#);
+    let value: String = client
+        .eval_script(&script, &["prefix".to_string()], &["suffix".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(value, "prefix:suffix");
+}
 
-        // 验证脚本对象创建成功
-        drop(script);
-    }
+#[tokio::test]
+async fn test_script_return_number() {
+    let client = client().await;
+    let script = client.script("return 42");
+    let value: i64 = client.eval_script(&script, &[], &[]).await.unwrap();
+    assert_eq!(value, 42);
+}
 
-    /// 测试脚本参数传递（KEYS 和 ARGV）
-    #[test]
-    fn test_script_with_keys_and_args() {
-        let code = r#"
-            return KEYS[1] .. ":" .. ARGV[1]
-        "#;
+#[tokio::test]
+async fn test_script_return_array() {
+    let client = client().await;
+    let script = client.script(r#"return {1, 2, 3, "four"}"#);
+    let value: Vec<String> = client.eval_script(&script, &[], &[]).await.unwrap();
+    assert_eq!(value, vec!["1", "2", "3", "four"]);
+}
 
-        let script = Script::new(code);
+#[tokio::test]
+async fn test_script_returns_nil() {
+    let client = client().await;
+    let cache_key = key("missing");
+    client.del(std::slice::from_ref(&cache_key)).await.unwrap();
+    let script = client.script("return redis.call('GET', KEYS[1])");
+    let value: Option<String> = client
+        .eval_script(&script, &[cache_key], &[])
+        .await
+        .unwrap();
+    assert_eq!(value, None);
+}
 
-        // 验证脚本对象创建成功
-        drop(script);
-    }
+#[tokio::test]
+async fn test_script_syntax_error_is_reported() {
+    let client = client().await;
+    let script = client.script("this is not valid lua");
+    let result: Result<i64, _> = client.eval_script(&script, &[], &[]).await;
+    assert!(result.is_err(), "非法脚本必须返回错误");
+}
 
-    /// 测试脚本返回数字
-    #[test]
-    fn test_script_return_number() {
-        let code = r#"
-            return 42
-        "#;
+#[tokio::test]
+async fn test_script_evalsha_caching() {
+    let client = client().await;
+    let cache_key = key("evalsha");
+    client.del(std::slice::from_ref(&cache_key)).await.unwrap();
+    let script = client.script("return redis.call('INCR', KEYS[1])");
 
-        let script = Script::new(code);
+    let first: i64 = client
+        .eval_script(&script, std::slice::from_ref(&cache_key), &[])
+        .await
+        .unwrap();
+    let second: i64 = client
+        .eval_script(&script, std::slice::from_ref(&cache_key), &[])
+        .await
+        .unwrap();
+    assert_eq!((first, second), (1, 2), "EVALSHA 缓存应复用同一脚本");
+    client.del(&[cache_key]).await.unwrap();
+}
 
-        // 验证脚本对象创建成功
-        drop(script);
-    }
+#[tokio::test]
+async fn test_script_with_loop() {
+    let client = client().await;
+    let script = client.script(
+        r#"
+        local total = 0
+        for i = 1, 10 do
+            total = total + i
+        end
+        return total
+        "#,
+    );
+    let value: i64 = client.eval_script(&script, &[], &[]).await.unwrap();
+    assert_eq!(value, 55);
+}
 
-    /// 测试脚本返回数组
-    #[test]
-    fn test_script_return_array() {
-        let code = r#"
-            return {1, 2, 3, "four"}
-        "#;
+#[tokio::test]
+async fn test_script_conditional_update() {
+    let client = client().await;
+    let cache_key = key("balance");
+    client.set(&cache_key, "100").await.unwrap();
+    let script = client.script(
+        r#"
+        local balance = tonumber(redis.call('GET', KEYS[1]) or 0)
+        local amount = tonumber(ARGV[1])
+        if balance >= amount then
+            redis.call('DECRBY', KEYS[1], amount)
+            return 1
+        end
+        return 0
+        "#,
+    );
+    let success: i64 = client
+        .eval_script(
+            &script,
+            std::slice::from_ref(&cache_key),
+            &["30".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(success, 1);
+    assert_eq!(
+        client.get(&cache_key).await.unwrap(),
+        Some("70".to_string())
+    );
+    client.del(&[cache_key]).await.unwrap();
+}
 
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本返回 nil
-    #[test]
-    fn test_script_return_nil() {
-        let code = r#"
-            return nil
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试复杂脚本逻辑
-    #[test]
-    fn test_complex_script_logic() {
-        let code = r#"
-            local value = tonumber(ARGV[1])
-            if value > 10 then
-                return "large"
-            elseif value > 5 then
-                return "medium"
-            else
-                return "small"
-            end
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本中的 Redis 命令调用
-    #[test]
-    fn test_script_with_redis_calls() {
-        let code = r#"
-            redis.call('SET', KEYS[1], ARGV[1])
-            return redis.call('GET', KEYS[1])
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本中的多个 Redis 命令
-    #[test]
-    fn test_script_with_multiple_redis_calls() {
-        let code = r#"
-            redis.call('INCR', KEYS[1])
-            redis.call('INCR', KEYS[2])
-            local v1 = redis.call('GET', KEYS[1])
-            local v2 = redis.call('GET', KEYS[2])
-            return {v1, v2}
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本语法错误处理
-    #[test]
-    fn test_script_with_syntax_error() {
-        // 故意包含语法错误的脚本
-        let code = r#"
-            return "unclosed string
-        "#;
-
-        let script = Script::new(code);
-
-        // Script::new 不会验证语法，只有在执行时才会报错
-        // 这里只验证对象可以创建
-        drop(script);
-    }
-
-    /// 测试空脚本
-    #[test]
-    fn test_empty_script() {
-        let code = "";
-
-        let script = Script::new(code);
-
-        // 验证空脚本对象可以创建
-        drop(script);
-    }
-
-    /// 测试脚本中的条件逻辑
-    #[test]
-    fn test_script_conditional_logic() {
-        let code = r#"
-            local balance = tonumber(redis.call('GET', KEYS[1]) or 0)
-            local amount = tonumber(ARGV[1])
-            if balance >= amount then
-                redis.call('DECRBY', KEYS[1], amount)
-                return 1
-            else
-                return 0
-            end
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本中的循环
-    #[test]
-    fn test_script_with_loop() {
-        let code = r#"
-            local sum = 0
-            for i = 1, tonumber(ARGV[1]) do
-                sum = sum + i
-            end
-            return sum
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
-
-    /// 测试脚本中的表操作
-    #[test]
-    fn test_script_with_table_operations() {
-        let code = r#"
-            local result = {}
-            for i = 1, #KEYS do
-                table.insert(result, redis.call('GET', KEYS[i]))
-            end
-            return result
-        "#;
-
-        let script = Script::new(code);
-
-        // 验证脚本对象创建成功
-        drop(script);
-    }
+#[tokio::test]
+async fn test_script_type_error_does_not_leak_payload() {
+    let client = client().await;
+    let secret = "eyJhbGciOiJIUzI1NiJ9.super-secret-token";
+    let script = client.script(r#"return ARGV[1]"#);
+    let result: Result<i64, _> = client
+        .eval_script(&script, &[], &[secret.to_string()])
+        .await;
+    let error = result.expect_err("字符串结果按 i64 解码必须失败");
+    assert!(
+        !format!("{error}").contains("super-secret-token"),
+        "类型错误不得回显原始响应: {error}"
+    );
 }

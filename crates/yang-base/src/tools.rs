@@ -366,6 +366,21 @@ impl ToolsBuilder {
         self
     }
 
+    /// 从 URL + 池配置连接 Redis 并注册。
+    ///
+    /// 失败返回 [`BaseError::RedisConnectionFailed`]（保留底层错误链）。
+    #[cfg(feature = "redis")]
+    pub async fn cache_from_url(
+        self,
+        url: impl Into<String>,
+        config: yang_db::RedisConfig,
+    ) -> Result<Self, BaseError> {
+        let client = RedisClient::connect_with_config(url, config)
+            .await
+            .map_err(BaseError::RedisConnectionFailed)?;
+        Ok(self.cache(client))
+    }
+
     /// 设置唯一 Token 管理器。
     #[cfg(feature = "token")]
     pub fn token(mut self, token: TokenManager) -> Self {

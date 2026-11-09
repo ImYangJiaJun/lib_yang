@@ -40,6 +40,9 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # Redis 客户端（yang-feishu 的可选令牌缓存复用同一版本）
 redis = "0.32"
 
+# Redis Pub/Sub 消息流迭代（StreamExt）
+futures-util = "0.3"
+
 # TOTP 第二因子（RFC 6238；禁止自写 HOTP/TOTP 算法）
 totp-lite = "2.0.1"
 

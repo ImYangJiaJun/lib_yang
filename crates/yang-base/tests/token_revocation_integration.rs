@@ -9,11 +9,25 @@ use yang_base::token::TokenManager;
 use yang_base::tools::{Tools, ToolsBuilder};
 use yang_db::RedisClient;
 
-async fn redis_container() -> (testcontainers::ContainerAsync<GenericImage>, RedisClient) {
+async fn redis_container() -> (
+    Option<testcontainers::ContainerAsync<GenericImage>>,
+    RedisClient,
+) {
+    // 优先复用外部测试专用实例（本地 docker / CI service）
+    if let Ok(url) = std::env::var("REDIS_TEST_URL") {
+        let cache = RedisClient::connect(url)
+            .await
+            .expect("应能连接 REDIS_TEST_URL");
+        return (None, cache);
+    }
+
     let image = GenericImage::new("redis", "7-alpine").with_wait_for(
         testcontainers::core::WaitFor::message_on_stdout("Ready to accept connections"),
     );
-    let container = image.start().await.expect("应能启动 Redis 7 测试容器");
+    let container = image
+        .start()
+        .await
+        .expect("应能启动 Redis 7 测试容器；请设置 REDIS_TEST_URL 复用已有实例");
     let port = container
         .get_host_port_ipv4(6379)
         .await
@@ -21,7 +35,7 @@ async fn redis_container() -> (testcontainers::ContainerAsync<GenericImage>, Red
     let cache = RedisClient::connect(format!("redis://127.0.0.1:{port}"))
         .await
         .expect("应能连接 Redis 测试容器");
-    (container, cache)
+    (Some(container), cache)
 }
 
 #[tokio::test]
@@ -199,6 +213,15 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
         .generate_access_token(subject, json!({"role": "user"}))
         .expect("应能生成固定 Access Token");
 
+    // 共享测试实例可能残留上次运行的水位线，先清理以保证绝对断言成立
+    let stale = cache
+        .scan_all(Some("token:user:*:min_iat"), Some(100))
+        .await
+        .expect("应能扫描残留水位线 key");
+    if !stale.is_empty() {
+        cache.del(&stale).await.expect("应能清理残留水位线 key");
+    }
+
     tools
         .token()
         .expect("Tools 应包含 TokenManager")
@@ -206,7 +229,7 @@ async fn corrupt_subject_watermark_fails_closed_on_public_verification_paths() {
         .await
         .expect("应能通过公开 API 写入用户撤销水位线");
     let mut watermark_keys = cache
-        .keys("token:user:*:min_iat")
+        .scan_all(Some("token:user:*:min_iat"), Some(100))
         .await
         .expect("应能定位隔离容器中的水位线 key");
     assert_eq!(watermark_keys.len(), 1, "隔离容器中应只有一个水位线 key");

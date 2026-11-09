@@ -1,236 +1,206 @@
-# yang-base Redis 功能使用指南
+# yang-base Redis 使用指南
 
-## 概述
-
-yang-base 现在支持全局 Redis 访问，通过 `GlobalRedis` 提供线程安全的 Redis 操作接口。
+> `GlobalRedis` 已在 0.4.0 删除。Redis 资源通过 `ToolsBuilder` 显式注入，运行期经
+> `Tools::cache()` / `ActionContext::tools().cache()` 获取 `yang_db::RedisClient`。
 
 ## 初始化
 
 ```rust
-use yang_base::database::GlobalRedis;
-use yang_db::redis::RedisConfig;
+use yang_base::tools::ToolsBuilder;
+use yang_db::RedisConfig;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用默认配置
-    GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
-    
-    // 或使用自定义配置
-    let config = RedisConfig::new(
-        10,    // max_connections
-        5,     // connect_timeout (秒)
-        300,   // idle_timeout (秒)
-        true   // enable_logging
-    );
-    GlobalRedis::init("redis://127.0.0.1:6379", config).await?;
-    
-    Ok(())
+let tools = ToolsBuilder::new()
+    .cache_from_url("redis://127.0.0.1:6379", RedisConfig::default())
+    .await?
+    .build()?;
+
+let redis = tools.cache()?;
+```
+
+`cache_from_url` 建连失败会返回 `BaseError::RedisConnectionFailed`（保留底层错误链）。
+需要自定义池参数时，先构造 `RedisConfig`：
+
+```rust
+let config = RedisConfig::default()
+    .with_max_connections(20)
+    .with_connect_timeout(5)
+    .with_wait_timeout(10)
+    .with_response_timeout_ms(Some(3_000))
+    .with_reconnect_retries(2);
+```
+
+`min_connections` / `max_lifetime` / `test_before_acquire` 不被 deadpool 0.12 支持，
+设置后 `validate()` 会显式返回 `InvalidArgument`（不再静默忽略）。
+
+## 基础操作
+
+```rust
+// String
+redis.setex("session:1", 3600, "data").await?;
+let value = redis.get("session:1").await?;
+
+// Hash
+redis.hset("user:1", "name", "Alice").await?;
+let name = redis.hget("user:1", "name").await?;
+let all = redis.hgetall("user:1").await?;
+
+// List / Set / Sorted Set
+redis.lpush("queue", &["task1".to_string()]).await?;
+let task = redis.rpop("queue").await?;
+redis.sadd("tags", &["rust".to_string()]).await?;
+redis.zadd("scores", &[(100.0, "alice".to_string())]).await?;
+
+// 通用
+redis.expire("session:1", 600).await?;
+redis.scan_all(Some("user:*"), Some(100)).await?; // 生产安全，替代 KEYS
+```
+
+## 二进制安全
+
+```rust
+let blob = vec![0u8, 0xFF, 0x80];
+redis.set_bytes("blob", &blob).await?;
+assert_eq!(redis.get_bytes("blob").await?, Some(blob));
+
+redis.hset_bytes("hash", [0xFFu8], &[0x00, 0x01]).await?;
+let pairs = redis.hgetall_bytes("hash").await?;
+```
+
+字符串 API 遇到非 UTF-8 会返回 `DbError::RedisTypeConversionError`，不会静默当成
+「键不存在」。
+
+## JSON、命名空间与类型化读写
+
+```rust
+use yang_db::KeyNamespace;
+
+let redis = redis.clone().with_namespace(KeyNamespace::new("myapp", "prod")?);
+redis.set_json("user:1", &user, Some(300)).await?;
+let user: User = redis.get_json("user:1").await?.unwrap();
+
+// 自定义 codec
+redis.set_typed(&MyCodec, "user:2", &user, None).await?;
+```
+
+## Pipeline / 事务 / 脚本
+
+```rust
+// Pipeline：任一命令失败会整体报错
+let mut pipeline = redis.pipeline();
+pipeline.set("k1", "v1").get("k1");
+let values = pipeline.execute().await?;
+
+// 容错 Pipeline：逐条返回结果，单条错误不吞掉其他命令
+let mut pipeline = redis.pipeline();
+pipeline.set("k1", "v1");
+pipeline.cmd(redis::cmd("INCR").arg("not-a-number").clone());
+let results = pipeline.execute_tolerant().await?;
+assert!(results[1].is_err());
+
+// WATCH/MULTI/EXEC 乐观锁
+let mut tx = redis.transaction();
+tx.watch(&["balance".to_string()]);
+tx.set("balance", "100");
+let _: (String,) = tx.exec().await?;
+
+// Lua（EVALSHA + NOSCRIPT 自动 SCRIPT LOAD 后重试）
+let script = redis.script("return redis.call('INCR', KEYS[1])");
+let value: i64 = redis.eval_script(&script, &["counter".to_string()], &[]).await?;
+```
+
+## 缓存门面（Cache）
+
+```rust
+use yang_base::cache::{Cache, CacheConfig};
+
+let cache = Cache::new(redis.clone(), CacheConfig::default());
+
+// cache-aside：miss 回填，single-flight 防击穿，TTL 自动抖动
+let user: User = cache
+    .get_or_load("user:1", None, || async { load_user(1).await })
+    .await?;
+
+// 允许缓存空值，防穿透
+let maybe: Option<User> = cache
+    .get_or_load_optional("user:2", None, || async { Ok(None) })
+    .await?;
+```
+
+`CacheConfig::fail_open = true` 仅适用于纯缓存场景；token 撤销、MFA、鉴权限流等
+安全路径必须保持 fail-closed（默认值）。
+
+## 分布式锁
+
+```rust
+use std::time::Duration;
+
+let guard = redis
+    .lock("job:nightly")
+    .with_ttl(Duration::from_secs(30))
+    .acquire(Duration::from_secs(5))
+    .await?;
+
+// ... 临界区 ...
+
+guard.release().await?; // 仅 owner token 匹配时删除
+```
+
+锁 TTL 是进程崩溃时的兜底；长时间任务应设置足够大的 TTL 或显式 `extend`。
+
+## 限流
+
+```rust
+use yang_base::cache::RateLimiter;
+use std::time::Duration;
+
+let limiter = RateLimiter::new(redis.clone(), "api");
+let decision = limiter.check("user:1", 100, Duration::from_secs(60)).await?;
+if !decision.allowed {
+    // 返回 429，reset_after_ms 可用于 Retry-After
 }
 ```
 
-## String 操作
+## Pub/Sub 与 Streams
 
 ```rust
-// 设置值
-GlobalRedis::set("key", "value", None).await?;
-
-// 设置带过期时间的值（10秒后过期）
-GlobalRedis::set("key", "value", Some(10)).await?;
-
-// 获取值
-let value: Option<String> = GlobalRedis::get("key").await?;
-
-// 删除键
-GlobalRedis::del(&["key1".to_string(), "key2".to_string()]).await?;
-
-// 检查键是否存在
-let count = GlobalRedis::exists(&["key".to_string()]).await?;
-
-// 设置过期时间
-GlobalRedis::expire("key", 60).await?;
-
-// 获取剩余生存时间
-let ttl = GlobalRedis::ttl("key").await?;
-
-// 移除过期时间
-GlobalRedis::persist("key").await?;
-
-// 查找匹配的键
-let keys = GlobalRedis::keys("user:*").await?;
-```
-
-## Hash 操作
-
-```rust
-// 设置字段
-GlobalRedis::hset("user:1", "name", "Alice").await?;
-
-// 获取字段
-let name: Option<String> = GlobalRedis::hget("user:1", "name").await?;
-
-// 删除字段
-GlobalRedis::hdel("user:1", &["age".to_string()]).await?;
-
-// 获取所有字段和值
-let all: Vec<(String, String)> = GlobalRedis::hgetall("user:1").await?;
-
-// 检查字段是否存在
-let exists = GlobalRedis::hexists("user:1", "name").await?;
-
-// 获取字段数量
-let count = GlobalRedis::hlen("user:1").await?;
-```
-
-## List 操作
-
-```rust
-// 从左侧推入
-GlobalRedis::lpush("queue", &["task1".to_string(), "task2".to_string()]).await?;
-
-// 从右侧推入
-GlobalRedis::rpush("queue", &["task3".to_string()]).await?;
-
-// 从左侧弹出
-let task: Option<String> = GlobalRedis::lpop("queue").await?;
-
-// 从右侧弹出
-let task: Option<String> = GlobalRedis::rpop("queue").await?;
-
-// 获取列表长度
-let len = GlobalRedis::llen("queue").await?;
-
-// 获取范围内的元素
-let tasks: Vec<String> = GlobalRedis::lrange("queue", 0, -1).await?;
-```
-
-## Set 操作
-
-```rust
-// 添加成员
-GlobalRedis::sadd("tags", &["rust".to_string(), "redis".to_string()]).await?;
-
-// 移除成员
-GlobalRedis::srem("tags", &["redis".to_string()]).await?;
-
-// 检查成员是否存在
-let is_member = GlobalRedis::sismember("tags", "rust").await?;
-
-// 获取所有成员
-let members: Vec<String> = GlobalRedis::smembers("tags").await?;
-
-// 获取成员数量
-let count = GlobalRedis::scard("tags").await?;
-```
-
-## Sorted Set 操作
-
-```rust
-// 添加成员（分数，成员）
-GlobalRedis::zadd("leaderboard", &[
-    (100.0, "player1".to_string()),
-    (200.0, "player2".to_string()),
-]).await?;
-
-// 移除成员
-GlobalRedis::zrem("leaderboard", &["player1".to_string()]).await?;
-
-// 获取成员数量
-let count = GlobalRedis::zcard("leaderboard").await?;
-
-// 获取排名范围（按分数从小到大）
-let players: Vec<String> = GlobalRedis::zrange("leaderboard", 0, -1).await?;
-```
-
-## 错误处理
-
-所有 Redis 操作都返回 `Result<T, BaseError>`，可以使用 `?` 操作符进行错误传播：
-
-```rust
-use yang_base::error::BaseError;
-
-async fn example() -> Result<(), BaseError> {
-    GlobalRedis::set("key", "value", None).await?;
-    let value = GlobalRedis::get("key").await?;
-    Ok(())
+// 订阅（专用长连接，断线自动重连重订阅）
+let mut subscriber = redis.pubsub().await?;
+subscriber.subscribe(&["events".to_string()]).await?;
+if let Some(message) = subscriber.next_message().await? {
+    println!("{}: {:?}", message.channel, message.payload);
 }
+
+// Streams + 消费者组
+redis.xgroup_create("orders", "workers", "0", true).await?;
+let id = redis.xadd("orders", "*", &[("order", "42")]).await?;
+let reply = redis
+    .xread_group(&["orders".to_string()], &[">".to_string()], "workers", "w1", Some(10), None, false)
+    .await?;
+redis.xack("orders", "workers", &[id]).await?;
 ```
 
-## 完整示例
+## 可观测性与韧性
 
-```rust
-use yang_base::database::GlobalRedis;
-use yang_base::error::BaseError;
-use yang_db::redis::RedisConfig;
+- `response_timeout_ms`：命令级响应超时（`None` 表示不限制）。
+- `reconnect_retries` / `reconnect_max_delay_ms`：连接断开时的重试与指数退避。
+- `health_check_detailed()`：PING + INFO（role / clients / memory / replication）。
+- `close_and_wait(deadline)`：停机时等待借出连接归还。
+- feature `metrics`：输出 `db.client.operation.duration` 与错误计数。
 
-#[tokio::main]
-async fn main() -> Result<(), BaseError> {
-    // 初始化 Redis
-    GlobalRedis::init("redis://127.0.0.1:6379", RedisConfig::default()).await?;
-    
-    // 用户会话管理
-    let session_id = "session:12345";
-    GlobalRedis::set(session_id, "user_data", Some(3600)).await?; // 1小时过期
-    
-    // 缓存用户信息
-    GlobalRedis::hset("user:1", "name", "Alice").await?;
-    GlobalRedis::hset("user:1", "email", "alice@example.com").await?;
-    
-    // 任务队列
-    GlobalRedis::lpush("tasks", &["task1".to_string(), "task2".to_string()]).await?;
-    let task = GlobalRedis::rpop("tasks").await?;
-    
-    // 标签系统
-    GlobalRedis::sadd("article:1:tags", &["rust".to_string(), "redis".to_string()]).await?;
-    
-    // 排行榜
-    GlobalRedis::zadd("scores", &[(100.0, "player1".to_string())]).await?;
-    
-    Ok(())
-}
-```
+## 环境变量（EngineConfig）
 
-## 注意事项
+| 变量 | 含义 |
+|---|---|
+| `YANG_REDIS_URL` | Redis 连接串 |
+| `YANG_REDIS_MAX_CONNECTIONS` | 最大连接数 |
+| `YANG_REDIS_CONNECT_TIMEOUT` | 建连超时（秒） |
+| `YANG_REDIS_WAIT_TIMEOUT` | 获取连接超时（秒） |
+| `YANG_REDIS_IDLE_TIMEOUT` | 归还回收钩子超时（秒） |
+| `YANG_REDIS_RESPONSE_TIMEOUT_MS` | 命令级响应超时（0 表示关闭） |
+| `YANG_REDIS_RECONNECT_RETRIES` | 断线重试次数 |
+| `YANG_REDIS_RECONNECT_MAX_DELAY_MS` | 重试最大退避 |
+| `YANG_REDIS_PIPELINE_MAX_COMMANDS` | Pipeline 命令数上限 |
+| `YANG_REDIS_ENABLE_LOGGING` | 是否打印脱敏连接目标 |
 
-1. **初始化顺序**：必须先调用 `GlobalRedis::init()` 才能使用其他方法
-2. **线程安全**：`GlobalRedis` 是线程安全的，可以在多个线程中使用
-3. **连接池**：内部使用连接池管理 Redis 连接，自动处理连接复用
-4. **错误处理**：所有操作都可能失败，请妥善处理错误
-5. **类型转换**：大部分方法返回 `String` 类型，需要时请自行转换
-
-## 与 MySQL 配合使用
-
-```rust
-use yang_base::database::{GlobalDatabase, GlobalRedis};
-use yang_db::{DatabaseConfig, redis::RedisConfig};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化 MySQL
-    GlobalDatabase::init(
-        "mysql://root:password@localhost/mydb",
-        DatabaseConfig::default()
-    ).await?;
-    
-    // 初始化 Redis
-    GlobalRedis::init(
-        "redis://127.0.0.1:6379",
-        RedisConfig::default()
-    ).await?;
-    
-    // 先查 Redis 缓存
-    if let Some(cached) = GlobalRedis::get("user:1").await? {
-        println!("从缓存获取: {}", cached);
-    } else {
-        // 缓存未命中，查询数据库
-        let user = GlobalDatabase::table("users")?
-            .where_and("id", "=", 1)
-            .select::<User>()
-            .await?;
-        
-        // 写入缓存
-        GlobalRedis::set("user:1", &serde_json::to_string(&user)?, Some(300)).await?;
-    }
-    
-    Ok(())
-}
-```
+TLS 需要 `yang-db/redis-tls` feature（`rediss://`）；Cluster/Sentinel 分别需要
+`yang-db/redis-cluster` / `yang-db/redis-sentinel`。

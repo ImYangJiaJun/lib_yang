@@ -2,10 +2,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use yang_db::{RedisClient, RedisValue};
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 测试 Pipeline 创建
 #[tokio::test]
 async fn test_pipeline_creation() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -17,7 +24,7 @@ async fn test_pipeline_creation() {
 /// 测试 Pipeline 基础命令添加
 #[tokio::test]
 async fn test_pipeline_basic_commands() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -37,7 +44,7 @@ async fn test_pipeline_basic_commands() {
 /// 测试 Pipeline 链式调用
 #[tokio::test]
 async fn test_pipeline_chaining() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -56,7 +63,7 @@ async fn test_pipeline_chaining() {
 /// 测试 Pipeline 执行 - SET/GET 操作
 #[tokio::test]
 async fn test_pipeline_execute_set_get() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -102,7 +109,7 @@ async fn test_pipeline_execute_set_get() {
 /// 测试 Pipeline 类型化结果提取
 #[tokio::test]
 async fn test_pipeline_query_typed() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -134,7 +141,7 @@ async fn test_pipeline_query_typed() {
 /// 测试 Pipeline INCR 操作
 #[tokio::test]
 async fn test_pipeline_incr() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -163,7 +170,7 @@ async fn test_pipeline_incr() {
 /// 测试 Pipeline DEL 操作
 #[tokio::test]
 async fn test_pipeline_del() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -198,7 +205,7 @@ async fn test_pipeline_del() {
 /// 测试 Pipeline Hash 操作
 #[tokio::test]
 async fn test_pipeline_hash_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -227,7 +234,7 @@ async fn test_pipeline_hash_operations() {
 /// 测试 Pipeline List 操作
 #[tokio::test]
 async fn test_pipeline_list_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -251,7 +258,7 @@ async fn test_pipeline_list_operations() {
 /// 测试 Pipeline Set 操作
 #[tokio::test]
 async fn test_pipeline_set_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -279,7 +286,7 @@ async fn test_pipeline_set_operations() {
 /// 测试 Pipeline Sorted Set 操作
 #[tokio::test]
 async fn test_pipeline_sorted_set_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -307,7 +314,7 @@ async fn test_pipeline_sorted_set_operations() {
 /// 测试 Pipeline 自定义命令
 #[tokio::test]
 async fn test_pipeline_custom_command() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -336,7 +343,7 @@ async fn test_pipeline_custom_command() {
 /// 测试 Pipeline 错误处理 - 空 Pipeline
 #[tokio::test]
 async fn test_pipeline_empty_execution() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -356,33 +363,36 @@ async fn test_pipeline_empty_execution() {
 /// 测试 Pipeline 错误处理 - 无效的键操作
 #[tokio::test]
 async fn test_pipeline_error_handling() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
     // 先设置一个字符串类型的键
-    let _ = client.set("string_key", "value").await;
+    let key = format!("string_key:{}", std::process::id());
+    client.del(std::slice::from_ref(&key)).await.ok();
+    client.set(&key, "value").await.expect("SET 失败");
 
     let mut pipeline = client.pipeline();
 
     // 尝试对字符串类型的键执行 Hash 操作（应该失败）
-    pipeline.hget("string_key", "field").get("string_key");
+    pipeline.hget(&key, "field").get(&key);
 
-    // Pipeline 执行应该失败或返回错误结果
     let results = pipeline.execute().await;
 
-    // 根据 Redis 的行为，这可能会成功但返回错误值，或者直接失败
-    // 这里我们只验证能够处理这种情况
-    assert!(results.is_ok() || results.is_err());
+    // HGET 作用于字符串 key 是 WRONGTYPE，Pipeline 必须整体返回错误
+    assert!(
+        results.is_err(),
+        "字符串 key 上执行 HGET 应使 Pipeline 报错，实际: {results:?}"
+    );
 
     // 清理测试数据
-    let _ = client.del(&["string_key".to_string()]).await;
+    client.del(&[key]).await.ok();
 }
 
 /// 测试 Pipeline 混合命令类型
 #[tokio::test]
 async fn test_pipeline_mixed_commands() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 

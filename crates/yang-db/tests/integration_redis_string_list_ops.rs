@@ -4,10 +4,17 @@
 #![allow(unused_results)]
 use yang_db::RedisClient;
 
+/// 测试 Redis URL：优先使用 REDIS_TEST_URL，否则回退到本机 6379。
+///
+/// 不使用软跳过：连接失败时测试必须失败，避免 CI 绿色假象。
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+}
+
 /// 集成测试：String 操作完整流程
 #[tokio::test]
 async fn integration_test_string_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -97,9 +104,20 @@ async fn integration_test_string_operations() {
 /// 集成测试：List 操作完整流程
 #[tokio::test]
 async fn integration_test_list_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
+
+    // 共享测试实例可能残留上次运行的数据，先清理固定 key
+    client
+        .del(&[
+            "queue:tasks".to_string(),
+            "inbox:user:1001".to_string(),
+            "processing:user:1001".to_string(),
+            "notifications:user:2001".to_string(),
+        ])
+        .await
+        .ok();
 
     // 场景：任务队列管理
     let queue_key = "queue:tasks";
@@ -190,7 +208,7 @@ async fn integration_test_list_operations() {
 /// 集成测试：String 和 List 操作混合场景
 #[tokio::test]
 async fn integration_test_mixed_operations() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
@@ -294,13 +312,19 @@ async fn integration_test_mixed_operations() {
 /// 集成测试：高并发场景
 #[tokio::test]
 async fn integration_test_high_concurrency() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 
     // 场景：高并发计数器和队列
     let counter_key = "concurrent:counter";
     let queue_key = "concurrent:queue";
+
+    // 共享测试实例可能残留上次运行的数据
+    client
+        .del(&[counter_key.to_string(), queue_key.to_string()])
+        .await
+        .ok();
 
     // 初始化
     client.set(counter_key, "0").await.expect("SET 失败");
@@ -357,7 +381,7 @@ async fn integration_test_high_concurrency() {
 /// 集成测试：错误处理和边界情况
 #[tokio::test]
 async fn integration_test_error_handling() {
-    let client = RedisClient::connect("redis://127.0.0.1:6379")
+    let client = RedisClient::connect(redis_test_url())
         .await
         .expect("连接失败");
 

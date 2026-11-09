@@ -37,6 +37,20 @@
 //! | `YANG_PG_SSL_ROOT_CERT` | 根证书（CA）PEM 路径 | 不设置 |
 //! | `YANG_PG_SSL_CLIENT_CERT` | 客户端证书 PEM 路径（与私钥成对） | 不设置 |
 //! | `YANG_PG_SSL_CLIENT_KEY` | 客户端私钥 PEM 路径（与证书成对） | 不设置 |
+//!
+//! Redis 连接池（`feature = "redis"`）：
+//!
+//! | 变量 | 含义 | 默认 |
+//! |------|------|------|
+//! | `YANG_REDIS_MAX_CONNECTIONS` | 最大连接数 | 10 |
+//! | `YANG_REDIS_CONNECT_TIMEOUT` | 建连超时（秒） | 5 |
+//! | `YANG_REDIS_WAIT_TIMEOUT` | 获取连接超时（秒） | 10 |
+//! | `YANG_REDIS_IDLE_TIMEOUT` | 归还回收钩子超时（秒） | 300 |
+//! | `YANG_REDIS_RESPONSE_TIMEOUT_MS` | 命令级响应超时（0=关闭） | 不限制 |
+//! | `YANG_REDIS_RECONNECT_RETRIES` | 断线重试次数 | 2 |
+//! | `YANG_REDIS_RECONNECT_MAX_DELAY_MS` | 重试最大退避 | 200 |
+//! | `YANG_REDIS_PIPELINE_MAX_COMMANDS` | Pipeline 命令数上限 | 10000 |
+//! | `YANG_REDIS_ENABLE_LOGGING` | 脱敏连接目标日志 | false |
 
 use crate::error::BaseError;
 use std::env;
@@ -72,6 +86,9 @@ pub struct EngineConfig {
     /// 仍为 MySQL 配置类型）。
     #[cfg(feature = "postgres")]
     pub postgres_database: yang_db::PgDatabaseConfig,
+    /// Redis 连接池配置（由 `YANG_REDIS_*` 覆盖 `RedisConfig::default`）。
+    #[cfg(feature = "redis")]
+    pub redis: yang_db::RedisConfig,
 }
 
 /// 当前编译所使用的数据库连接池配置类型。
@@ -81,7 +98,7 @@ type DatabaseConfigType = yang_db::DatabaseConfig;
 type DatabaseConfigType = yang_db::PgDatabaseConfig;
 
 /// 读取一个环境变量并按 `T` 解析；缺失返回 `Ok(None)`，存在但解析失败返回 ConfigError。
-#[cfg(any(feature = "mysql", feature = "postgres"))]
+#[cfg(any(feature = "mysql", feature = "postgres", feature = "redis"))]
 fn parse_env<T: std::str::FromStr>(key: &str) -> Result<Option<T>, BaseError>
 where
     T::Err: std::fmt::Display,
@@ -100,7 +117,7 @@ where
 }
 
 /// 解析布尔环境变量：接受 `true/false/1/0`（大小写不敏感），其余报 ConfigError。
-#[cfg(any(feature = "mysql", feature = "postgres"))]
+#[cfg(any(feature = "mysql", feature = "postgres", feature = "redis"))]
 fn parse_bool_env(key: &str) -> Result<Option<bool>, BaseError> {
     match env::var(key) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -292,6 +309,42 @@ impl EngineConfig {
         #[cfg(feature = "postgres")]
         let postgres_database = load_postgres_database_config()?;
 
+        #[cfg(feature = "redis")]
+        let redis = {
+            let mut cfg = yang_db::RedisConfig::default();
+            if let Some(v) = parse_env::<usize>("YANG_REDIS_MAX_CONNECTIONS")? {
+                cfg.max_connections = v;
+            }
+            if let Some(v) = parse_env::<u64>("YANG_REDIS_CONNECT_TIMEOUT")? {
+                cfg.connect_timeout = v;
+            }
+            if let Some(v) = parse_env::<u64>("YANG_REDIS_WAIT_TIMEOUT")? {
+                cfg.wait_timeout = v;
+            }
+            if let Some(v) = parse_env::<u64>("YANG_REDIS_IDLE_TIMEOUT")? {
+                cfg.idle_timeout = v;
+            }
+            if let Some(v) = parse_env::<u64>("YANG_REDIS_RESPONSE_TIMEOUT_MS")? {
+                // 0 表示显式关闭命令级超时
+                cfg.response_timeout_ms = if v == 0 { None } else { Some(v) };
+            }
+            if let Some(v) = parse_env::<u32>("YANG_REDIS_RECONNECT_RETRIES")? {
+                cfg.reconnect_retries = v;
+            }
+            if let Some(v) = parse_env::<u64>("YANG_REDIS_RECONNECT_MAX_DELAY_MS")? {
+                cfg.reconnect_max_delay_ms = v;
+            }
+            if let Some(v) = parse_env::<usize>("YANG_REDIS_PIPELINE_MAX_COMMANDS")? {
+                cfg.pipeline_max_commands = v;
+            }
+            if let Some(v) = parse_bool_env("YANG_REDIS_ENABLE_LOGGING")? {
+                cfg.enable_logging = v;
+            }
+            cfg.validate()
+                .map_err(|error| BaseError::ConfigError(error.to_string()))?;
+            cfg
+        };
+
         Ok(Self {
             mysql_url,
             postgres_url,
@@ -300,11 +353,19 @@ impl EngineConfig {
             database,
             #[cfg(feature = "postgres")]
             postgres_database,
+            #[cfg(feature = "redis")]
+            redis,
         })
+    }
+
+    /// 返回 Redis 连接串与池配置（仅在同时配置了 `YANG_REDIS_URL` 时）。
+    #[cfg(feature = "redis")]
+    pub fn redis_config(&self) -> Option<(&str, &yang_db::RedisConfig)> {
+        self.redis_url.as_deref().map(|url| (url, &self.redis))
     }
 }
 
-#[cfg(all(test, any(feature = "mysql", feature = "postgres")))]
+#[cfg(all(test, any(feature = "mysql", feature = "postgres", feature = "redis")))]
 mod tests {
     use super::*;
 

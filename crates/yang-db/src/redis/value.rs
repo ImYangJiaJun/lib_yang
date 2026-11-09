@@ -1,7 +1,12 @@
+use std::fmt;
+
 /// Redis 值类型
 ///
-/// 表示 Redis 中的各种数据类型，提供类型安全的值表示
-#[derive(Debug, Clone, PartialEq)]
+/// 表示 Redis 中的各种数据类型，提供类型安全的值表示。
+///
+/// `Debug` 实现会对字符串/字节内容做脱敏，只输出类型与长度，避免把缓存值、
+/// token 或用户数据写进日志。
+#[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub enum RedisValue {
     /// 空值
@@ -12,18 +17,69 @@ pub enum RedisValue {
     Float(f64),
     /// 字符串
     String(String),
-    /// 字节数组
+    /// 字节数组（非 UTF-8 或显式二进制）
     Bytes(Vec<u8>),
     /// 数组
     Array(Vec<RedisValue>),
     /// 布尔值
     Bool(bool),
+    /// RESP3 Map
+    Map(Vec<(RedisValue, RedisValue)>),
+    /// RESP3 Set
+    Set(Vec<RedisValue>),
+    /// RESP3 Verbatim String
+    VerbatimString {
+        /// 格式（如 `txt` / `mkd`）
+        format: String,
+        /// 文本内容
+        text: String,
+    },
+    /// RESP3 Push（Pub/Sub 消息等）
+    Push(Vec<RedisValue>),
+    /// RESP3 Attribute
+    Attribute {
+        /// 被附着的值
+        data: Box<RedisValue>,
+        /// 属性键值对
+        attributes: Vec<(RedisValue, RedisValue)>,
+    },
+    /// RESP3 BigNumber（超出 i64 的数值字符串）
+    BigNumber(String),
+    /// 服务端错误响应（仅当调用方显式按 Value 解码时出现）
+    ServerError(String),
+}
+
+impl fmt::Debug for RedisValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RedisValue::Nil => f.write_str("Nil"),
+            RedisValue::Int(value) => write!(f, "Int({value})"),
+            RedisValue::Float(value) => write!(f, "Float({value})"),
+            RedisValue::String(value) => write!(f, "String(<redacted {} bytes>)", value.len()),
+            RedisValue::Bytes(value) => write!(f, "Bytes(<redacted {} bytes>)", value.len()),
+            RedisValue::Array(values) => f.debug_list().entries(values).finish(),
+            RedisValue::Bool(value) => write!(f, "Bool({value})"),
+            RedisValue::Map(entries) => write!(f, "Map(<redacted {} entries>)", entries.len()),
+            RedisValue::Set(values) => write!(f, "Set(<redacted {} items>)", values.len()),
+            RedisValue::VerbatimString { format, text } => write!(
+                f,
+                "VerbatimString {{ format: {format:?}, text: <redacted {} bytes> }}",
+                text.len()
+            ),
+            RedisValue::Push(values) => write!(f, "Push(<redacted {} items>)", values.len()),
+            RedisValue::Attribute { attributes, .. } => {
+                write!(f, "Attribute(<redacted {} entries>)", attributes.len())
+            }
+            RedisValue::BigNumber(value) => write!(f, "BigNumber({value})"),
+            RedisValue::ServerError(_) => f.write_str("ServerError(<redacted>)"),
+        }
+    }
 }
 
 impl RedisValue {
     /// 借用字符串切片（零拷贝）
     ///
-    /// 对 `String` 变体返回 `&str`，无需堆分配。
+    /// 对 `String` 与 `VerbatimString` 变体返回 `&str`，无需堆分配。
     /// `Bytes` 变体不自动解码为 UTF-8，返回 `None`。
     ///
     /// # 返回
@@ -42,7 +98,9 @@ impl RedisValue {
     /// ```
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            RedisValue::String(s) => Some(s.as_str()),
+            RedisValue::String(value) => Some(value.as_str()),
+            RedisValue::VerbatimString { text, .. } => Some(text.as_str()),
+            RedisValue::BigNumber(value) => Some(value.as_str()),
             _ => None,
         }
     }
@@ -67,29 +125,38 @@ impl RedisValue {
     /// assert_eq!(nil.as_string(), None);
     /// ```
     pub fn as_string(&self) -> Option<String> {
-        self.as_str().map(|s| s.to_owned())
+        self.as_str().map(|value| value.to_owned())
     }
 
     /// 转换为整数
     ///
+    /// 除 `Int` 外，也接受 RESP2 以字符串形式返回的数字（如 INCR 以外的
+    /// 部分命令），解析失败返回 `None`。
+    ///
     /// # 返回
-    /// - `Some(i64)`: 如果值是整数类型
-    /// - `None`: 如果值不是整数类型
+    /// - `Some(i64)`: 如果值是整数或可解析的整数字符串
+    /// - `None`: 其他类型或解析失败
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            RedisValue::Int(i) => Some(*i),
+            RedisValue::Int(value) => Some(*value),
+            RedisValue::String(value) | RedisValue::BigNumber(value) => value.parse().ok(),
+            RedisValue::Bytes(value) => std::str::from_utf8(value).ok()?.parse().ok(),
             _ => None,
         }
     }
 
     /// 转换为浮点数
     ///
+    /// 除 `Float` 外，也接受以字符串形式返回的数字。
+    ///
     /// # 返回
-    /// - `Some(f64)`: 如果值是浮点数类型
-    /// - `None`: 如果值不是浮点数类型
+    /// - `Some(f64)`: 如果值是浮点数或可解析的数字字符串
+    /// - `None`: 其他类型或解析失败
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            RedisValue::Float(f) => Some(*f),
+            RedisValue::Float(value) => Some(*value),
+            RedisValue::String(value) | RedisValue::BigNumber(value) => value.parse().ok(),
+            RedisValue::Bytes(value) => std::str::from_utf8(value).ok()?.parse().ok(),
             _ => None,
         }
     }
@@ -101,21 +168,32 @@ impl RedisValue {
     /// - `None`: 如果值不是布尔类型
     pub fn as_bool(&self) -> Option<bool> {
         match self {
-            RedisValue::Bool(b) => Some(*b),
+            RedisValue::Bool(value) => Some(*value),
             _ => None,
         }
     }
 
     /// 转换为字节数组引用
     ///
+    /// `String` / `VerbatimString` / `BigNumber` 返回其 UTF-8 字节，
+    /// `Bytes` 返回原始字节。这样即使是「恰好是合法 UTF-8 的二进制」也能取回字节。
+    ///
     /// # 返回
-    /// - `Some(&[u8])`: 如果值是字节数组类型
-    /// - `None`: 如果值不是字节数组类型
+    /// - `Some(&[u8])`: 如果值可表示为字节
+    /// - `None`: 其他类型（Nil/Int/Float/Bool/Array/Map/Set）
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
-            RedisValue::Bytes(b) => Some(b.as_slice()),
+            RedisValue::Bytes(value) => Some(value.as_slice()),
+            RedisValue::String(value) => Some(value.as_bytes()),
+            RedisValue::VerbatimString { text, .. } => Some(text.as_bytes()),
+            RedisValue::BigNumber(value) => Some(value.as_bytes()),
             _ => None,
         }
+    }
+
+    /// 转换为拥有所有权的字节数组。
+    pub fn as_bytes_owned(&self) -> Option<Vec<u8>> {
+        self.as_bytes().map(|value| value.to_vec())
     }
 
     /// 转换为数组引用
@@ -125,7 +203,7 @@ impl RedisValue {
     /// - `None`: 如果值不是数组类型
     pub fn as_array(&self) -> Option<&[RedisValue]> {
         match self {
-            RedisValue::Array(arr) => Some(arr.as_slice()),
+            RedisValue::Array(values) => Some(values.as_slice()),
             _ => None,
         }
     }
@@ -142,44 +220,44 @@ impl RedisValue {
 
 // 实现 From trait 支持自动转换
 impl From<String> for RedisValue {
-    fn from(s: String) -> Self {
-        RedisValue::String(s)
+    fn from(value: String) -> Self {
+        RedisValue::String(value)
     }
 }
 
 impl From<&str> for RedisValue {
-    fn from(s: &str) -> Self {
-        RedisValue::String(s.to_string())
+    fn from(value: &str) -> Self {
+        RedisValue::String(value.to_string())
     }
 }
 
 impl From<i64> for RedisValue {
-    fn from(i: i64) -> Self {
-        RedisValue::Int(i)
+    fn from(value: i64) -> Self {
+        RedisValue::Int(value)
     }
 }
 
 impl From<i32> for RedisValue {
-    fn from(i: i32) -> Self {
-        RedisValue::Int(i as i64)
+    fn from(value: i32) -> Self {
+        RedisValue::Int(value as i64)
     }
 }
 
 impl From<f64> for RedisValue {
-    fn from(f: f64) -> Self {
-        RedisValue::Float(f)
+    fn from(value: f64) -> Self {
+        RedisValue::Float(value)
     }
 }
 
 impl From<bool> for RedisValue {
-    fn from(b: bool) -> Self {
-        RedisValue::Bool(b)
+    fn from(value: bool) -> Self {
+        RedisValue::Bool(value)
     }
 }
 
 impl From<Vec<u8>> for RedisValue {
-    fn from(bytes: Vec<u8>) -> Self {
-        RedisValue::Bytes(bytes)
+    fn from(value: Vec<u8>) -> Self {
+        RedisValue::Bytes(value)
     }
 }
 
@@ -188,48 +266,43 @@ impl From<redis::Value> for RedisValue {
     fn from(value: redis::Value) -> Self {
         match value {
             redis::Value::Nil => RedisValue::Nil,
-            redis::Value::Int(i) => RedisValue::Int(i),
-            redis::Value::BulkString(bytes) => {
-                // 尝试转换为 UTF-8 字符串：from_utf8 按值消费 bytes，
-                // 失败时通过 into_bytes() 取回原始字节，避免多余 clone
-                match String::from_utf8(bytes) {
-                    Ok(s) => RedisValue::String(s),
-                    Err(e) => RedisValue::Bytes(e.into_bytes()),
-                }
-            }
+            redis::Value::Int(value) => RedisValue::Int(value),
+            redis::Value::BulkString(bytes) => match String::from_utf8(bytes) {
+                Ok(value) => RedisValue::String(value),
+                Err(error) => RedisValue::Bytes(error.into_bytes()),
+            },
             redis::Value::Array(values) => {
                 RedisValue::Array(values.into_iter().map(RedisValue::from).collect())
             }
-            redis::Value::SimpleString(s) => RedisValue::String(s),
+            redis::Value::SimpleString(value) => RedisValue::String(value),
             redis::Value::Okay => RedisValue::Bool(true),
-            redis::Value::Map(_) => {
-                // Map 类型转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
+            redis::Value::Map(entries) => RedisValue::Map(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (RedisValue::from(key), RedisValue::from(value)))
+                    .collect(),
+            ),
+            redis::Value::Attribute { data, attributes } => RedisValue::Attribute {
+                data: Box::new(RedisValue::from(*data)),
+                attributes: attributes
+                    .into_iter()
+                    .map(|(key, value)| (RedisValue::from(key), RedisValue::from(value)))
+                    .collect(),
+            },
+            redis::Value::Set(values) => {
+                RedisValue::Set(values.into_iter().map(RedisValue::from).collect())
             }
-            redis::Value::Attribute { .. } => {
-                // Attribute 类型转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
+            redis::Value::Double(value) => RedisValue::Float(value),
+            redis::Value::Boolean(value) => RedisValue::Bool(value),
+            redis::Value::VerbatimString { format, text } => RedisValue::VerbatimString {
+                format: format!("{format:?}"),
+                text,
+            },
+            redis::Value::BigNumber(value) => RedisValue::BigNumber(value.to_string()),
+            redis::Value::Push { data, .. } => {
+                RedisValue::Push(data.into_iter().map(RedisValue::from).collect())
             }
-            redis::Value::Set(_) => {
-                // Set 类型转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
-            }
-            redis::Value::Double(f) => RedisValue::Float(f),
-            redis::Value::Boolean(b) => RedisValue::Bool(b),
-            redis::Value::VerbatimString { .. } => {
-                // VerbatimString 转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
-            }
-            redis::Value::BigNumber(_) => {
-                // BigNumber 转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
-            }
-            redis::Value::Push { .. } => {
-                // Push 类型转换为字符串表示
-                RedisValue::String(format!("{:?}", value))
-            }
-            // 其他未知类型
-            _ => RedisValue::String(format!("{:?}", value)),
+            redis::Value::ServerError(error) => RedisValue::ServerError(format!("{error:?}")),
         }
     }
 }
@@ -404,11 +477,29 @@ mod tests {
     }
 
     #[test]
-    fn test_debug() {
-        let value = RedisValue::Int(42);
-        let debug_str = format!("{:?}", value);
-        assert!(debug_str.contains("Int"));
-        assert!(debug_str.contains("42"));
+    fn test_debug_redacts_payloads() {
+        // 标量类型保留可读值，便于排障
+        assert!(format!("{:?}", RedisValue::Int(42)).contains("42"));
+        assert!(format!("{:?}", RedisValue::Bool(true)).contains("true"));
+
+        // 字符串/字节内容必须脱敏
+        let string_debug = format!("{:?}", RedisValue::String("super-secret-token".to_string()));
+        assert!(!string_debug.contains("super-secret-token"));
+        assert!(string_debug.contains("redacted"));
+
+        let bytes_debug = format!("{:?}", RedisValue::Bytes(b"super-secret".to_vec()));
+        assert!(!bytes_debug.contains("super-secret"));
+        assert!(bytes_debug.contains("redacted"));
+
+        let map_debug = format!(
+            "{:?}",
+            RedisValue::Map(vec![(
+                RedisValue::String("user".to_string()),
+                RedisValue::String("secret".to_string())
+            )])
+        );
+        assert!(!map_debug.contains("secret"));
+        assert!(map_debug.contains("redacted"));
     }
 
     #[test]
@@ -427,6 +518,24 @@ mod tests {
         assert_eq!(RedisValue::Float(1.0).as_str(), None);
         assert_eq!(RedisValue::Bool(true).as_str(), None);
         assert_eq!(RedisValue::Array(vec![]).as_str(), None);
+    }
+
+    #[test]
+    fn test_as_bytes_includes_utf8_strings() {
+        // 恰好是合法 UTF-8 的二进制也必须能通过 as_bytes 取回
+        let value = RedisValue::String("abc".to_string());
+        assert_eq!(value.as_bytes(), Some(b"abc".as_slice()));
+        assert_eq!(
+            RedisValue::Bytes(vec![0xFF]).as_bytes(),
+            Some([0xFF].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_as_i64_and_f64_accept_numeric_strings() {
+        assert_eq!(RedisValue::String("42".to_string()).as_i64(), Some(42));
+        assert_eq!(RedisValue::String("1.5".to_string()).as_f64(), Some(1.5));
+        assert_eq!(RedisValue::String("nope".to_string()).as_i64(), None);
     }
 
     #[test]

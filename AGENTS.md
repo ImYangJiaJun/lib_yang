@@ -49,6 +49,8 @@ cargo check --workspace --all-targets --all-features --locked   # MSRV/feature �
 cargo test --doc -p yang-db -p yang-base -p yang-runtime -p yang-feishu --locked
 
 # 集成测试（需容器；Redis pipeline/script 两个测试不带 --ignored，服务可用时直接 --test-threads=1）
+# Redis TLS/Cluster/Sentinel 真实拓扑：bash scripts/run_redis_topology_tests.sh
+#   （需 REDIS_TEST_HOST_IP；脚本自动搭建并清理容器）
 cargo test --test <name> -- --ignored --test-threads=1
 
 # 契约自检
@@ -60,14 +62,14 @@ cargo run --example <name> -p <crate> --locked
 ```
 
 ## CI（.github/workflows/ci.yml）
-`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-postgres-17`（PG 17，含 proptest_pg_types）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
+`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-postgres-17`（PG 17，含 proptest_pg_types）→ `docker-redis`（redis:7 service + `REDIS_TEST_URL`，覆盖全部 Redis 套件）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
 | MySQL 查询 | `crates/yang-db/src/mysql/query_builder/` | 按职责拆分子模块；`condition.rs` owns WHERE/HAVING 表达式 |
 | PostgreSQL 查询 | `crates/yang-db/src/postgres/` | 共享 `crates/yang-db/src/dialect.rs`（SQL dialect 抽象，非复制）；含 `copy.rs`、`listener.rs`、`init.rs`（dollar-quote 脚本） |
-| Redis 操作 | `crates/yang-db/src/redis/` | `client.rs` 是主 API |
+| Redis 操作 | `crates/yang-db/src/redis/` | `client.rs` 主 API；`pubsub/streams/lock/codec/bytes/commands/scan/namespace` 为分层能力；`backend.rs` 统一 standalone/cluster/sentinel |
 | 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`；Global 单例已删除 |
 | 定义内核 | `crates/yang-base/src/definition/` | `builder/` 子模块化（app/catalog/compile/handle/project/registry/validate） |
 | Action 系统 | `crates/yang-base/src/action/` | child AGENTS.md；请求链路：`ModuleRouter::dispatch` → middleware 洋葱链 → `authorize_and_dispatch` 鉴权派发；`auth/` 子模块化（login/refresh/password/middleware…） |
