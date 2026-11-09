@@ -86,26 +86,38 @@ fn test_builtin_input_schema_non_empty() {
     );
 }
 
-/// `InsertResult.id` 是跨后端统一的自增主键契约：MySQL 与 PostgreSQL 的整型主键
-/// 都经 `TableQuery::insert` 收敛为 `u64`，因此这里锁定序列化与 schema 均不损失范围。
+/// `InsertResult.id` 是跨后端统一的主键契约：整型主键无损编码为 JSON number，
+/// UUID/text/numeric 主键按真实类型（字符串）编码，并提供便捷读取方法。
 #[test]
-fn test_insert_result_id_stays_u64_contract() {
+fn test_insert_result_id_preserves_json_contract() {
     let result = InsertResult {
         affected: 1,
-        id: u64::MAX,
+        id: json!(u64::MAX),
     };
     let value = serde_json::to_value(&result).expect("InsertResult 应可序列化");
     assert_eq!(
         value["id"],
         json!(u64::MAX),
-        "InsertResult.id 必须保持 u64 无损编码"
+        "InsertResult.id 必须保持整型无损编码"
     );
+    assert_eq!(result.as_u64(), Some(u64::MAX));
+
+    let uuid_result = InsertResult {
+        affected: 1,
+        id: json!("550e8400-e29b-41d4-a716-446655440000"),
+    };
+    assert_eq!(
+        uuid_result.as_str(),
+        Some("550e8400-e29b-41d4-a716-446655440000"),
+        "UUID 主键应按字符串原样回填"
+    );
+    assert_eq!(uuid_result.as_u64(), None);
 
     let schema = serde_json::to_value(schemars::schema_for!(InsertResult))
         .expect("InsertResult schema 应可序列化");
-    assert_eq!(
-        schema["properties"]["id"]["type"], "integer",
-        "InsertResult.id 的 schema 必须是 integer"
+    assert!(
+        schema["properties"]["id"].is_object() || schema["properties"]["id"] == true,
+        "InsertResult.id 的 schema 应允许任意 JSON 值: {schema:?}"
     );
 }
 

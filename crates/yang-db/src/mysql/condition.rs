@@ -139,6 +139,18 @@ pub enum Condition {
     Between(String, SqlValue, SqlValue),
     /// LIKE 条件
     Like(String, String),
+    /// 大小写不敏感 LIKE（MySQL 无 ILIKE，退化为 `LIKE`）。
+    ILike(String, String),
+    /// 大小写不敏感 LIKE 取反（MySQL 无 ILIKE，退化为 `NOT LIKE`）。
+    NotILike(String, String),
+    /// 正则匹配（`REGEXP`）。
+    RegexMatch(String, String),
+    /// 大小写不敏感正则匹配（`REGEXP`，大小写敏感性由 collation 决定）。
+    RegexIMatch(String, String),
+    /// 正则不匹配（`NOT REGEXP`）。
+    NotRegexMatch(String, String),
+    /// 大小写不敏感正则不匹配（`NOT REGEXP`）。
+    NotRegexIMatch(String, String),
     /// IS NULL 条件
     IsNull(String),
     /// IS NOT NULL 条件
@@ -323,13 +335,16 @@ pub(crate) fn render_condition_checked(
     condition: Condition,
 ) -> Result<crate::sql_types::RenderedCondition<SqlValue>, DbError> {
     // 渲染逻辑按方言共享于 crate::dialect；这里只做公开条件树 → 内部树的转换。
-    crate::dialect::render_condition(crate::dialect::MYSQL, into_node(condition), 0)
+    crate::dialect::render_condition(crate::dialect::MYSQL, into_node(condition)?, 0)
 }
 
 /// 将公开条件树转换为方言无关的内部渲染树（值原样移动，不复制）。
-fn into_node(condition: Condition) -> crate::dialect::CondNode<SqlValue> {
+///
+/// 受控表达式在转换期预渲染；MySQL 不支持的表达式（如 `to_char`）在此返回
+/// [`DbError::UnsupportedOperator`]。
+fn into_node(condition: Condition) -> Result<crate::dialect::CondNode<SqlValue>, DbError> {
     use crate::dialect::CondNode as Node;
-    match condition {
+    Ok(match condition {
         Condition::Eq(field, value) => Node::Eq(field, value),
         Condition::Ne(field, value) => Node::Ne(field, value),
         Condition::Gt(field, value) => Node::Gt(field, value),
@@ -340,33 +355,66 @@ fn into_node(condition: Condition) -> crate::dialect::CondNode<SqlValue> {
         Condition::NotIn(field, values) => Node::NotIn(field, values),
         Condition::Between(field, start, end) => Node::Between(field, start, end),
         Condition::Like(field, pattern) => Node::Like(field, SqlValue::String(pattern)),
+        Condition::ILike(field, pattern) => {
+            Node::PatternMatch(field, "LIKE", SqlValue::String(pattern))
+        }
+        Condition::NotILike(field, pattern) => {
+            Node::PatternMatch(field, "NOT LIKE", SqlValue::String(pattern))
+        }
+        Condition::RegexMatch(field, pattern) | Condition::RegexIMatch(field, pattern) => {
+            Node::PatternMatch(field, "REGEXP", SqlValue::String(pattern))
+        }
+        Condition::NotRegexMatch(field, pattern) | Condition::NotRegexIMatch(field, pattern) => {
+            Node::PatternMatch(field, "NOT REGEXP", SqlValue::String(pattern))
+        }
         Condition::IsNull(field) => Node::IsNull(field),
         Condition::IsNotNull(field) => Node::IsNotNull(field),
         Condition::ColumnComparison(left, op, right) => {
             Node::ColumnComparison(left, op.as_sql(), right)
         }
         Condition::ColumnExprComparison(field, op, expression) => {
-            // 预渲染 SqlExpr 白名单片段：固定文本 + 可选绑定参数（偏移秒数）。
-            let (fragment, param) = expression.mysql_render();
-            Node::ColumnExpr(field, op.as_sql(), fragment, param.map(SqlValue::Int))
+            // 预渲染 SqlExpr 白名单片段：固定文本 + 按占位符顺序的绑定参数。
+            let rendered = expression.mysql_render()?;
+            Node::ColumnExpr(
+                field,
+                op.as_sql(),
+                rendered.sql,
+                rendered.params.into_iter().map(Into::into).collect(),
+            )
         }
-        Condition::Exists(subquery) => Node::Exists(Box::new(into_subquery_node(*subquery))),
-        Condition::NotExists(subquery) => Node::NotExists(Box::new(into_subquery_node(*subquery))),
+        Condition::Exists(subquery) => Node::Exists(Box::new(into_subquery_node(*subquery)?)),
+        Condition::NotExists(subquery) => Node::NotExists(Box::new(into_subquery_node(*subquery)?)),
         Condition::InSubquery(field, subquery) => {
-            Node::InSubquery(field, Box::new(into_subquery_node(*subquery)))
+            Node::InSubquery(field, Box::new(into_subquery_node(*subquery)?))
         }
-        Condition::And(conditions) => Node::And(conditions.into_iter().map(into_node).collect()),
-        Condition::Or(conditions) => Node::Or(conditions.into_iter().map(into_node).collect()),
-    }
+        Condition::And(conditions) => Node::And(
+            conditions
+                .into_iter()
+                .map(into_node)
+                .collect::<Result<_, _>>()?,
+        ),
+        Condition::Or(conditions) => Node::Or(
+            conditions
+                .into_iter()
+                .map(into_node)
+                .collect::<Result<_, _>>()?,
+        ),
+    })
 }
 
 /// 将受控子查询转换为内部渲染节点。
-fn into_subquery_node(subquery: Subquery) -> crate::dialect::SubqueryNode<SqlValue> {
-    crate::dialect::SubqueryNode {
+fn into_subquery_node(
+    subquery: Subquery,
+) -> Result<crate::dialect::SubqueryNode<SqlValue>, DbError> {
+    Ok(crate::dialect::SubqueryNode {
         table: subquery.table,
         field: subquery.field,
-        conditions: subquery.conditions.into_iter().map(into_node).collect(),
-    }
+        conditions: subquery
+            .conditions
+            .into_iter()
+            .map(into_node)
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 #[cfg(test)]

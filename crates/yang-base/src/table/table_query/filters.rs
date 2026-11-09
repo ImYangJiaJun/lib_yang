@@ -641,6 +641,37 @@ impl TableQuery {
         Ok(self)
     }
 
+    /// 注入框架自有的 `IN` 条件（关系批量加载等内部寻址使用）。
+    ///
+    /// 与 [`Self::where_primary_key_eq`] 一致：字段存在性与值类型仍校验，但绕过
+    /// filterable 业务筛选权限——关联键不是调用方可选的筛选入口。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub(crate) fn where_in_trusted(
+        mut self,
+        field: &str,
+        values: Vec<Value>,
+    ) -> Result<Self, BaseError> {
+        if values.is_empty() {
+            return Err(BaseError::ParamInvalid(
+                "values".to_string(),
+                "IN 列表不能为空".to_string(),
+            ));
+        }
+        let config = self.table_config.get_field(field).ok_or_else(|| {
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), field.to_string())
+        })?;
+        for value in &values {
+            if !value.is_null() {
+                config.field_type.validate(field, value)?;
+            }
+        }
+        self.query_params.where_conditions.push(WhereCondition::In {
+            field: field.to_string(),
+            values,
+        });
+        Ok(self)
+    }
+
     /// 添加一个 OR 逻辑组 (WHERE ... AND (c1 OR c2 OR ...))
     ///
     /// 组内每个子条件递归校验字段存在性与筛选权限；通过后整组以 `Or` 节点追加到

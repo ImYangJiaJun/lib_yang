@@ -244,8 +244,10 @@ async fn build_tools() -> Result<Arc<yang_base::tools::Tools>, BaseError> {
 | 事务 / 保存点 | 是 | 已接入（保存点需直接用 yang-db） | `ActionContext::begin_transaction` 返回 `AnyTransaction`，提交/回滚按后端分派 |
 | 事务局部配置（`SET LOCAL`） | 是 | 已接入 | `ActionContext::set_local` / `set_tenant_local` 用 `set_config(..., true)` 写入 `app.tenant_id`；仅 PostgreSQL，MySQL 明确返回配置错误 |
 | `TableQuery` / 内置 CRUD / 受保护查询 | 是 | 已接入 | SELECT/分页/COUNT/软删/租户/权限/insert/update/delete 均有 PG 执行分支 |
+| `ORDER BY ... NULLS FIRST/LAST` | 是 | 已接入 | `TableQuery::order_nulls`；MySQL 用 `field IS NULL` 排序表达式模拟 |
 | 批量 upsert（`ON CONFLICT`） | 是 | 已接入 | `TableQuery::{upsert_batch, upsert_batch_do_nothing}` 及 `_in_tx` 变体，冲突列必须显式传入 |
-| `RETURNING` / CTE / 窗口 / `SKIP LOCKED` | 是 | 未封装 | 可直接使用 `yang-db` 的 PostgreSQL API，但 base 的 `TableQuery` 未暴露这些进阶入口 |
+| `RETURNING`（INSERT） | 是 | 已接入 | `TableQuery::insert_returning(ReturningTarget::{Pk, Columns, All})`；UUID/text/numeric 主键可回填；MySQL 仅支持整型主键 |
+| update/delete `RETURNING`、CTE、窗口、`SKIP LOCKED` | 是 | 未接入 | 可直接使用 `yang-db` 的 PostgreSQL API，但 base 的 `TableQuery` 未暴露这些入口 |
 | `COPY` / `LISTEN` / `NOTIFY` | 是 | 未封装 | yang-db 已提供 `copy_from_csv` / `copy_to_csv` / `PgNotificationListener`；base 不额外声明 |
 | range / jsonpath / 全文检索 / EXPLAIN / 内省 / 2PC / 表锁 | 是 | 未封装 | 通过 `yang-db` 的 PostgreSQL API 使用；base 不重复包装 |
 

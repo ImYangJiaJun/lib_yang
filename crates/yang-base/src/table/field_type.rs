@@ -3,10 +3,28 @@
 //! 提供数据表字段的类型系统，支持基本类型、时间类型、复杂类型和关联类型。
 
 /// MySQL utf8mb4 下 `VARCHAR` 的最大字符数（行上限 65535 字节 ÷ 4 字节/字符）。
+#[allow(dead_code)] // 单后端构建时另一个方言的常量仅供测试与文档对照。
+pub const MYSQL_MAX_VARCHAR_LENGTH: usize = 16_383;
+
+/// PostgreSQL `VARCHAR(n)` 的最大字符数（`n` 上限为 10485760）。
+#[allow(dead_code)] // 单后端构建时另一个方言的常量仅供测试与文档对照。
+pub const POSTGRES_MAX_VARCHAR_LENGTH: usize = 10_485_760;
+
+/// 构建期声明可用的 `VARCHAR` 最大字符数。
 ///
-/// 构建期（[`crate::table::Field::string`]）与渲染期
-/// （`schema_sync::render::render_column`）共用同一常量，避免两处上界漂移。
-pub const MAX_VARCHAR_LENGTH: usize = 16_383;
+/// 构建期（[`crate::table::Field::string`]）没有“当前后端”概念：同时启用两种
+/// 数据库 feature 时取两者中更大的 PostgreSQL 上界，让合法声明不被收紧；
+/// 具体方言的 DDL 渲染再各自使用 [`MYSQL_MAX_VARCHAR_LENGTH`] /
+/// [`POSTGRES_MAX_VARCHAR_LENGTH`] 校验，超出 MySQL 上界的声明会在 MySQL
+/// 渲染阶段明确报错，而不是在构建期被静默拒绝。
+#[cfg(all(feature = "mysql", not(feature = "postgres")))]
+pub const MAX_VARCHAR_LENGTH: usize = MYSQL_MAX_VARCHAR_LENGTH;
+/// 构建期声明可用的 `VARCHAR` 最大字符数（PostgreSQL 构建，含双后端构建）。
+#[cfg(feature = "postgres")]
+pub const MAX_VARCHAR_LENGTH: usize = POSTGRES_MAX_VARCHAR_LENGTH;
+/// 当前后端方言的 `VARCHAR` 最大字符数（未启用数据库 feature 时的保守值）。
+#[cfg(not(any(feature = "mysql", feature = "postgres")))]
+pub const MAX_VARCHAR_LENGTH: usize = MYSQL_MAX_VARCHAR_LENGTH;
 
 use crate::error::BaseError;
 use serde::{Deserialize, Serialize};
@@ -241,6 +259,42 @@ pub enum FieldType {
         /// 可选值列表
         values: Vec<String>,
     },
+
+    /// UUID 类型
+    ///
+    /// 运行期以连字符小写字符串表示。PostgreSQL 映射为原生 `uuid`；MySQL 没有
+    /// 原生 UUID，统一映射为定长 `CHAR(36)`（保留连字符文本形式，跨后端读写
+    /// 表示一致）。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_base::table::FieldType;
+    ///
+    /// let field_type = FieldType::Uuid;
+    /// ```
+    Uuid,
+
+    /// 二进制类型
+    ///
+    /// 运行期以 Base64 字符串表示。PostgreSQL 映射为 `BYTEA`，MySQL 映射为
+    /// `BLOB`。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_base::table::FieldType;
+    ///
+    /// let field_type = FieldType::Bytes;
+    /// ```
+    Bytes,
+
+    /// 数组类型（仅支持标量元素，如 `INTEGER[]` / `TEXT[]`）
+    ///
+    /// 运行期以 JSON 数组表示，元素按标量规则转换，数组内 NULL 保持 JSON
+    /// `null`。禁止嵌套数组与 `Json` 元素（无法无损映射到数据库数组字面量），
+    /// 构造/构建期会明确报错。MySQL 没有数组类型，渲染 DDL 时明确拒绝。
+    Array(Box<FieldType>),
 }
 
 impl FieldType {
@@ -276,7 +330,42 @@ impl FieldType {
             FieldType::Json => "JSON",
             FieldType::Text => "文本",
             FieldType::Enum { .. } => "枚举",
+            FieldType::Uuid => "UUID",
+            FieldType::Bytes => "二进制",
+            FieldType::Array(_) => "数组",
         }
+    }
+
+    /// 构造数组类型（标量元素）。
+    ///
+    /// 只做构造，不校验元素；构建期 `Table::build` 会拒绝嵌套数组与 `Json`
+    /// 元素等无法映射的声明。
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use yang_base::table::FieldType;
+    ///
+    /// let field_type = FieldType::array(FieldType::Integer);
+    /// assert!(field_type.is_array());
+    /// ```
+    pub fn array(element: FieldType) -> Self {
+        FieldType::Array(Box::new(element))
+    }
+
+    /// 是否为 UUID 类型。
+    pub fn is_uuid(&self) -> bool {
+        matches!(self, FieldType::Uuid)
+    }
+
+    /// 是否为二进制类型。
+    pub fn is_binary(&self) -> bool {
+        matches!(self, FieldType::Bytes)
+    }
+
+    /// 是否为数组类型。
+    pub fn is_array(&self) -> bool {
+        matches!(self, FieldType::Array(_))
     }
 
     /// 检查字段类型是否为数值类型
@@ -529,6 +618,49 @@ impl FieldType {
                     ))
                 }
             }
+
+            // UUID 类型：运行期以字符串表示，格式由数据库写入路径校验。
+            FieldType::Uuid => {
+                if value.as_str().is_some() {
+                    Ok(())
+                } else {
+                    Err(BaseError::InvalidFieldType(
+                        field_name.to_string(),
+                        format!("期望 UUID 字符串，实际类型: {}", value_type_name(value)),
+                    ))
+                }
+            }
+
+            // 二进制类型：运行期以 Base64 字符串表示。
+            FieldType::Bytes => {
+                if value.as_str().is_some() {
+                    Ok(())
+                } else {
+                    Err(BaseError::InvalidFieldType(
+                        field_name.to_string(),
+                        format!(
+                            "期望 Base64 二进制字符串，实际类型: {}",
+                            value_type_name(value)
+                        ),
+                    ))
+                }
+            }
+
+            // 数组类型：JSON 数组，元素按标量规则递归校验，数组内 NULL 允许。
+            FieldType::Array(element) => {
+                let Some(items) = value.as_array() else {
+                    return Err(BaseError::InvalidFieldType(
+                        field_name.to_string(),
+                        format!("期望 JSON 数组，实际类型: {}", value_type_name(value)),
+                    ));
+                };
+                for item in items {
+                    if !item.is_null() {
+                        element.validate(field_name, item)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -630,6 +762,20 @@ fn validate_timestamp(field_name: &str, value: &serde_json::Value) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 方言上界：MySQL 保持 utf8mb4 行上限，PostgreSQL 放宽到 varchar 的 10,485,760。
+    #[test]
+    fn varchar_limit_follows_backend_dialect() {
+        assert_eq!(MYSQL_MAX_VARCHAR_LENGTH, 16_383);
+        assert_eq!(POSTGRES_MAX_VARCHAR_LENGTH, 10_485_760);
+
+        #[cfg(all(feature = "mysql", not(feature = "postgres")))]
+        assert_eq!(MAX_VARCHAR_LENGTH, MYSQL_MAX_VARCHAR_LENGTH);
+        #[cfg(feature = "postgres")]
+        assert_eq!(MAX_VARCHAR_LENGTH, POSTGRES_MAX_VARCHAR_LENGTH);
+        #[cfg(not(any(feature = "mysql", feature = "postgres")))]
+        assert_eq!(MAX_VARCHAR_LENGTH, MYSQL_MAX_VARCHAR_LENGTH);
+    }
 
     #[test]
     fn test_field_type_display_name() {
@@ -1176,6 +1322,69 @@ mod tests {
             .is_err());
         assert!(field_type
             .validate("data", &serde_json::json!(null))
+            .is_err());
+    }
+
+    // ==================== UUID / Bytes / Array 测试 ====================
+
+    #[test]
+    fn test_new_variants_display_name_and_predicates() {
+        assert_eq!(FieldType::Uuid.display_name(), "UUID");
+        assert_eq!(FieldType::Bytes.display_name(), "二进制");
+        assert_eq!(FieldType::array(FieldType::Integer).display_name(), "数组");
+
+        assert!(FieldType::Uuid.is_uuid());
+        assert!(!FieldType::Bytes.is_uuid());
+        assert!(FieldType::Bytes.is_binary());
+        assert!(!FieldType::Uuid.is_binary());
+        let array = FieldType::array(FieldType::Text);
+        assert!(array.is_array());
+        assert!(!FieldType::Text.is_array());
+        assert!(!array.is_text());
+        assert!(!array.is_numeric());
+    }
+
+    #[test]
+    fn test_validate_uuid_and_bytes_require_strings() {
+        assert!(FieldType::Uuid
+            .validate(
+                "uid",
+                &serde_json::json!("11111111-1111-1111-1111-111111111111")
+            )
+            .is_ok());
+        assert!(FieldType::Uuid
+            .validate("uid", &serde_json::json!(123))
+            .is_err());
+
+        assert!(FieldType::Bytes
+            .validate("payload", &serde_json::json!("3q2+7w=="))
+            .is_ok());
+        assert!(FieldType::Bytes
+            .validate("payload", &serde_json::json!([1, 2]))
+            .is_err());
+    }
+
+    #[test]
+    fn test_validate_array_recurses_scalar_rules_and_allows_null_elements() {
+        let field_type = FieldType::array(FieldType::Integer);
+        assert!(field_type
+            .validate("numbers", &serde_json::json!([1, 2, null]))
+            .is_ok());
+        // 元素类型不匹配时递归校验必须报错。
+        assert!(field_type
+            .validate("numbers", &serde_json::json!([1, "two"]))
+            .is_err());
+        // 非数组值直接拒绝。
+        assert!(field_type
+            .validate("numbers", &serde_json::json!(1))
+            .is_err());
+
+        let text_array = FieldType::array(FieldType::Text);
+        assert!(text_array
+            .validate("tags", &serde_json::json!(["a", null, "c"]))
+            .is_ok());
+        assert!(text_array
+            .validate("tags", &serde_json::json!([1]))
             .is_err());
     }
 }

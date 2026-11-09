@@ -4,6 +4,22 @@ use crate::mysql::condition::SqlValue;
 
 use super::{QueryBuilder, SqlGenerator};
 
+/// MySQL 只支持标准 `FOR UPDATE` / `FOR SHARE` 及其 `SKIP LOCKED` 变体。
+///
+/// PostgreSQL 专属的 `NoKeyUpdate` / `KeyShare` 必须在客户端拒绝：若原样下发，
+/// MySQL 会把 `FOR NO KEY UPDATE` / `FOR KEY SHARE` 判为语法错误。
+fn ensure_mysql_row_lock(lock: crate::RowLock) -> Result<(), crate::error::DbError> {
+    match lock {
+        crate::RowLock::NoKeyUpdate | crate::RowLock::KeyShare => {
+            Err(crate::error::DbError::UnsupportedOperator(format!(
+                "MySQL 不支持行锁模式: {}",
+                lock.as_sql()
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 impl<'a> QueryBuilder<'a> {
     /// 尝试获取生成的 SQL（用于调试）。
     ///
@@ -36,6 +52,7 @@ impl<'a> QueryBuilder<'a> {
         let mut generator = SqlGenerator::new();
         generator.build_select(self)?;
         if let Some(lock) = lock {
+            ensure_mysql_row_lock(lock)?;
             generator.sql.push(' ');
             generator.sql.push_str(lock.as_sql());
         }
@@ -59,6 +76,70 @@ impl<'a> QueryBuilder<'a> {
                 }
                 "/* SQL generation failed */".to_string()
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::{ensure_mysql_row_lock, QueryBuilder};
+    use crate::error::DbError;
+
+    /// 懒连接池（仅解析 URL，不建立真实连接）；部分 SQL 渲染单元测试共用。
+    fn make_sync_test_pool() -> &'static sqlx::mysql::MySqlPool {
+        use std::sync::OnceLock;
+        static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        static POOL: OnceLock<sqlx::mysql::MySqlPool> = OnceLock::new();
+        let rt = RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("无法创建测试用 Tokio 运行时")
+        });
+        POOL.get_or_init(|| {
+            rt.block_on(async {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://root:111111@localhost:3306/test")
+                    .expect("无法解析测试数据库 URL")
+            })
+        })
+    }
+
+    #[test]
+    fn postgres_only_row_locks_are_rejected_for_mysql() {
+        for lock in [crate::RowLock::NoKeyUpdate, crate::RowLock::KeyShare] {
+            match ensure_mysql_row_lock(lock) {
+                Err(DbError::UnsupportedOperator(message)) => {
+                    assert!(
+                        message.contains(lock.as_sql()),
+                        "错误消息应指出被拒绝的行锁: {message}"
+                    );
+                }
+                other => panic!("{lock:?} 在 MySQL 下必须返回 UnsupportedOperator: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn standard_row_locks_still_render_for_mysql() {
+        for (lock, expected) in [
+            (crate::RowLock::ForUpdate, "FOR UPDATE"),
+            (crate::RowLock::ForShare, "FOR SHARE"),
+            (
+                crate::RowLock::ForUpdateSkipLocked,
+                "FOR UPDATE SKIP LOCKED",
+            ),
+            (crate::RowLock::ForShareSkipLocked, "FOR SHARE SKIP LOCKED"),
+        ] {
+            let builder = QueryBuilder::new(make_sync_test_pool(), "accounts", false)
+                .field(crate::field!("id"));
+            let (sql, _) = builder
+                .render_for_transaction(Some(lock))
+                .expect("MySQL 标准行锁应可渲染");
+            assert!(sql.ends_with(expected), "{lock:?} 渲染结果异常: {sql}");
         }
     }
 }

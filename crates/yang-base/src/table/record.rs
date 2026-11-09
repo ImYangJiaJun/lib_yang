@@ -42,14 +42,30 @@
 //! | UUID | String（连字符小写形式） |
 //! | JSON / JSONB | 对应 JSON 值 |
 //! | INET / CIDR | String（PostgreSQL 文本表示，含掩码时形如 `192.168.1.1/24`） |
+//! | int4range / int8range / numrange / daterange / tstzrange | Range 对象（见下） |
 //! | 数组（一维） | JSON Array，元素按上表转换，数组内 NULL → JSON Null |
 //! | SQL NULL | Null |
+//!
+//! ## Range 契约
+//!
+//! 非空 range 输出为 `{"lower": ..., "upper": ..., "lower_inclusive": bool, "upper_inclusive": bool}`：
+//! 端点按元素类型的标量规则解码；无界端点用 JSON `null` 表示，对应侧的
+//! `*_inclusive` 固定为 `false`。空 range 显式输出 `{"empty": true}`，与
+//! `(,)`（两端无界但非空）严格区分。按内置 range OID 分派；未知 range 元素类型
+//! （如 `tsrange` 或用户自定义 range）fail-closed。
+//!
+//! ## 自定义类型解码器
+//!
+//! 内置规则无法解码的自定义类型（composite / 扩展类型）可由调用方通过
+//! [`register_pg_type_decoder`] 注册解码器。解码分派顺序为：注册表 → 内置规则
+//! → 结构化错误；重复注册同一 OID 会覆盖旧解码器。
 //!
 //! ## PostgreSQL 解码约定
 //!
 //! - 列名保持数据库返回的原样；重复列名时后者覆盖前者（JSON Object 无法保留重复键）。
-//! - SQL NULL 与 JSONB 字面量 `null` 都映射为 JSON `Null`，不引入额外 sidecar 区分。
-//! - 未知 OID / 不支持的类型（如 POINT、RANGE、COMPOSITE）返回
+//! - SQL NULL 与 JSONB 字面量 `null` 的序列化值都是 JSON `Null`，但后者额外登记在
+//!   sidecar 集合中，可用 [`Record::is_sql_null`] / [`Record::is_json_null`] 区分。
+//! - 未知 OID / 不支持的类型（如 POINT、未注册的 COMPOSITE、未知 RANGE）返回
 //!   `sqlx::Error::ColumnDecode`，消息包含列名、序号、OID 与类型名，绝不静默置 Null。
 //! - 数组仅支持一维（sqlx 的数组解码限制）；多维数组返回解码错误。
 //! - INTERVAL 用无损的三段整数对象表示：PostgreSQL 的 months / days / microseconds
@@ -99,6 +115,15 @@ use serde::{Deserialize, Serialize};
 #[schemars(transparent)]
 pub struct Record {
     columns: serde_json::Map<String, serde_json::Value>,
+    /// PostgreSQL 中值为 JSON 字面量 `null` 的 `json`/`jsonb` 列名。
+    ///
+    /// JSON 值与 SQL NULL 在解包后都是 [`serde_json::Value::Null`]，无法从值本身
+    /// 区分。该集合只记录「列值确实是 JSON null」的列，用于
+    /// [`Record::is_json_null`] 与 [`Record::is_sql_null`]；不参与序列化，
+    /// `get()` 与 JSON 输出行为保持不变。
+    #[serde(skip)]
+    #[schemars(skip)]
+    json_nulls: std::collections::BTreeSet<String>,
 }
 
 impl Record {
@@ -106,7 +131,23 @@ impl Record {
     pub fn new() -> Self {
         Self {
             columns: serde_json::Map::new(),
+            json_nulls: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// 该列是否为 SQL NULL（区别于 JSON 字面量 `null`）。
+    ///
+    /// 列不存在时返回 `false`。
+    pub fn is_sql_null(&self, key: &str) -> bool {
+        self.columns
+            .get(key)
+            .is_some_and(serde_json::Value::is_null)
+            && !self.json_nulls.contains(key)
+    }
+
+    /// 该列是否为 PostgreSQL `json`/`jsonb` 的 JSON 字面量 `null`。
+    pub fn is_json_null(&self, key: &str) -> bool {
+        self.json_nulls.contains(key)
     }
 
     /// 链式写入字段值。
@@ -122,6 +163,29 @@ impl Record {
         value: impl Into<serde_json::Value>,
     ) -> Option<serde_json::Value> {
         self.columns.insert(key.into(), value.into())
+    }
+
+    /// 移除指定列并返回其原值。
+    ///
+    /// 同时从 JSON null sidecar 中移除该列，避免列已不存在却仍被
+    /// [`Record::is_json_null`] 判定为 JSON null。
+    ///
+    /// # 返回
+    ///
+    /// - `Some(Value)`：列存在时返回被移除的值
+    /// - `None`：列不存在
+    pub fn remove_column(&mut self, key: &str) -> Option<serde_json::Value> {
+        self.json_nulls.remove(key);
+        self.columns.remove(key)
+    }
+
+    /// 只保留指定列，其余列及其 JSON null 登记一并移除。
+    ///
+    /// 用于多列投影：投影结果必须保留 [`Record::is_json_null`] 的区分能力，
+    /// 不能经 `into_map()` + [`Record::from`] 重建（那会丢失 sidecar）。
+    pub fn retain_columns(&mut self, keys: &[&str]) {
+        self.columns.retain(|name, _| keys.contains(&name.as_str()));
+        self.json_nulls.retain(|name| keys.contains(&name.as_str()));
     }
 
     /// 获取指定列的原始 JSON 值。
@@ -195,7 +259,10 @@ impl Default for Record {
 
 impl From<serde_json::Map<String, serde_json::Value>> for Record {
     fn from(columns: serde_json::Map<String, serde_json::Value>) -> Self {
-        Self { columns }
+        Self {
+            columns,
+            json_nulls: std::collections::BTreeSet::new(),
+        }
     }
 }
 
@@ -252,7 +319,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for Record {
             columns.insert(col_name, json_value);
         }
 
-        Ok(Record { columns })
+        Ok(Record {
+            columns,
+            json_nulls: std::collections::BTreeSet::new(),
+        })
     }
 }
 
@@ -399,6 +469,17 @@ fn decode_mysql_column(
     Ok(serde_json::Value::String(val))
 }
 
+/// PostgreSQL 内置 range 的元素类别。
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgRangeKind {
+    Int4,
+    Int8,
+    Numeric,
+    Date,
+    TimestampTz,
+}
+
 /// PostgreSQL 标量列的解码类别。
 ///
 /// 按 OID 归类后再统一走标量与数组两条路径，保证同一个类型在标量和数组中的
@@ -429,6 +510,8 @@ enum PgScalarKind {
     Cidr,
     /// 用户自定义枚举，按标签文本输出。
     Enum,
+    /// 内置 range 类型，解码为 JSON 对象。
+    Range(PgRangeKind),
 }
 
 /// 列的解码计划。
@@ -439,8 +522,83 @@ enum PgDecodePlan {
     Scalar(PgScalarKind),
     /// 一维数组，元素沿用同一套标量解码。
     Array(Box<PgDecodePlan>),
+    /// 调用方注册的自定义解码器。
+    Custom(u32),
     /// 不支持的类型，携带类型名与 OID 供结构化错误使用。
     Unsupported(String),
+}
+
+/// 注册型 PostgreSQL 解码器收到的原始列值。
+///
+/// 扩展协议（prepared statement）结果为 [`PgValue::Binary`]，简单协议
+/// （如 `sqlx::raw_sql`）结果为 [`PgValue::Text`]。
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgValue<'a> {
+    /// 二进制（扩展协议）结果格式。
+    Binary(&'a [u8]),
+    /// 文本（简单协议）结果格式。
+    Text(&'a str),
+}
+
+#[cfg(feature = "postgres")]
+impl<'a> PgValue<'a> {
+    /// 二进制格式的原始字节；文本格式返回 `None`。
+    pub fn as_bytes(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Binary(bytes) => Some(bytes),
+            Self::Text(_) => None,
+        }
+    }
+
+    /// 文本格式的字符串；二进制格式返回 `None`。
+    pub fn as_str(&self) -> Option<&'a str> {
+        match self {
+            Self::Binary(_) => None,
+            Self::Text(text) => Some(text),
+        }
+    }
+}
+
+/// 自定义 PostgreSQL 类型解码器。
+#[cfg(feature = "postgres")]
+pub type PgTypeDecoder = for<'a> fn(&PgValue<'a>) -> Result<serde_json::Value, BaseError>;
+
+/// 进程级自定义解码器注册表。
+///
+/// 这是 [`register_pg_type_decoder`] 明确要求的扩展点，不是资源所有权单例；
+/// 读写均经 `RwLock`，中毒时取回内部值继续服务，避免解码路径 panic。
+#[cfg(feature = "postgres")]
+static PG_TYPE_DECODERS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<u32, PgTypeDecoder>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(feature = "postgres")]
+fn pg_type_decoders() -> &'static std::sync::RwLock<std::collections::HashMap<u32, PgTypeDecoder>> {
+    PG_TYPE_DECODERS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// 注册自定义 OID 解码器。
+///
+/// 注册后，该 OID 优先于内置规则解码。重复注册同一 OID 会覆盖旧解码器
+/// （幂等；线程安全）。解码器返回的 [`BaseError`] 会被包装为带列上下文的
+/// `sqlx::Error::ColumnDecode`。
+#[cfg(feature = "postgres")]
+pub fn register_pg_type_decoder(oid: u32, decoder: PgTypeDecoder) {
+    let mut decoders = match pg_type_decoders().write() {
+        Ok(decoders) => decoders,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    decoders.insert(oid, decoder);
+}
+
+#[cfg(feature = "postgres")]
+fn lookup_pg_decoder(oid: u32) -> Option<PgTypeDecoder> {
+    let decoders = match pg_type_decoders().read() {
+        Ok(decoders) => decoders,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    decoders.get(&oid).copied()
 }
 
 /// 按 PostgreSQL 内置类型的稳定 OID 归类标量类型。
@@ -469,6 +627,12 @@ fn pg_scalar_kind(oid: u32) -> Option<PgScalarKind> {
         114 | 3802 => PgScalarKind::Json,
         869 => PgScalarKind::Inet,
         650 => PgScalarKind::Cidr,
+        // 内置 range 类型的 OID 同样是稳定的；只识别本轮承诺的五种。
+        3904 => PgScalarKind::Range(PgRangeKind::Int4),
+        3926 => PgScalarKind::Range(PgRangeKind::Int8),
+        3906 => PgScalarKind::Range(PgRangeKind::Numeric),
+        3912 => PgScalarKind::Range(PgRangeKind::Date),
+        3910 => PgScalarKind::Range(PgRangeKind::TimestampTz),
         _ => return None,
     })
 }
@@ -527,6 +691,13 @@ fn pg_decode_plan(type_info: &sqlx::postgres::PgTypeInfo) -> PgDecodePlan {
 
     let oid = type_info.oid().map(|oid| oid.0);
 
+    // 注册表优先于内置规则，允许调用方覆盖任意 OID 的解码方式。
+    if let Some(oid) = oid {
+        if lookup_pg_decoder(oid).is_some() {
+            return PgDecodePlan::Custom(oid);
+        }
+    }
+
     // 内置标量与内置数组的 OID 是稳定的，且不依赖类型名解析。
     if let Some(kind) = oid.and_then(pg_scalar_kind) {
         return PgDecodePlan::Scalar(kind);
@@ -566,12 +737,20 @@ fn pg_decode_plan_from_kind(
 
     match kind {
         PgTypeKind::Enum(_) => PgDecodePlan::Scalar(PgScalarKind::Enum),
+        PgTypeKind::Composite(_) => PgDecodePlan::Unsupported(format!(
+            "复合类型 {} 没有注册解码器；请调用 yang_base::table::register_pg_type_decoder(oid, decoder)",
+            pg_unsupported_description(oid, type_name)
+        )),
+        PgTypeKind::Range(_) => PgDecodePlan::Unsupported(format!(
+            "range 类型 {} 不在内置支持列表（int4range/int8range/numrange/daterange/tstzrange）；\
+             请调用 yang_base::table::register_pg_type_decoder(oid, decoder)",
+            pg_unsupported_description(oid, type_name)
+        )),
         PgTypeKind::Simple => match oid.and_then(pg_scalar_kind) {
             Some(kind) => PgDecodePlan::Scalar(kind),
             None => PgDecodePlan::Unsupported(pg_unsupported_description(oid, type_name)),
         },
-        // Array / Domain 由 pg_decode_plan 递归处理；其余结构（Range / Composite /
-        // Pseudo）不在本轮能力范围内。
+        // Array / Domain 由 pg_decode_plan 递归处理；其余结构（Pseudo）不在本轮能力范围内。
         _ => PgDecodePlan::Unsupported(pg_unsupported_description(oid, type_name)),
     }
 }
@@ -847,6 +1026,138 @@ fn pg_inet_to_json(value: PgInetValue, is_cidr: bool) -> Result<serde_json::Valu
     Ok(value.to_json(is_cidr))
 }
 
+/// 判断 range 原始值是否为空 range。
+///
+/// sqlx 的 `PgRange` 解码把空 range 的两端都还原为 `Unbounded`，与 `(,)`
+/// 无法区分；这里在解码前按原始协议判定：二进制首字节的 `EMPTY` 标志位为
+/// `0x01`，文本格式恰为 `empty`。
+#[cfg(feature = "postgres")]
+fn pg_range_is_empty(value: &sqlx::postgres::PgValueRef<'_>) -> Result<bool, sqlx::Error> {
+    match value.format() {
+        sqlx::postgres::PgValueFormat::Binary => {
+            let bytes = value.as_bytes().map_err(sqlx::Error::Decode)?;
+            Ok(bytes.first().is_some_and(|flags| flags & 0x01 != 0))
+        }
+        sqlx::postgres::PgValueFormat::Text => {
+            let text = value.as_str().map_err(sqlx::Error::Decode)?;
+            Ok(text == "empty")
+        }
+    }
+}
+
+/// 把一个 range 端点转换为 `(JSON 值, 是否闭区间)`；无界端点用 `null` + `false`。
+#[cfg(feature = "postgres")]
+fn pg_range_bound_to_json<T>(
+    bound: std::ops::Bound<T>,
+    convert: impl Fn(T) -> Result<serde_json::Value, sqlx::Error>,
+) -> Result<(serde_json::Value, bool), sqlx::Error> {
+    match bound {
+        std::ops::Bound::Included(value) => Ok((convert(value)?, true)),
+        std::ops::Bound::Excluded(value) => Ok((convert(value)?, false)),
+        std::ops::Bound::Unbounded => Ok((serde_json::Value::Null, false)),
+    }
+}
+
+/// 按文档契约把 range 转为 JSON 对象；空 range 明确输出 `{"empty": true}`。
+#[cfg(feature = "postgres")]
+fn pg_range_to_json<T>(
+    range: sqlx::postgres::types::PgRange<T>,
+    empty: bool,
+    convert: impl Fn(T) -> Result<serde_json::Value, sqlx::Error>,
+) -> Result<serde_json::Value, sqlx::Error> {
+    if empty {
+        return Ok(serde_json::json!({ "empty": true }));
+    }
+    let (lower, lower_inclusive) = pg_range_bound_to_json(range.start, &convert)?;
+    let (upper, upper_inclusive) = pg_range_bound_to_json(range.end, convert)?;
+    Ok(serde_json::json!({
+        "lower": lower,
+        "upper": upper,
+        "lower_inclusive": lower_inclusive,
+        "upper_inclusive": upper_inclusive,
+    }))
+}
+
+/// 解码内置 range 列。
+#[cfg(feature = "postgres")]
+fn decode_pg_range(
+    row: &sqlx::postgres::PgRow,
+    ordinal: usize,
+    kind: PgRangeKind,
+) -> Result<serde_json::Value, sqlx::Error> {
+    use sqlx::Row;
+
+    let raw = row.try_get_raw(ordinal)?;
+    let empty = pg_range_is_empty(&raw)?;
+    // 空 range 在文本协议下的原始值是字面量 `empty`，交给 `PgRange<T>` 解码
+    // 会先撞上元素类型解析错误（ParseIntError 等）；直接返回契约 JSON。
+    if empty {
+        return Ok(serde_json::json!({ "empty": true }));
+    }
+
+    match kind {
+        PgRangeKind::Int4 => {
+            let range: sqlx::postgres::types::PgRange<i32> = row.try_get_unchecked(ordinal)?;
+            pg_range_to_json(range, empty, |value| pg_i64_to_json(i64::from(value)))
+        }
+        PgRangeKind::Int8 => {
+            let range: sqlx::postgres::types::PgRange<i64> = row.try_get_unchecked(ordinal)?;
+            pg_range_to_json(range, empty, pg_i64_to_json)
+        }
+        PgRangeKind::Numeric => {
+            let range: sqlx::postgres::types::PgRange<sqlx::types::BigDecimal> =
+                row.try_get_unchecked(ordinal)?;
+            pg_range_to_json(range, empty, pg_bigdecimal_to_json)
+        }
+        PgRangeKind::Date => {
+            let range: sqlx::postgres::types::PgRange<chrono::NaiveDate> =
+                row.try_get_unchecked(ordinal)?;
+            pg_range_to_json(range, empty, pg_date_to_json)
+        }
+        PgRangeKind::TimestampTz => {
+            let range: sqlx::postgres::types::PgRange<chrono::DateTime<chrono::Utc>> =
+                row.try_get_unchecked(ordinal)?;
+            pg_range_to_json(range, empty, pg_timestamptz_to_json)
+        }
+    }
+}
+
+/// 调用注册表解码未知类型列。
+#[cfg(feature = "postgres")]
+fn decode_pg_custom(
+    row: &sqlx::postgres::PgRow,
+    ordinal: usize,
+    column_name: &str,
+    oid: u32,
+) -> Result<serde_json::Value, sqlx::Error> {
+    use sqlx::Row;
+
+    let Some(decoder) = lookup_pg_decoder(oid) else {
+        return Err(unsupported_pg_type_error(
+            column_name,
+            ordinal,
+            &format!("OID {oid} 未注册解码器"),
+        ));
+    };
+
+    let raw = row.try_get_raw(ordinal)?;
+    let value = match raw.format() {
+        sqlx::postgres::PgValueFormat::Binary => {
+            PgValue::Binary(raw.as_bytes().map_err(sqlx::Error::Decode)?)
+        }
+        sqlx::postgres::PgValueFormat::Text => {
+            PgValue::Text(raw.as_str().map_err(sqlx::Error::Decode)?)
+        }
+    };
+    decoder(&value).map_err(|error| {
+        unsupported_pg_type_error(
+            column_name,
+            ordinal,
+            &format!("OID {oid} 的注册解码器失败: {error}"),
+        )
+    })
+}
+
 /// 解码单个 PostgreSQL 标量列。
 #[cfg(feature = "postgres")]
 fn decode_pg_scalar(
@@ -913,6 +1224,7 @@ fn decode_pg_scalar(
         PgScalarKind::Cidr => {
             pg_inet_to_json(row.try_get_unchecked::<PgInetValue, _>(ordinal)?, true)
         }
+        PgScalarKind::Range(kind) => decode_pg_range(row, ordinal, kind),
     }
 }
 
@@ -993,6 +1305,8 @@ fn decode_pg_array(
         PgScalarKind::Cidr => decode_elements!(PgInetValue, |value: PgInetValue| {
             pg_inet_to_json(value, true)
         }),
+        // range 数组的 OID 不在内置分派表中，正常不会走到这里；显式 fail-closed。
+        PgScalarKind::Range(_) => Err(sqlx::Error::Decode("不支持 PostgreSQL range 数组".into())),
     }
 }
 
@@ -1007,6 +1321,7 @@ fn decode_pg_column(
     match plan {
         PgDecodePlan::Scalar(kind) => decode_pg_scalar(row, ordinal, *kind),
         PgDecodePlan::Array(element) => decode_pg_array(row, ordinal, column_name, element),
+        PgDecodePlan::Custom(oid) => decode_pg_custom(row, ordinal, column_name, *oid),
         PgDecodePlan::Unsupported(detail) => {
             Err(unsupported_pg_type_error(column_name, ordinal, detail))
         }
@@ -1025,6 +1340,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Record {
         use sqlx::ValueRef;
 
         let mut columns = serde_json::Map::new();
+        let mut json_nulls = std::collections::BTreeSet::new();
 
         for col in row.columns() {
             let name = col.name().to_string();
@@ -1038,11 +1354,19 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Record {
 
             let plan = pg_decode_plan(col.type_info());
             let value = decode_pg_column(row, ordinal, &name, &plan)?;
+            // json/jsonb 的 JSON 字面量 null 解码后同样是 Value::Null，这里单独登记，
+            // 使调用方能与 SQL NULL 区分（序列化输出仍保持 null）。
+            if value.is_null() && matches!(plan, PgDecodePlan::Scalar(PgScalarKind::Json)) {
+                json_nulls.insert(name.clone());
+            }
             // 列名保持数据库原样；重复列名时后者覆盖前者。
             columns.insert(name, value);
         }
 
-        Ok(Record { columns })
+        Ok(Record {
+            columns,
+            json_nulls,
+        })
     }
 }
 
@@ -1050,6 +1374,73 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Record {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn json_null_sidecar_distinguishes_sql_null() {
+        let mut row = Record::new()
+            .set("sql_null", json!(null))
+            .set("json_null", json!(null));
+        row.json_nulls.insert("json_null".to_string());
+
+        assert!(row.is_sql_null("sql_null"));
+        assert!(!row.is_json_null("sql_null"));
+        assert!(row.is_json_null("json_null"));
+        assert!(!row.is_sql_null("json_null"));
+        assert!(!row.is_sql_null("missing"));
+
+        // 既有读取与序列化行为不变：两者都仍是 JSON null。
+        assert_eq!(row.get("json_null"), Some(&json!(null)));
+        assert_eq!(
+            serde_json::to_value(&row).expect("记录应可序列化"),
+            json!({ "sql_null": null, "json_null": null })
+        );
+    }
+
+    #[test]
+    fn remove_column_preserves_json_null_sidecar() {
+        let mut row = Record::new()
+            .set("json_null", json!(null))
+            .set("sql_null", json!(null))
+            .set("extra", json!(null));
+        row.json_nulls.insert("json_null".to_string());
+        row.json_nulls.insert("extra".to_string());
+
+        assert_eq!(row.remove_column("extra"), Some(json!(null)));
+        assert!(
+            !row.is_json_null("extra"),
+            "被移除列的 JSON null 登记必须清除"
+        );
+        assert_eq!(row.get("extra"), None);
+        assert_eq!(row.remove_column("extra"), None);
+        assert_eq!(row.remove_column("missing"), None);
+
+        // 其余列的 sidecar 不受影响。
+        assert!(row.is_json_null("json_null"));
+        assert!(!row.is_sql_null("json_null"));
+        assert!(row.is_sql_null("sql_null"));
+    }
+
+    #[test]
+    fn retain_columns_preserves_json_null_sidecar() {
+        let mut row = Record::new()
+            .set("keep_json", json!(null))
+            .set("keep_sql", json!(null))
+            .set("drop", json!(null));
+        row.json_nulls.insert("keep_json".to_string());
+        row.json_nulls.insert("drop".to_string());
+
+        row.retain_columns(&["keep_json", "keep_sql"]);
+
+        assert_eq!(row.as_map().len(), 2);
+        assert!(row.is_json_null("keep_json"));
+        assert!(!row.is_sql_null("keep_json"));
+        assert!(row.is_sql_null("keep_sql"));
+        assert_eq!(row.get("drop"), None);
+        assert!(
+            !row.is_json_null("drop"),
+            "被裁掉列的 JSON null 登记必须清除"
+        );
+    }
 
     #[test]
     fn get_rejects_blank_column_name() {
@@ -1128,14 +1519,21 @@ mod tests {
             (3802, PgScalarKind::Json),
             (869, PgScalarKind::Inet),
             (650, PgScalarKind::Cidr),
+            (3904, PgScalarKind::Range(PgRangeKind::Int4)),
+            (3926, PgScalarKind::Range(PgRangeKind::Int8)),
+            (3906, PgScalarKind::Range(PgRangeKind::Numeric)),
+            (3912, PgScalarKind::Range(PgRangeKind::Date)),
+            (3910, PgScalarKind::Range(PgRangeKind::TimestampTz)),
         ] {
             assert_eq!(pg_scalar_kind(oid), Some(expected), "OID {oid} 映射漂移");
         }
 
-        // POINT / RANGE / 自定义类型等不得被静默归类。
+        // POINT / 未列入内置清单的 range / 自定义类型等不得被静默归类。
         assert_eq!(pg_scalar_kind(600), None);
-        assert_eq!(pg_scalar_kind(3904), None);
         assert_eq!(pg_scalar_kind(50_000), None);
+        // tsrange 不在本轮承诺的五种内置 range 内，必须 fail-closed。
+        assert_eq!(pg_scalar_kind(3908), None);
+        assert_eq!(pg_scalar_kind(3905), None);
     }
 
     #[cfg(feature = "postgres")]
@@ -1328,5 +1726,80 @@ mod tests {
         assert_eq!(pg_f64_to_json(2.25).expect("有限浮点应可编码"), json!(2.25));
         assert!(pg_f64_to_json(f64::NAN).is_err());
         assert!(pg_f64_to_json(f64::INFINITY).is_err());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_range_bounds_follow_documented_json_contract() {
+        use sqlx::postgres::types::PgRange;
+        use std::ops::Bound;
+
+        let bounded = PgRange {
+            start: Bound::Included(1_i32),
+            end: Bound::Excluded(5_i32),
+        };
+        assert_eq!(
+            pg_range_to_json(bounded, false, |value: i32| pg_i64_to_json(i64::from(
+                value
+            )))
+            .expect("range 应可编码"),
+            json!({
+                "lower": 1,
+                "upper": 5,
+                "lower_inclusive": true,
+                "upper_inclusive": false,
+            })
+        );
+
+        let unbounded = PgRange::<i64> {
+            start: Bound::Unbounded,
+            end: Bound::Included(10),
+        };
+        assert_eq!(
+            pg_range_to_json(unbounded, false, pg_i64_to_json).expect("无界 range 应可编码"),
+            json!({
+                "lower": null,
+                "upper": 10,
+                "lower_inclusive": false,
+                "upper_inclusive": true,
+            })
+        );
+
+        // 空 range 与 `(,)` 必须明确区分。
+        let empty = PgRange::<i64> {
+            start: Bound::Unbounded,
+            end: Bound::Unbounded,
+        };
+        assert_eq!(
+            pg_range_to_json(empty, true, pg_i64_to_json).expect("空 range 应可编码"),
+            json!({"empty": true})
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_decoder_registry_prefers_and_overwrites() {
+        fn first(_: &PgValue<'_>) -> Result<serde_json::Value, BaseError> {
+            Ok(json!("first"))
+        }
+        fn second(_: &PgValue<'_>) -> Result<serde_json::Value, BaseError> {
+            Ok(json!("second"))
+        }
+
+        let oid = 4_000_000_001_u32;
+        register_pg_type_decoder(oid, first);
+        let decoder = lookup_pg_decoder(oid).expect("注册后应能查回解码器");
+        assert_eq!(
+            decoder(&PgValue::Text("x")).expect("解码器应成功"),
+            json!("first")
+        );
+
+        // 重复注册同一 OID 覆盖旧解码器。
+        register_pg_type_decoder(oid, second);
+        let decoder = lookup_pg_decoder(oid).expect("重复注册后应能查回解码器");
+        assert_eq!(
+            decoder(&PgValue::Text("x")).expect("解码器应成功"),
+            json!("second")
+        );
     }
 }

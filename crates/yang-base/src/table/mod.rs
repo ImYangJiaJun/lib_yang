@@ -65,13 +65,17 @@ pub use definition::TableHandle;
 pub use definition::{col, ColumnName, Field, FieldMetadata, Order, Table, TableDefinition};
 pub(crate) use field_config::FieldConfig;
 pub use field_config::RelationType;
-pub use field_type::{FieldType, MAX_VARCHAR_LENGTH};
+pub use field_type::{
+    FieldType, MAX_VARCHAR_LENGTH, MYSQL_MAX_VARCHAR_LENGTH, POSTGRES_MAX_VARCHAR_LENGTH,
+};
 pub use query_params::{
     PaginatedResult, QueryParams, TableQueryPlan, WhereCondition, DEFAULT_QUERY_PAGE_SIZE,
     MAX_QUERY_PAGE_SIZE,
 };
 pub use record::Record;
-#[cfg(feature = "mysql")]
+#[cfg(feature = "postgres")]
+pub use record::{register_pg_type_decoder, PgTypeDecoder, PgValue};
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 pub use relation_loader::DatabaseRelationExecutor;
 pub use relation_loader::{
     RelationBatch, RelationBatchExecutor, RelationData, RelationLoader, RelationSpec,

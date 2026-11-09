@@ -276,16 +276,18 @@ impl SqlErrorInfo {
         }
     }
 
-    /// 是否为可安全重试的瞬时错误（序列化失败/死锁/连接失败/锁不可用/连接数超限）。
+    /// 是否为可安全重试的瞬时错误。
+    ///
+    /// 仅 PostgreSQL 的 `40001`（序列化失败）、`40P01`（死锁）、`08` 类
+    /// （连接失败/断开）与 `53` 类（资源不足，如连接数超限）返回 `true`。
+    /// 其余 SQLSTATE 一律不可重试，尤其是：
+    ///
+    /// - `55P03` 锁不可用（锁等待超时）：属于 [`DbErrorCategory::Timeout`]，
+    ///   是否重试由调用方决定；
+    /// - `57014` 语句被取消：同样归 [`DbErrorCategory::Timeout`]，不是瞬时故障；
+    /// - `25P02` 事务已中止：必须先 `ROLLBACK`，重试只会在中止事务上继续失败。
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self.kind(),
-            SqlErrorKind::SerializationFailure
-                | SqlErrorKind::DeadlockDetected
-                | SqlErrorKind::ConnectionFailure
-                | SqlErrorKind::TooManyConnections
-                | SqlErrorKind::LockNotAvailable
-        )
+        matches!(self.code(), "40001" | "40P01") || matches!(self.class(), "08" | "53")
     }
 }
 
@@ -380,9 +382,10 @@ impl DbError {
                 SqlErrorKind::SerializationFailure
                 | SqlErrorKind::DeadlockDetected
                 | SqlErrorKind::ConnectionFailure
-                | SqlErrorKind::TooManyConnections
-                | SqlErrorKind::LockNotAvailable => C::Transient,
-                SqlErrorKind::QueryCanceled => C::Timeout,
+                | SqlErrorKind::TooManyConnections => C::Transient,
+                // 57014 语句取消与 55P03 锁等待超时不是瞬时故障：
+                // 前者通常由调用方超时/取消主动触发，后者需由调用方决定是否重试。
+                SqlErrorKind::QueryCanceled | SqlErrorKind::LockNotAvailable => C::Timeout,
                 SqlErrorKind::InFailedTransaction
                 | SqlErrorKind::UndefinedColumn
                 | SqlErrorKind::SyntaxError
@@ -390,10 +393,11 @@ impl DbError {
                 | SqlErrorKind::StringDataRightTruncation
                 | SqlErrorKind::NumericValueOutOfRange => C::Client,
                 SqlErrorKind::Other => {
-                    if info.class() == "23" {
-                        C::Conflict
-                    } else if info.class() == "40" || info.class() == "08" || info.class() == "53" {
+                    if info.is_retryable() {
+                        // 08xxx/53xxx 与 40001/40P01 之外的 40 类不重试。
                         C::Transient
+                    } else if info.class() == "23" {
+                        C::Conflict
                     } else if info.class() == "57" {
                         C::Timeout
                     } else {
@@ -885,6 +889,58 @@ mod tests {
         assert!(
             !DbError::DatabaseError(Box::new(SqlErrorInfo::new("57014", "canceled")))
                 .is_retryable()
+        );
+    }
+
+    /// P0-2：逐 SQLSTATE 校验可重试分类。
+    ///
+    /// 只有 40001/40P01 与 08xxx、53xxx 是瞬时错误；55P03、57014 归 Timeout
+    /// 且不可重试；25P02 必须先 ROLLBACK，重试无效。
+    #[test]
+    fn retryable_sqlstates_are_exactly_postgres_transient_classes() {
+        use DbErrorCategory as C;
+
+        for code in [
+            "40001", "40P01", // 序列化失败 / 死锁
+            "08000", "08001", "08003", "08006",
+            "08007", // 连接失败/断开（08 类全类）
+            "53300", "53200", "53100", // 资源不足（53 类全类）
+        ] {
+            let info = SqlErrorInfo::new(code, "transient");
+            assert!(info.is_retryable(), "{code} 应可重试");
+            let error = DbError::DatabaseError(Box::new(info));
+            assert_eq!(error.category(), C::Transient, "{code} 应归 Transient");
+            assert!(error.is_retryable(), "{code} 应可重试");
+        }
+
+        for code in [
+            "55P03", // lock_timeout：锁不可用，交由调用方决定
+            "57014", // statement_timeout / 主动取消
+            "25P02", // 事务已中止
+            "23505", "42P01", "42601", "22001", "22003", // 确定性错误
+            "40000", // 40 类中非 40001/40P01 的码不得重试
+            "XX000", // 内部错误
+        ] {
+            let info = SqlErrorInfo::new(code, "non-transient");
+            assert!(!info.is_retryable(), "{code} 不应可重试");
+            assert_ne!(
+                DbError::DatabaseError(Box::new(info)).category(),
+                C::Transient,
+                "{code} 不应归 Transient"
+            );
+        }
+
+        // 超时类显式归 Timeout，而非 Transient。
+        for code in ["55P03", "57014", "57000"] {
+            assert_eq!(
+                DbError::DatabaseError(Box::new(SqlErrorInfo::new(code, "timeout"))).category(),
+                C::Timeout,
+                "{code} 应归 Timeout"
+            );
+        }
+        assert_eq!(
+            DbError::DatabaseError(Box::new(SqlErrorInfo::new("25P02", "aborted"))).category(),
+            C::Client
         );
     }
 

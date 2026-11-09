@@ -44,6 +44,17 @@ pub(crate) struct FieldConfig {
     /// 显式声明该字段由哪个旧列原位改名而来。
     pub renamed_from: Option<String>,
 
+    /// 生成列表达式（PostgreSQL `GENERATED ALWAYS AS (<expr>) STORED`）。
+    ///
+    /// 生成列由数据库计算，声明后不可写入；schema 同步只创建列，不自动改写表达式。
+    pub generated: Option<String>,
+
+    /// 列注释；PostgreSQL 通过 `COMMENT ON COLUMN` 同步。
+    pub comment: Option<String>,
+
+    /// 列排序规则（PostgreSQL `COLLATE`）；MySQL 不支持字段级 collation。
+    pub collation: Option<String>,
+
     /// 验证器列表
     ///
     /// 用于验证字段值的验证器，按顺序执行
@@ -103,6 +114,9 @@ impl FieldConfig {
             default_value: None,
             auto_increment: false,
             renamed_from: None,
+            generated: None,
+            comment: None,
+            collation: None,
             validators: Vec::new(),
             permissions: FieldPermissions::default(),
             hidden: false,

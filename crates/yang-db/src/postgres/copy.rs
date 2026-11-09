@@ -58,7 +58,7 @@ impl Database {
         R: AsRef<[u8]>,
     {
         let sql = validate_copy_sql(sql)?;
-        let mut conn = self.pool().acquire().await?;
+        let mut conn = self.acquire().await?;
         match copy_in_rows(&mut conn, sql, rows).await {
             Ok(affected) => Ok(affected),
             Err(error) => {
@@ -81,7 +81,7 @@ impl Database {
     /// 失败时若连接协议状态已无法确认，该连接会被关闭而不是放回连接池。
     pub async fn copy_to_csv(&self, sql: &str) -> Result<Vec<u8>, DbError> {
         let sql = validate_copy_sql(sql)?;
-        let mut conn = self.pool().acquire().await?;
+        let mut conn = self.acquire().await?;
         match copy_out_bytes(&mut conn, sql).await {
             Ok(bytes) => Ok(bytes),
             Err(error) => {

@@ -54,7 +54,10 @@ pub use isolation::IsolationLevel;
 pub use pool::PoolStatus;
 #[doc(hidden)]
 pub use reference::{__validate_field_literal, __validate_table_literal};
-pub use reference::{CompareOp, FieldRef, Predicate, SelectExpr, SortOrder, SqlExpr, TableRef};
+pub use reference::{
+    CompareOp, ExprOperand, FieldRef, Predicate, SelectExpr, SortOrder, SqlExpr, SqlExprParam,
+    TableRef,
+};
 
 /// 创建编译期校验、进程内只初始化一次的表引用。
 #[macro_export]
@@ -92,10 +95,12 @@ pub use mysql::{
 #[cfg(feature = "postgres")]
 pub use postgres::{
     condition_to_sql_owned as pg_condition_to_sql_owned,
-    condition_to_sql_owned_checked as pg_condition_to_sql_owned_checked, Condition as PgCondition,
-    Database as PgDatabase, DatabaseConfig as PgDatabaseConfig, FieldType as PgFieldType,
-    Notification as PgNotification, PgNotificationListener, QueryBuilder as PgQueryBuilder,
-    SqlValue as PgSqlValue, Transaction as PgTransaction,
+    condition_to_sql_owned_checked as pg_condition_to_sql_owned_checked,
+    CancelToken as PgCancelToken, Condition as PgCondition, Database as PgDatabase,
+    DatabaseConfig as PgDatabaseConfig, FieldType as PgFieldType, Notification as PgNotification,
+    PgAdvisoryLock, PgNotificationListener, PgRowCursor, QueryBuilder as PgQueryBuilder,
+    SqlValue as PgSqlValue, SslMode as PgSslMode, Transaction as PgTransaction,
+    TransactionOptions as PgTransactionOptions,
 };
 
 // 重新导出 Redis 核心类型

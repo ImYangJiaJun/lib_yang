@@ -13,6 +13,10 @@ pub enum RowLock {
     ForUpdateSkipLocked,
     /// 共享行锁并跳过已锁定行：`FOR SHARE SKIP LOCKED`。
     ForShareSkipLocked,
+    /// 排他行锁，但不禁外键引用：`FOR NO KEY UPDATE`（PostgreSQL）。
+    NoKeyUpdate,
+    /// 键共享锁：`FOR KEY SHARE`（PostgreSQL）。
+    KeyShare,
 }
 
 impl RowLock {
@@ -23,6 +27,8 @@ impl RowLock {
             Self::ForShare => "FOR SHARE",
             Self::ForUpdateSkipLocked => "FOR UPDATE SKIP LOCKED",
             Self::ForShareSkipLocked => "FOR SHARE SKIP LOCKED",
+            Self::NoKeyUpdate => "FOR NO KEY UPDATE",
+            Self::KeyShare => "FOR KEY SHARE",
         }
     }
 }
@@ -43,5 +49,7 @@ mod tests {
         );
         assert_eq!(RowLock::ForUpdate.as_sql(), "FOR UPDATE");
         assert_eq!(RowLock::ForShare.as_sql(), "FOR SHARE");
+        assert_eq!(RowLock::NoKeyUpdate.as_sql(), "FOR NO KEY UPDATE");
+        assert_eq!(RowLock::KeyShare.as_sql(), "FOR KEY SHARE");
     }
 }

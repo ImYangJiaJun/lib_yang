@@ -743,6 +743,11 @@ mod tests {
         ];
 
         for payload in payloads {
+            // 双特性构建下 FieldRef/TableRef 采用 PostgreSQL 标识符规则，
+            // Unicode 名称合法；MySQL-only 构建仍必须拒绝。
+            if cfg!(all(feature = "mysql", feature = "postgres")) && payload == "用户.id" {
+                continue;
+            }
             assert!(crate::FieldRef::new(payload).is_err());
         }
         assert!(crate::TableRef::new("profiles p").is_err());

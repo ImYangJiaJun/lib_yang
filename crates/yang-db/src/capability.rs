@@ -49,7 +49,7 @@ pub enum BackendCapability {
     /// 方言原生 UPSERT。
     Upsert,
     /// 批量 UPSERT。MySQL 是 `INSERT ... ON DUPLICATE KEY UPDATE`；
-    /// PostgreSQL 的对应物需显式冲突列 + `EXCLUDED`，形状不同，本轮不声明。
+    /// PostgreSQL 是 `INSERT ... ON CONFLICT (...) DO UPDATE SET ...`（形状不同）。
     BatchUpsert,
     /// PostgreSQL `RETURNING`。
     Returning,
@@ -67,6 +67,26 @@ pub enum BackendCapability {
     Cte,
     /// 窗口函数（`OVER (...)`）。
     Window,
+    /// PostgreSQL 数组类型与 `= ANY(...)` / `= ALL(...)` 谓词。
+    Arrays,
+    /// PostgreSQL 范围类型（`int4range` 等）。
+    Range,
+    /// PostgreSQL 多范围类型（`int4multirange` 等）。
+    Multirange,
+    /// jsonpath 查询（`jsonb_path_exists` / `jsonb_path_match`）。
+    JsonPath,
+    /// 全文检索（`to_tsvector` / `to_tsquery`）。
+    FullText,
+    /// MERGE（PostgreSQL 15+，执行前按 `server_version_num` 门控）。
+    Merge,
+    /// 查询计划与锁等待诊断（`EXPLAIN`、`pg_stat_activity` / `pg_locks`）。
+    Diagnostics,
+    /// 两阶段提交（`PREPARE TRANSACTION` / `COMMIT PREPARED` / `ROLLBACK PREPARED`）。
+    TwoPhaseCommit,
+    /// 表级锁（`LOCK TABLE`）。
+    TableLock,
+    /// 事务级会话配置（`SET LOCAL`）。
+    TransactionLocalConfig,
     /// SQL 事务内的 insert/update/delete 构建器。
     TransactionCrud,
     /// Redis Pipeline。
@@ -137,17 +157,12 @@ const MYSQL_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::BatchUpsert,
 ];
 
-// PostgreSQL Phase C 已实现、但**未**新增枚举变体的能力（枚举保持 non_exhaustive
-// 演进成本最低，按需再逐项落枚举）：
-// - 范围/多范围：`FieldType::Range` / `FieldType::Multirange`，`@>` / `&&` 谓词；
-// - jsonpath：`jsonb_path_exists` / `jsonb_path_match`（路径与变量均绑定参数）；
-// - 全文检索：`plainto_tsquery` / `to_tsquery`（配置固定 `simple`）；
-// - 计划诊断：`Database::explain`（FORMAT JSON）；
-// - 内省：`Database::active_queries` / `Database::lock_waits`；
-// - 会话上下文：`Transaction::set_local`（值绑定参数，键严格白名单校验）；
-// - 版本门控：`Database::server_version_num` / `Database::supports`（实例内缓存）；
-// - 两阶段提交：`prepare_transaction` / `commit_prepared` / `rollback_prepared`；
-// - 表级锁：`Transaction::lock_table`（受控 `TableLockMode`）。
+// PostgreSQL 已实现的全部能力。事务专属能力（保存点、两阶段提交、表级锁、
+// SET LOCAL）声明在 [`POSTGRES_CAPABILITIES`] 的 `transaction` 切片中，
+// [`BackendCapabilities::supports`] 对两个切片一视同仁。
+//
+// MySQL 与 Redis 不得声明 PG 专属能力：能力矩阵是调用方机读契约，
+// 虚报会让下游在错误 SQL 处才暴露问题。
 const POSTGRES_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::CheckedIdentifiers,
     BackendCapability::Select,
@@ -167,6 +182,13 @@ const POSTGRES_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::ListenNotify,
     BackendCapability::Cte,
     BackendCapability::Window,
+    BackendCapability::Arrays,
+    BackendCapability::Range,
+    BackendCapability::Multirange,
+    BackendCapability::JsonPath,
+    BackendCapability::FullText,
+    BackendCapability::Merge,
+    BackendCapability::Diagnostics,
 ];
 
 const SQL_SAFETY: &[SafetyConstraint] = &[
@@ -196,6 +218,9 @@ pub const POSTGRES_CAPABILITIES: BackendCapabilities = BackendCapabilities {
         BackendCapability::TransactionCrud,
         BackendCapability::Returning,
         BackendCapability::Savepoint,
+        BackendCapability::TwoPhaseCommit,
+        BackendCapability::TableLock,
+        BackendCapability::TransactionLocalConfig,
     ],
     safety: SQL_SAFETY,
 };
@@ -293,17 +318,27 @@ mod tests {
 
     #[test]
     fn postgres_capabilities_match_implemented_features() {
-        // 已实现的能力必须声明。
+        // P1-26：Phase C 已实现的能力必须全部声明。
         for capability in [
-            BackendCapability::Returning,
-            BackendCapability::ExplicitConflictTarget,
-            BackendCapability::SkipLocked,
-            BackendCapability::BatchUpsert,
             BackendCapability::Savepoint,
             BackendCapability::Cte,
             BackendCapability::Window,
+            BackendCapability::SkipLocked,
+            BackendCapability::Returning,
+            BackendCapability::ExplicitConflictTarget,
             BackendCapability::Copy,
             BackendCapability::ListenNotify,
+            BackendCapability::BatchUpsert,
+            BackendCapability::Arrays,
+            BackendCapability::Range,
+            BackendCapability::Multirange,
+            BackendCapability::JsonPath,
+            BackendCapability::FullText,
+            BackendCapability::Merge,
+            BackendCapability::Diagnostics,
+            BackendCapability::TwoPhaseCommit,
+            BackendCapability::TableLock,
+            BackendCapability::TransactionLocalConfig,
         ] {
             assert!(
                 POSTGRES_CAPABILITIES.supports(capability),
@@ -311,12 +346,61 @@ mod tests {
             );
         }
 
-        // 仅 PostgreSQL 实现的差异能力不得被 MySQL 提前声明。
-        for capability in [BackendCapability::Copy, BackendCapability::ListenNotify] {
+        // 可信表达式入口与标识符入口在 API 上显式分离。
+        assert!(
+            POSTGRES_CAPABILITIES.enforces(SafetyConstraint::ExplicitTrustedExpressions),
+            "PostgreSQL 必须声明 ExplicitTrustedExpressions 安全约束"
+        );
+
+        // 仅 PostgreSQL 实现的差异能力不得被 MySQL/Redis 提前声明。
+        for capability in [
+            BackendCapability::Copy,
+            BackendCapability::ListenNotify,
+            BackendCapability::Arrays,
+            BackendCapability::Range,
+            BackendCapability::Multirange,
+            BackendCapability::JsonPath,
+            BackendCapability::FullText,
+            BackendCapability::Merge,
+            BackendCapability::Diagnostics,
+            BackendCapability::TwoPhaseCommit,
+            BackendCapability::TableLock,
+            BackendCapability::TransactionLocalConfig,
+        ] {
             assert!(
                 !MYSQL_CAPABILITIES.supports(capability),
                 "MySQL 未实现 {capability:?}，不得声明"
             );
+            assert!(
+                !REDIS_CAPABILITIES.supports(capability),
+                "Redis 未实现 {capability:?}，不得声明"
+            );
+        }
+    }
+
+    #[test]
+    fn non_postgres_backends_do_not_claim_postgres_only_capabilities() {
+        // 能力矩阵是机读契约；任一 PG 专属能力被 MySQL/Redis 声明都视为回归。
+        for capability in [
+            BackendCapability::Returning,
+            BackendCapability::ExplicitConflictTarget,
+            BackendCapability::SkipLocked,
+            BackendCapability::Savepoint,
+            BackendCapability::Cte,
+            BackendCapability::Window,
+            BackendCapability::Arrays,
+            BackendCapability::Range,
+            BackendCapability::Multirange,
+            BackendCapability::JsonPath,
+            BackendCapability::FullText,
+            BackendCapability::Merge,
+            BackendCapability::Diagnostics,
+            BackendCapability::TwoPhaseCommit,
+            BackendCapability::TableLock,
+            BackendCapability::TransactionLocalConfig,
+        ] {
+            assert!(!MYSQL_CAPABILITIES.supports(capability), "{capability:?}");
+            assert!(!REDIS_CAPABILITIES.supports(capability), "{capability:?}");
         }
     }
 

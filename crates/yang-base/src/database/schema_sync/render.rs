@@ -7,7 +7,7 @@ use super::dialect::has_redundant_outer_parentheses;
 use super::model::DesiredIndex;
 use crate::error::BaseError;
 use crate::table::{
-    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, TableConfig, MAX_VARCHAR_LENGTH,
+    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, TableConfig, MYSQL_MAX_VARCHAR_LENGTH,
 };
 
 pub(super) fn render_create_table(
@@ -154,12 +154,14 @@ pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
     let sql_type = match &field.field_type {
         // 防御性断言：构建期 validate_field_shape 已强制同一上界，
         // 此处不应再可达；保留 Err 以免绕过构建期的配置静默渲染出非法 DDL。
-        FieldType::String { max_length } if (1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
+        // 双 feature 构建时构建期取 PostgreSQL 上界，MySQL 方言必须按自己的
+        // 上限再次校验。
+        FieldType::String { max_length } if (1..=MYSQL_MAX_VARCHAR_LENGTH).contains(max_length) => {
             format!("VARCHAR({max_length})")
         }
         FieldType::String { max_length } => {
             return Err(BaseError::ConfigError(format!(
-                "字段 {} 的 VARCHAR 长度必须在 1..={MAX_VARCHAR_LENGTH}: {}",
+                "字段 {} 的 VARCHAR 长度必须在 1..={MYSQL_MAX_VARCHAR_LENGTH}: {}",
                 field.name, max_length
             )))
         }
@@ -198,6 +200,17 @@ pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
                     .join(", ")
             )
         }
+        // MySQL 没有原生 UUID，统一用 CHAR(36) 保存连字符小写文本。
+        FieldType::Uuid => "CHAR(36)".to_string(),
+        FieldType::Bytes => "BLOB".to_string(),
+        // MySQL 没有数组类型，明确拒绝而不是静默降级为 JSON/TEXT。
+        FieldType::Array(_) => {
+            return Err(BaseError::ConfigError(format!(
+                "字段 {} 的类型 {} 在 MySQL 方言下不支持：MySQL 没有数组类型",
+                field.name,
+                field.field_type.display_name()
+            )))
+        }
     };
 
     let mut definition = format!(
@@ -215,9 +228,12 @@ pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
                 field.name
             )));
         }
-        if matches!(field.field_type, FieldType::Text | FieldType::Json) {
+        if matches!(
+            field.field_type,
+            FieldType::Text | FieldType::Json | FieldType::Bytes | FieldType::Array(_)
+        ) {
             return Err(BaseError::ConfigError(format!(
-                "TEXT/JSON 字段 {} 不自动生成数据库默认值",
+                "TEXT/JSON/BYTES/ARRAY 字段 {} 不自动生成数据库默认值",
                 field.name
             )));
         }
@@ -249,6 +265,12 @@ pub(super) fn desired_indexes(table: &TableConfig) -> Result<Vec<DesiredIndex>, 
         (false, table.indexes.as_slice()),
     ] {
         for index in indexes {
+            if index.nulls_not_distinct {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的索引声明了 PostgreSQL 专属的 NULLS NOT DISTINCT，MySQL 不支持",
+                    table.table_name
+                )));
+            }
             if index.fields.is_empty() {
                 return Err(BaseError::ConfigError(format!(
                     "表 {} 包含空索引",
@@ -277,6 +299,7 @@ pub(super) fn desired_indexes(table: &TableConfig) -> Result<Vec<DesiredIndex>, 
                 name,
                 unique,
                 columns: index.fields.clone(),
+                nulls_not_distinct: false,
             });
         }
     }

@@ -109,6 +109,28 @@ impl Field {
         self
     }
 
+    /// 声明 PostgreSQL 生成列（`GENERATED ALWAYS AS (<expr>) STORED`）。
+    ///
+    /// 表达式属于受信任的应用定义，不得来自请求或运行时配置；生成列同时会
+    /// 被标记为不可写，避免内置 CRUD 尝试写入数据库自算的值。
+    pub fn generated(mut self, expression: impl Into<String>) -> Self {
+        self.config.generated = Some(expression.into());
+        self.config.permissions.writable = Audience::Nobody;
+        self
+    }
+
+    /// 设置数据库列注释（PostgreSQL 通过 `COMMENT ON COLUMN` 同步）。
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.config.comment = Some(comment.into());
+        self
+    }
+
+    /// 设置列排序规则（PostgreSQL `COLLATE`）。
+    pub fn collation(mut self, collation: impl Into<String>) -> Self {
+        self.config.collation = Some(collation.into());
+        self
+    }
+
     /// 创建 64 位自增主键字段。
     pub fn id(name: impl Into<String>) -> Self {
         Self::new(name, FieldType::BigInt)
@@ -176,6 +198,21 @@ impl Field {
     /// 创建长文本字段。
     pub fn text(name: impl Into<String>) -> Self {
         Self::new(name, FieldType::Text)
+    }
+
+    /// 创建 UUID 字段（MySQL 渲染为 `CHAR(36)`，PostgreSQL 为 `uuid`）。
+    pub fn uuid(name: impl Into<String>) -> Self {
+        Self::new(name, FieldType::Uuid)
+    }
+
+    /// 创建二进制字段（运行期 Base64 字符串；MySQL `BLOB`，PostgreSQL `BYTEA`）。
+    pub fn bytes(name: impl Into<String>) -> Self {
+        Self::new(name, FieldType::Bytes)
+    }
+
+    /// 创建标量元素数组字段（仅 PostgreSQL 支持；MySQL 渲染时明确拒绝）。
+    pub fn array(name: impl Into<String>, element: FieldType) -> Self {
+        Self::new(name, FieldType::Array(Box::new(element)))
     }
 
     /// 创建枚举字段。
@@ -488,6 +525,7 @@ struct PendingIndex {
     name: Option<String>,
     fields: Vec<String>,
     unique: bool,
+    nulls_not_distinct: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -559,6 +597,7 @@ impl Table {
                 .map(|field| field.into().into_name())
                 .collect(),
             unique: true,
+            nulls_not_distinct: false,
         });
         self
     }
@@ -576,6 +615,50 @@ impl Table {
                 .map(|field| field.into().into_name())
                 .collect(),
             unique: true,
+            nulls_not_distinct: false,
+        });
+        self
+    }
+
+    /// 添加复合唯一索引，并声明 PostgreSQL 15+ 的 `NULLS NOT DISTINCT` 语义。
+    ///
+    /// 空值互不异：两行该索引列均为 NULL 时会触发唯一冲突。仅 PostgreSQL 支持；
+    /// MySQL 在 schema 同步时明确拒绝该标志。
+    pub fn unique_nulls_not_distinct<I, C>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<ColumnName>,
+    {
+        self.indexes.push(PendingIndex {
+            name: None,
+            fields: fields
+                .into_iter()
+                .map(|field| field.into().into_name())
+                .collect(),
+            unique: true,
+            nulls_not_distinct: true,
+        });
+        self
+    }
+
+    /// 添加指定名称的复合唯一索引，并声明 `NULLS NOT DISTINCT` 语义。
+    pub fn unique_named_nulls_not_distinct<I, C>(
+        mut self,
+        name: impl Into<String>,
+        fields: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<ColumnName>,
+    {
+        self.indexes.push(PendingIndex {
+            name: Some(name.into()),
+            fields: fields
+                .into_iter()
+                .map(|field| field.into().into_name())
+                .collect(),
+            unique: true,
+            nulls_not_distinct: true,
         });
         self
     }
@@ -593,6 +676,7 @@ impl Table {
                 .map(|field| field.into().into_name())
                 .collect(),
             unique: false,
+            nulls_not_distinct: false,
         });
         self
     }
@@ -610,6 +694,7 @@ impl Table {
                 .map(|field| field.into().into_name())
                 .collect(),
             unique: false,
+            nulls_not_distinct: false,
         });
         self
     }
@@ -769,6 +854,7 @@ impl Table {
                     name: field.unique_name.take(),
                     fields: vec![field.config.name.clone()],
                     unique: true,
+                    nulls_not_distinct: false,
                 });
             }
             if field.index {
@@ -776,6 +862,7 @@ impl Table {
                     name: field.index_name.take(),
                     fields: vec![field.config.name.clone()],
                     unique: false,
+                    nulls_not_distinct: false,
                 });
             }
             configs.insert(field.config.name.clone(), field.config);
@@ -799,7 +886,7 @@ impl Table {
         let mut index_names = HashSet::new();
         for index in indexes {
             validate_index(&self.name, &field_names, &index, &mut index_names)?;
-            let config = IndexConfig::new(index.name, index.fields);
+            let config = IndexConfig::new(index.name, index.fields, index.nulls_not_distinct);
             if index.unique {
                 unique_indexes.push(config);
             } else {
@@ -1162,6 +1249,80 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), BaseError> {
     Ok(())
 }
 
+/// 生成列表达式的括号平衡校验。
+///
+/// 跳过单引号字符串（含 `''` 双写与 `E'...'` 反斜杠转义）与双引号标识符；
+/// 顶层右括号使深度变负即拒绝，结束时深度必须为 0。用于阻止
+/// `price) STORED, ...` 这类闭合外层 `GENERATED ALWAYS AS (` 的注入。
+fn has_balanced_generated_expression(expression: &str) -> bool {
+    let bytes = expression.as_bytes();
+    let mut depth: i32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' => {
+                let escape_string = is_escape_string_prefix(bytes, index);
+                index += 1;
+                while index < bytes.len() {
+                    if escape_string && bytes[index] == b'\\' {
+                        // E 字符串的反斜杠转义：跳过被转义的下一个字节。
+                        index = (index + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[index] == b'\'' {
+                        if bytes.get(index + 1) == Some(&b'\'') {
+                            index += 2;
+                            continue;
+                        }
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'"' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'"' {
+                        if bytes.get(index + 1) == Some(&b'"') {
+                            index += 2;
+                            continue;
+                        }
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    depth == 0
+}
+
+/// 判断 `'`（位于 `quote_index`）是否属于 PostgreSQL `E'...'` 转义字符串。
+fn is_escape_string_prefix(bytes: &[u8], quote_index: usize) -> bool {
+    if quote_index == 0 || !matches!(bytes[quote_index - 1], b'E' | b'e') {
+        return false;
+    }
+    quote_index == 1 || !is_identifier_byte(bytes[quote_index - 2])
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
+}
+
 fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Result<(), BaseError> {
     match &field.config.field_type {
         FieldType::String { max_length } if !(1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
@@ -1184,6 +1345,12 @@ fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Resul
         {
             return Err(BaseError::ConfigError(format!(
                 "表 {table} 的 DECIMAL 字段 {} 必须满足 1 <= precision <= 65 且 scale <= precision",
+                field.config.name
+            )));
+        }
+        FieldType::Array(element) if matches!(**element, FieldType::Array(_) | FieldType::Json) => {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的数组字段 {} 只支持标量元素，不支持嵌套数组或 JSON 元素",
                 field.config.name
             )));
         }
@@ -1214,11 +1381,43 @@ fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Resul
             field.config.name
         )));
     }
+    if let Some(expression) = &field.config.generated {
+        let expression = expression.trim();
+        if expression.is_empty()
+            || expression.chars().count() > 2_048
+            || [";", "--", "/*", "*/"]
+                .iter()
+                .any(|marker| expression.contains(marker))
+            || !has_balanced_generated_expression(expression)
+        {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的生成列 {} 必须是单条、非空、长度受限且括号平衡的受信表达式",
+                field.config.name
+            )));
+        }
+        if field.config.auto_increment || field.config.default_value.is_some() {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的生成列 {} 不能同时声明自增或默认值",
+                field.config.name
+            )));
+        }
+    }
+    if let Some(collation) = &field.config.collation {
+        if collation.trim().is_empty() || collation.len() > 128 {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的字段 {} 声明了空或过长的 collation",
+                field.config.name
+            )));
+        }
+    }
     validate_validator_configuration(table, &field.config)?;
     if let Some(default) = &field.config.default_value {
-        if matches!(field.config.field_type, FieldType::Text | FieldType::Json) {
+        if matches!(
+            field.config.field_type,
+            FieldType::Text | FieldType::Json | FieldType::Bytes | FieldType::Array(_)
+        ) {
             return Err(BaseError::ConfigError(format!(
-                "表 {table} 的 TEXT/JSON 字段不能配置数据库默认值: {}",
+                "表 {table} 的 TEXT/JSON/BYTES/ARRAY 字段不能配置数据库默认值: {}",
                 field.config.name
             )));
         }
@@ -1584,6 +1783,19 @@ fn field_json_schema(field: &FieldConfig) -> Value {
             schema.insert("type".into(), json!("string"));
             schema.insert("enum".into(), json!(values));
         }
+        FieldType::Uuid => {
+            schema.insert("type".into(), json!("string"));
+            schema.insert("format".into(), json!("uuid"));
+        }
+        FieldType::Bytes => {
+            // Base64 文本；与 OpenAPI 的 `byte` format 对齐。
+            schema.insert("type".into(), json!("string"));
+            schema.insert("format".into(), json!("byte"));
+        }
+        FieldType::Array(element) => {
+            schema.insert("type".into(), json!("array"));
+            schema.insert("items".into(), storage_type_json_schema(element));
+        }
     }
 
     for validator in &field.validators {
@@ -1696,4 +1908,67 @@ fn field_json_schema(field: &FieldConfig) -> Value {
         schema.insert("default".into(), default.clone());
     }
     Value::Object(schema)
+}
+
+/// 数组元素的 JSON Schema 存储类型（不含字段级校验器与权限元数据）。
+fn storage_type_json_schema(field_type: &FieldType) -> Value {
+    match field_type {
+        FieldType::String { max_length } => json!({
+            "type": "string",
+            "maxLength": max_length,
+        }),
+        FieldType::Text => json!({"type": "string"}),
+        FieldType::Uuid => json!({"type": "string", "format": "uuid"}),
+        FieldType::Bytes => json!({"type": "string", "format": "byte"}),
+        FieldType::Enum { values } => json!({"type": "string", "enum": values}),
+        FieldType::Decimal { precision, scale } => json!({
+            "type": "string",
+            "format": "decimal",
+            "x-precision": precision,
+            "x-scale": scale,
+        }),
+        FieldType::Integer | FieldType::BigInt | FieldType::Timestamp => json!({"type": "integer"}),
+        FieldType::Float | FieldType::Double => json!({"type": "number"}),
+        FieldType::Boolean => json!({"type": "boolean"}),
+        FieldType::Date => json!({"type": "string", "format": "date"}),
+        FieldType::DateTime => json!({"type": "string", "format": "date-time"}),
+        // 嵌套数组/JSON 元素在构建期已被拒绝，这里保持空 schema 作为兜底。
+        FieldType::Json | FieldType::Array(_) => json!({}),
+    }
+}
+
+#[cfg(test)]
+mod generated_expression_tests {
+    use super::*;
+
+    fn generated_table(expression: &str) -> Result<TableDefinition, BaseError> {
+        Table::new("generated_balance")
+            .fields([
+                Field::id("id"),
+                Field::integer("price").required(),
+                Field::string("name", 32),
+                Field::bigint("total").generated(expression),
+            ])
+            .build()
+    }
+
+    #[test]
+    fn balanced_generated_expressions_pass() {
+        generated_table("price * 2").expect("简单表达式应通过");
+        generated_table("coalesce(price, 0)").expect("函数调用应通过");
+        // 字符串字面量中的右括号不是语法括号。
+        generated_table("coalesce(name, ')')").expect("字符串字面量含右括号应通过");
+        // E 字符串中的反斜杠转义不破坏扫描。
+        generated_table(r"coalesce(name, E'\')')").expect("E 字符串转义应通过");
+    }
+
+    #[test]
+    fn generated_expression_injection_is_rejected() {
+        let error = generated_table("price) STORED, 注入 INTEGER")
+            .expect_err("闭合外层括号的注入表达式必须拒绝");
+        assert!(
+            matches!(error, BaseError::ConfigError(ref message) if message.contains("生成列")),
+            "实得错误: {error:?}"
+        );
+    }
 }

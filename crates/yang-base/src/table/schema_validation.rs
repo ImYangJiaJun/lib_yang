@@ -1,4 +1,4 @@
-use super::{FieldType, TableConfig};
+use super::{FieldType, TableConfig, MYSQL_MAX_VARCHAR_LENGTH};
 
 /// 数据库 introspection 得到的最小列快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +188,10 @@ fn is_type_compatible(field_type: &FieldType, column: &SchemaColumn) -> bool {
     let data_type = column.data_type.as_str();
     match field_type {
         FieldType::String { max_length } => {
-            matches!(data_type, "varchar" | "char")
+            // 这是 MySQL 语义的只读契约检查：超过 MySQL 上界的声明（双 feature
+            // 构建期允许 PostgreSQL 上界）在 MySQL 后端一律判为不兼容。
+            *max_length <= MYSQL_MAX_VARCHAR_LENGTH
+                && matches!(data_type, "varchar" | "char")
                 && column
                     .max_length
                     .is_some_and(|actual| actual >= *max_length as u64)
@@ -224,6 +227,18 @@ fn is_type_compatible(field_type: &FieldType, column: &SchemaColumn) -> bool {
                 && parse_mysql_enum_values(&column.column_type)
                     .is_some_and(|actual| actual.as_slice() == values.as_slice())
         }
+        // MySQL 方言：UUID 映射为 CHAR(36)。
+        FieldType::Uuid => {
+            matches!(data_type, "char" | "varchar")
+                && column.max_length.is_some_and(|actual| actual >= 36)
+        }
+        // MySQL 方言：二进制映射为 BLOB / BINARY / VARBINARY 族。
+        FieldType::Bytes => {
+            matches!(data_type, "blob" | "tinyblob" | "mediumblob" | "longblob")
+                || matches!(data_type, "binary" | "varbinary")
+        }
+        // MySQL 没有数组类型，声明了也无法由任何 MySQL 列承载。
+        FieldType::Array(_) => false,
     }
 }
 

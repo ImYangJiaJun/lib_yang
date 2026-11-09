@@ -116,6 +116,13 @@ pub enum BaseError {
     #[error("数据库事务失败: {0}")]
     DatabaseTransactionFailed(#[source] yang_db::DbError),
 
+    /// 当前后端/构建不支持请求的能力（如方言专属语法）。
+    ///
+    /// 与 [`BaseError::ConfigError`] 区分：这是「运行时能力矩阵」的显式拒绝，
+    /// 调用方应降级或换用受支持的入口，而不是修复配置。
+    #[error("当前后端不支持该能力: {0}")]
+    UnsupportedCapability(String),
+
     /// UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作
     ///
     /// 与 yang-db 的 `MissingWhereClause` 安全网对齐：无 WHERE 的更新/删除
@@ -663,6 +670,7 @@ impl BaseError {
             BaseError::DatabaseNotInitialized => 200008,
             BaseError::DatabaseTransactionFailed(_) => 200009,
             BaseError::MissingWhereClause(_) => 200010,
+            BaseError::UnsupportedCapability(_) => 200012,
 
             // ==================== Redis 错误 (21xxxx) ====================
             BaseError::RedisConnectionFailed(_) => 210001,
@@ -765,6 +773,7 @@ impl BaseError {
             BaseError::DatabaseNotInitialized => "200008",
             BaseError::DatabaseTransactionFailed(_) => "200009",
             BaseError::MissingWhereClause(_) => "200010",
+            BaseError::UnsupportedCapability(_) => "200012",
             // Redis 错误 (21xxxx)
             BaseError::RedisConnectionFailed(_) => "210001",
             BaseError::RedisAlreadyInitialized => "210002",
@@ -854,6 +863,7 @@ impl BaseError {
                 C::Transient
             }
             BaseError::MissingWhereClause(_) => C::Client,
+            BaseError::UnsupportedCapability(_) => C::Server,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
             | BaseError::DatabaseInitFailed(_) => C::Server,
@@ -926,9 +936,73 @@ impl BaseError {
         }
     }
 
-    /// 是否为可重试的瞬时错误（等价 `category() == Transient`）。
+    /// 取被包裹的底层数据库错误（不含 Redis 之外的其它传输错误）。
+    fn db_error(&self) -> Option<&yang_db::DbError> {
+        match self {
+            BaseError::DatabaseConnectionFailed(err)
+            | BaseError::DatabaseConnectionDbError(err)
+            | BaseError::DatabaseQueryFailed(err)
+            | BaseError::DatabaseExecuteFailed(err)
+            | BaseError::DatabaseTransactionFailed(err)
+            | BaseError::RedisConnectionFailed(err)
+            | BaseError::RedisOperationFailed(err)
+            | BaseError::RedisOperationDbError(err) => Some(err),
+            _ => None,
+        }
+    }
+
+    /// 暴露包裹的 SQLSTATE 结构化信息（含约束/表/列/诊断）。
+    ///
+    /// 外键、NOT NULL、CHECK 等约束错误在映射时保留原始 `DatabaseError`，
+    /// 调用方可据此分流，而无需解析本地化报文。
+    pub fn sql_error_info(&self) -> Option<&yang_db::SqlErrorInfo> {
+        match self.db_error()? {
+            yang_db::DbError::DatabaseError(info) => Some(info.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// 原始 SQLSTATE 五字符码；无结构化数据库错误时返回 `None`。
+    pub fn sqlstate(&self) -> Option<&str> {
+        self.sql_error_info().map(yang_db::SqlErrorInfo::code)
+    }
+
+    /// 触发错误的约束名（如外键/唯一索引/CHECK 名称）。
+    pub fn constraint(&self) -> Option<&str> {
+        self.sql_error_info()
+            .and_then(yang_db::SqlErrorInfo::constraint)
+    }
+
+    /// 是否为可重试的瞬时错误。
+    ///
+    /// 包裹的 [`yang_db::DbError`] 以其自身 `is_retryable()` 为准：PostgreSQL
+    /// `40001`/`40P01`、`08xxx`、`53xxx` 可重试；`55P03`/`57014`/`25P02` 不可。
+    /// 非数据库错误沿用 [`BaseError::category`] 的 `Transient` 语义。
     pub fn is_retryable(&self) -> bool {
-        self.category() == ErrorCategory::Transient
+        self.db_error().map_or_else(
+            || self.category() == ErrorCategory::Transient,
+            |err| err.is_retryable(),
+        )
+    }
+
+    /// 是否处于 PostgreSQL 的「事务已中止」状态（SQLSTATE `25P02`）。
+    ///
+    /// 此时任何语句都会继续失败，必须先 `ROLLBACK`。
+    pub fn is_transaction_aborted(&self) -> bool {
+        self.sql_error_info()
+            .is_some_and(|info| info.kind() == yang_db::SqlErrorKind::InFailedTransaction)
+    }
+
+    /// 是否为超时/取消类错误：`57014`（语句取消）或 `55P03`（锁不可用），
+    /// 以及既有 HTTP 超时。
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, BaseError::HttpTimeout)
+            || self.sql_error_info().is_some_and(|info| {
+                matches!(
+                    info.kind(),
+                    yang_db::SqlErrorKind::QueryCanceled | yang_db::SqlErrorKind::LockNotAvailable
+                )
+            })
     }
 
     /// 是否为客户端过错（`Client`、`Auth` 或 `NotFound` 类）。
@@ -1491,5 +1565,66 @@ mod tests {
             "缺 for key 段就该放弃提取，而不是编一个名字出来"
         );
         assert_eq!(duplicate_key_field("some other db error"), None);
+    }
+
+    fn sql_error(code: &str, constraint: Option<&str>) -> BaseError {
+        let mut info = yang_db::SqlErrorInfo::new(code, format!("sqlstate {code}"));
+        if let Some(constraint) = constraint {
+            info = info.with_constraint(Some(constraint.to_string()));
+        }
+        BaseError::DatabaseExecuteFailed(yang_db::DbError::DatabaseError(Box::new(info)))
+    }
+
+    /// P0-13/P1-17：SQLSTATE 语义（可重试 / 取消超时 / 事务中止）必须从包裹的
+    /// `yang_db::DbError` 透出，而不是被「数据库执行失败」压平。
+    #[test]
+    fn sqlstate_semantics_are_exposed_from_wrapped_db_error() {
+        // 40001 序列化失败、40P01 死锁：可重试。
+        for code in ["40001", "40P01"] {
+            let error = sql_error(code, None);
+            assert!(error.is_retryable(), "{code} 应可重试");
+            assert!(!error.is_timeout(), "{code} 不是超时");
+            assert!(!error.is_transaction_aborted(), "{code} 不是事务中止");
+        }
+
+        // 08xxx 连接失败、53xxx 资源不足：可重试。
+        assert!(sql_error("08006", None).is_retryable());
+        assert!(sql_error("53300", None).is_retryable());
+
+        // 55P03 锁不可用、57014 语句取消：不可重试，但属于超时/取消。
+        for code in ["55P03", "57014"] {
+            let error = sql_error(code, None);
+            assert!(!error.is_retryable(), "{code} 不应自动重试");
+            assert!(error.is_timeout(), "{code} 应识别为超时/取消");
+        }
+
+        // 25P02 事务已中止：不可重试，且必须显式识别以触发 ROLLBACK。
+        let aborted = sql_error("25P02", None);
+        assert!(aborted.is_transaction_aborted());
+        assert!(!aborted.is_retryable());
+        assert!(!aborted.is_timeout());
+        assert!(!sql_error("40001", None).is_transaction_aborted());
+    }
+
+    /// 外键/NOT NULL/CHECK 违反保留 SQLSTATE 与约束名，供 409/422 分流。
+    #[test]
+    fn constraint_errors_keep_sqlstate_and_constraint_context() {
+        let foreign_key = sql_error("23503", Some("orders_user_id_fkey"));
+        assert_eq!(foreign_key.sqlstate(), Some("23503"));
+        assert_eq!(foreign_key.constraint(), Some("orders_user_id_fkey"));
+        assert!(!foreign_key.is_retryable());
+        assert!(foreign_key.is_server_error());
+
+        let not_null = sql_error("23502", Some("users_email_not_null"));
+        assert_eq!(not_null.sqlstate(), Some("23502"));
+        assert_eq!(not_null.constraint(), Some("users_email_not_null"));
+
+        let check = sql_error("23514", Some("positive_amount"));
+        assert_eq!(check.constraint(), Some("positive_amount"));
+
+        // 非结构化错误没有 SQLSTATE 上下文。
+        let plain = BaseError::DatabaseExecuteFailed(yang_db::DbError::QueryError("boom".into()));
+        assert_eq!(plain.sqlstate(), None);
+        assert_eq!(plain.constraint(), None);
     }
 }

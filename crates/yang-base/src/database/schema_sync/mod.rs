@@ -5,8 +5,10 @@
 //! 返回表、对象和主键后拒绝全部 DDL。
 //!
 //! 方言差异集中在 [`dialect::SchemaDialect`]，数据库访问由 [`driver::SchemaDriver`]
-//! 分派：MySQL 使用早前行为（`GET_LOCK`、DDL 隐式提交）；PostgreSQL 使用
-//! `pg_advisory_lock(bigint)` 串行化多实例启动，并把全部 DDL 放入单事务，失败整体回滚。
+//! 分派：MySQL 使用早前行为（`GET_LOCK`、DDL 隐式提交，预检先于 DDL）；PostgreSQL
+//! 使用 `pg_advisory_lock(bigint)` 串行化多实例启动，先在同一事务内落地建表/加列
+//! 再预检（预检 SQL 因此能看到新列），违规则整体回滚；并发索引与
+//! `VALIDATE CONSTRAINT` 在提交后以 autocommit 执行。
 
 mod dialect;
 mod driver;
@@ -51,8 +53,14 @@ pub enum SchemaSyncChangeKind {
     AddedIndex,
     /// 增加 CHECK 约束。
     AddedCheck,
+    /// 仅验证（`VALIDATE CONSTRAINT`）一个既有但尚未验证的 CHECK 约束。
+    ValidatedCheck,
+    /// 更新列注释（PostgreSQL `COMMENT ON COLUMN`）。
+    CommentedColumn,
     /// 增加外键约束。
     AddedForeignKey,
+    /// 仅验证（`VALIDATE CONSTRAINT`）一个既有但尚未验证的外键约束。
+    ValidatedForeignKey,
 }
 
 /// 一项实际执行的 schema 变更。
@@ -75,6 +83,10 @@ pub struct SchemaSyncReport {
     pub tables: Vec<String>,
     /// 本次实际执行的 additive 变更。
     pub changes: Vec<SchemaSyncChange>,
+    /// 事务内执行的 DDL 文本，供 dry-run 审计；实际同步时同样携带。
+    pub statements: Vec<String>,
+    /// 事务提交后执行的 deferred DDL 文本（`VALIDATE CONSTRAINT`、并发索引等）。
+    pub deferred_statements: Vec<String>,
 }
 
 /// 一项阻止 Schema 更新的旧数据问题。

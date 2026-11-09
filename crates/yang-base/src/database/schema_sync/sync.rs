@@ -71,9 +71,7 @@ impl DatabaseInitializer {
                 let mut connection = owned.as_schema();
                 let existing = driver.introspect(&mut connection, table).await?;
                 let config = table.shared_config();
-                Ok(driver
-                    .dialect()
-                    .validate_schema(config.as_ref(), &existing.columns))
+                Ok(driver.dialect().validate_schema(config.as_ref(), &existing))
             }
         }
     }
@@ -94,9 +92,12 @@ impl DatabaseInitializer {
         let mut owned = self.acquire_schema_connection().await?;
         let mut connection = owned.as_schema();
         let plans = plan_locked(driver, &mut connection, &definitions).await?;
+        let (statements, deferred_statements) = plan_statements(&plans);
         Ok(SchemaSyncReport {
             tables: report_tables(&definitions),
             changes: plans.into_iter().flat_map(|plan| plan.changes).collect(),
+            statements,
+            deferred_statements,
         })
     }
 
@@ -113,6 +114,7 @@ impl DatabaseInitializer {
         let mut owned = self.acquire_schema_connection().await?;
         let mut connection = owned.as_schema();
         let plans = plan_locked(driver, &mut connection, &definitions).await?;
+        let (statements, deferred_statements) = plan_statements(&plans);
         let violations =
             preflight_locked(driver.dialect(), &mut connection, &definitions, &plans).await?;
         Ok(SchemaPreflightReport {
@@ -122,6 +124,8 @@ impl DatabaseInitializer {
                     .iter()
                     .flat_map(|plan| plan.changes.iter().cloned())
                     .collect(),
+                statements,
+                deferred_statements,
             },
             violations,
         })
@@ -130,8 +134,14 @@ impl DatabaseInitializer {
     /// 同步一组不可变表定义。
     ///
     /// 多实例启动使用数据库级 advisory lock 串行化：MySQL 用 `GET_LOCK`，
-    /// PostgreSQL 用 `pg_advisory_lock(bigint)`（session 级）。PostgreSQL 的全部
-    /// DDL 在单个事务中执行，任一步失败整体回滚。
+    /// PostgreSQL 用 `pg_advisory_lock(bigint)`（session 级）。PostgreSQL 按阶段
+    /// 执行：地基 DDL（建表/加列）→ 同事务预检 → 其余事务步骤 → 提交 →
+    /// 并发索引与非外键 `VALIDATE CONSTRAINT` → 外键事务（`ADD ... NOT VALID`）→
+    /// 提交后执行外键 `VALIDATE CONSTRAINT`。
+    ///
+    /// Foundation 与 Main 阶段共享同一事务，整体提交或回滚；Concurrent 与外键阶段
+    /// 在提交后以 autocommit 执行，失败不会回滚已提交的 DDL，只会留下可重试状态
+    /// （INVALID 索引 / `NOT VALID` 约束），下次同步会自动自愈。
     pub async fn sync_table_definitions(
         &self,
         definitions: &[&TableDefinition],
@@ -146,7 +156,23 @@ impl DatabaseInitializer {
         let mut connection = owned.as_schema();
         let lock = driver.lock(&mut connection).await?;
         let result = sync_locked(driver, &mut connection, &definitions).await;
+        // 复位会话级 lock_timeout：连接归还池后会被业务查询复用。
+        let reset_result = driver.reset_session(&mut connection).await;
         let release_result = driver.unlock(&mut connection, &lock).await;
+
+        let result = match result {
+            Ok(report) => reset_result.map(|()| report),
+            Err(error) => {
+                // 同步失败时保留原始错误；复位失败只记录（连接随后仍会归还池）。
+                if let Err(reset_error) = &reset_result {
+                    tracing::warn!(
+                        error = %reset_error,
+                        "schema 同步失败后复位会话参数失败"
+                    );
+                }
+                Err(error)
+            }
+        };
 
         match (result, release_result) {
             (Err(error), _) => Err(error),
@@ -188,64 +214,194 @@ impl DatabaseInitializer {
     }
 }
 
+/// 步骤的执行阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepPhase {
+    /// 地基步骤（建表/加列）：必须先落地，预检 SQL 才能看到新列。
+    Foundation,
+    /// 其余事务内、非外键步骤。
+    Main,
+    /// 事务提交后以 autocommit 执行：并发索引 + 非外键步骤的 deferred 语句。
+    Concurrent,
+    /// 外键事务（`ADD ... NOT VALID`）。
+    ForeignKeys,
+    /// 外键事务提交后执行 FK 步骤的 deferred 语句（`VALIDATE CONSTRAINT`）。
+    PostForeignKeys,
+    /// MySQL：全部非外键步骤（预检先于 DDL，无需地基阶段）。
+    AllNonForeignKey,
+}
+
+impl StepPhase {
+    /// 本阶段是否执行该步骤的 `statements`。
+    fn runs_statements(self, step: &super::model::PlanStep) -> bool {
+        let is_foreign_key = matches!(
+            step.change.kind,
+            SchemaSyncChangeKind::AddedForeignKey | SchemaSyncChangeKind::ValidatedForeignKey
+        );
+        match self {
+            Self::Foundation => {
+                !step.concurrent
+                    && !is_foreign_key
+                    && matches!(
+                        step.change.kind,
+                        SchemaSyncChangeKind::CreatedTable | SchemaSyncChangeKind::AddedColumn
+                    )
+            }
+            Self::Main => {
+                !step.concurrent
+                    && !is_foreign_key
+                    && !matches!(
+                        step.change.kind,
+                        SchemaSyncChangeKind::CreatedTable | SchemaSyncChangeKind::AddedColumn
+                    )
+            }
+            Self::Concurrent => step.concurrent,
+            Self::ForeignKeys => !step.concurrent && is_foreign_key,
+            Self::PostForeignKeys => false,
+            Self::AllNonForeignKey => !step.concurrent && !is_foreign_key,
+        }
+    }
+
+    /// 本阶段是否执行该步骤的 deferred 语句（仅提交后阶段）。
+    ///
+    /// `Concurrent` 只处理非外键步骤；外键的 `VALIDATE` 属于 `PostForeignKeys`，
+    /// 在外键事务提交后单独执行。
+    fn runs_deferred(self, step: &super::model::PlanStep) -> bool {
+        if step.deferred_statements.is_empty() {
+            return false;
+        }
+        let is_foreign_key = matches!(
+            step.change.kind,
+            SchemaSyncChangeKind::AddedForeignKey | SchemaSyncChangeKind::ValidatedForeignKey
+        );
+        match self {
+            Self::Concurrent => !is_foreign_key,
+            Self::PostForeignKeys => is_foreign_key,
+            _ => false,
+        }
+    }
+}
+
 async fn sync_locked(
     driver: SchemaDriver,
     connection: &mut SchemaConnection<'_>,
     definitions: &[&TableDefinition],
 ) -> Result<SchemaSyncReport, BaseError> {
-    let transactional = driver.transactional_ddl();
-    if transactional {
+    driver.configure_session(connection).await?;
+    let plans = plan_locked(driver, connection, definitions).await?;
+
+    if driver.transactional_ddl() {
+        // PostgreSQL：地基步骤 -> 同事务内预检（能看到新列）-> 其余事务步骤
+        // -> 提交 -> 并发索引与 deferred VALIDATE -> 外键事务。
         connection.begin().await?;
-    }
-    let result = execute_sync(driver, connection, definitions).await;
-    if transactional {
-        if result.is_ok() {
-            connection.commit().await?;
-        } else {
-            // 回滚失败不覆盖原始 DDL 错误，调用方应优先处理根因。
-            let _ = connection.rollback().await;
+        let transaction = async {
+            execute_steps(connection, &plans, StepPhase::Foundation).await?;
+            let violations = driver.preflight(connection, definitions, &plans).await?;
+            if !violations.is_empty() {
+                return Err(BaseError::DatabaseInitFailed(format_violations(
+                    &violations,
+                )));
+            }
+            execute_steps(connection, &plans, StepPhase::Main).await
         }
+        .await;
+        match transaction {
+            Ok(()) => connection.commit().await?,
+            Err(error) => {
+                // 回滚失败不覆盖原始 DDL/预检错误，调用方应优先处理根因。
+                let _ = connection.rollback().await;
+                return Err(error);
+            }
+        }
+        // CREATE/DROP INDEX CONCURRENTLY 不能在事务块内执行；非外键步骤的
+        // deferred `VALIDATE CONSTRAINT`（CHECK 等）也在此阶段以 autocommit 执行。
+        execute_steps(connection, &plans, StepPhase::Concurrent).await?;
+        // 外键最后执行，确保它依赖的唯一索引（可能刚并发创建）已存在。
+        if plans
+            .iter()
+            .flat_map(|plan| &plan.steps)
+            .any(|step| step.change.kind == SchemaSyncChangeKind::AddedForeignKey)
+        {
+            connection.begin().await?;
+            match execute_steps(connection, &plans, StepPhase::ForeignKeys).await {
+                Ok(()) => connection.commit().await?,
+                Err(error) => {
+                    let _ = connection.rollback().await;
+                    return Err(error);
+                }
+            }
+        }
+        // 外键事务提交后再 VALIDATE，避免 ADD 的 ShareRowExclusiveLock 持有到验证结束；
+        // 仅需自愈验证的既有外键也会在这里执行。
+        execute_steps(connection, &plans, StepPhase::PostForeignKeys).await?;
+    } else {
+        // MySQL：保持既有顺序，预检先于全部 DDL。
+        let violations = driver.preflight(connection, definitions, &plans).await?;
+        if !violations.is_empty() {
+            return Err(BaseError::DatabaseInitFailed(format_violations(
+                &violations,
+            )));
+        }
+        execute_steps(connection, &plans, StepPhase::AllNonForeignKey).await?;
+        execute_steps(connection, &plans, StepPhase::ForeignKeys).await?;
     }
-    result
+
+    // 报告按计划顺序生成，保证每个 step 恰好一条且顺序稳定（与执行阶段无关）。
+    let (statements, deferred_statements) = plan_statements(&plans);
+    Ok(SchemaSyncReport {
+        tables: report_tables(definitions),
+        changes: plans
+            .iter()
+            .flat_map(|plan| plan.steps.iter().map(|step| step.change.clone()))
+            .collect(),
+        statements,
+        deferred_statements,
+    })
 }
 
-async fn execute_sync(
-    driver: SchemaDriver,
-    connection: &mut SchemaConnection<'_>,
-    definitions: &[&TableDefinition],
-) -> Result<SchemaSyncReport, BaseError> {
-    let mut report = SchemaSyncReport {
-        tables: report_tables(definitions),
-        changes: Vec::new(),
-    };
-
-    let plans = plan_locked(driver, connection, definitions).await?;
-    let violations = driver.preflight(connection, definitions, &plans).await?;
-    if !violations.is_empty() {
-        return Err(BaseError::DatabaseInitFailed(format_violations(
-            &violations,
-        )));
+/// 汇总计划中的事务内与 deferred DDL 文本，供同步/dry-run 报告审计。
+fn plan_statements(plans: &[super::model::TableSyncPlan]) -> (Vec<String>, Vec<String>) {
+    let mut statements = Vec::new();
+    let mut deferred_statements = Vec::new();
+    for plan in plans {
+        for step in &plan.steps {
+            statements.extend(step.statements.iter().cloned());
+            deferred_statements.extend(step.deferred_statements.iter().cloned());
+        }
     }
-    for foreign_key_phase in [false, true] {
-        for plan in &plans {
-            for step in &plan.steps {
-                if (step.change.kind == SchemaSyncChangeKind::AddedForeignKey) != foreign_key_phase
-                {
-                    continue;
-                }
+    (statements, deferred_statements)
+}
+
+async fn execute_steps(
+    connection: &mut SchemaConnection<'_>,
+    plans: &[super::model::TableSyncPlan],
+    phase: StepPhase,
+) -> Result<(), BaseError> {
+    for plan in plans {
+        for step in &plan.steps {
+            let run_statements = phase.runs_statements(step);
+            let run_deferred = phase.runs_deferred(step);
+            if !run_statements && !run_deferred {
+                continue;
+            }
+            if run_statements {
                 for statement in &step.statements {
                     connection.execute(statement).await?;
                 }
-                tracing::info!(
-                    table = %step.change.table,
-                    object = %step.change.object,
-                    kind = ?step.change.kind,
-                    "数据库 schema 已同步"
-                );
-                report.changes.push(step.change.clone());
             }
+            if run_deferred {
+                for statement in &step.deferred_statements {
+                    connection.execute(statement).await?;
+                }
+            }
+            tracing::info!(
+                table = %step.change.table,
+                object = %step.change.object,
+                kind = ?step.change.kind,
+                phase = ?phase,
+                "数据库 schema 已同步"
+            );
         }
     }
-
-    Ok(report)
+    Ok(())
 }

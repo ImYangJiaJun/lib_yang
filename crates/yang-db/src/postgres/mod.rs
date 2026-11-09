@@ -29,9 +29,13 @@ pub use condition::{
     condition_to_sql_owned, condition_to_sql_owned_checked, ComparisonOperator, Condition,
     SqlValue, Subquery,
 };
-pub use database::{ActiveQuery, Database, DatabaseConfig, LockWait};
+pub use database::{
+    ActiveQuery, CancelToken, Database, DatabaseConfig, LockWait, PgAdvisoryLock, PgRowCursor,
+    SslMode,
+};
 pub use field::FieldType;
 pub use identifier::{is_valid_identifier, quote_identifier, quote_qualified, quote_table};
+pub use init::split_sql_script;
 pub use listener::{Notification, PgNotificationListener};
 pub use query_builder::QueryBuilder;
-pub use transaction::{TableLockMode, Transaction};
+pub use transaction::{TableLockMode, Transaction, TransactionOptions};

@@ -17,12 +17,35 @@ use crate::database::AnyDatabase;
 use crate::http::HttpClient;
 #[cfg(feature = "token")]
 use crate::token::TokenManager;
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+use yang_db::BackendCapability;
 #[cfg(feature = "redis")]
 use yang_db::RedisClient;
 
 const RUNNING: u8 = 0;
 const CLOSING: u8 = 1;
 const CLOSED: u8 = 2;
+
+/// yang-base 受保护查询层与内置 CRUD 在启动期必需的后端能力。
+///
+/// 取两种 SQL 后端都声明的基础能力集合；方言专属能力（如 PostgreSQL 的
+/// `Savepoint`/`Returning`）由调用方通过 [`crate::database::AnyDatabase::require_capabilities`]
+/// 按需追加校验，避免 MySQL 构建被 PG 专属能力卡死。
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+const REQUIRED_DATABASE_CAPABILITIES: &[BackendCapability] = &[
+    BackendCapability::CheckedIdentifiers,
+    BackendCapability::Select,
+    BackendCapability::Aggregate,
+    BackendCapability::Join,
+    BackendCapability::Insert,
+    BackendCapability::BatchInsert,
+    BackendCapability::Update,
+    BackendCapability::BatchUpdate,
+    BackendCapability::Delete,
+    BackendCapability::Upsert,
+    BackendCapability::BatchUpsert,
+    BackendCapability::TransactionCrud,
+];
 
 type TypeMap = HashMap<TypeId, Box<dyn Any + Send + Sync>>;
 
@@ -411,6 +434,12 @@ impl ToolsBuilder {
             return Err(BaseError::ConfigError(format!(
                 "Tools 资源重复注册: {resource}"
             )));
+        }
+
+        // 启动期能力门禁：核心查询/CRUD 所需能力缺失时 fail-fast。
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        if let Some(database) = &self.database {
+            database.require_capabilities(REQUIRED_DATABASE_CAPABILITIES)?;
         }
 
         #[cfg(feature = "token")]

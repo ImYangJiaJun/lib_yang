@@ -24,17 +24,49 @@ use yang_db::postgres::{
 pub(super) fn pg_field_type(field_type: &FieldType) -> PgFieldType {
     match field_type {
         FieldType::String { .. } | FieldType::Text | FieldType::Enum { .. } => PgFieldType::Text,
-        FieldType::Integer
-        | FieldType::BigInt
-        | FieldType::Float
-        | FieldType::Double
-        | FieldType::Boolean => PgFieldType::Standard,
+        FieldType::Integer | FieldType::BigInt | FieldType::Float | FieldType::Double => {
+            PgFieldType::Standard
+        }
+        // 布尔单独映射：空/全 NULL 布尔数组没有元素类型线索，必须按 bool[]
+        // 绑定，回退到 Standard(int8[]) 会与 boolean[] 列类型不匹配（42804）。
+        FieldType::Boolean => PgFieldType::Bool,
         FieldType::Decimal { .. } => PgFieldType::Decimal,
         FieldType::Date => PgFieldType::Date,
         FieldType::DateTime => PgFieldType::TimestampTz,
         FieldType::Timestamp => PgFieldType::Timestamp,
         FieldType::Json => PgFieldType::Jsonb,
+        FieldType::Uuid => PgFieldType::Uuid,
+        FieldType::Bytes => PgFieldType::Blob,
+        FieldType::Array(element) => PgFieldType::Array(Box::new(pg_field_type(element))),
     }
+}
+
+/// 把应用层数组元素类型映射为 PostgreSQL 内置元素类型名。
+///
+/// [`PgSqlValue::TypedArray`] 用它决定绑定的 Rust 数组类型：`int4[]` 必须绑定为
+/// `i32` 数组（绑定成 `int8[]` 会因 `integer[] = bigint[]` 无运算符报 42883）。
+fn pg_array_element_type(element: &FieldType) -> Result<&'static str, BaseError> {
+    Ok(match element {
+        FieldType::Integer => "int4",
+        FieldType::BigInt => "int8",
+        FieldType::Float => "float4",
+        FieldType::Double => "float8",
+        FieldType::Boolean => "bool",
+        FieldType::String { .. } | FieldType::Enum { .. } => "varchar",
+        FieldType::Text => "text",
+        FieldType::Decimal { .. } => "numeric",
+        FieldType::Date => "date",
+        FieldType::DateTime => "timestamptz",
+        FieldType::Timestamp => "int8",
+        FieldType::Json => "jsonb",
+        FieldType::Uuid => "uuid",
+        FieldType::Bytes => "bytea",
+        FieldType::Array(inner) => {
+            return Err(BaseError::UnsupportedCapability(format!(
+                "数组等值/排序谓词不支持嵌套数组元素类型: {inner:?}"
+            )))
+        }
+    })
 }
 
 /// 把 JSON 值转换为 PostgreSQL 原生绑定值（未做字段类型特化的通用路径）。
@@ -102,8 +134,83 @@ fn pg_condition_value(
             Ok(PgSqlValue::Decimal(decimal))
         }
         FieldType::Json => Ok(PgSqlValue::Json(value.clone())),
+        FieldType::Uuid => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| invalid(format!("期望 UUID 字符串，实际: {value}")))?;
+            let uuid = sqlx::types::Uuid::parse_str(text)
+                .map_err(|error| invalid(format!("UUID 格式无效: {error}")))?;
+            Ok(PgSqlValue::Uuid(uuid))
+        }
+        FieldType::Bytes => {
+            use base64::Engine;
+            let text = value
+                .as_str()
+                .ok_or_else(|| invalid(format!("期望 Base64 二进制字符串，实际: {value}")))?;
+            // 与 yang-db 的 Blob 写入路径一致：非法 Base64 退化为原始字节。
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .unwrap_or_else(|_| text.as_bytes().to_vec());
+            Ok(PgSqlValue::Bytes(bytes))
+        }
+        FieldType::Array(element) => {
+            let items = value
+                .as_array()
+                .ok_or_else(|| invalid(format!("期望 JSON 数组，实际: {value}")))?;
+            let converted = items
+                .iter()
+                .map(|item| pg_condition_value(field, element, item))
+                .collect::<Result<Vec<_>, _>>()?;
+            // INTEGER[] 的列类型是 int4[]：高于 i32 的元素必须显式报错，
+            // 否则绑定期会被静默截断为 NULL。
+            if matches!(element.as_ref(), FieldType::Integer) {
+                for item in &converted {
+                    if let PgSqlValue::Int(value) = item {
+                        if i32::try_from(*value).is_err() {
+                            return Err(invalid(format!("整数数组元素超出 int4 范围: {value}")));
+                        }
+                    }
+                }
+            }
+            Ok(PgSqlValue::TypedArray {
+                element_type: pg_array_element_type(element)?,
+                values: converted,
+            })
+        }
         _ => Ok(plain_pg_value(value)),
     }
+}
+
+/// 构造 `"field" <dir> NULLS FIRST|LAST, "field"` 的受控排序表达式。
+///
+/// `yang-db` 的 `QueryBuilder::order` 只接受 [`yang_db::FieldRef`]，渲染时整体加
+/// 引号，无法直接表达 `NULLS FIRST/LAST`。这里用其 `#[doc(hidden)]` 的可信构造器
+/// 嵌入已加引号的片段；字段名来自构建期校验过的表定义，不存在注入风险。
+///
+/// ponytail: 依赖 `order()` 对 FieldRef 整体加引号的实现，只支持单段字段名；
+/// yang-db 提供原生 nulls 排序 API 后替换为此处一行调用。
+fn pg_nulls_order_expr(
+    field: &str,
+    order: SortOrder,
+    nulls_first: bool,
+) -> Result<yang_db::FieldRef, BaseError> {
+    if field.is_empty() || field.contains('.') {
+        return Err(BaseError::UnsupportedCapability(format!(
+            "NULLS 排序仅支持单段字段名: {field}"
+        )));
+    }
+    let dir = match order {
+        SortOrder::Asc => "ASC",
+        SortOrder::Desc => "DESC",
+    };
+    let nulls = if nulls_first {
+        "NULLS FIRST"
+    } else {
+        "NULLS LAST"
+    };
+    Ok(yang_db::FieldRef::__from_validated_owned(format!(
+        "{field}\" {dir} {nulls}, \"{field}"
+    )))
 }
 
 /// 递归收集条件树中所有叶子字段名（逻辑组自身没有字段）。
@@ -133,7 +240,7 @@ impl TableQuery {
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
         let pg_pool = pool.as_postgres().ok_or_else(|| {
-            BaseError::ConfigError(
+            BaseError::UnsupportedCapability(
                 "当前连接池不是 PostgreSQL 后端，无法执行 PostgreSQL 查询计划".to_string(),
             )
         })?;
@@ -197,12 +304,16 @@ impl TableQuery {
             &self.query_params.order_by
         };
         for (name, order) in orders {
-            let field = self.field_ref(name)?;
-            let order = match order {
+            let db_order = match order {
                 SortOrder::Asc => yang_db::SortOrder::Asc,
                 SortOrder::Desc => yang_db::SortOrder::Desc,
             };
-            query = query.order(field, order);
+            if let Some(nulls_first) = self.nulls_orders.get(name) {
+                query = query.order(&pg_nulls_order_expr(name, *order, *nulls_first)?, db_order);
+            } else {
+                let field = self.field_ref(name)?;
+                query = query.order(field, db_order);
+            }
         }
         if let Some(page_size) = self.query_params.page_size {
             let page = self.query_params.page.unwrap_or(1).max(1);
@@ -315,6 +426,20 @@ impl TableQuery {
             let tree = self.pg_condition(condition)?;
             query = query.where_not(PgCondition::Not(Box::new(tree)));
         }
+        // `where_any`：整个列表作为一个数组参数绑定为 `field = ANY($n)`。
+        for (name, values) in &self.any_conditions {
+            query = self.register_pg_field(query, name)?;
+            let config = self.table_config.get_field(name).ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
+            })?;
+            let field_type = &config.field_type;
+            let bound = values
+                .iter()
+                .map(|value| pg_condition_value(name, field_type, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let field = self.field_ref(name)?;
+            query = query.where_any(field, bound);
+        }
         if !self.include_trashed {
             if let Some(name) = &self.table_config.soft_delete_field {
                 query = self.register_pg_field(query, name)?;
@@ -364,7 +489,7 @@ mod tests {
         assert_eq!(pg_field_type(&FieldType::BigInt), PgFieldType::Standard);
         assert_eq!(pg_field_type(&FieldType::Float), PgFieldType::Standard);
         assert_eq!(pg_field_type(&FieldType::Double), PgFieldType::Standard);
-        assert_eq!(pg_field_type(&FieldType::Boolean), PgFieldType::Standard);
+        assert_eq!(pg_field_type(&FieldType::Boolean), PgFieldType::Bool);
         assert_eq!(
             pg_field_type(&FieldType::Decimal {
                 precision: 10,
@@ -379,6 +504,78 @@ mod tests {
         );
         assert_eq!(pg_field_type(&FieldType::Timestamp), PgFieldType::Timestamp);
         assert_eq!(pg_field_type(&FieldType::Json), PgFieldType::Jsonb);
+    }
+
+    /// UUID / BYTEA / 数组必须登记为原生绑定类型，避免参数按 TEXT 发送触发 42883。
+    #[test]
+    fn new_field_types_map_to_native_postgres_bindings() {
+        assert_eq!(pg_field_type(&FieldType::Uuid), PgFieldType::Uuid);
+        assert_eq!(pg_field_type(&FieldType::Bytes), PgFieldType::Blob);
+        assert_eq!(
+            pg_field_type(&FieldType::array(FieldType::Integer)),
+            PgFieldType::Array(Box::new(PgFieldType::Standard))
+        );
+        assert_eq!(
+            pg_field_type(&FieldType::array(FieldType::Text)),
+            PgFieldType::Array(Box::new(PgFieldType::Text))
+        );
+        // 布尔数组元素必须保留为 Bool，空/全 NULL 数组才能绑定为 bool[]。
+        assert_eq!(
+            pg_field_type(&FieldType::array(FieldType::Boolean)),
+            PgFieldType::Array(Box::new(PgFieldType::Bool))
+        );
+    }
+
+    /// 条件值转换：UUID 解析、BYTEA Base64 解码、数组逐元素递归（含 NULL）。
+    #[test]
+    fn condition_values_convert_uuid_bytes_and_arrays() {
+        let uuid = pg_condition_value(
+            "uid",
+            &FieldType::Uuid,
+            &json!("11111111-1111-1111-1111-111111111111"),
+        )
+        .expect("合法 UUID 应可转换");
+        assert!(matches!(uuid, PgSqlValue::Uuid(_)));
+        assert!(pg_condition_value("uid", &FieldType::Uuid, &json!("not-a-uuid")).is_err());
+
+        let bytes = pg_condition_value("payload", &FieldType::Bytes, &json!("3q2+7w=="))
+            .expect("Base64 应可转换");
+        assert!(matches!(
+            bytes,
+            PgSqlValue::Bytes(ref value) if value == &[0xde, 0xad, 0xbe, 0xef]
+        ));
+
+        let numbers = pg_condition_value(
+            "numbers",
+            &FieldType::array(FieldType::Integer),
+            &json!([1, null, 3]),
+        )
+        .expect("整数数组应可转换");
+        match numbers {
+            PgSqlValue::TypedArray {
+                element_type,
+                values,
+            } => {
+                assert_eq!(element_type, "int4", "int4[] 必须按 int4 元素类型绑定");
+                assert_eq!(values.len(), 3);
+                assert!(matches!(values[0], PgSqlValue::Int(1)));
+                assert!(matches!(values[1], PgSqlValue::Null));
+                assert!(matches!(values[2], PgSqlValue::Int(3)));
+            }
+            other => panic!("期望带元素类型的数组值，实得 {other:?}"),
+        }
+
+        assert!(
+            pg_condition_value("numbers", &FieldType::array(FieldType::Integer), &json!(1))
+                .is_err()
+        );
+        // int4 越界必须显式报错，不能静默绑定成 NULL。
+        assert!(pg_condition_value(
+            "numbers",
+            &FieldType::array(FieldType::Integer),
+            &json!([i64::from(i32::MAX) + 1])
+        )
+        .is_err());
     }
 
     /// 读计划必须在生成 SQL 前完成：投影、WHERE、租户条件、软删守卫、分页。
@@ -413,6 +610,81 @@ mod tests {
         );
         assert!(sql.contains("LIMIT 10"), "分页 LIMIT 缺失: {sql}");
         assert!(sql.contains("OFFSET 10"), "分页 OFFSET 缺失: {sql}");
+    }
+
+    /// `order_nulls` 必须在 PostgreSQL 上渲染原生 `NULLS FIRST/LAST`。
+    #[tokio::test]
+    async fn read_plan_renders_nulls_first_and_last() {
+        let first = lazy_pg_query(
+            Table::new("pg_nulls_first").fields([Field::id("id"), Field::integer("bucket")]),
+        )
+        .order_nulls("bucket", SortOrder::Asc, true)
+        .expect("order_nulls 应通过校验");
+        let database = first.pg_database().expect("惰性池应可构造 PG Database");
+        let sql = first
+            .apply_pg_read_plan(database.table(&first.table_config.table_ref))
+            .expect("PG 读计划应编译成功")
+            .try_to_sql()
+            .expect("PG 读计划应能渲染 SQL");
+        assert!(
+            sql.contains("\"bucket\" ASC NULLS FIRST, \"bucket\" ASC"),
+            "NULLS FIRST 渲染缺失: {sql}"
+        );
+
+        let last = lazy_pg_query(
+            Table::new("pg_nulls_last").fields([Field::id("id"), Field::integer("bucket")]),
+        )
+        .order_nulls("bucket", SortOrder::Desc, false)
+        .expect("order_nulls 应通过校验");
+        let database = last.pg_database().expect("惰性池应可构造 PG Database");
+        let sql = last
+            .apply_pg_read_plan(database.table(&last.table_config.table_ref))
+            .expect("PG 读计划应编译成功")
+            .try_to_sql()
+            .expect("PG 读计划应能渲染 SQL");
+        assert!(
+            sql.contains("\"bucket\" DESC NULLS LAST, \"bucket\" DESC"),
+            "NULLS LAST 渲染缺失: {sql}"
+        );
+    }
+
+    /// `where_any` 必须渲染为单个数组参数的 `= ANY($n)`。
+    #[tokio::test]
+    async fn where_any_renders_single_array_parameter() {
+        let query = lazy_pg_query(
+            Table::new("pg_any_rows").fields([Field::id("id"), Field::string("name", 50)]),
+        )
+        .where_any("id", vec![json!(1), json!(2), json!(3)])
+        .expect("where_any 应通过校验");
+        let database = query.pg_database().expect("惰性池应可构造 PG Database");
+        let sql = query
+            .apply_pg_read_plan(database.table(&query.table_config.table_ref))
+            .expect("PG 读计划应编译成功")
+            .try_to_sql()
+            .expect("PG 读计划应能渲染 SQL");
+        assert!(sql.contains("= ANY($1)"), "ANY 数组参数缺失: {sql}");
+    }
+
+    /// 分页必须在业务排序之后追加主键 tiebreaker。
+    #[tokio::test]
+    async fn pagination_appends_primary_key_tiebreaker() {
+        let query = lazy_pg_query(
+            Table::new("pg_stable_rows").fields([Field::id("id"), Field::integer("bucket")]),
+        )
+        .order_by("bucket", SortOrder::Asc)
+        .expect("排序字段应合法")
+        .page(1, 10)
+        .expect("分页参数应合法");
+        let (query, page, page_size) = query.with_effective_pagination().expect("分页参数应有效");
+        assert_eq!((page, page_size), (1, 10));
+        assert_eq!(
+            query.query_params.order_by,
+            vec![
+                ("bucket".to_string(), SortOrder::Asc),
+                ("id".to_string(), SortOrder::Asc),
+            ],
+            "分页排序必须追加主键 tiebreaker"
+        );
     }
 
     /// `with_trashed()` 必须真正移除软删守卫（与 MySQL 行为一致）。

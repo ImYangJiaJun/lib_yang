@@ -141,6 +141,8 @@ pub(super) async fn load_existing_schema(
         .map(|row| ExistingCheck {
             name: row.constraint_name,
             expression: row.check_clause,
+            // MySQL 的 CHECK 一旦建立即为已验证状态。
+            validated: true,
         })
         .collect();
 
@@ -174,6 +176,8 @@ pub(super) async fn load_existing_schema(
                 referenced_columns: Vec::new(),
                 update_rule: row.update_rule,
                 delete_rule: row.delete_rule,
+                // MySQL 的外键一旦建立即为已验证状态。
+                validated: true,
             });
         foreign_key.columns.push(row.column_name);
         foreign_key

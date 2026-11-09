@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 准备表（PostgreSQL 用 SERIAL 自增主键）
     let _ = db.drop_table(table_name).await;
-    db.create_table(&format!(
+    db.execute_script(&format!(
         "CREATE TABLE {} (
             id SERIAL PRIMARY KEY,
             name VARCHAR(100) NOT NULL,

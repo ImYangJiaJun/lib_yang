@@ -8,6 +8,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// 流式游标默认每批拉取的行数。
 pub(crate) const DEFAULT_STREAM_BATCH_SIZE: usize = 1000;
 
+/// 事务级排他 advisory lock（阻塞）。
+const XACT_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock($1)";
+/// 事务级共享 advisory lock（阻塞）。
+const XACT_LOCK_SHARED_SQL: &str = "SELECT pg_advisory_xact_lock_shared($1)";
+/// 事务级排他 advisory lock（非阻塞）。
+const XACT_TRY_LOCK_SQL: &str = "SELECT pg_try_advisory_xact_lock($1)";
+/// 事务级共享 advisory lock（非阻塞）。
+const XACT_TRY_LOCK_SHARED_SQL: &str = "SELECT pg_try_advisory_xact_lock_shared($1)";
+
 /// 进程内游标名计数器。游标名只由本 crate 生成，不含外部输入。
 static STREAM_CURSOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -403,6 +412,28 @@ impl Transaction {
         self.select_with_optional_lock(query, Some(lock)).await
     }
 
+    /// 在当前事务中执行完整的行锁 SELECT：可指定 `FOR ... OF` 表列表、`NOWAIT`
+    /// 或 `SKIP LOCKED`（与 [`QueryBuilder::try_to_sql_with_lock`] 的 SQL 语义一致）。
+    ///
+    /// `nowait` 与 `skip_locked` 互斥，同时为 `true` 时返回
+    /// [`DbError::InvalidArgument`]；`ForUpdateSkipLocked` / `ForShareSkipLocked`
+    /// 隐含 `SKIP LOCKED`。锁冲突在 `NOWAIT` 下返回 SQLSTATE `55P03`，
+    /// 可通过 [`DbError::sqlstate`] 或 [`DbError::sql_error`] 识别。
+    pub async fn select_locked_with<T>(
+        &mut self,
+        query: QueryBuilder<'_>,
+        lock: crate::RowLock,
+        of: &[&crate::FieldRef],
+        nowait: bool,
+        skip_locked: bool,
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    {
+        let (sql, params) = query.render_with_lock(lock, of, nowait, skip_locked)?;
+        self.fetch_all_with_sql(&sql, &params).await
+    }
+
     async fn select_with_optional_lock<T>(
         &mut self,
         query: QueryBuilder<'_>,
@@ -412,6 +443,18 @@ impl Transaction {
         T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
     {
         let (sql, params) = query.render_for_transaction(lock)?;
+        self.fetch_all_with_sql(&sql, &params).await
+    }
+
+    /// 在当前事务连接上执行已渲染的参数化查询。
+    async fn fetch_all_with_sql<T>(
+        &mut self,
+        sql: &str,
+        params: &[crate::postgres::SqlValue],
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    {
         if self.enable_logging {
             log::debug!("事务中执行 SELECT: {}, 参数: {:?}", sql, params);
         }
@@ -419,8 +462,8 @@ impl Transaction {
             .tx
             .as_mut()
             .ok_or_else(|| DbError::TransactionError("事务已提交或回滚".to_string()))?;
-        let mut sql_query = sqlx::query_as::<_, T>(&sql);
-        for param in &params {
+        let mut sql_query = sqlx::query_as::<_, T>(sql);
+        for param in params {
             sql_query = crate::postgres::query_builder::bind_param(sql_query, param);
         }
         Ok(sql_query.fetch_all(&mut **tx).await?)
@@ -576,29 +619,65 @@ impl Transaction {
         }
     }
 
-    /// 获取事务级 advisory lock（`pg_advisory_xact_lock`），事务结束自动释放。
+    /// 获取事务级排他 advisory lock（`pg_advisory_xact_lock`），事务结束自动释放。
     ///
     /// 该调用会阻塞直到拿到锁；需要非阻塞语义请用
     /// [`try_advisory_xact_lock`](Self::try_advisory_xact_lock)。
     pub async fn advisory_xact_lock(&mut self, key: i64) -> Result<(), DbError> {
         let tx = self.active_tx()?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        sqlx::query(XACT_LOCK_SQL)
             .bind(key)
             .execute(&mut **tx)
             .await?;
         Ok(())
     }
 
-    /// 尝试获取事务级 advisory lock（`pg_try_advisory_xact_lock`），不阻塞。
+    /// 获取事务级共享 advisory lock（`pg_advisory_xact_lock_shared`），事务结束自动释放。
+    ///
+    /// 共享锁彼此不互斥，但与同 key 的排他锁互斥。
+    pub async fn advisory_xact_lock_shared(&mut self, key: i64) -> Result<(), DbError> {
+        let tx = self.active_tx()?;
+        sqlx::query(XACT_LOCK_SHARED_SQL)
+            .bind(key)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// 尝试获取事务级排他 advisory lock（`pg_try_advisory_xact_lock`），不阻塞。
     ///
     /// 返回 `true` 表示已持有锁，`false` 表示锁被其他会话占用。
     pub async fn try_advisory_xact_lock(&mut self, key: i64) -> Result<bool, DbError> {
         let tx = self.active_tx()?;
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        let acquired: bool = sqlx::query_scalar(XACT_TRY_LOCK_SQL)
             .bind(key)
             .fetch_one(&mut **tx)
             .await?;
         Ok(acquired)
+    }
+
+    /// 尝试获取事务级共享 advisory lock（`pg_try_advisory_xact_lock_shared`），不阻塞。
+    pub async fn try_advisory_xact_lock_shared(&mut self, key: i64) -> Result<bool, DbError> {
+        let tx = self.active_tx()?;
+        let acquired: bool = sqlx::query_scalar(XACT_TRY_LOCK_SHARED_SQL)
+            .bind(key)
+            .fetch_one(&mut **tx)
+            .await?;
+        Ok(acquired)
+    }
+
+    /// 在当前事务内执行多语句脚本（不新开事务）。
+    ///
+    /// 脚本经 [`split_sql_script`](crate::postgres::init::split_sql_script) 按
+    /// PostgreSQL 词法切分（识别单/双引号、行/块注释与 dollar-quote），函数体、
+    /// `DO` 块内的分号不会被误切。任一条语句失败时本方法返回错误，事务进入中止
+    /// 态，需由调用方 `rollback()`（或回滚到保存点）。
+    ///
+    /// 返回执行的语句条数（空脚本返回 0）。
+    pub async fn execute_script_in_transaction(&mut self, script: &str) -> Result<usize, DbError> {
+        let statements = crate::postgres::init::split_sql_script(script)?;
+        crate::postgres::init::execute_statements(self, &statements).await?;
+        Ok(statements.len())
     }
 
     /// 在当前事务内以服务端游标流式读取结果集（默认每批 1000 行）。
@@ -868,7 +947,7 @@ mod tests {
             "RELEASE SAVEPOINT \"sp_1\""
         );
 
-        for invalid in ["", "1sp", "sp; DROP TABLE t", "sp\"x"] {
+        for invalid in ["", "1sp", "sp; DROP TABLE t"] {
             assert!(
                 matches!(
                     savepoint_statement("SAVEPOINT", invalid),
@@ -877,6 +956,27 @@ mod tests {
                 "保存点名应拒绝 {invalid:?}"
             );
         }
+
+        // P1-28 起内嵌双引号是合法标识符（渲染为 ""），不再被拒绝。
+        assert_eq!(
+            savepoint_statement("SAVEPOINT", "sp\"x").unwrap(),
+            "SAVEPOINT \"sp\"\"x\""
+        );
+    }
+
+    /// P1-18：共享/排他、阻塞/非阻塞的事务级 advisory lock 必须用对应函数。
+    #[test]
+    fn advisory_xact_lock_sql_covers_shared_and_exclusive() {
+        assert_eq!(XACT_LOCK_SQL, "SELECT pg_advisory_xact_lock($1)");
+        assert_eq!(
+            XACT_LOCK_SHARED_SQL,
+            "SELECT pg_advisory_xact_lock_shared($1)"
+        );
+        assert_eq!(XACT_TRY_LOCK_SQL, "SELECT pg_try_advisory_xact_lock($1)");
+        assert_eq!(
+            XACT_TRY_LOCK_SHARED_SQL,
+            "SELECT pg_try_advisory_xact_lock_shared($1)"
+        );
     }
 
     #[test]

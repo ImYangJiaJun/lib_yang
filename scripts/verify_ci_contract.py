@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+import sys
 from pathlib import Path
 
 
@@ -95,6 +97,20 @@ REQUIRED_FRAGMENTS = (
     "cargo test -p yang-db --test integration_pg_phase_b_copy_listen --locked -- --ignored --test-threads=1",
     "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_phase_c --locked -- --ignored --test-threads=1",
     "cargo test -p yang-db --no-default-features --features postgres --test proptest_pg_types --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_p0p1_wave1 --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave1 --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_query --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_errors --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_read --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_write --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_addaction --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_contract --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_query_features --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_guards --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_runtime --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave3 --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1",
+    "cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_codec --locked -- --ignored --test-threads=1",
     "--test-threads=1",
 )
 
@@ -103,6 +119,28 @@ def missing_contract_fragments(text: str) -> list[str]:
     """返回 CI 文本中缺失的必需契约片段。"""
 
     return [fragment for fragment in REQUIRED_FRAGMENTS if fragment not in text]
+
+
+def integration_test_targets() -> tuple[str, ...]:
+    """从本地 runner 的 integration 命令提取 --test 目标。"""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import run_ci
+
+    targets = []
+    for command in run_ci.INTEGRATION_COMMANDS:
+        argv = command.argv
+        for index, argument in enumerate(argv[:-1]):
+            if argument == "--test":
+                targets.append(argv[index + 1])
+    return tuple(dict.fromkeys(targets))
+
+
+def missing_integration_targets(text: str) -> list[str]:
+    """返回 workflow 文本中缺失的本地 integration 目标。"""
+
+    present = set(re.findall(r"--test\s+(\S+)", text))
+    return [target for target in integration_test_targets() if target not in present]
 
 
 def run_self_test() -> None:
@@ -115,6 +153,14 @@ def run_self_test() -> None:
         adversarial_fixture = valid_fixture.replace(fragment, "")
         missing = missing_contract_fragments(adversarial_fixture)
         assert fragment in missing, f"未检测到被删除的 CI 契约: {fragment}"
+
+    targets = integration_test_targets()
+    target_fixture = "\n".join(f"--test {target}" for target in targets)
+    assert not missing_integration_targets(target_fixture)
+    for target in targets:
+        adversarial_fixture = target_fixture.replace(f"--test {target}", "", 1)
+        missing = missing_integration_targets(adversarial_fixture)
+        assert target in missing, f"未检测到被删除的 integration 目标: {target}"
 
 
 def main() -> int:
@@ -134,9 +180,12 @@ def main() -> int:
 
     text = args.workflow.read_text(encoding="utf-8")
     missing = missing_contract_fragments(text)
-    if missing:
+    missing_targets = missing_integration_targets(text)
+    if missing or missing_targets:
         for fragment in missing:
             print(f"missing CI contract fragment: {fragment}")
+        for target in missing_targets:
+            print(f"missing local integration target in CI: {target}")
         return 1
 
     print(f"CI contract verified: {args.workflow}")

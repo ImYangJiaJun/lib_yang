@@ -4,14 +4,14 @@
 //! [`super::render`] 的既有渲染，PostgreSQL 分支输出双引号标识符、无 `ENGINE`
 //! 与内联 `KEY` 的 DDL。数据库访问由 [`super::driver`] 分派。
 
-use super::model::DesiredIndex;
+use super::model::{DesiredIndex, ExistingTableSchema};
 use crate::error::BaseError;
 use crate::table::{
-    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, SchemaColumn, SchemaIssueKind,
-    SchemaValidationReport, TableConfig, TableDefinition,
+    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, SchemaIssueKind, SchemaValidationReport,
+    TableConfig, TableDefinition,
 };
 #[cfg(feature = "postgres")]
-use crate::table::{SchemaIssue, MAX_VARCHAR_LENGTH};
+use crate::table::{SchemaColumn, SchemaIssue, POSTGRES_MAX_VARCHAR_LENGTH};
 use std::collections::BTreeMap;
 
 #[cfg(feature = "mysql")]
@@ -65,6 +65,67 @@ impl SchemaDialect {
         }
     }
 
+    /// 校验并引用 PostgreSQL collation 名称。
+    ///
+    /// collation 名称允许 ICU 的连字符形式（如 `en-US-x-icu`）与 libc 的点号形式
+    /// （如 `en_US.utf8`），因此不能直接复用只接受 `[A-Za-z0-9_]` 的标识符校验。
+    /// 这里把整个名称当作**单个**标识符双引号包裹（点号是名称的一部分，不是
+    /// schema 限定符），仍拒绝引号/NUL/空白/分号并限制 63 字节。
+    /// 本方法不支持 `schema.collation` 限定写法。
+    ///
+    /// 大小写任意的 `default` 统一渲染为 `"default"`：PostgreSQL 只识别小写
+    /// `COLLATE "default"`，`"DEFAULT"`/`"Default"` 会报 42704；而归一化比较
+    /// 已把该名称视为“类型默认”，两者必须一致。
+    #[cfg(feature = "postgres")]
+    pub(super) fn quote_collation(self, collation: &str) -> Result<String, BaseError> {
+        let trimmed = collation.trim();
+        if trimmed.is_empty()
+            || trimmed.chars().any(|character| {
+                character == '"'
+                    || character == '\0'
+                    || character.is_whitespace()
+                    || character == ';'
+            })
+        {
+            return Err(BaseError::ConfigError(format!(
+                "非法 collation 名称: {collation:?}"
+            )));
+        }
+        ensure_postgres_identifier_bytes("collation", trimmed)?;
+        if trimmed.eq_ignore_ascii_case("default") {
+            return Ok("\"default\"".to_string());
+        }
+        Ok(format!("\"{trimmed}\""))
+    }
+
+    /// 是否支持列注释同步；MySQL 需要在 MODIFY COLUMN 中重述完整类型，暂不支持。
+    pub(super) fn supports_column_comments(self) -> bool {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => false,
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => true,
+        }
+    }
+
+    /// 渲染 PostgreSQL `COMMENT ON COLUMN`。
+    pub(super) fn render_comment_on_column(
+        self,
+        table: &TableConfig,
+        field: &FieldConfig,
+    ) -> Result<String, BaseError> {
+        let comment = field
+            .comment
+            .as_deref()
+            .ok_or_else(|| BaseError::ConfigError(format!("字段 {} 未声明注释", field.name)))?;
+        Ok(format!(
+            "COMMENT ON COLUMN {}.{} IS {}",
+            self.quote_table(&table.table_name)?,
+            self.quote_identifier(&field.name)?,
+            self.quote_string(comment)
+        ))
+    }
+
     /// 预检 SQL 中把主键/列值转成文本的 CAST 目标类型。
     pub(super) fn cast_text_target(self) -> &'static str {
         match self {
@@ -96,6 +157,7 @@ impl SchemaDialect {
                 table.table_name, table.primary_key
             )));
         }
+        self.validate_identifier_limits(table)?;
         for field in table.fields.values() {
             self.quote_identifier(&field.name)?;
             if field.auto_increment
@@ -113,9 +175,73 @@ impl SchemaDialect {
                     table.table_name, field.name
                 )));
             }
+            match self {
+                #[cfg(feature = "mysql")]
+                Self::MySql => {
+                    if field.generated.is_some() || field.collation.is_some() {
+                        return Err(BaseError::ConfigError(format!(
+                            "表 {} 的字段 {} 使用了 PostgreSQL 专属的 generated/collation 声明",
+                            table.table_name, field.name
+                        )));
+                    }
+                }
+                #[cfg(feature = "postgres")]
+                Self::PostgreSql => {
+                    if field.generated.is_some() && field.auto_increment {
+                        return Err(BaseError::ConfigError(format!(
+                            "表 {} 的生成列 {} 不能同时声明自增",
+                            table.table_name, field.name
+                        )));
+                    }
+                    if let Some(collation) = &field.collation {
+                        self.quote_collation(collation)?;
+                    }
+                }
+            }
             let _ = self.render_column(field)?;
         }
         let _ = self.desired_indexes(table)?;
+        let _ = self.desired_checks(table)?;
+        Ok(())
+    }
+
+    /// PostgreSQL 的标识符上限是 63 字节（NUL 终止），超长会被服务端静默截断。
+    ///
+    /// 用户显式声明的标识符一律 fail-closed；自动生成的索引名在 `desired_indexes`
+    /// 中用稳定 hash 截断，避免超长表名/列名生成不可复现的名字。
+    fn validate_identifier_limits(self, table: &TableConfig) -> Result<(), BaseError> {
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::PostgreSql) {
+            for part in table.table_name.split('.') {
+                ensure_postgres_identifier_bytes("表名", part)?;
+            }
+            for field in table.fields.values() {
+                ensure_postgres_identifier_bytes("字段名", &field.name)?;
+            }
+            for index in table.unique_indexes.iter().chain(table.indexes.iter()) {
+                if let Some(name) = &index.name {
+                    ensure_postgres_identifier_bytes("索引名", name)?;
+                }
+            }
+            for check in &table.checks {
+                ensure_postgres_identifier_bytes("约束名", &check.name)?;
+            }
+            for foreign_key in &table.foreign_keys {
+                ensure_postgres_identifier_bytes("约束名", &foreign_key.name)?;
+                for part in foreign_key.referenced_table.split('.') {
+                    ensure_postgres_identifier_bytes("外键目标表名", part)?;
+                }
+                for column in foreign_key
+                    .columns
+                    .iter()
+                    .chain(foreign_key.referenced_columns.iter())
+                {
+                    ensure_postgres_identifier_bytes("外键列名", column)?;
+                }
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = table;
         Ok(())
     }
 
@@ -153,10 +279,49 @@ impl SchemaDialect {
             }
             normalized.insert(definition.name(), (*definition, signature));
         }
-        Ok(normalized
+        let definitions = normalized
             .into_values()
             .map(|(definition, _)| definition)
-            .collect())
+            .collect::<Vec<_>>();
+        self.validate_index_namespace(&definitions)?;
+        Ok(definitions)
+    }
+
+    /// PostgreSQL 索引名在 schema 内唯一；跨表重复会让第二次 `CREATE INDEX` 失败。
+    pub(super) fn validate_index_namespace(
+        self,
+        definitions: &[&TableDefinition],
+    ) -> Result<(), BaseError> {
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::PostgreSql) {
+            let mut seen: BTreeMap<(Option<String>, String), String> = BTreeMap::new();
+            for definition in definitions {
+                let config = definition.shared_config();
+                let table = config.as_ref();
+                let schema = table
+                    .table_name
+                    .split_once('.')
+                    .map(|(schema, _)| schema.to_string());
+                for index in self.desired_indexes(table)? {
+                    let key = (schema.clone(), index.name.clone());
+                    match seen.get(&key) {
+                        Some(existing_table) if existing_table != &table.table_name => {
+                            return Err(BaseError::ConfigError(format!(
+                                "索引名 {} 在同一 schema 内被表 {} 与 {} 重复使用",
+                                index.name, existing_table, table.table_name
+                            )));
+                        }
+                        Some(_) => {}
+                        None => {
+                            seen.insert(key, table.table_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = definitions;
+        Ok(())
     }
 
     /// 建表需要的全部语句。
@@ -175,7 +340,7 @@ impl SchemaDialect {
             Self::PostgreSql => {
                 let mut statements = vec![self.render_create_table(table, include_foreign_keys)?];
                 for index in self.desired_indexes(table)? {
-                    statements.push(self.render_create_index_on_table(table, &index)?);
+                    statements.push(self.render_create_index_on_table(table, &index, false)?);
                 }
                 Ok(statements)
             }
@@ -203,8 +368,8 @@ impl SchemaDialect {
                     "PRIMARY KEY ({})",
                     self.quote_identifier(&table.primary_key)?
                 ));
-                for check in &table.checks {
-                    definitions.push(self.render_check(check)?);
+                for check in self.desired_checks(table)? {
+                    definitions.push(self.render_check(&check)?);
                 }
                 if include_foreign_keys {
                     for foreign_key in &table.foreign_keys {
@@ -228,13 +393,21 @@ impl SchemaDialect {
             #[cfg(feature = "postgres")]
             Self::PostgreSql => {
                 let sql_type = self.render_type(&field.field_type, &field.name)?;
-                let mut definition = format!(
-                    "{} {sql_type} {}",
-                    self.quote_identifier(&field.name)?,
-                    if field.required { "NOT NULL" } else { "NULL" }
-                );
+                let mut definition = format!("{} {sql_type}", self.quote_identifier(&field.name)?);
+                if let Some(collation) = &field.collation {
+                    definition.push_str(" COLLATE ");
+                    definition.push_str(&self.quote_collation(collation)?);
+                }
+                definition.push(' ');
+                definition.push_str(if field.required { "NOT NULL" } else { "NULL" });
                 if field.auto_increment {
                     definition.push_str(" GENERATED BY DEFAULT AS IDENTITY");
+                }
+                if let Some(expression) = &field.generated {
+                    definition.push_str(" GENERATED ALWAYS AS (");
+                    definition.push_str(expression);
+                    definition.push_str(") STORED");
+                    return Ok(definition);
                 }
                 if let Some(default) = &field.default_value {
                     if default.is_null() && field.required {
@@ -262,12 +435,15 @@ impl SchemaDialect {
         field_name: &str,
     ) -> Result<String, BaseError> {
         match field_type {
-            // 防御性断言：构建期已强制同一上界，保留 Err 避免绕过构建期渲染非法 DDL。
-            FieldType::String { max_length } if (1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
+            // 防御性断言：构建期已强制同一上界；PostgreSQL 方言按自己的上限再次
+            // 校验，避免双 feature 构建受 MySQL 上界影响。
+            FieldType::String { max_length }
+                if (1..=POSTGRES_MAX_VARCHAR_LENGTH).contains(max_length) =>
+            {
                 Ok(format!("VARCHAR({max_length})"))
             }
             FieldType::String { max_length } => Err(BaseError::ConfigError(format!(
-                "字段 {} 的 VARCHAR 长度必须在 1..={MAX_VARCHAR_LENGTH}: {}",
+                "字段 {} 的 VARCHAR 长度必须在 1..={POSTGRES_MAX_VARCHAR_LENGTH}: {}",
                 field_name, max_length
             ))),
             FieldType::Integer => Ok("INTEGER".to_string()),
@@ -282,11 +458,41 @@ impl SchemaDialect {
             FieldType::Timestamp => Ok("BIGINT".to_string()),
             FieldType::Json => Ok("JSONB".to_string()),
             FieldType::Text => Ok("TEXT".to_string()),
-            // PostgreSQL 没有内联 ENUM；静默降级会丢失取值约束，因此 fail-closed。
-            FieldType::Enum { .. } => Err(BaseError::ConfigError(format!(
-                "PostgreSQL schema 同步暂不支持枚举字段 {}；请改用 Text 字段加显式 CHECK",
-                field_name
-            ))),
+            // PostgreSQL 没有内联 ENUM；用 varchar + CHECK 表达，取值约束由
+            // `desired_checks` 生成的隐式 CHECK 保证，不再 fail-closed。
+            FieldType::Enum { values } => {
+                if values.is_empty() || values.iter().any(|value| value.is_empty()) {
+                    return Err(BaseError::ConfigError(format!(
+                        "枚举字段 {} 必须声明非空值",
+                        field_name
+                    )));
+                }
+                let max_length = values
+                    .iter()
+                    .map(|value| value.chars().count())
+                    .max()
+                    .unwrap_or(1)
+                    .max(1);
+                if max_length > POSTGRES_MAX_VARCHAR_LENGTH {
+                    return Err(BaseError::ConfigError(format!(
+                        "枚举字段 {} 的取值超过 VARCHAR 上限 {POSTGRES_MAX_VARCHAR_LENGTH}",
+                        field_name
+                    )));
+                }
+                Ok(format!("VARCHAR({max_length})"))
+            }
+            FieldType::Uuid => Ok("UUID".to_string()),
+            FieldType::Bytes => Ok("BYTEA".to_string()),
+            // 数组元素类型递归渲染；嵌套数组与 JSON 元素无法稳定映射为数据库
+            // 数组字面量，明确拒绝（构建期已拦截，这里是渲染期兜底）。
+            FieldType::Array(element) => match element.as_ref() {
+                FieldType::Array(_) | FieldType::Json => Err(BaseError::ConfigError(format!(
+                    "字段 {} 的数组元素类型 {} 不受支持：仅允许标量元素",
+                    field_name,
+                    element.display_name()
+                ))),
+                element => Ok(format!("{}[]", self.render_type(element, field_name)?)),
+            },
         }
     }
 
@@ -325,11 +531,12 @@ impl SchemaDialect {
         existing_name: &str,
         field: &FieldConfig,
         issues: &[SchemaIssueKind],
+        existing_collation: Option<&str>,
     ) -> Result<Vec<String>, BaseError> {
         match self {
             #[cfg(feature = "mysql")]
             Self::MySql => {
-                let _ = (existing_name, issues);
+                let _ = (existing_name, issues, existing_collation);
                 Ok(vec![format!(
                     "ALTER TABLE {} MODIFY COLUMN {}",
                     self.quote_table(&table.table_name)?,
@@ -341,11 +548,21 @@ impl SchemaDialect {
                 let quoted_table = self.quote_table(&table.table_name)?;
                 let quoted_column = self.quote_identifier(existing_name)?;
                 let mut statements = Vec::new();
-                if issues.contains(&SchemaIssueKind::IncompatibleType) {
+                let collation_changed =
+                    !collations_equal(field.collation.as_deref(), existing_collation);
+                if issues.contains(&SchemaIssueKind::IncompatibleType) || collation_changed {
                     let sql_type = self.render_type(&field.field_type, &field.name)?;
+                    let collate = match &field.collation {
+                        Some(collation) => {
+                            format!(" COLLATE {}", self.quote_collation(collation)?)
+                        }
+                        // 显式 collation 被移除时重置到类型默认排序规则。
+                        None if existing_collation.is_some() => " COLLATE \"default\"".to_string(),
+                        None => String::new(),
+                    };
                     statements.push(format!(
                         "ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} \
-                         TYPE {sql_type} USING {quoted_column}::{sql_type}"
+                         TYPE {sql_type}{collate} USING {quoted_column}::{sql_type}"
                     ));
                 }
                 if issues.contains(&SchemaIssueKind::NullabilityMismatch) {
@@ -384,12 +601,13 @@ impl SchemaDialect {
         ))
     }
 
-    /// 渲染在新建表上创建索引（PostgreSQL 不允许内联 KEY）。
+    /// 渲染索引创建。PostgreSQL 不允许内联 KEY；`concurrent` 用于已有表在线建索引。
     #[cfg(feature = "postgres")]
     pub(super) fn render_create_index_on_table(
         self,
         table: &TableConfig,
         index: &DesiredIndex,
+        concurrent: bool,
     ) -> Result<String, BaseError> {
         let columns = index
             .columns
@@ -402,8 +620,15 @@ impl SchemaDialect {
         } else {
             "INDEX"
         };
+        let concurrently = if concurrent { " CONCURRENTLY" } else { "" };
+        // PG15+：NULLS NOT DISTINCT 位于列清单之后。
+        let nulls_clause = if index.nulls_not_distinct {
+            " NULLS NOT DISTINCT"
+        } else {
+            ""
+        };
         Ok(format!(
-            "CREATE {kind} {} ON {} ({columns})",
+            "CREATE {kind}{concurrently} {} ON {} ({columns}){nulls_clause}",
             self.quote_identifier(&index.name)?,
             self.quote_table(&table.table_name)?
         ))
@@ -436,8 +661,32 @@ impl SchemaDialect {
                 ))
             }
             #[cfg(feature = "postgres")]
-            Self::PostgreSql => self.render_create_index_on_table(table, index),
+            Self::PostgreSql => self.render_create_index_on_table(table, index, true),
         }
+    }
+
+    /// 给已存在表添加索引是否必须脱离事务执行（PostgreSQL `CONCURRENTLY`）。
+    pub(super) fn add_index_is_concurrent(self) -> bool {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => false,
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => true,
+        }
+    }
+
+    /// 渲染 `DROP INDEX CONCURRENTLY`（用于自愈 INVALID 索引）。
+    pub(super) fn render_drop_index_concurrently(
+        self,
+        table: &TableConfig,
+        index_name: &str,
+    ) -> Result<String, BaseError> {
+        let quoted_index = self.quote_identifier(index_name)?;
+        let qualified = match table.table_name.split_once('.') {
+            Some((schema, _)) => format!("{}.{quoted_index}", self.quote_identifier(schema)?),
+            None => quoted_index,
+        };
+        Ok(format!("DROP INDEX CONCURRENTLY IF EXISTS {qualified}"))
     }
 
     /// 渲染 CHECK 约束。
@@ -455,16 +704,60 @@ impl SchemaDialect {
     }
 
     /// 渲染 ADD CONSTRAINT ... CHECK。
+    ///
+    /// PostgreSQL 先 `NOT VALID` 再 `VALIDATE CONSTRAINT`（在线 DDL：添加阶段只取
+    /// 短暂 `ACCESS EXCLUSIVE`，验证阶段仅 `SHARE UPDATE EXCLUSIVE`）；MySQL 单语句。
     pub(super) fn render_add_check(
         self,
         table: &TableConfig,
         check: &CheckConfig,
+    ) -> Result<Vec<String>, BaseError> {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => Ok(vec![format!(
+                "ALTER TABLE {} ADD {}",
+                self.quote_table(&table.table_name)?,
+                self.render_check(check)?
+            )]),
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => {
+                let quoted_table = self.quote_table(&table.table_name)?;
+                let quoted_name = self.quote_identifier(&check.name)?;
+                Ok(vec![
+                    format!(
+                        "ALTER TABLE {quoted_table} ADD CONSTRAINT {quoted_name} CHECK ({}) NOT VALID",
+                        check.expression
+                    ),
+                    format!("ALTER TABLE {quoted_table} VALIDATE CONSTRAINT {quoted_name}"),
+                ])
+            }
+        }
+    }
+
+    /// 渲染 `VALIDATE CONSTRAINT`（仅 PostgreSQL）。
+    ///
+    /// 用于在线 DDL 与自愈：CHECK / 外键先以 `NOT VALID` 添加，或既有约束仍处于
+    /// `NOT VALID` 状态时，单独执行验证；该语句必须在事务提交后以 autocommit 执行。
+    pub(super) fn render_validate_constraint(
+        self,
+        table: &TableConfig,
+        constraint_name: &str,
     ) -> Result<String, BaseError> {
-        Ok(format!(
-            "ALTER TABLE {} ADD {}",
-            self.quote_table(&table.table_name)?,
-            self.render_check(check)?
-        ))
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => {
+                let _ = table;
+                Err(BaseError::ConfigError(format!(
+                    "MySQL 不支持单独验证约束: {constraint_name}"
+                )))
+            }
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => Ok(format!(
+                "ALTER TABLE {} VALIDATE CONSTRAINT {}",
+                self.quote_table(&table.table_name)?,
+                self.quote_identifier(constraint_name)?
+            )),
+        }
     }
 
     /// 渲染外键约束。
@@ -499,16 +792,47 @@ impl SchemaDialect {
     }
 
     /// 渲染 ADD CONSTRAINT ... FOREIGN KEY。
+    ///
+    /// 与 CHECK 一致，PostgreSQL 使用 `NOT VALID` + `VALIDATE CONSTRAINT` 降低
+    /// 已有表加外键时的锁级别；MySQL 保持单语句。
     pub(super) fn render_add_foreign_key(
         self,
         table: &TableConfig,
         foreign_key: &ForeignKeyConfig,
-    ) -> Result<String, BaseError> {
-        Ok(format!(
-            "ALTER TABLE {} ADD {}",
-            self.quote_table(&table.table_name)?,
-            self.render_foreign_key(foreign_key)?
-        ))
+    ) -> Result<Vec<String>, BaseError> {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => Ok(vec![format!(
+                "ALTER TABLE {} ADD {}",
+                self.quote_table(&table.table_name)?,
+                self.render_foreign_key(foreign_key)?
+            )]),
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => {
+                let quoted_table = self.quote_table(&table.table_name)?;
+                let quoted_name = self.quote_identifier(&foreign_key.name)?;
+                let columns = foreign_key
+                    .columns
+                    .iter()
+                    .map(|column| self.quote_identifier(column))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                let referenced_columns = foreign_key
+                    .referenced_columns
+                    .iter()
+                    .map(|column| self.quote_identifier(column))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                Ok(vec![
+                    format!(
+                        "ALTER TABLE {quoted_table} ADD CONSTRAINT {quoted_name} FOREIGN KEY \
+                         ({columns}) REFERENCES {} ({referenced_columns}) NOT VALID",
+                        self.quote_table(&foreign_key.referenced_table)?
+                    ),
+                    format!("ALTER TABLE {quoted_table} VALIDATE CONSTRAINT {quoted_name}"),
+                ])
+            }
+        }
     }
 
     /// 计算声明的索引（含自动命名与名称长度校验）。
@@ -542,27 +866,65 @@ impl SchemaDialect {
                             }
                         }
                         let prefix = if unique { "uk" } else { "idx" };
-                        let name = index.name.clone().unwrap_or_else(|| {
-                            format!("{prefix}_{}_{}", table.table_name, index.fields.join("_"))
-                        });
-                        // PostgreSQL 标识符上限是 63 字节（NUL 终止），超长会被服务端
-                        // 静默截断，导致下次同步看到不同索引名而反复尝试创建，必须提前拒绝。
-                        if name.len() > 63 {
-                            return Err(BaseError::ConfigError(format!(
-                                "索引名超过 PostgreSQL 63 字节限制，请显式命名: {name}"
-                            )));
-                        }
+                        let name = match &index.name {
+                            Some(explicit) => {
+                                ensure_postgres_identifier_bytes("索引名", explicit)?;
+                                explicit.clone()
+                            }
+                            None => truncate_generated_identifier(
+                                format!(
+                                    "{prefix}_{}_{}",
+                                    table_name_part(&table.table_name),
+                                    index.fields.join("_")
+                                ),
+                                63,
+                            ),
+                        };
                         self.quote_identifier(&name)?;
                         desired.push(DesiredIndex {
                             name,
                             unique,
                             columns: index.fields.clone(),
+                            nulls_not_distinct: index.nulls_not_distinct,
                         });
                     }
                 }
                 Ok(desired)
             }
         }
+    }
+
+    /// 实际需要落库的 CHECK 约束：显式声明 + PostgreSQL 枚举字段的隐式 CHECK。
+    ///
+    /// 枚举在 PostgreSQL 下渲染为 `varchar + CHECK`，隐式约束必须和显式约束一样
+    /// 参与建表、偏移检测与二次同步幂等判断。
+    pub(super) fn desired_checks(self, table: &TableConfig) -> Result<Vec<CheckConfig>, BaseError> {
+        let checks = table.checks.clone();
+        #[cfg(feature = "postgres")]
+        let mut checks = checks;
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::PostgreSql) {
+            let mut fields: Vec<&FieldConfig> = table.fields.values().collect();
+            fields.sort_by(|left, right| left.name.cmp(&right.name));
+            for field in fields {
+                let FieldType::Enum { values } = &field.field_type else {
+                    continue;
+                };
+                let allowed = values
+                    .iter()
+                    .map(|value| self.quote_string(value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                checks.push(CheckConfig {
+                    name: truncate_generated_identifier(
+                        format!("chk_{}_{}", table_name_part(&table.table_name), field.name),
+                        63,
+                    ),
+                    expression: format!("{} IN ({allowed})", self.quote_identifier(&field.name)?),
+                });
+            }
+        }
+        Ok(checks)
     }
 
     /// 归一化 CHECK 表达式用于幂等比较。
@@ -615,15 +977,96 @@ impl SchemaDialect {
     pub(super) fn validate_schema(
         self,
         table: &TableConfig,
-        columns: &[SchemaColumn],
+        existing: &ExistingTableSchema,
     ) -> SchemaValidationReport {
         match self {
             #[cfg(feature = "mysql")]
-            Self::MySql => table.validate_schema(columns),
+            Self::MySql => table.validate_schema(&existing.columns),
             #[cfg(feature = "postgres")]
-            Self::PostgreSql => validate_postgres_schema(table, columns),
+            Self::PostgreSql => validate_postgres_schema(table, existing),
         }
     }
+}
+
+/// 取表名中的裸表部分；自动生成的索引/约束名不能包含 schema 限定符的点。
+#[cfg(feature = "postgres")]
+fn table_name_part(table_name: &str) -> &str {
+    table_name.rsplit('.').next().unwrap_or(table_name)
+}
+
+/// 校验单个标识符不超过 PostgreSQL 的 63 字节上限（用户显式标识符 fail-closed）。
+#[cfg(feature = "postgres")]
+fn ensure_postgres_identifier_bytes(kind: &str, identifier: &str) -> Result<(), BaseError> {
+    if identifier.len() > 63 {
+        return Err(BaseError::ConfigError(format!(
+            "{kind}超过 PostgreSQL 63 字节限制: {identifier}（{} 字节）",
+            identifier.len()
+        )));
+    }
+    Ok(())
+}
+
+/// 用稳定 hash 截断自动生成的标识符，保证多次同步得到同一个名字。
+///
+/// 截断保留前缀并用 FNV-1a 的 8 位十六进制后缀标识原值，避免不同表/列的
+/// 自动名在截断后碰撞。
+#[cfg(feature = "postgres")]
+fn truncate_generated_identifier(name: String, max_bytes: usize) -> String {
+    if name.len() <= max_bytes {
+        return name;
+    }
+    let hash = format!("{:08x}", fnv1a_64(name.as_bytes()) as u32);
+    let keep = max_bytes.saturating_sub(hash.len() + 1);
+    let mut prefix = String::new();
+    for character in name.chars() {
+        if prefix.len() + character.len_utf8() > keep {
+            break;
+        }
+        prefix.push(character);
+    }
+    format!("{prefix}_{hash}")
+}
+
+/// FNV-1a 64 位哈希；仅用于稳定生成标识符，不追求密码学强度。
+#[cfg(feature = "postgres")]
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// 比较声明侧与读回侧 collation；`None` 表示未显式指定（类型默认）。
+///
+/// 只规范化真正的前缀：去掉开头的 `pg_catalog.` 与首尾双引号；名称等于
+/// `default`（大小写不敏感）时归一为 `None` —— inspect 在
+/// `attcollation == typcollation` 时返回 NULL，声明 `COLLATE "default"` 必须
+/// 与之相等，否则每次同步都会整表重写。其余名称按 PostgreSQL 引号标识符语义
+/// **精确比较**（`c` 与 `C` 是不同 collation）。点号是 libc collation 名称的
+/// 一部分（`en_US.utf8`），不能再按最后一个点截断，否则 `en_US.utf8` 与
+/// `de_DE.utf8` 会被误判为相等。
+#[cfg(feature = "postgres")]
+pub(super) fn collations_equal(desired: Option<&str>, actual: Option<&str>) -> bool {
+    normalized_collation(desired) == normalized_collation(actual)
+}
+
+#[cfg(feature = "postgres")]
+fn normalized_collation(name: Option<&str>) -> Option<String> {
+    let normalized = normalize_collation_name(name?);
+    if normalized.eq_ignore_ascii_case("default") {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn normalize_collation_name(name: &str) -> String {
+    let trimmed = name.trim().trim_matches('"');
+    let without_catalog = trimmed.strip_prefix("pg_catalog.").unwrap_or(trimmed);
+    without_catalog.trim_matches('"').to_string()
 }
 
 /// 渲染 PostgreSQL 默认值。
@@ -643,8 +1086,9 @@ fn render_postgres_default(value: &serde_json::Value) -> Result<String, BaseErro
 #[cfg(feature = "postgres")]
 fn validate_postgres_schema(
     table: &TableConfig,
-    columns: &[SchemaColumn],
+    existing: &ExistingTableSchema,
 ) -> SchemaValidationReport {
+    let columns = &existing.columns;
     let mut fields: Vec<_> = table.fields.values().collect();
     fields.sort_by(|left, right| left.name.cmp(&right.name));
     let mut issues = Vec::new();
@@ -684,10 +1128,8 @@ fn validate_postgres_schema(
                 }),
             });
         }
-        let actual_auto_increment = column
-            .column_type
-            .split_whitespace()
-            .any(|part| part.eq_ignore_ascii_case("auto_increment"));
+        // 自增判定完全来自 pg_catalog 的 identity / serial 集合，不解析 column_type 文本。
+        let actual_auto_increment = existing.identity_columns.contains(&field.name);
         if field.auto_increment != actual_auto_increment {
             issues.push(SchemaIssue {
                 field: field.name.clone(),
@@ -702,6 +1144,48 @@ fn validate_postgres_schema(
                 } else {
                     "无 IDENTITY".to_string()
                 }),
+            });
+        }
+        let actual_generated = existing.generated_columns.get(&field.name);
+        match (&field.generated, actual_generated) {
+            (None, None) => {}
+            (Some(expected), Some(actual)) => {
+                if normalize_postgres_check_expression(expected)
+                    != normalize_postgres_check_expression(actual)
+                {
+                    issues.push(SchemaIssue {
+                        field: field.name.clone(),
+                        kind: SchemaIssueKind::IncompatibleType,
+                        expected: format!("GENERATED ALWAYS AS ({expected}) STORED"),
+                        actual: Some(format!("GENERATED ALWAYS AS ({actual}) STORED")),
+                    });
+                }
+            }
+            (Some(expected), None) => issues.push(SchemaIssue {
+                field: field.name.clone(),
+                kind: SchemaIssueKind::IncompatibleType,
+                expected: format!("GENERATED ALWAYS AS ({expected}) STORED"),
+                actual: Some("普通列".to_string()),
+            }),
+            (None, Some(_)) => issues.push(SchemaIssue {
+                field: field.name.clone(),
+                kind: SchemaIssueKind::IncompatibleType,
+                expected: "普通列".to_string(),
+                actual: Some("生成列".to_string()),
+            }),
+        }
+        let existing_collation = existing.collations.get(&field.name).map(String::as_str);
+        if !collations_equal(field.collation.as_deref(), existing_collation) {
+            issues.push(SchemaIssue {
+                field: field.name.clone(),
+                kind: SchemaIssueKind::IncompatibleType,
+                expected: field
+                    .collation
+                    .clone()
+                    .unwrap_or_else(|| "默认 collation".to_string()),
+                actual: Some(
+                    existing_collation.map_or_else(|| "默认 collation".to_string(), str::to_string),
+                ),
             });
         }
         let expected_default =
@@ -752,7 +1236,93 @@ fn postgres_type_compatible(field_type: &FieldType, column: &SchemaColumn) -> bo
         FieldType::Timestamp => matches!(data_type, "bigint" | "int8"),
         FieldType::Json => matches!(data_type, "json" | "jsonb"),
         FieldType::Text => data_type == "text",
-        FieldType::Enum { .. } => matches!(data_type, "enum" | "text" | "varchar" | "char"),
+        FieldType::Enum { values } => {
+            let needed = values
+                .iter()
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or(1)
+                .max(1) as u64;
+            match data_type {
+                "text" => true,
+                "varchar" | "char" => column.max_length.is_some_and(|actual| actual >= needed),
+                _ => false,
+            }
+        }
+        FieldType::Uuid => data_type == "uuid",
+        FieldType::Bytes => data_type == "bytea",
+        // 数组的 data_type 由 introspection 归一化为 `<内部元素名>[]`；未知元素
+        // 类型保留 `_xxx` 原名，永远不匹配，从而 fail-closed。元素级修饰
+        // （varchar 长度 / numeric 精度）只存在于完整列类型中，需单独比较。
+        FieldType::Array(element) => {
+            data_type == format!("{}[]", postgres_internal_type_name(element))
+                && postgres_array_element_type_compatible(element, &column.column_type)
+        }
+    }
+}
+
+/// 比较数组列的元素长度/精度：`character varying(10)[]`、`numeric(12,3)[]`。
+///
+/// `data_type` 只保留 `varchar[]` / `decimal[]` 这样的元素基名，元素上限与
+/// 精度必须从 `column_type` 解析；元素类型未声明修饰时视为兼容。
+#[cfg(feature = "postgres")]
+fn postgres_array_element_type_compatible(element: &FieldType, column_type: &str) -> bool {
+    let Some(inner) = column_type.trim().strip_suffix("[]") else {
+        return false;
+    };
+    let inner = inner.trim();
+    match element {
+        FieldType::String { max_length } => {
+            postgres_character_type_length(inner).is_some_and(|actual| actual >= *max_length as u64)
+        }
+        FieldType::Enum { values } => {
+            let needed = values
+                .iter()
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or(1)
+                .max(1) as u64;
+            postgres_character_type_length(inner).is_some_and(|actual| actual >= needed)
+        }
+        FieldType::Decimal { precision, scale } => {
+            inner.eq_ignore_ascii_case(&format!("numeric({precision},{scale})"))
+                || inner.eq_ignore_ascii_case(&format!("decimal({precision},{scale})"))
+        }
+        _ => true,
+    }
+}
+
+/// 从 `character varying(10)` / `varchar(10)` / `char(5)` 提取字符上限。
+#[cfg(feature = "postgres")]
+fn postgres_character_type_length(inner: &str) -> Option<u64> {
+    let open = inner.rfind('(')?;
+    let close = inner.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    inner[open + 1..close].trim().parse().ok()
+}
+
+/// 把声明字段类型映射为 introspection 使用的内部标量名（不含数组后缀）。
+#[cfg(feature = "postgres")]
+fn postgres_internal_type_name(field_type: &FieldType) -> &'static str {
+    match field_type {
+        FieldType::Integer => "integer",
+        FieldType::BigInt => "bigint",
+        FieldType::Float => "float",
+        FieldType::Double => "double",
+        FieldType::Decimal { .. } => "decimal",
+        FieldType::Boolean => "boolean",
+        FieldType::Date => "date",
+        FieldType::DateTime => "timestamptz",
+        FieldType::Timestamp => "bigint",
+        FieldType::Json => "jsonb",
+        FieldType::Text => "text",
+        FieldType::String { .. } | FieldType::Enum { .. } => "varchar",
+        FieldType::Uuid => "uuid",
+        FieldType::Bytes => "bytea",
+        // 嵌套数组在声明/渲染阶段已被拒绝；返回不可能匹配的名字兜底。
+        FieldType::Array(_) => "array",
     }
 }
 
@@ -926,6 +1496,13 @@ fn strip_postgres_casts(input: &str) -> String {
 
 /// PostgreSQL CHECK 表达式归一化：去 `CHECK` 前缀、去类型转换、去双引号/空白、
 /// 小写关键字，并把 `col = ANY (ARRAY[...])` 还原成 `col IN (...)`。
+///
+/// PostgreSQL 会在 `pg_get_constraintdef` 中给布尔操作数补分组括号，例如声明
+/// `score >= 0 AND status <> 'banned'` 读回为
+/// `((score >= 0) AND (status <> 'banned'))`。为此归一化期间先保留单个空格做词法
+/// 分析，折叠包裹原子/原子比较/AND 分组的冗余括号，最后再统一去空白；OR 分组与
+/// `NOT` 下的 AND 分组保持原样，避免把 `(a AND b) OR c` 与 `a AND (b OR c)`
+/// 误判相等。
 #[cfg(feature = "postgres")]
 fn normalize_postgres_check_expression(expression: &str) -> String {
     let trimmed = expression.trim();
@@ -938,35 +1515,73 @@ fn normalize_postgres_check_expression(expression: &str) -> String {
         trimmed
     };
     let without_casts = strip_postgres_casts(without_prefix);
+    let spaced = normalize_postgres_check_spacing(&without_casts);
+    let spaced = rewrite_postgres_any_array(&spaced);
+    let spaced = strip_simple_identifier_parentheses(&spaced);
+    let spaced = strip_redundant_group_parentheses(&spaced);
+    let spaced = strip_outer_parentheses(spaced);
+    remove_postgres_check_whitespace(&spaced)
+}
 
-    let mut normalized = String::with_capacity(without_casts.len());
-    let mut characters = without_casts.chars().peekable();
+/// 去双引号、折叠空白为单个空格、小写关键字；单引号字面量内容原样保留。
+#[cfg(feature = "postgres")]
+fn normalize_postgres_check_spacing(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
     let mut quoted = false;
-    for character in characters.by_ref() {
+    let mut pending_space = false;
+    for character in input.chars() {
         if character == '\'' {
+            if pending_space && !output.is_empty() {
+                output.push(' ');
+            }
+            pending_space = false;
             quoted = !quoted;
-            normalized.push(character);
+            output.push(character);
             continue;
         }
         if quoted {
-            normalized.push(character);
+            output.push(character);
             continue;
         }
-        if character == '"' || character.is_whitespace() {
+        if character == '"' {
             continue;
         }
-        normalized.extend(character.to_lowercase());
+        if character.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !output.is_empty() {
+            output.push(' ');
+        }
+        pending_space = false;
+        output.extend(character.to_lowercase());
     }
-
-    let normalized = rewrite_postgres_any_array(&normalized);
-    let normalized = strip_simple_identifier_parentheses(&normalized);
-    strip_outer_parentheses(normalized)
+    output
 }
 
-/// 去掉仅包裹单个标识符的括号：`(status)in(...)` → `statusin(...)`。
+/// 最终比较用：去掉字面量之外的空白。
+#[cfg(feature = "postgres")]
+fn remove_postgres_check_whitespace(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut quoted = false;
+    for character in input.chars() {
+        if character == '\'' {
+            quoted = !quoted;
+            output.push(character);
+            continue;
+        }
+        if !quoted && character.is_whitespace() {
+            continue;
+        }
+        output.push(character);
+    }
+    output
+}
+
+/// 去掉仅包裹单个标识符的括号：`(status) in (...)` → `status in (...)`。
 ///
 /// PostgreSQL 会把 `IN` 改写成 `ANY (ARRAY[...])`，并在左侧标识符外加括号；
-/// 只折叠“内容全是标识符字符”的括号，避免改变 `(a+b)` 之类的语义。
+/// 只折叠“内容全是标识符字符”的括号，且不误伤函数调用参数（`lower(email)`）。
 #[cfg(feature = "postgres")]
 fn strip_simple_identifier_parentheses(expression: &str) -> String {
     let characters = expression.chars().collect::<Vec<_>>();
@@ -986,25 +1601,23 @@ fn strip_simple_identifier_parentheses(expression: &str) -> String {
             index += 1;
             continue;
         }
-        if current == '(' {
-            if let Some(offset) = characters[index + 1..]
-                .iter()
-                .position(|value| *value == ')')
-            {
-                let inner = characters[index + 1..index + 1 + offset]
-                    .iter()
-                    .collect::<String>();
-                let simple = !inner.is_empty()
-                    && inner
+        if current == '('
+            && !previous_postgres_character(&characters, index).is_some_and(is_identifier_character)
+        {
+            if let Some(close) = find_matching_parenthesis(&characters, index) {
+                let inner = characters[index + 1..close].iter().collect::<String>();
+                let trimmed = inner.trim();
+                let simple = !trimmed.is_empty()
+                    && trimmed
                         .chars()
                         .all(|value| value.is_ascii_alphanumeric() || value == '_' || value == '.')
-                    && !inner
+                    && !trimmed
                         .chars()
                         .next()
                         .is_some_and(|value| value.is_ascii_digit());
                 if simple {
-                    output.push_str(&inner);
-                    index = index + offset + 2;
+                    output.push_str(trimmed);
+                    index = close + 1;
                     continue;
                 }
             }
@@ -1015,41 +1628,276 @@ fn strip_simple_identifier_parentheses(expression: &str) -> String {
     output
 }
 
+/// 折叠 PostgreSQL 为布尔操作数补加的冗余分组括号：
+/// 原子比较、不涉及 OR 的 AND 分组（`NOT` 下除外）。OR 分组保留，
+/// 因为 `(a AND b) OR c` 与 `a AND (b OR c)` 的括号具有语义。
 #[cfg(feature = "postgres")]
-fn rewrite_postgres_any_array(expression: &str) -> String {
-    let needle = "=any(";
+fn strip_redundant_group_parentheses(expression: &str) -> String {
     let mut current = expression.to_string();
     loop {
-        let Some(start) = current.find(needle) else {
+        let characters = current.chars().collect::<Vec<_>>();
+        let mut index = 0;
+        let mut quoted = false;
+        let mut changed = false;
+        while index < characters.len() {
+            let character = characters[index];
+            if character == '\'' {
+                quoted = !quoted;
+                index += 1;
+                continue;
+            }
+            if quoted {
+                index += 1;
+                continue;
+            }
+            if character != '(' {
+                index += 1;
+                continue;
+            }
+            let Some(close) = find_matching_parenthesis(&characters, index) else {
+                index += 1;
+                continue;
+            };
+            let inner = characters[index + 1..close].iter().collect::<String>();
+            if should_strip_postgres_group(&characters, index, &inner) {
+                let mut next = String::with_capacity(current.len());
+                next.extend(&characters[..index]);
+                next.push_str(&inner);
+                next.extend(&characters[close + 1..]);
+                current = next;
+                changed = true;
+                break;
+            }
+            index += 1;
+        }
+        if !changed {
+            return current;
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn should_strip_postgres_group(characters: &[char], open: usize, inner: &str) -> bool {
+    let previous = previous_postgres_character(characters, open);
+    if previous.is_some_and(|character| matches!(character, ')' | ']')) {
+        return false;
+    }
+    let previous_word = previous_postgres_word(characters, open).map(|word| word.to_lowercase());
+    if previous_word
+        .as_deref()
+        .is_some_and(|word| !matches!(word, "and" | "or" | "not"))
+    {
+        // 函数调用或类型应用的参数括号，保持原样。
+        return false;
+    }
+    // 只有布尔上下文（表达式开头、`(` 后，或 AND/OR/NOT 之后）的括号才可能是
+    // 冗余的。比较/算术运算符右侧的括号具有语义，如 `flag = (x AND y)`，
+    // 折叠后会与 `(flag = x) AND y` 混淆。
+    let boolean_context = matches!(previous, None | Some('(')) || previous_word.is_some();
+    if !boolean_context {
+        return false;
+    }
+    let (has_and, has_or, has_comparison) = postgres_group_tokens(inner);
+    if has_and || has_or {
+        // OR 分组的括号具有语义，保留；AND 分组只有在 NOT 下才需要括号。
+        return has_and && !has_or && previous_word.as_deref() != Some("not");
+    }
+    has_comparison
+}
+
+/// 判断分组内部顶层是否出现 AND/OR 或比较运算。
+#[cfg(feature = "postgres")]
+fn postgres_group_tokens(inner: &str) -> (bool, bool, bool) {
+    let characters = inner.chars().collect::<Vec<_>>();
+    let mut depth = 0_i32;
+    let mut quoted = false;
+    let mut word = String::new();
+    let mut has_and = false;
+    let mut has_or = false;
+    let mut has_comparison = false;
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        if character == '\'' {
+            if depth == 0 {
+                flush_postgres_group_word(
+                    &mut word,
+                    &mut has_and,
+                    &mut has_or,
+                    &mut has_comparison,
+                );
+            }
+            quoted = !quoted;
+            index += 1;
+            continue;
+        }
+        if quoted {
+            index += 1;
+            continue;
+        }
+        if depth == 0 && is_identifier_character(character) {
+            word.extend(character.to_lowercase());
+            index += 1;
+            continue;
+        }
+        flush_postgres_group_word(&mut word, &mut has_and, &mut has_or, &mut has_comparison);
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            '<' | '>' | '=' if depth == 0 => has_comparison = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    flush_postgres_group_word(&mut word, &mut has_and, &mut has_or, &mut has_comparison);
+    (has_and, has_or, has_comparison)
+}
+
+#[cfg(feature = "postgres")]
+fn flush_postgres_group_word(
+    word: &mut String,
+    has_and: &mut bool,
+    has_or: &mut bool,
+    has_comparison: &mut bool,
+) {
+    if word.is_empty() {
+        return;
+    }
+    match word.as_str() {
+        "and" => *has_and = true,
+        "or" => *has_or = true,
+        "is" | "in" | "like" | "ilike" | "between" | "any" | "all" | "similar" | "not"
+        | "exists" | "null" | "true" | "false" => *has_comparison = true,
+        _ => {}
+    }
+    word.clear();
+}
+
+#[cfg(feature = "postgres")]
+fn find_matching_parenthesis(characters: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0_i32;
+    let mut quoted = false;
+    for (index, character) in characters.iter().enumerate().skip(open) {
+        if *character == '\'' {
+            quoted = !quoted;
+            continue;
+        }
+        if quoted {
+            continue;
+        }
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(feature = "postgres")]
+fn is_identifier_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+#[cfg(feature = "postgres")]
+fn previous_postgres_character(characters: &[char], index: usize) -> Option<char> {
+    characters[..index]
+        .iter()
+        .rev()
+        .find(|character| !character.is_whitespace())
+        .copied()
+}
+
+#[cfg(feature = "postgres")]
+fn previous_postgres_word(characters: &[char], index: usize) -> Option<String> {
+    let mut cursor = index;
+    while cursor > 0 && characters[cursor - 1].is_whitespace() {
+        cursor -= 1;
+    }
+    let end = cursor;
+    while cursor > 0 && is_identifier_character(characters[cursor - 1]) {
+        cursor -= 1;
+    }
+    (cursor < end).then(|| characters[cursor..end].iter().collect())
+}
+
+#[cfg(feature = "postgres")]
+fn rewrite_postgres_any_array(expression: &str) -> String {
+    let mut current = expression.to_string();
+    loop {
+        let Some((start, inner, tail)) = find_postgres_any_array(&current) else {
             return current;
         };
-        let bytes = current.as_bytes();
-        let mut index = start + "=any".len();
+        current = format!("{}in({inner}){}", &current[..start], &current[tail..]);
+    }
+}
+
+/// 定位 `= ANY ((ARRAY[...]))`，返回 `=` 的偏移、数组元素文本与匹配右括号后的偏移。
+#[cfg(feature = "postgres")]
+fn find_postgres_any_array(input: &str) -> Option<(usize, String, usize)> {
+    let bytes = input.as_bytes();
+    let mut search = 0;
+    loop {
+        let start = search + input[search..].find('=')?;
+        let mut index = start + 1;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if !input[index..].starts_with("any") {
+            search = start + 1;
+            continue;
+        }
+        index += "any".len();
+        if input[index..]
+            .chars()
+            .next()
+            .is_some_and(is_identifier_character)
+        {
+            search = start + 1;
+            continue;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
         // PostgreSQL 可能额外包一层括号：`= ANY ((ARRAY[...]))`。
         let mut depth = 0_i32;
         while index < bytes.len() && bytes[index] == b'(' {
             depth += 1;
             index += 1;
         }
-        if depth == 0 || !current[index..].starts_with("array[") {
-            return current;
+        if depth == 0 {
+            search = start + 1;
+            continue;
+        }
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if !input[index..].starts_with("array[") {
+            search = start + 1;
+            continue;
         }
         let inner_start = index + "array[".len();
-        let Some(close_offset) = current[inner_start..].find(']') else {
-            return current;
-        };
-        let inner = current[inner_start..inner_start + close_offset].to_string();
+        let close_offset = input[inner_start..].find(']')?;
+        let inner = input[inner_start..inner_start + close_offset].to_string();
         let mut cursor = inner_start + close_offset + 1;
         while cursor < bytes.len() && depth > 0 {
             match bytes[cursor] {
                 b'(' => depth += 1,
                 b')' => depth -= 1,
-                b' ' | b'\t' | b']' => {}
-                _ => return current,
+                b']' | b' ' | b'\t' | b'\n' | b'\r' => {}
+                _ => return None,
             }
             cursor += 1;
         }
-        current = format!("{}in({inner}){}", &current[..start], &current[cursor..]);
+        if depth == 0 {
+            return Some((start, inner, cursor));
+        }
+        search = start + 1;
     }
 }
 
@@ -1098,4 +1946,232 @@ fn strip_outer_parentheses(mut expression: String) -> String {
         expression = expression[1..expression.len() - 1].to_string();
     }
     expression
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    use crate::table::{Field, Table};
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_renders_uuid_bytes_and_scalar_arrays() {
+        let dialect = SchemaDialect::PostgreSql;
+        assert_eq!(
+            dialect
+                .render_type(&FieldType::Uuid, "uid")
+                .expect("UUID 应可渲染"),
+            "UUID"
+        );
+        assert_eq!(
+            dialect
+                .render_type(&FieldType::Bytes, "payload")
+                .expect("BYTEA 应可渲染"),
+            "BYTEA"
+        );
+        assert_eq!(
+            dialect
+                .render_type(&FieldType::array(FieldType::Integer), "numbers")
+                .expect("int4[] 应可渲染"),
+            "INTEGER[]"
+        );
+        assert_eq!(
+            dialect
+                .render_type(&FieldType::array(FieldType::Text), "tags")
+                .expect("text[] 应可渲染"),
+            "TEXT[]"
+        );
+        assert_eq!(
+            dialect
+                .render_type(&FieldType::array(FieldType::Uuid), "uids")
+                .expect("uuid[] 应可渲染"),
+            "UUID[]"
+        );
+
+        // 嵌套数组与 JSON 元素明确拒绝。
+        assert!(dialect
+            .render_type(&FieldType::array(FieldType::array(FieldType::Text)), "bad")
+            .is_err());
+        assert!(dialect
+            .render_type(&FieldType::array(FieldType::Json), "bad")
+            .is_err());
+    }
+
+    /// PostgreSQL 方言按自己的上界校验：VARCHAR(100000) 在 PG 构建下必须可渲染。
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_ddl_accepts_varchar_above_mysql_limit() {
+        let dialect = SchemaDialect::PostgreSql;
+        assert_eq!(
+            dialect
+                .render_type(
+                    &FieldType::String {
+                        max_length: 100_000
+                    },
+                    "body"
+                )
+                .expect("PostgreSQL VARCHAR(100000) 应可渲染"),
+            "VARCHAR(100000)"
+        );
+        assert!(dialect
+            .render_type(
+                &FieldType::String {
+                    max_length: 10_485_761
+                },
+                "body"
+            )
+            .is_err());
+    }
+
+    /// 双 feature 构建：构建期接受 PostgreSQL 上界，但 MySQL 方言必须按
+    /// MySQL 上界拒绝，不能把非法 DDL 发到 MySQL。
+    #[cfg(all(feature = "mysql", feature = "postgres"))]
+    #[test]
+    fn dual_feature_mysql_ddl_rejects_varchar_above_mysql_limit() {
+        let definition = Table::new("dual_varchar")
+            .fields([Field::id("id"), Field::string("body", 100_000)])
+            .build()
+            .expect("双 feature 构建期应接受 PostgreSQL 上界");
+        let config = definition.shared_config();
+        assert!(SchemaDialect::MySql
+            .render_create_table(config.as_ref(), false)
+            .is_err());
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn mysql_renders_uuid_as_char36_and_bytes_as_blob() {
+        let definition = Table::new("mysql_types")
+            .fields([Field::id("id"), Field::uuid("uid"), Field::bytes("payload")])
+            .build()
+            .expect("MySQL 类型声明应有效");
+        let config = definition.shared_config();
+        let uid = config.get_field("uid").expect("uid 应存在");
+        let payload = config.get_field("payload").expect("payload 应存在");
+        assert!(SchemaDialect::MySql
+            .render_column(uid)
+            .expect("UUID 应可渲染")
+            .contains("CHAR(36)"));
+        assert!(SchemaDialect::MySql
+            .render_column(payload)
+            .expect("BYTES 应可渲染")
+            .contains("BLOB"));
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn mysql_rejects_array_columns() {
+        let definition = Table::new("mysql_array")
+            .fields([Field::id("id"), Field::array("numbers", FieldType::Integer)])
+            .build()
+            .expect("数组声明本身合法");
+        let config = definition.shared_config();
+        let numbers = config.get_field("numbers").expect("numbers 应存在");
+        assert!(SchemaDialect::MySql.render_column(numbers).is_err());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_renders_nulls_not_distinct_unique_index() {
+        let definition = Table::new("pg_nnd")
+            .fields([Field::id("id"), Field::string("code", 32)])
+            .unique_nulls_not_distinct(["code"])
+            .build()
+            .expect("NULLS NOT DISTINCT 声明应有效");
+        let config = definition.shared_config();
+        let dialect = SchemaDialect::PostgreSql;
+        let indexes = dialect
+            .desired_indexes(config.as_ref())
+            .expect("索引计划应成功");
+        assert_eq!(indexes.len(), 1);
+        assert!(indexes[0].nulls_not_distinct);
+
+        let sql = dialect
+            .render_add_index(config.as_ref(), &indexes[0])
+            .expect("索引 DDL 应可渲染");
+        assert!(
+            sql.contains("UNIQUE INDEX") && sql.contains("NULLS NOT DISTINCT"),
+            "DDL 必须携带 NULLS NOT DISTINCT: {sql}"
+        );
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn mysql_rejects_nulls_not_distinct_unique_index() {
+        let definition = Table::new("mysql_nnd")
+            .fields([Field::id("id"), Field::string("code", 32)])
+            .unique_nulls_not_distinct(["code"])
+            .build()
+            .expect("定义层允许跨方言声明");
+        let config = definition.shared_config();
+        assert!(
+            SchemaDialect::MySql
+                .desired_indexes(config.as_ref())
+                .is_err(),
+            "MySQL 必须明确拒绝 NULLS NOT DISTINCT"
+        );
+    }
+
+    /// 数组列的元素长度/精度必须参与兼容性比较，不能只看 `varchar[]`/`decimal[]`。
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_array_element_length_and_precision_are_compared() {
+        let varchar10 = FieldType::array(FieldType::String { max_length: 10 });
+        assert!(postgres_type_compatible(
+            &varchar10,
+            &SchemaColumn::new(
+                "tags",
+                "varchar[]",
+                "character varying(10)[]",
+                true,
+                None,
+                None
+            )
+        ));
+        assert!(!postgres_type_compatible(
+            &varchar10,
+            &SchemaColumn::new(
+                "tags",
+                "varchar[]",
+                "character varying(5)[]",
+                true,
+                None,
+                None
+            )
+        ));
+        // 无元素长度的裸 varchar[] 无法证明满足声明，必须判为不兼容。
+        assert!(!postgres_type_compatible(
+            &varchar10,
+            &SchemaColumn::new("tags", "varchar[]", "varchar[]", true, None, None)
+        ));
+
+        let decimal = FieldType::array(FieldType::Decimal {
+            precision: 12,
+            scale: 3,
+        });
+        assert!(postgres_type_compatible(
+            &decimal,
+            &SchemaColumn::new("amounts", "decimal[]", "decimal(12,3)[]", true, None, None)
+        ));
+        assert!(!postgres_type_compatible(
+            &decimal,
+            &SchemaColumn::new("amounts", "decimal[]", "decimal(12,4)[]", true, None, None)
+        ));
+        assert!(!postgres_type_compatible(
+            &decimal,
+            &SchemaColumn::new("amounts", "decimal[]", "decimal(10,3)[]", true, None, None)
+        ));
+
+        // 无修饰的元素类型仍按基名比较。
+        let ints = FieldType::array(FieldType::Integer);
+        assert!(postgres_type_compatible(
+            &ints,
+            &SchemaColumn::new("numbers", "integer[]", "integer[]", true, None, None)
+        ));
+        assert!(!postgres_type_compatible(
+            &ints,
+            &SchemaColumn::new("numbers", "bigint[]", "bigint[]", true, None, None)
+        ));
+    }
 }

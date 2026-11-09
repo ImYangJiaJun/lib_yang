@@ -7,6 +7,8 @@
 pub enum FieldType {
     /// 标准类型（无需特殊处理）
     Standard,
+    /// BOOLEAN 类型（空数组/全 NULL 数组需要它绑定为 `bool[]`）
+    Bool,
     /// JSON / JSONB 类型
     Json,
     /// JSONB 类型（插入时与 JSON 同样按原生 serde_json 值绑定）
@@ -63,6 +65,7 @@ impl FieldType {
     pub fn postgres_type_name(&self) -> Option<String> {
         Some(match self {
             Self::Standard => return None,
+            Self::Bool => "boolean".to_string(),
             Self::Array(inner) => format!("{}[]", inner.postgres_type_name()?),
             Self::Json => "json".to_string(),
             Self::Jsonb => "jsonb".to_string(),
@@ -112,19 +115,20 @@ fn range_type_name(element: &FieldType, multirange: bool) -> Option<&'static str
 
 /// PostgreSQL 会话 GUC 基线。
 ///
-/// 本常量只声明基线值，本 crate **不执行** `SET`：连接由调用方（运行时/建连
-/// 工厂）建立后统一应用，避免每个查询重复设置。基线目标是让文本格式与 Rust
-/// 侧编解码保持确定：
+/// 本常量只声明基线值，基线由**连接建立方**（[`crate::postgres::Database`] 的
+/// `after_connect` 钩子）应用，本 crate 不在每次查询时重复 `SET`。基线目标是让
+/// 文本格式与 Rust 侧编解码保持确定：
 ///
 /// - `TimeZone=UTC`：`TIMESTAMPTZ` 文本输出与 `now()` 展示统一为 UTC；
-/// - `DateStyle=ISO, MDY`：日期文本格式与 `chrono` 的 ISO 解析一致；
+/// - `DateStyle=ISO, YMD`：日期文本格式与 `chrono` 的 ISO 解析一致，且与建连时
+///   实际下发的 `SET DateStyle = 'ISO, YMD'` 保持一致；
 /// - `IntervalStyle=postgres`：`INTERVAL` 文本格式固定；
 /// - `extra_float_digits=3`：浮点文本往返不丢精度（PostgreSQL 12+ 默认值 1
 ///   已够用，这里显式固定以覆盖旧版本实例）；
 /// - `standard_conforming_strings=on`：反斜杠按字面处理，避免字符串转义歧义。
 pub const SESSION_GUC_BASELINE: &[(&str, &str)] = &[
     ("TimeZone", "UTC"),
-    ("DateStyle", "ISO, MDY"),
+    ("DateStyle", "ISO, YMD"),
     ("IntervalStyle", "postgres"),
     ("extra_float_digits", "3"),
     ("standard_conforming_strings", "on"),
@@ -167,6 +171,7 @@ mod tests {
     #[test]
     fn postgres_type_name_maps_existing_and_new_types() {
         let cases = [
+            (FieldType::Bool, "boolean"),
             (FieldType::Json, "json"),
             (FieldType::Jsonb, "jsonb"),
             (FieldType::DateTime, "timestamp"),
@@ -267,7 +272,7 @@ mod tests {
             SESSION_GUC_BASELINE,
             [
                 ("TimeZone", "UTC"),
-                ("DateStyle", "ISO, MDY"),
+                ("DateStyle", "ISO, YMD"),
                 ("IntervalStyle", "postgres"),
                 ("extra_float_digits", "3"),
                 ("standard_conforming_strings", "on"),
@@ -275,5 +280,16 @@ mod tests {
             .as_slice(),
             "会话 GUC 基线是类型编解码确定性的契约，变更需同步文档与集成测试"
         );
+    }
+
+    /// 基线的 DateStyle 必须与建连时实际下发的 `SET DateStyle` 一致（ISO, YMD）。
+    #[test]
+    fn session_guc_baseline_datestyle_matches_set_statement() {
+        let datestyle = SESSION_GUC_BASELINE
+            .iter()
+            .find(|(name, _)| *name == "DateStyle")
+            .map(|(_, value)| *value)
+            .expect("基线必须包含 DateStyle");
+        assert_eq!(datestyle, "ISO, YMD");
     }
 }

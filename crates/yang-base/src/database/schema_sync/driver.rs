@@ -15,6 +15,10 @@ use yang_db::BackendKind;
 /// schema 同步锁等待上限（秒）。
 const LOCK_TIMEOUT_SECONDS: u64 = 30;
 
+/// DDL 等待表锁的上限（秒）；超时返回错误而不是无限阻塞在线业务。
+#[cfg(feature = "postgres")]
+const DDL_LOCK_TIMEOUT_SECONDS: u64 = 30;
+
 /// schema 同步驱动。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchemaDriver {
@@ -149,6 +153,47 @@ impl SchemaDriver {
             Self::MySql => false,
             #[cfg(feature = "postgres")]
             Self::PostgreSql => true,
+        }
+    }
+
+    /// 应用 DDL 会话参数（PostgreSQL `lock_timeout`）。
+    ///
+    /// 在线 DDL 必须避免无限等待业务表锁：超时后同步失败并整体回滚/留下可重试状态。
+    pub(crate) async fn configure_session(
+        self,
+        connection: &mut SchemaConnection<'_>,
+    ) -> Result<(), BaseError> {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => {
+                let _ = connection;
+                Ok(())
+            }
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => {
+                connection
+                    .execute(&format!("SET lock_timeout = '{DDL_LOCK_TIMEOUT_SECONDS}s'"))
+                    .await
+            }
+        }
+    }
+
+    /// 复位 [`Self::configure_session`] 下发的会话参数。
+    ///
+    /// 连接归还池后会被业务查询复用；`lock_timeout` 必须恢复服务端默认值，
+    /// 否则业务查询会继承 30s 锁超时。MySQL 无会话级设置，空操作。
+    pub(crate) async fn reset_session(
+        self,
+        connection: &mut SchemaConnection<'_>,
+    ) -> Result<(), BaseError> {
+        match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => {
+                let _ = connection;
+                Ok(())
+            }
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => connection.execute("RESET lock_timeout").await,
         }
     }
 

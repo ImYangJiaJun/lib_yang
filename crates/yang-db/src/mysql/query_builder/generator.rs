@@ -129,12 +129,12 @@ impl SqlGenerator {
                     self.append(", ");
                 }
                 has_projection = true;
-                let (fragment, param) = expression.mysql_render();
-                self.append(fragment);
+                let rendered = expression.mysql_render()?;
+                self.append(&rendered.sql);
                 self.append(" AS ");
                 self.append(&crate::mysql::identifier::quote_qualified(alias)?);
-                if let Some(seconds) = param {
-                    self.add_param(SqlValue::Int(seconds));
+                for param in rendered.params {
+                    self.add_param(param.into());
                 }
             }
         }
@@ -357,10 +357,10 @@ impl SqlGenerator {
         // 受控服务端表达式列：片段固定，动态部分（如偏移秒数）走绑定参数
         for (field, expression) in expr_assignments {
             fields.push(crate::mysql::identifier::quote_identifier(field)?);
-            let (fragment, param) = expression.mysql_render();
-            placeholders.push(fragment.to_string());
-            if let Some(seconds) = param {
-                self.add_param(SqlValue::Int(seconds));
+            let rendered = expression.mysql_render()?;
+            placeholders.push(rendered.sql);
+            for param in rendered.params {
+                self.add_param(param.into());
             }
         }
 
@@ -596,14 +596,14 @@ impl SqlGenerator {
 
         // 受控服务端表达式赋值：如 `used_at` = UNIX_TIMESTAMP()，动态部分走绑定参数
         for (field, expression) in expr_assignments {
-            let (fragment, param) = expression.mysql_render();
+            let rendered = expression.mysql_render()?;
             set_clauses.push(format!(
                 "{} = {}",
                 crate::mysql::identifier::quote_identifier(field)?,
-                fragment
+                rendered.sql
             ));
-            if let Some(seconds) = param {
-                self.add_param(SqlValue::Int(seconds));
+            for param in rendered.params {
+                self.add_param(param.into());
             }
         }
 

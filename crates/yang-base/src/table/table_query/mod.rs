@@ -123,6 +123,18 @@ pub struct TableQuery {
     /// 包含字段选择、WHERE 条件、排序规则和分页参数
     query_params: QueryParams,
 
+    /// 每个排序字段的 NULL 位置：`true` = NULLS FIRST，`false` = NULLS LAST。
+    ///
+    /// 与 `query_params.order_by` 按字段名关联；PostgreSQL 渲染原生
+    /// `NULLS FIRST/LAST`，MySQL 用 `field IS NULL` 表达式模拟（见
+    /// [`TableQuery::order_nulls`]）。
+    #[cfg_attr(not(any(feature = "mysql", feature = "postgres")), allow(dead_code))]
+    nulls_orders: std::collections::HashMap<String, bool>,
+
+    /// `where_any` 登记的数组参数条件（仅 PostgreSQL 使用 `= ANY($n)`）。
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    any_conditions: Vec<(String, Vec<Value>)>,
+
     /// 是否在读取路径包含软删除记录
     ///
     /// 默认 `false`：配置了 `soft_delete_field` 的表，软删行不出现在

@@ -460,3 +460,66 @@ Rust 生态：
 - `crates/yang-db/src/postgres/**`、`src/capability.rs`、`src/error.rs`、`src/reference.rs`、`src/sql_types.rs`、`src/row_lock.rs`
 - `crates/yang-db/tests/integration_pg_*.rs`、`.github/workflows/ci.yml`
 - `crates/yang-db/README.md`、`docs/reference/BACKEND_CAPABILITIES.md`、`docs/reference/BASE_DB_CAPABILITY_MATRIX.md`、`docs/BACKLOG.md`
+
+## 9. 实施状态（2026-11-09）
+
+对照 `feat/postgres-full-support` HEAD `bfa1563` 核验；Wave 1（`20c8247`）、Wave 2（`bafd70a`）、Wave 3（`bfa1563`）已提交。状态口径：**已实现**＝代码 + 单测/真库测试；**部分**＝有入口但存在明确边界；**未实现**＝无代码路径。
+
+### 9.1 P0（11 项）
+
+| 编号 | 缺口 | 状态 | 证据与边界 |
+|---|---|---|---|
+| P0-1 | SQLSTATE 结构化 | 已实现（Wave 1） | `error.rs` 保留 code/constraint/schema/table/column/detail/hint，按 SQLSTATE 映射 `SqlErrorKind` |
+| P0-2 | 40001/40P01/57014/25P02/55P03 分流 | 已实现（Wave 1） | `is_retryable()` 仅 40001/40P01/08xxx/53xxx；55P03/57014 归 Timeout 不可重试 |
+| P0-3 | RETURNING 多列/整行/别名 | 已实现（Wave 2） | `returning_columns` / `returning_all` / `returning_column_as`；insert/update/delete/upsert/batch 均可 RETURNING |
+| P0-4 | `select_expr/set_expr/where_expr` | 已实现（Wave 1/2） | `query_builder.rs` 公开 `select_expr` / `set_expr` / `where_not`，`SqlExpr::postgres_render` 已接线 |
+| P0-5 | typed NULL | 已实现（Wave 3） | raw 参数未指定类型时按无 OID 绑定，不再固定为 `int4` |
+| P0-6 | NUMERIC 精度 | 已实现（Phase C） | `SqlValue::Decimal(BigDecimal)`，写入/数组绑定均走定点小数 |
+| P0-7 | 时间类型族 | 已实现（Wave 2） | 支持 date/time/timetz/timestamp/timestamptz/interval，RFC3339 与毫秒解析 |
+| P0-8 | ON CONFLICT 完整化 | 已实现（Wave 2） | 移除默认 `["id"]`，支持显式目标、部分索引谓词与 `DO UPDATE` 列白名单 |
+| P0-9 | schema 限定与标识符 | 已实现（Wave 1） | `TableRef`/`FieldRef` 支持 schema、Unicode、`$`、内嵌引号与 63 字节上限 |
+| P0-10 | search_path / SET LOCAL | 已实现（Wave 1/2） | `PgDatabaseConfig.search_path` + `set_config(..., true)` 事务局部配置 |
+| P0-11 | 布尔 NOT | 已实现（Wave 1/3） | `Condition::Not` 与 `where_not`，嵌套括号保序 |
+
+### 9.2 P1（28 项）
+
+| 编号 | 缺口 | 状态 | 证据与边界 |
+|---|---|---|---|
+| P1-1 | UUID | 已实现 | `SqlValue`/`Record` 解码支持 uuid（OID 2950/2951） |
+| P1-2 | ARRAY | 已实现 | `record.rs::pg_array_element_kind` 覆盖内置标量数组 OID 的解码；`insert_batch` 按参数上限缩批；MySQL 渲染 `Array` 明确拒绝（`dialect.rs:488`） |
+| P1-3 | JSONB 运算符 | 已实现 | `JsonContains`、`JsonPathExists`、`JsonPathMatch` 与整值 JSON 绑定 |
+| P1-4 | ENUM/DOMAIN/COMPOSITE/网络/位串/oid | 部分 | ENUM、DOMAIN、inet/cidr 已解码（`record.rs`）；COMPOSITE 可经 `register_pg_type_decoder` 注册表解码；bit、oid 仍返回结构化 Unsupported |
+| P1-5 | CTE / WITH RECURSIVE | 已实现 | `Cte` + `build_with`，支持递归标记 |
+| P1-6 | 窗口函数/frame | 已实现（Wave 3） | 命名窗口、ROWS/RANGE/GROUPS、FILTER |
+| P1-7 | HAVING/分组集/聚合修饰 | 已实现 | `having_exprs`、GROUPING SETS/ROLLUP/CUBE、聚合 FILTER |
+| P1-8 | DISTINCT ON/FULL/CROSS/NATURAL/LATERAL/USING | 已实现 | `distinct_on`、`JoinKind::{Full,Cross,Natural,LeftLateral}`、`JoinTarget::Lateral` |
+| P1-9 | INTERSECT/EXCEPT、ANY/SOME/ALL | 已实现 | 集合链含优先级处理；`Condition::{Any,All}` |
+| P1-10 | INSERT...SELECT / UPDATE FROM / DELETE USING | 已实现 | `insert_from_select`、`update_from`、`delete_using` |
+| P1-11 | MERGE（PG15+） | 已实现（版本门控） | `merge` / `merge_with_options`；`server_version_num < 150000` 拒绝 |
+| P1-12 | COPY FROM/TO | 已实现 | `postgres/copy.rs`：`copy_from_csv` / `copy_to_csv` / `copy_out_raw` |
+| P1-13 | ILIKE/POSIX 正则/IS DISTINCT FROM | 已实现（Wave 2） | `NotILike` / `NotRegex*` / `DistinctFrom` 条件 |
+| P1-14 | 批量 UPSERT | 已实现（Phase C/Wave 2） | `upsert_batch` 与 `upsert_batch_with_size`，显式冲突目标 |
+| P1-15 | SAVEPOINT | 已实现 | `Transaction::{savepoint, rollback_to, release}` |
+| P1-16 | read_only_transaction | 已实现 | `Database::read_only_transaction`（`BEGIN READ ONLY`） |
+| P1-17 | 行锁 + OF/NOWAIT/SKIP LOCKED | 已实现（Wave 2/3） | `row_lock.rs` 六变体（`ForUpdate`/`ForShare`/`ForUpdateSkipLocked`/`ForShareSkipLocked`/`NoKeyUpdate`/`KeyShare`）+ `OF` / `NOWAIT` / `SKIP LOCKED` 执行入口 |
+| P1-18 | advisory lock | 已实现（Wave 1） | 会话级/事务级共享与排他锁 |
+| P1-19 | 超时与 CancelToken | 已实现（Wave 1） | statement/lock/idle-in-transaction 超时经 `after_connect` 下发；`CancelToken` 触库取消 |
+| P1-20 | after_connect/会话与池 | 已实现（Wave 1） | `application_name`、`statement_cache_size`、DISCARD ALL `reset_on_release`、真实 waiting 计数 |
+| P1-21 | TLS 证书/verify-full | 已实现（Wave 1） | CA/客户端证书配置；`None`+根证书自动按 VerifyCa，矛盾组合报错 |
+| P1-22 | server_version_num/GUC/编码 | 已实现（Wave 1） | `server_version_num()` 缓存；GUC 基线（DateStyle=ISO,YMD）；client_encoding=UTF8 fail-closed |
+| P1-23 | 游标/流式结果 | 已实现 | `Database::stream_query` + `PgRowCursor`（只读事务 + DECLARE CURSOR） |
+| P1-24 | LISTEN/NOTIFY | 已实现 | `postgres/listener.rs`：`PgNotificationListener` + `notify` |
+| P1-25 | PG 测试门禁 | 已实现 | PG16 与 PG17 双 CI job；wave1-4 套件已接入 CI（wave4 注册需以最终 `ci.yml` 为准）；integration/proptest 套件均接入 |
+| P1-26 | 能力声明一致性 | 已实现（Wave 1） | `BackendCapability` 增加 PG 专属变体（Arrays/Range/JsonPath/FullText/Diagnostics/2PC/TableLock 等） |
+| P1-27 | DDL 事务化/dollar-quote 脚本 | 已实现（Wave 1） | `execute_script` 整脚本单事务；`split_sql_script` 识别 `$$/$tag$`、嵌套注释；`create_table` 标 deprecated |
+| P1-28 | 标识符规则 | 已实现（Wave 1） | Unicode/`$`/内嵌引号/63 字节上限 |
+
+### 9.3 专项与仍存在的边界
+
+| 项 | 状态 | 证据与边界 |
+|---|---|---|
+| NULLS NOT DISTINCT（PG15 唯一索引选项） | 已实现 | `definition.rs::unique_nulls_not_distinct` DSL；`dialect.rs` 渲染；`pg.rs` 反射 `indnullsnotdistinct`（PG15+ 门控）；MySQL 在 `render.rs` 拒绝；`integration_pg_wave4_codec` 真库覆盖 |
+| 部分索引 / 表达式索引 | 部分（仅反射） | `pg.rs` 反射 `indpred` 与 `pg_get_indexdef` 表达式键并 fail-closed 防同名漂移；DSL 暂不支持声明 |
+| MERGE 的 PG17-only 分支 | 已实现（门控） | `WHEN NOT MATCHED BY SOURCE` 要求 `server_version_num >= 170000`；PG15/16 明确报错 |
+| range / multirange（P2-2） | 已实现 | yang-db 侧 `SqlValue::{Range,Multirange}` 与 `RangeContains`/`RangeOverlaps`；base `record.rs::decode_pg_range` 已解码五种内置 range（含无界端点/空 range），composite 可经 `register_pg_type_decoder` 注册；未知 range 仍 fail-closed |
+| 迁移 runner / checksum / CLI（非目标） | 未实现（non-goal） | `MigrationConfig` 仅占位；DDL 由 `execute_script` 或外部迁移工具承担 |

@@ -274,6 +274,50 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Phase C integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg_phase_c --locked -- --ignored --test-threads=1
+      - name: PostgreSQL P0/P1 wave1 integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_p0p1_wave1 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync wave1 integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave1 --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 2 query integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_query --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 2 errors integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_errors --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 read integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_read --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 write integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_write --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 addaction integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_addaction --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase A integration
+        run: cargo test -p yang-db --test integration_pg_phase_a --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B queries integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_queries --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B runtime integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_runtime --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B types integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_types --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B COPY/LISTEN integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_copy_listen --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase C integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_phase_c --locked -- --ignored --test-threads=1
+      - name: PostgreSQL type property tests
+        run: cargo test -p yang-db --no-default-features --features postgres --test proptest_pg_types --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 3 contract integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_contract --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 3 query features integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_query_features --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 3 guards integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_guards --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 3 runtime integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_runtime --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync wave3 integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave3 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 4 types integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 4 codec integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_codec --locked -- --ignored --test-threads=1
+      - name: PostgreSQL row lock queries integration
+        run: cargo test -p yang-db --no-default-features --features mysql,postgres --test integration_advanced_queries --locked postgres -- --ignored --test-threads=1
 
   docker-postgres-17:
     name: PostgreSQL 17 integration
@@ -323,6 +367,36 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Phase C integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg_phase_c --locked -- --ignored --test-threads=1
+      - name: PostgreSQL P0/P1 wave1 integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_p0p1_wave1 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync wave1 integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave1 --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 2 query integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_query --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 2 errors integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave2_errors --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 read integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_read --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 write integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_write --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 2 addaction integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_addaction --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 3 contract integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_contract --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 3 query features integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave3_query_features --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 3 guards integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_guards --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 3 runtime integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_runtime --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync wave3 integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave3 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 4 types integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 4 codec integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_codec --locked -- --ignored --test-threads=1
+      - name: PostgreSQL row lock queries integration
+        run: cargo test -p yang-db --no-default-features --features mysql,postgres --test integration_advanced_queries --locked postgres -- --ignored --test-threads=1
 
   docker-redis:
     name: Redis 7 integration

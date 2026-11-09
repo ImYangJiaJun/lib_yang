@@ -6,6 +6,46 @@ use crate::mysql::field::FieldType;
 use super::predicate::predicate_condition;
 use super::{QueryBuilder, UnionOperator};
 
+/// 把封闭比较操作符映射为 MySQL 条件。
+///
+/// MySQL 无 ILIKE：大小写不敏感匹配退化为 `LIKE`/`NOT LIKE`（默认 collation 不区分
+/// 大小写）；正则有 `REGEXP` / `NOT REGEXP`（大小写敏感性同样由 collation 决定）。
+/// `IS [NOT] DISTINCT FROM` 在 MySQL 无等价语义，返回 [`crate::DbError::UnsupportedOperator`]。
+pub(super) fn condition_from_op(
+    field: String,
+    op: crate::CompareOp,
+    value: crate::mysql::condition::SqlValue,
+) -> Result<Condition, crate::error::DbError> {
+    use crate::mysql::condition::SqlValue;
+
+    let pattern = |value: SqlValue| match value {
+        SqlValue::String(pattern) => Ok(pattern),
+        _ => Err(crate::error::DbError::UnsupportedOperator(
+            "模式匹配操作符仅支持字符串模式值".to_string(),
+        )),
+    };
+    Ok(match op {
+        crate::CompareOp::Eq => Condition::Eq(field, value),
+        crate::CompareOp::Ne => Condition::Ne(field, value),
+        crate::CompareOp::Gt => Condition::Gt(field, value),
+        crate::CompareOp::Lt => Condition::Lt(field, value),
+        crate::CompareOp::Gte => Condition::Gte(field, value),
+        crate::CompareOp::Lte => Condition::Lte(field, value),
+        crate::CompareOp::Like => Condition::Like(field, pattern(value)?),
+        crate::CompareOp::ILike => Condition::ILike(field, pattern(value)?),
+        crate::CompareOp::NotILike => Condition::NotILike(field, pattern(value)?),
+        crate::CompareOp::RegexMatch => Condition::RegexMatch(field, pattern(value)?),
+        crate::CompareOp::RegexIMatch => Condition::RegexIMatch(field, pattern(value)?),
+        crate::CompareOp::NotRegexMatch => Condition::NotRegexMatch(field, pattern(value)?),
+        crate::CompareOp::NotRegexIMatch => Condition::NotRegexIMatch(field, pattern(value)?),
+        crate::CompareOp::IsDistinctFrom | crate::CompareOp::IsNotDistinctFrom => {
+            return Err(crate::error::DbError::UnsupportedOperator(
+                "MySQL 不支持 IS DISTINCT FROM / IS NOT DISTINCT FROM".to_string(),
+            ))
+        }
+    })
+}
+
 impl<'a> QueryBuilder<'a> {
     /// 选择字段
     ///
@@ -164,27 +204,9 @@ impl<'a> QueryBuilder<'a> {
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::mysql::condition::{Condition, SqlValue};
-
         let field = field.as_str().to_string();
         let value = value.into();
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                SqlValue::String(pattern) => Condition::Like(field, pattern),
-                // 不把值 Debug 回显，避免把调用方数据带进错误日志/响应
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let condition = condition_from_op(field, op, value)?;
         self.conditions.push(condition);
         Ok(self)
     }
@@ -211,26 +233,9 @@ impl<'a> QueryBuilder<'a> {
     where
         V: Into<crate::mysql::condition::SqlValue>,
     {
-        use crate::mysql::condition::{Condition, SqlValue};
-
         let field = field.as_str().to_string();
         let value = value.into();
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                SqlValue::String(pattern) => Condition::Like(field, pattern),
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let condition = condition_from_op(field, op, value)?;
 
         // 如果已有条件，将新条件与现有条件用 OR 组合
         if !self.conditions.is_empty() {
@@ -372,9 +377,9 @@ impl<'a> QueryBuilder<'a> {
             crate::CompareOp::Lt => ComparisonOperator::Lt,
             crate::CompareOp::Gte => ComparisonOperator::Gte,
             crate::CompareOp::Lte => ComparisonOperator::Lte,
-            crate::CompareOp::Like => {
+            _ => {
                 return Err(crate::error::DbError::UnsupportedOperator(
-                    "LIKE 不支持服务端表达式右值".to_string(),
+                    "模式匹配/NULL-safe 比较不支持服务端表达式右值".to_string(),
                 ));
             }
         };
@@ -424,22 +429,7 @@ impl<'a> QueryBuilder<'a> {
     {
         let field = field.as_str().to_string();
         let value = value.into();
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                crate::mysql::condition::SqlValue::String(value) => Condition::Like(field, value),
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let condition = condition_from_op(field, op, value)?;
         self.having_clause.push(condition);
         Ok(self)
     }
@@ -527,5 +517,58 @@ impl<'a> QueryBuilder<'a> {
     pub fn offset(mut self, offset: u64) -> Self {
         self.offset = Some(offset);
         self
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod wave2_compare_op_tests {
+    use super::*;
+    use crate::mysql::condition::{condition_to_sql_owned_checked, SqlValue};
+
+    fn render(op: crate::CompareOp, value: SqlValue) -> String {
+        let condition =
+            condition_from_op("name".to_string(), op, value).expect("受控操作符应可映射");
+        let mut params = Vec::new();
+        condition_to_sql_owned_checked(condition, &mut params).expect("条件应可渲染")
+    }
+
+    #[test]
+    fn ilike_and_regex_degrade_to_mysql_operators() {
+        let pattern = || SqlValue::String("%a%".to_string());
+        assert_eq!(render(crate::CompareOp::ILike, pattern()), "`name` LIKE ?");
+        assert_eq!(
+            render(crate::CompareOp::NotILike, pattern()),
+            "`name` NOT LIKE ?"
+        );
+        assert_eq!(
+            render(crate::CompareOp::RegexMatch, pattern()),
+            "`name` REGEXP ?"
+        );
+        assert_eq!(
+            render(crate::CompareOp::RegexIMatch, pattern()),
+            "`name` REGEXP ?"
+        );
+        assert_eq!(
+            render(crate::CompareOp::NotRegexMatch, pattern()),
+            "`name` NOT REGEXP ?"
+        );
+        assert_eq!(
+            render(crate::CompareOp::NotRegexIMatch, pattern()),
+            "`name` NOT REGEXP ?"
+        );
+    }
+
+    #[test]
+    fn is_distinct_from_is_unsupported_on_mysql() {
+        for op in [
+            crate::CompareOp::IsDistinctFrom,
+            crate::CompareOp::IsNotDistinctFrom,
+        ] {
+            assert!(matches!(
+                condition_from_op("name".to_string(), op, SqlValue::Int(1)),
+                Err(crate::error::DbError::UnsupportedOperator(_))
+            ));
+        }
     }
 }

@@ -1,10 +1,13 @@
 //! PostgreSQL schema 同步纯逻辑单元测试（不连接数据库）。
 
-use super::super::dialect::SchemaDialect;
+use super::super::dialect::{collations_equal, SchemaDialect};
+use super::super::model::{ExistingCheck, ExistingForeignKey, SchemaPreflightCheck};
+use super::super::plan::expression_references_column;
 use super::super::plan_table_sync_with;
 use super::super::{ExistingIndex, ExistingTableSchema, SchemaSyncChangeKind};
 use crate::error::BaseError;
-use crate::table::{Field, SchemaColumn, Table, TableDefinition};
+use crate::table::{Field, FieldType, SchemaColumn, Table, TableDefinition};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn account_table() -> TableDefinition {
     Table::new("pg_accounts")
@@ -27,6 +30,36 @@ fn account_table_with_default() -> TableDefinition {
         ])
         .build()
         .expect("pg_accounts 表定义应有效")
+}
+
+fn plain_table() -> TableDefinition {
+    Table::new("pg_profile")
+        .fields([
+            Field::id("id"),
+            Field::string("nickname", 32).required().comment("昵称"),
+        ])
+        .build()
+        .expect("pg_profile 表定义应有效")
+}
+
+fn identity(id: &str) -> BTreeSet<String> {
+    BTreeSet::from([id.to_string()])
+}
+
+fn plain_existing() -> ExistingTableSchema {
+    ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("nickname", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_comments(BTreeMap::from([(
+        "nickname".to_string(),
+        "昵称".to_string(),
+    )]))
 }
 
 #[test]
@@ -61,7 +94,7 @@ fn create_table_uses_postgres_dialect_without_engine_or_inline_key() {
 fn modify_column_renders_type_null_and_default_statements() {
     let existing = ExistingTableSchema::existing(
         vec![
-            SchemaColumn::new("id", "bigint", "bigint auto_increment", false, None, None),
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
             SchemaColumn::new("username", "varchar", "varchar(8)", true, Some(8), None),
         ],
         vec!["id".to_string()],
@@ -70,7 +103,8 @@ fn modify_column_renders_type_null_and_default_statements() {
             true,
             vec!["username".to_string()],
         )],
-    );
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
     let plan = plan_table_sync_with(
         SchemaDialect::PostgreSql,
         &account_table_with_default(),
@@ -93,7 +127,7 @@ fn modify_column_renders_type_null_and_default_statements() {
 fn compatible_identity_and_postgres_default_are_noop() {
     let existing = ExistingTableSchema::existing(
         vec![
-            SchemaColumn::new("id", "bigint", "bigint auto_increment", false, None, None),
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
             SchemaColumn::new(
                 "username",
                 "varchar",
@@ -109,7 +143,8 @@ fn compatible_identity_and_postgres_default_are_noop() {
             true,
             vec!["username".to_string()],
         )],
-    );
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
 
     let plan = plan_table_sync_with(
         SchemaDialect::PostgreSql,
@@ -118,6 +153,57 @@ fn compatible_identity_and_postgres_default_are_noop() {
     )
     .expect("identity 与 PG 默认值写法不应被视为漂移");
     assert!(plan.changes.is_empty());
+}
+
+/// 自增判定只认 pg_catalog 的 identity/serial 集合，不解析 column_type 文本。
+#[test]
+fn identity_is_read_from_catalog_not_column_type() {
+    let catalog_identity = ExistingTableSchema::existing(
+        vec![
+            // column_type 干净，identity 来自 attidentity。
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("username", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        vec![ExistingIndex::new(
+            "uk_pg_accounts_username",
+            true,
+            vec!["username".to_string()],
+        )],
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    assert!(plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &account_table(),
+        &catalog_identity
+    )
+    .expect("catalog identity 应视为一致")
+    .changes
+    .is_empty());
+
+    let string_marker_only = ExistingTableSchema::existing(
+        vec![
+            // 只有 column_type 字符串标记，没有 catalog identity -> 必须报漂移。
+            SchemaColumn::new("id", "bigint", "bigint auto_increment", false, None, None),
+            SchemaColumn::new("username", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        vec![ExistingIndex::new(
+            "uk_pg_accounts_username",
+            true,
+            vec!["username".to_string()],
+        )],
+    )
+    .with_column_kinds(BTreeSet::new(), BTreeMap::new());
+    let error = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &account_table(),
+        &string_marker_only,
+    )
+    .expect_err("column_type 文本不能替代 catalog identity");
+    assert!(
+        matches!(error, BaseError::DatabaseInitFailed(message) if message.contains("AutoIncrementMismatch"))
+    );
 }
 
 #[test]
@@ -141,6 +227,76 @@ fn postgres_check_normalization_handles_casts_any_array_and_literals() {
 }
 
 #[test]
+fn postgres_multi_clause_check_normalization_folds_pg_grouping() {
+    let dialect = SchemaDialect::PostgreSql;
+    // PostgreSQL 读回时会给每个布尔操作数补分组括号，必须与声明文本等价。
+    assert_eq!(
+        dialect.normalize_check_expression("CHECK (((score >= 0) AND (status <> 'banned'::text)))"),
+        dialect.normalize_check_expression("\"score\" >= 0 AND \"status\" <> 'banned'")
+    );
+    assert_eq!(
+        dialect.normalize_check_expression("CHECK (((a >= 10) OR (a < 20)))"),
+        dialect.normalize_check_expression("\"a\" >= 10 OR \"a\" < 20")
+    );
+    assert_eq!(
+        dialect.normalize_check_expression("CHECK ((((a >= 0) AND (b < 5)) OR (c = 2)))"),
+        dialect.normalize_check_expression("(\"a\" >= 0 AND \"b\" < 5) OR \"c\" = 2")
+    );
+    assert_eq!(
+        dialect.normalize_check_expression("CHECK ((NOT ((a >= 0) AND (b < 5))))"),
+        dialect.normalize_check_expression("NOT (\"a\" >= 0 AND \"b\" < 5)")
+    );
+    // 括号改变布尔结合方式时不得误判相等。
+    assert_ne!(
+        dialect.normalize_check_expression("(\"a\" = 1 AND \"b\" = 2) OR \"c\" = 3"),
+        dialect.normalize_check_expression("\"a\" = 1 AND (\"b\" = 2 OR \"c\" = 3)")
+    );
+    assert_ne!(
+        dialect.normalize_check_expression("(\"a\" = 1 OR \"b\" = 2) AND \"c\" = 3"),
+        dialect.normalize_check_expression("\"a\" = 1 OR (\"b\" = 2 AND \"c\" = 3)")
+    );
+}
+
+#[test]
+fn postgres_check_normalization_keeps_parentheses_right_of_comparison_operator() {
+    let dialect = SchemaDialect::PostgreSql;
+    // `flag = (x AND y)` 与 `(flag = x) AND y` 语义不同，不得归一为同一表达式。
+    assert_ne!(
+        dialect.normalize_check_expression("flag = (x AND y)"),
+        dialect.normalize_check_expression("(flag = x) AND y")
+    );
+    // 表达式开头 / `(` 后 / AND|OR|NOT 后的布尔分组仍按既有规则折叠。
+    assert_eq!(
+        dialect.normalize_check_expression("((a AND b) OR c)"),
+        dialect.normalize_check_expression("(a AND b) OR c")
+    );
+    assert_ne!(
+        dialect.normalize_check_expression("(a AND b) OR c"),
+        dialect.normalize_check_expression("a AND (b OR c)")
+    );
+    assert_eq!(
+        dialect.normalize_check_expression("(flag = x) AND y"),
+        dialect.normalize_check_expression("flag = x AND y")
+    );
+}
+
+#[test]
+fn check_column_matching_follows_postgres_identifier_case_folding() {
+    // 未加双引号的标识符按 PostgreSQL 规则折叠为小写，大小写不敏感匹配。
+    assert!(expression_references_column("SCORE >= 0", "score"));
+    assert!(expression_references_column(
+        "Score >= 0 AND status <> 'banned'",
+        "score"
+    ));
+    assert!(expression_references_column("scOre >= 0", "score"));
+    // 双引号标识符精确匹配，`"SCORE"` 不等同于列 score。
+    assert!(!expression_references_column("\"SCORE\" >= 0", "score"));
+    assert!(expression_references_column("\"score\" >= 0", "score"));
+    // 单引号字符串字面量中的同名文本不算列引用。
+    assert!(!expression_references_column("status <> 'score'", "score"));
+}
+
+#[test]
 fn index_name_longer_than_63_bytes_is_rejected() {
     let long_name = "i".repeat(64);
     let table = Table::new("pg_long_index")
@@ -154,25 +310,856 @@ fn index_name_longer_than_63_bytes_is_rejected() {
         &table,
         &ExistingTableSchema::missing(),
     )
-    .expect_err("超过 63 字节的索引名必须拒绝");
+    .expect_err("超过 63 字节的显式索引名必须拒绝");
     assert!(matches!(error, BaseError::ConfigError(message) if message.contains("63")));
 }
 
 #[test]
-fn enum_columns_fail_closed_on_postgres() {
-    let table = Table::new("pg_enum_unsupported")
+fn index_names_must_be_unique_within_schema() {
+    let first = Table::new("pg_first")
+        .fields([Field::id("id"), Field::string("name", 16)])
+        .index_named("idx_shared_name", ["name"])
+        .build()
+        .expect("第一张表应有效");
+    let second = Table::new("pg_second")
+        .fields([Field::id("id"), Field::string("name", 16)])
+        .index_named("idx_shared_name", ["name"])
+        .build()
+        .expect("第二张表应有效");
+    let error = SchemaDialect::PostgreSql
+        .normalize_definitions(&[&first, &second])
+        .expect_err("同一 schema 内跨表重复索引名必须拒绝");
+    assert!(matches!(error, BaseError::ConfigError(message) if message.contains("schema")));
+}
+
+#[test]
+fn explicit_identifiers_longer_than_63_bytes_fail_closed() {
+    // PostgreSQL 标识符上限是 63 字节。`TableRef`/`FieldRef` 已在构建期按同一上限
+    // 拒绝超长名称，因此同步层不会再看到 64 字节标识符；这里断言 fail-closed。
+    let long_table = Table::new("t".repeat(64)).fields([Field::id("id")]).build();
+    assert!(long_table.is_err(), "64 字节表名必须在构建期拒绝");
+
+    let long_field = Table::new("pg_long_field")
+        .fields([Field::id("i".repeat(64))])
+        .build();
+    assert!(long_field.is_err(), "64 字节字段名必须在构建期拒绝");
+}
+
+/// 自动生成的索引名超长时用稳定 hash 截断，而不是拒绝或让服务端静默截断。
+#[test]
+fn generated_index_names_are_truncated_stably() {
+    let table = Table::new("t".repeat(30))
+        .fields([Field::id("id"), Field::string("c".repeat(29), 32)])
+        .index([("c".repeat(29)).as_str()])
+        .build()
+        .expect("长名字表定义应有效");
+    let first = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("自动索引名应可截断");
+    let second = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("自动索引名应可截断");
+    assert_eq!(first.statements, second.statements, "截断结果必须稳定");
+
+    let index_statement = first
+        .statements
+        .iter()
+        .find(|statement| statement.starts_with("CREATE INDEX"))
+        .expect("应包含独立索引创建语句");
+    let name = index_statement
+        .split('"')
+        .nth(1)
+        .expect("索引语句应包含引号内名称");
+    assert!(name.len() <= 63, "截断后索引名长度必须 <= 63: {name}");
+    assert!(name.contains('_'), "截断名应保留前缀与 hash 分隔符: {name}");
+}
+
+// ---- P0-02 + P1-06：Enum -> varchar + CHECK ----
+
+fn enum_table() -> TableDefinition {
+    Table::new("pg_enum")
         .fields([
             Field::id("id"),
             Field::enumeration("status", ["active", "disabled"]).required(),
         ])
         .build()
-        .expect("枚举表定义应有效");
+        .expect("枚举表定义应有效")
+}
 
+#[test]
+fn enum_columns_render_varchar_and_check() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &enum_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect("PostgreSQL 枚举应降级为 varchar + CHECK");
+    let create = &plan.statements[0];
+    assert!(create.contains("\"status\" VARCHAR(8) NOT NULL"));
+    assert!(create.contains(
+        "CONSTRAINT \"chk_pg_enum_status\" CHECK (\"status\" IN ('active', 'disabled'))"
+    ));
+    assert!(!create.contains("ENUM"));
+}
+
+#[test]
+fn enum_check_is_idempotent_on_second_sync() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("status", "varchar", "varchar(8)", false, Some(8), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_constraints(
+        vec![ExistingCheck {
+            name: "chk_pg_enum_status".to_string(),
+            expression: "((status)::text = ANY ((ARRAY['active'::text, 'disabled'::text])))"
+                .to_string(),
+            validated: true,
+        }],
+        Vec::new(),
+    );
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &enum_table(), &existing)
+        .expect("已有等价 CHECK 时枚举必须幂等");
+    assert!(plan.changes.is_empty(), "二次同步必须 no-op: {plan:?}");
+}
+
+#[test]
+fn enum_check_on_existing_table_uses_not_valid_then_validate() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("status", "varchar", "varchar(8)", false, Some(8), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &enum_table(), &existing)
+        .expect("缺失枚举 CHECK 应可在线添加");
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(plan.changes[0].kind, SchemaSyncChangeKind::AddedCheck);
+    assert_eq!(
+        plan.statements,
+        vec![
+            "ALTER TABLE \"pg_enum\" ADD CONSTRAINT \"chk_pg_enum_status\" CHECK (\"status\" IN ('active', 'disabled')) NOT VALID",
+            "ALTER TABLE \"pg_enum\" VALIDATE CONSTRAINT \"chk_pg_enum_status\"",
+        ]
+    );
+    // VALIDATE 必须在事务提交后执行，避免 ACCESS EXCLUSIVE 锁持有到 COMMIT。
+    assert_eq!(plan.steps.len(), 1);
+    assert_eq!(
+        plan.steps[0].statements,
+        vec![
+            "ALTER TABLE \"pg_enum\" ADD CONSTRAINT \"chk_pg_enum_status\" CHECK (\"status\" IN ('active', 'disabled')) NOT VALID"
+        ]
+    );
+    assert_eq!(
+        plan.steps[0].deferred_statements,
+        vec!["ALTER TABLE \"pg_enum\" VALIDATE CONSTRAINT \"chk_pg_enum_status\""]
+    );
+}
+
+#[test]
+fn unvalidated_existing_check_is_self_healed_with_deferred_validate() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("status", "varchar", "varchar(8)", false, Some(8), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_constraints(
+        vec![ExistingCheck {
+            name: "chk_pg_enum_status".to_string(),
+            expression: "((status)::text = ANY ((ARRAY['active'::text, 'disabled'::text])))"
+                .to_string(),
+            // NOT VALID 添加后尚未验证。
+            validated: false,
+        }],
+        Vec::new(),
+    );
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &enum_table(), &existing)
+        .expect("未验证的同表达式 CHECK 应可自愈");
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(plan.changes[0].kind, SchemaSyncChangeKind::ValidatedCheck);
+    assert_eq!(plan.steps.len(), 1);
+    assert!(plan.steps[0].statements.is_empty());
+    assert_eq!(
+        plan.steps[0].deferred_statements,
+        vec!["ALTER TABLE \"pg_enum\" VALIDATE CONSTRAINT \"chk_pg_enum_status\""]
+    );
+    // 完整 SQL 文本仍需出现在 plan.statements 中。
+    assert_eq!(
+        plan.statements,
+        vec!["ALTER TABLE \"pg_enum\" VALIDATE CONSTRAINT \"chk_pg_enum_status\""]
+    );
+}
+
+// ---- P1-06：生成列与注释 ----
+
+fn generated_table() -> TableDefinition {
+    Table::new("pg_orders")
+        .fields([
+            Field::id("id"),
+            Field::integer("price").required(),
+            Field::bigint("total").required().generated("price * 2"),
+        ])
+        .build()
+        .expect("生成列表定义应有效")
+}
+
+#[test]
+fn generated_columns_render_stored_and_reflect_into_existing_schema() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &generated_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect("生成列应可建表");
+    let create = &plan.statements[0];
+    assert!(create.contains("\"total\" BIGINT NOT NULL GENERATED ALWAYS AS (price * 2) STORED"));
+    assert!(!create.contains("\"total\" BIGINT NOT NULL DEFAULT"));
+
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("price", "integer", "integer", false, None, None),
+            SchemaColumn::new("total", "bigint", "bigint", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(
+        identity("id"),
+        BTreeMap::from([("total".to_string(), "(price * 2)".to_string())]),
+    );
+    assert!(
+        plan_table_sync_with(SchemaDialect::PostgreSql, &generated_table(), &existing)
+            .expect("等价生成表达式必须幂等")
+            .changes
+            .is_empty()
+    );
+}
+
+#[test]
+fn generated_expression_or_presence_drift_fails_closed() {
+    let base = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("price", "integer", "integer", false, None, None),
+            SchemaColumn::new("total", "bigint", "bigint", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let error = plan_table_sync_with(SchemaDialect::PostgreSql, &generated_table(), &base)
+        .expect_err("生成列属性漂移必须拒绝");
+    assert!(matches!(error, BaseError::DatabaseInitFailed(message) if message.contains("生成列")));
+
+    let different = base.with_column_kinds(
+        identity("id"),
+        BTreeMap::from([("total".to_string(), "(price * 3)".to_string())]),
+    );
+    let error = plan_table_sync_with(SchemaDialect::PostgreSql, &generated_table(), &different)
+        .expect_err("生成表达式漂移必须拒绝");
+    assert!(matches!(error, BaseError::DatabaseInitFailed(message) if message.contains("生成列")));
+}
+
+#[test]
+fn column_comments_are_emitted_only_when_different() {
+    let existing = plain_existing();
+    assert!(
+        plan_table_sync_with(SchemaDialect::PostgreSql, &plain_table(), &existing)
+            .expect("相同注释应幂等")
+            .changes
+            .is_empty()
+    );
+
+    let without_comment =
+        ExistingTableSchema::existing(existing.columns.clone(), vec!["id".to_string()], Vec::new())
+            .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &plain_table(), &without_comment)
+        .expect("新增注释应生成计划");
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(plan.changes[0].kind, SchemaSyncChangeKind::CommentedColumn);
+    assert_eq!(
+        plan.statements,
+        vec!["COMMENT ON COLUMN \"pg_profile\".\"nickname\" IS '昵称'"]
+    );
+}
+
+// ---- P1-07：collation ----
+
+#[test]
+fn collation_is_rendered_and_diffed() {
+    let table = Table::new("pg_collated")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 32).required().collation("C"),
+        ])
+        .build()
+        .expect("collation 表定义应有效");
+    let create = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("collation 应可建表");
+    assert!(create.statements[0].contains("\"name\" VARCHAR(32) COLLATE \"C\" NOT NULL"));
+
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("name", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_collations(BTreeMap::from([("name".to_string(), "C".to_string())]));
+    assert!(
+        plan_table_sync_with(SchemaDialect::PostgreSql, &table, &existing)
+            .expect("相同 collation 应幂等")
+            .changes
+            .is_empty()
+    );
+
+    let different =
+        existing.with_collations(BTreeMap::from([("name".to_string(), "en_US".to_string())]));
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &table, &different)
+        .expect("collation 漂移应生成修改计划");
+    assert_eq!(plan.changes[0].kind, SchemaSyncChangeKind::ModifiedColumn);
+    assert!(plan.statements[0].contains("TYPE VARCHAR(32) COLLATE \"C\""));
+}
+
+#[test]
+fn removing_collation_resets_to_default() {
+    let table = Table::new("pg_collated")
+        .fields([Field::id("id"), Field::string("name", 32).required()])
+        .build()
+        .expect("表定义应有效");
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("name", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_collations(BTreeMap::from([("name".to_string(), "C".to_string())]));
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &table, &existing)
+        .expect("移除显式 collation 应可重置");
+    assert!(plan.statements[0].contains("COLLATE \"default\""));
+}
+
+#[test]
+fn dotted_collation_names_are_quoted_as_one_identifier() {
+    // libc collation 名称本身包含点号（en_US.utf8），不能被拆成 schema.name。
+    let table = Table::new("pg_collated")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 32).required().collation("en_US.utf8"),
+        ])
+        .build()
+        .expect("点号 collation 表定义应有效");
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("点号 collation 应可建表");
+    assert!(
+        plan.statements[0].contains("COLLATE \"en_US.utf8\""),
+        "整个名称必须作为单个标识符: {}",
+        plan.statements[0]
+    );
+    assert!(!plan.statements[0].contains("\"en_US\".\"utf8\""));
+}
+
+#[test]
+fn collation_name_injection_is_rejected() {
+    let table = Table::new("pg_collated")
+        .fields([
+            Field::id("id"),
+            Field::string("name", 32)
+                .required()
+                .collation("C\"; DROP TABLE x; --"),
+        ])
+        .build()
+        .expect("构建期不解析 collation 字符");
     let error = plan_table_sync_with(
         SchemaDialect::PostgreSql,
         &table,
         &ExistingTableSchema::missing(),
     )
-    .expect_err("PostgreSQL 枚举字段必须 fail-closed");
-    assert!(matches!(error, BaseError::ConfigError(message) if message.contains("枚举")));
+    .expect_err("非法 collation 名称必须拒绝");
+    assert!(matches!(error, BaseError::ConfigError(message) if message.contains("collation")));
+}
+
+// ---- P1-14：在线 DDL ----
+
+fn unique_existing() -> ExistingTableSchema {
+    ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("username", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+}
+
+#[test]
+fn index_creation_on_existing_table_is_concurrent_and_outside_transaction() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &account_table(),
+        &unique_existing(),
+    )
+    .expect("已有表加索引应使用并发路径");
+    let step = plan
+        .steps
+        .iter()
+        .find(|step| step.change.kind == SchemaSyncChangeKind::AddedIndex)
+        .expect("应有索引步骤");
+    assert!(step.concurrent, "并发索引步骤必须标记为事务外执行");
+    assert!(step.statements[0].contains("CREATE UNIQUE INDEX CONCURRENTLY"));
+}
+
+#[test]
+fn invalid_index_is_rebuilt_concurrently() {
+    let invalid = ExistingIndex::new(
+        "uk_pg_accounts_username",
+        true,
+        vec!["username".to_string()],
+    )
+    .with_valid(false);
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("username", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        vec![invalid],
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &account_table(), &existing)
+        .expect("INVALID 索引应自愈");
+    let step = plan
+        .steps
+        .iter()
+        .find(|step| step.change.kind == SchemaSyncChangeKind::AddedIndex)
+        .expect("应有索引重建步骤");
+    assert!(step.concurrent);
+    assert_eq!(
+        step.statements,
+        vec![
+            "DROP INDEX CONCURRENTLY IF EXISTS \"uk_pg_accounts_username\"".to_string(),
+            "CREATE UNIQUE INDEX CONCURRENTLY \"uk_pg_accounts_username\" ON \"pg_accounts\" (\"username\")".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn collations_equal_compares_full_names_and_normalizes_only_catalog_prefix() {
+    // libc collation 的点号是名称的一部分：不同语言不能被截成相同的 `utf8`。
+    assert!(!collations_equal(Some("en_US.utf8"), Some("de_DE.utf8")));
+    assert!(collations_equal(Some("en_US.utf8"), Some("en_US.utf8")));
+    // 只规范化真正的前缀与引号。
+    assert!(collations_equal(Some("pg_catalog.C"), Some("C")));
+    assert!(collations_equal(Some("C"), Some("\"C\"")));
+    // PostgreSQL 引号标识符大小写敏感：`c` 与 `C` 是不同 collation。
+    assert!(!collations_equal(Some("en_us.utf8"), Some("EN_US.UTF8")));
+    assert!(!collations_equal(Some("c"), Some("C")));
+    // `default` 等价于未显式指定（inspect 在 attcollation == typcollation 时返回 NULL）。
+    assert!(collations_equal(Some("default"), None));
+    assert!(collations_equal(Some("DEFAULT"), None));
+    assert!(collations_equal(Some("\"default\""), None));
+    assert!(collations_equal(Some("default"), Some("default")));
+    // 未显式指定与显式指定其他 collation 不能视为相等。
+    assert!(!collations_equal(None, Some("C")));
+    assert!(collations_equal(None, None));
+}
+
+#[test]
+fn default_collation_case_variants_render_as_lowercase_keyword() {
+    // PostgreSQL 只识别 COLLATE "default"；"DEFAULT"/"Default" 会报 42704。
+    for name in ["default", "DEFAULT", "Default"] {
+        let table = Table::new("pg_collated")
+            .fields([
+                Field::id("id"),
+                Field::string("name", 32).required().collation(name),
+            ])
+            .build()
+            .expect("default collation 表定义应有效");
+        let plan = plan_table_sync_with(
+            SchemaDialect::PostgreSql,
+            &table,
+            &ExistingTableSchema::missing(),
+        )
+        .expect("default collation 应可建表");
+        assert!(
+            plan.statements[0].contains("COLLATE \"default\""),
+            "{name:?} 必须渲染为小写 default: {}",
+            plan.statements[0]
+        );
+    }
+}
+
+#[test]
+fn check_and_foreign_key_use_not_valid_then_validate() {
+    let table = Table::new("pg_child")
+        .fields([
+            Field::id("id"),
+            Field::integer("parent_id").required(),
+            Field::integer("score").required(),
+        ])
+        .foreign_key_named("fk_child_parent", ["parent_id"], "pg_parent", ["id"])
+        .check_named("chk_score_positive", "score >= 0")
+        .build()
+        .expect("含 CHECK/FK 的表定义应有效");
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("parent_id", "integer", "integer", false, None, None),
+            SchemaColumn::new("score", "integer", "integer", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &table, &existing)
+        .expect("CHECK/FK 应可在线添加");
+    assert!(plan.statements.contains(
+        &"ALTER TABLE \"pg_child\" ADD CONSTRAINT \"chk_score_positive\" CHECK (score >= 0) NOT VALID"
+            .to_string()
+    ));
+    assert!(plan.statements.contains(
+        &"ALTER TABLE \"pg_child\" VALIDATE CONSTRAINT \"chk_score_positive\"".to_string()
+    ));
+    assert!(plan.statements.iter().any(|statement| {
+        statement.contains("ADD CONSTRAINT \"fk_child_parent\" FOREIGN KEY (\"parent_id\")")
+            && statement.ends_with("NOT VALID")
+    }));
+    assert!(plan
+        .statements
+        .contains(&"ALTER TABLE \"pg_child\" VALIDATE CONSTRAINT \"fk_child_parent\"".to_string()));
+
+    // 外键步骤：事务内只含 ADD ... NOT VALID，VALIDATE 放到外键事务提交后的 deferred。
+    let foreign_key_step = plan
+        .steps
+        .iter()
+        .find(|step| step.change.kind == SchemaSyncChangeKind::AddedForeignKey)
+        .expect("应有外键步骤");
+    assert!(!foreign_key_step.concurrent);
+    assert_eq!(foreign_key_step.statements.len(), 1);
+    assert!(
+        foreign_key_step.statements[0].ends_with("NOT VALID"),
+        "事务内只应含 NOT VALID: {:?}",
+        foreign_key_step.statements
+    );
+    assert_eq!(
+        foreign_key_step.deferred_statements,
+        vec!["ALTER TABLE \"pg_child\" VALIDATE CONSTRAINT \"fk_child_parent\"".to_string()]
+    );
+}
+
+#[test]
+fn unvalidated_existing_foreign_key_is_self_healed_with_deferred_validate() {
+    let table = Table::new("pg_child")
+        .fields([Field::id("id"), Field::integer("parent_id").required()])
+        .foreign_key_named("fk_child_parent", ["parent_id"], "pg_parent", ["id"])
+        .build()
+        .expect("含外键的表定义应有效");
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("parent_id", "integer", "integer", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_constraints(
+        Vec::new(),
+        vec![ExistingForeignKey {
+            name: "fk_child_parent".to_string(),
+            columns: vec!["parent_id".to_string()],
+            referenced_table: "pg_parent".to_string(),
+            referenced_columns: vec!["id".to_string()],
+            update_rule: "NO ACTION".to_string(),
+            delete_rule: "NO ACTION".to_string(),
+            // NOT VALID 添加后尚未验证。
+            validated: false,
+        }],
+    );
+
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &table, &existing)
+        .expect("未验证的同定义外键应可自愈");
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(
+        plan.changes[0].kind,
+        SchemaSyncChangeKind::ValidatedForeignKey
+    );
+    assert_eq!(plan.steps.len(), 1);
+    assert!(plan.steps[0].statements.is_empty());
+    assert_eq!(
+        plan.steps[0].deferred_statements,
+        vec!["ALTER TABLE \"pg_child\" VALIDATE CONSTRAINT \"fk_child_parent\""]
+    );
+    assert!(plan
+        .statements
+        .contains(&"ALTER TABLE \"pg_child\" VALIDATE CONSTRAINT \"fk_child_parent\"".to_string()));
+}
+
+// ---- 部分索引/表达式索引反射 ----
+
+fn indexed_account_existing(indexes: Vec<ExistingIndex>) -> ExistingTableSchema {
+    ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("username", "varchar", "varchar(32)", false, Some(32), None),
+        ],
+        vec!["id".to_string()],
+        indexes,
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+}
+
+#[test]
+fn plain_index_with_other_name_satisfies_declared_unique_index() {
+    let existing = indexed_account_existing(vec![ExistingIndex::new(
+        "uk_other_username",
+        true,
+        vec!["username".to_string()],
+    )]);
+    assert!(
+        plan_table_sync_with(SchemaDialect::PostgreSql, &account_table(), &existing)
+            .expect("普通唯一索引应满足声明")
+            .changes
+            .is_empty()
+    );
+}
+
+#[test]
+fn partial_unique_index_does_not_satisfy_full_unique_declaration() {
+    // 部分唯一索引只约束谓词命中的行，不能代替完整唯一约束。
+    let existing = indexed_account_existing(vec![ExistingIndex::new(
+        "uk_partial_username",
+        true,
+        vec!["username".to_string()],
+    )
+    .with_predicate("(username IS NOT NULL)".to_string())]);
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &account_table(), &existing)
+        .expect("部分索引不应覆盖完整唯一声明");
+    assert!(
+        plan.changes
+            .iter()
+            .any(|change| change.kind == SchemaSyncChangeKind::AddedIndex),
+        "部分唯一索引不能阻止补建完整唯一索引: {plan:?}"
+    );
+}
+
+#[test]
+fn expression_index_does_not_satisfy_plain_column_declaration() {
+    let existing = indexed_account_existing(vec![ExistingIndex::new(
+        "uk_lower_username",
+        true,
+        Vec::new(),
+    )
+    .with_expressions(vec!["lower(username)".to_string()])]);
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &account_table(), &existing)
+        .expect("表达式索引不应与普通列索引混淆");
+    assert!(
+        plan.changes
+            .iter()
+            .any(|change| change.kind == SchemaSyncChangeKind::AddedIndex),
+        "表达式索引不能阻止补建普通列索引: {plan:?}"
+    );
+}
+
+#[test]
+fn same_named_partial_index_fails_closed_instead_of_recreating() {
+    let existing = indexed_account_existing(vec![ExistingIndex::new(
+        "uk_pg_accounts_username",
+        true,
+        vec!["username".to_string()],
+    )
+    .with_predicate("(username IS NOT NULL)".to_string())]);
+    let error = plan_table_sync_with(SchemaDialect::PostgreSql, &account_table(), &existing)
+        .expect_err("同名部分索引与声明定义不同，必须拒绝");
+    assert!(
+        matches!(&error, BaseError::DatabaseInitFailed(message) if message.contains("定义不同")),
+        "应给出 fail-closed 定义冲突: {error}"
+    );
+}
+
+// ---- 预检顺序：同一轮新增列上的 CHECK/FK ----
+
+fn check_and_foreign_key_table() -> TableDefinition {
+    Table::new("pg_child")
+        .fields([
+            Field::id("id"),
+            Field::integer("parent_id").required(),
+            Field::integer("score").required(),
+        ])
+        .foreign_key_named("fk_child_parent", ["parent_id"], "pg_parent", ["id"])
+        .check_named("chk_score_positive", "score >= 0")
+        .build()
+        .expect("含 CHECK/FK 的表定义应有效")
+}
+
+#[test]
+fn preflight_is_skipped_when_all_check_and_fk_columns_are_newly_added() {
+    let existing = ExistingTableSchema::existing(
+        vec![SchemaColumn::new(
+            "id", "bigint", "bigint", false, None, None,
+        )],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &check_and_foreign_key_table(),
+        &existing,
+    )
+    .expect("新增列 + CHECK/FK 应可规划");
+    assert!(
+        plan.preflight.is_empty(),
+        "新增列上的 CHECK/FK 不应生成引用缺失列的预检: {:?}",
+        plan.preflight
+    );
+}
+
+fn mixed_constraints_table() -> TableDefinition {
+    Table::new("pg_mixed")
+        .fields([
+            Field::id("id"),
+            Field::string("status", 32).required(),
+            Field::integer("score").required(),
+            Field::integer("parent_id").required(),
+            Field::integer("code").required(),
+        ])
+        .unique_named("uk_pg_mixed_status_score", ["status", "score"])
+        .check_named("chk_pg_mixed_score", "score >= 0 AND status <> 'banned'")
+        .foreign_key_named(
+            "fk_pg_mixed_parent",
+            ["parent_id", "code"],
+            "pg_parent",
+            ["id", "code"],
+        )
+        .build()
+        .expect("混合新增/既有列的约束表定义应有效")
+}
+
+#[test]
+fn preflight_is_skipped_when_constraint_mixes_new_and_existing_columns() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("status", "varchar", "varchar(32)", false, Some(32), None),
+            SchemaColumn::new("parent_id", "integer", "integer", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &mixed_constraints_table(),
+        &existing,
+    )
+    .expect("混合新增/既有列的约束应可规划");
+    assert!(
+        plan.changes.iter().any(|change| {
+            change.kind == SchemaSyncChangeKind::AddedColumn
+                && matches!(change.object.as_str(), "score" | "code")
+        }),
+        "预计新增 score/code 列: {:?}",
+        plan.changes
+    );
+    assert!(
+        !plan.preflight.iter().any(|check| matches!(
+            check,
+            SchemaPreflightCheck::Check { .. }
+                | SchemaPreflightCheck::ForeignKey { .. }
+                | SchemaPreflightCheck::UniqueIndex { .. }
+        )),
+        "引用任一新增列的 CHECK/外键/唯一索引预检必须跳过: {:?}",
+        plan.preflight
+    );
+}
+
+#[test]
+fn preflight_is_kept_for_check_and_fk_on_existing_columns() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("parent_id", "integer", "integer", false, None, None),
+            SchemaColumn::new("score", "integer", "integer", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &check_and_foreign_key_table(),
+        &existing,
+    )
+    .expect("既有列上的 CHECK/FK 应可规划");
+    assert!(plan
+        .preflight
+        .iter()
+        .any(|check| matches!(check, SchemaPreflightCheck::Check { .. })));
+    assert!(plan
+        .preflight
+        .iter()
+        .any(|check| matches!(check, SchemaPreflightCheck::ForeignKey { .. })));
+}
+
+// ---- DDL 类型渲染 ----
+
+#[test]
+fn postgres_type_rendering_matches_expected_ddl() {
+    let dialect = SchemaDialect::PostgreSql;
+    let cases = [
+        (FieldType::Date, "DATE"),
+        (FieldType::DateTime, "TIMESTAMPTZ"),
+        (
+            FieldType::Decimal {
+                precision: 12,
+                scale: 3,
+            },
+            "NUMERIC(12,3)",
+        ),
+        (FieldType::Boolean, "BOOLEAN"),
+        (FieldType::Json, "JSONB"),
+        (FieldType::Text, "TEXT"),
+    ];
+    for (field_type, expected) in cases {
+        assert_eq!(
+            dialect
+                .render_type(&field_type, "sample")
+                .expect("PostgreSQL 类型渲染应成功"),
+            expected
+        );
+    }
 }

@@ -66,15 +66,21 @@ impl Dialect {
         }
     }
 
-    /// 按方言渲染受控服务端表达式，返回（固定 SQL 片段，可选 i64 绑定参数）。
+    /// 按方言渲染受控服务端表达式，返回（固定 SQL 片段，按占位符顺序的绑定参数）。
     ///
     /// 编号占位符方言由调用方传入下一个占位符序号；`?` 方言忽略该序号。
+    /// MySQL 不支持的表达式（如 `to_char`）返回 [`DbError::UnsupportedOperator`]。
     #[cfg(feature = "postgres")]
-    fn render_expr(self, expression: &crate::SqlExpr, placeholder: usize) -> (String, Option<i64>) {
+    fn render_expr(
+        self,
+        expression: &crate::SqlExpr,
+        placeholder: usize,
+    ) -> Result<(String, Vec<crate::reference::SqlExprParam>), DbError> {
         if self.numbered_placeholders {
             #[cfg(feature = "postgres")]
             {
-                expression.postgres_render(placeholder)
+                let rendered = expression.postgres_render(placeholder);
+                Ok((rendered.sql, rendered.params))
             }
             #[cfg(not(feature = "postgres"))]
             {
@@ -85,8 +91,8 @@ impl Dialect {
             #[cfg(feature = "mysql")]
             {
                 let _ = placeholder;
-                let (fragment, param) = expression.mysql_render();
-                (fragment.to_string(), param)
+                let rendered = expression.mysql_render()?;
+                Ok((rendered.sql, rendered.params))
             }
             #[cfg(not(feature = "mysql"))]
             {
@@ -128,9 +134,9 @@ pub(crate) trait CondValue {
     /// 是否为 SQL NULL。
     fn is_null(&self) -> bool;
 
-    /// 从受控表达式的 i64 绑定参数构造后端值。
+    /// 从受控表达式的绑定参数构造后端值。
     #[cfg(feature = "postgres")]
-    fn from_i64(value: i64) -> Self;
+    fn from_expr_param(param: crate::reference::SqlExprParam) -> Self;
 
     /// 是否为原生 JSON 值（JSON/JSONB 谓词只接受原生 JSON 绑定）。
     ///
@@ -176,8 +182,8 @@ impl CondValue for crate::mysql::SqlValue {
 
     /// 仅在同时启用 postgres 时 trait 才要求该方法（表达式渲染是 PG 路径）。
     #[cfg(feature = "postgres")]
-    fn from_i64(value: i64) -> Self {
-        crate::mysql::SqlValue::from(value)
+    fn from_expr_param(param: crate::reference::SqlExprParam) -> Self {
+        param.into()
     }
 }
 
@@ -187,8 +193,8 @@ impl CondValue for crate::postgres::SqlValue {
         matches!(self, crate::postgres::SqlValue::Null)
     }
 
-    fn from_i64(value: i64) -> Self {
-        crate::postgres::SqlValue::from(value)
+    fn from_expr_param(param: crate::reference::SqlExprParam) -> Self {
+        param.into()
     }
 
     fn is_json(&self) -> bool {
@@ -196,7 +202,10 @@ impl CondValue for crate::postgres::SqlValue {
     }
 
     fn is_array(&self) -> bool {
-        matches!(self, crate::postgres::SqlValue::Array(_))
+        matches!(
+            self,
+            crate::postgres::SqlValue::Array(_) | crate::postgres::SqlValue::TypedArray { .. }
+        )
     }
 
     fn is_range_value(&self) -> bool {
@@ -207,7 +216,13 @@ impl CondValue for crate::postgres::SqlValue {
     }
 
     fn array_is_empty(&self) -> bool {
-        matches!(self, crate::postgres::SqlValue::Array(values) if values.is_empty())
+        matches!(
+            self,
+            crate::postgres::SqlValue::Array(values) if values.is_empty()
+        ) || matches!(
+            self,
+            crate::postgres::SqlValue::TypedArray { values, .. } if values.is_empty()
+        )
     }
 
     fn cast_suffix(&self) -> Option<&'static str> {
@@ -218,6 +233,16 @@ impl CondValue for crate::postgres::SqlValue {
             crate::postgres::SqlValue::MacAddr8(_) => Some("::macaddr8"),
             crate::postgres::SqlValue::Range(_) => Some("::int4range"),
             crate::postgres::SqlValue::Multirange(_) => Some("::int4multirange"),
+            // 带元素类型的数组：字符串族与网络族绑定的是 TEXT[]，需要追加显式
+            // 转换；其余元素类型绑定的 Rust 数组 OID 已与列类型一致。
+            crate::postgres::SqlValue::TypedArray { element_type, .. } => match *element_type {
+                "varchar" => Some("::varchar[]"),
+                "inet" => Some("::inet[]"),
+                "cidr" => Some("::cidr[]"),
+                "macaddr" => Some("::macaddr[]"),
+                "macaddr8" => Some("::macaddr8[]"),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -265,6 +290,15 @@ pub(crate) enum CondNode<V> {
     Between(String, V, V),
     /// LIKE 条件（模式串已在转换时包装为后端值类型）。
     Like(String, V),
+    /// 模式/正则匹配：操作符文本来自受控白名单（`ILIKE` / `NOT ILIKE` / `~` /
+    /// `~*` / `!~` / `!~*` / `REGEXP` / `NOT REGEXP`），模式串走绑定参数。
+    PatternMatch(String, &'static str, V),
+    /// NULL-safe 比较：`field IS [NOT] DISTINCT FROM value`。
+    ///
+    /// `bool` 为 `true` 时渲染 `IS DISTINCT FROM`，否则 `IS NOT DISTINCT FROM`。
+    /// 右值为 SQL NULL 时内联 `NULL`（该形式对任意列类型都合法）。
+    #[cfg(feature = "postgres")]
+    DistinctFrom(String, bool, V),
     /// IS NULL 条件
     IsNull(String),
     /// IS NOT NULL 条件
@@ -273,10 +307,10 @@ pub(crate) enum CondNode<V> {
     ColumnComparison(String, &'static str, String),
     /// 字段与受控服务端表达式的比较（MySQL 专属变体）。
     ///
-    /// 表达式已在转换时预渲染为固定片段文本 + 可选绑定参数（如偏移秒数）；
+    /// 表达式已在转换时预渲染为固定片段文本 + 按占位符顺序的绑定参数；
     /// PG 的 `Condition` 无此变体，故只在 `mysql` feature 下存在。
     #[cfg(feature = "mysql")]
-    ColumnExpr(String, &'static str, &'static str, Option<V>),
+    ColumnExpr(String, &'static str, String, Vec<V>),
     /// 字段与受控服务端表达式的比较。
     ///
     /// 表达式在渲染期按方言生成固定片段；动态偏移量只以绑定参数进入参数列表，
@@ -531,6 +565,33 @@ fn write_condition<V: CondValue>(
             dialect.push_param(params, pattern, parameter_offset, out);
             Ok(())
         }
+        CondNode::PatternMatch(field, operator, pattern) => {
+            if pattern.is_null() {
+                out.push_str("NULL");
+                return Ok(());
+            }
+            out.push_str(&quote_condition_field(dialect, &field)?);
+            out.push(' ');
+            out.push_str(operator);
+            out.push(' ');
+            dialect.push_param(params, pattern, parameter_offset, out);
+            Ok(())
+        }
+        #[cfg(feature = "postgres")]
+        CondNode::DistinctFrom(field, negated, value) => {
+            out.push_str(&quote_condition_field(dialect, &field)?);
+            out.push_str(if negated {
+                " IS DISTINCT FROM "
+            } else {
+                " IS NOT DISTINCT FROM "
+            });
+            if value.is_null() {
+                out.push_str("NULL");
+            } else {
+                dialect.push_param(params, value, parameter_offset, out);
+            }
+            Ok(())
+        }
         CondNode::IsNull(field) => {
             out.push_str(&quote_condition_field(dialect, &field)?);
             out.push_str(" IS NULL");
@@ -550,18 +611,16 @@ fn write_condition<V: CondValue>(
             Ok(())
         }
         #[cfg(feature = "mysql")]
-        CondNode::ColumnExpr(field, op, fragment, param) => {
-            // 表达式片段是 SqlExpr 白名单内的固定文本，动态部分（如偏移秒数）
-            // 只以绑定参数进入参数列表，绝不内联进 SQL 文本。
+        CondNode::ColumnExpr(field, op, fragment, expr_params) => {
+            // 表达式片段是 SqlExpr 白名单内的固定文本，动态部分（偏移秒数、
+            // 格式串、填充串等）只以绑定参数进入参数列表，绝不内联进 SQL 文本。
             out.push_str(&quote_condition_field(dialect, &field)?);
             out.push(' ');
             out.push_str(op);
             out.push(' ');
-            out.push_str(fragment);
-            if let Some(value) = param {
-                // 片段文本自带占位符（如 `UNIX_TIMESTAMP() + ?`），参数直接压入即可。
-                params.push(value);
-            }
+            out.push_str(&fragment);
+            // 片段文本自带的占位符与参数顺序一一对应，直接按序压入即可。
+            params.extend(expr_params);
             Ok(())
         }
         CondNode::Exists(subquery) => {
@@ -706,10 +765,10 @@ fn write_condition<V: CondValue>(
             // 占位符序号必须是「调用方偏移 + 已收集参数 + 1」，与 AND/OR 内其它
             // 条件共享同一编号空间。
             let placeholder = parameter_offset + params.len() + 1;
-            let (fragment, param) = dialect.render_expr(&expression, placeholder);
+            let (fragment, expr_params) = dialect.render_expr(&expression, placeholder)?;
             out.push_str(&fragment);
-            if let Some(value) = param {
-                params.push(V::from_i64(value));
+            for param in expr_params {
+                params.push(V::from_expr_param(param));
             }
             Ok(())
         }

@@ -1,6 +1,6 @@
 # AGENTS.md — lib_yang
 
-**刷新日期:** 2026-09-05（对照 commit b8e511d 现场核实；上一版生成于 2026-07-16 / b65a50b）
+**刷新日期:** 2026-11-09（对照 commit bfa1563 现场核实；上一版生成于 2026-09-05 / b8e511d）
 
 ## OVERVIEW
 YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system` 用于本地联合调试。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
@@ -60,13 +60,13 @@ cargo run --example <name> -p <crate> --locked
 ```
 
 ## CI（.github/workflows/ci.yml）
-`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
+`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-postgres-17`（PG 17，含 proptest_pg_types）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
 | MySQL 查询 | `crates/yang-db/src/mysql/query_builder/` | 按职责拆分子模块；`condition.rs` owns WHERE/HAVING 表达式 |
-| PostgreSQL 查询 | `crates/yang-db/src/postgres/` | 共享 `crates/yang-db/src/dialect.rs`（SQL dialect 抽象，非复制） |
+| PostgreSQL 查询 | `crates/yang-db/src/postgres/` | 共享 `crates/yang-db/src/dialect.rs`（SQL dialect 抽象，非复制）；含 `copy.rs`、`listener.rs`、`init.rs`（dollar-quote 脚本） |
 | Redis 操作 | `crates/yang-db/src/redis/` | `client.rs` 是主 API |
 | 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`；Global 单例已删除 |
 | 定义内核 | `crates/yang-base/src/definition/` | `builder/` 子模块化（app/catalog/compile/handle/project/registry/validate） |
@@ -76,7 +76,7 @@ cargo run --example <name> -p <crate> --locked
 | HTTP 客户端 | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
 | Table 系统 | `crates/yang-base/src/table/` | child AGENTS.md；`table_query/` 子模块化（build/read/write/filters/plan/validation…） |
 | definition ui | `crates/yang-base/src/definition/ui/` | 已拆 action/catalog/demo/hints/module/table |
-| schema 同步 | `crates/yang-base/src/database/schema_sync/` | inspect/model/plan/preflight/render/sync 子模块 |
+| schema 同步 | `crates/yang-base/src/database/schema_sync/` | 方言经 `dialect.rs` / `driver.rs` 分派；MySQL `inspect.rs`+`render.rs`，PostgreSQL `pg.rs`（`pg_catalog` 反射：列/主键/索引/CHECK/FK/identity/生成列/注释/collation；部分索引与表达式键反射保留但不支持 DSL 声明） |
 | Tokens | `crates/yang-base/src/token/` | JWT TokenManager, feature-gated；鉴权路径必须用 `verify_token_checked`（`verify_token` 不查 Redis 撤销黑名单） |
 | 基础系统联调 | `project/yang-system/` | 独立嵌套仓库（相对路径依赖 ../../crates 联调本地库）；进入该目录独立跑 Cargo |
 | PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |

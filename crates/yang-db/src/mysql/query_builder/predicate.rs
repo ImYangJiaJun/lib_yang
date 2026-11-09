@@ -1,38 +1,17 @@
 //! 服务端谓词（[`crate::Predicate`]）到条件树的受控转换。
 
+use super::builder::condition_from_op;
 use crate::mysql::condition::{Condition, SqlValue};
 
 pub(crate) fn predicate_condition(
     predicate: &crate::Predicate,
 ) -> Result<Condition, crate::error::DbError> {
     let condition = match predicate {
-        crate::Predicate::Compare(field, operator, value) => {
-            let name = field.as_str().to_string();
-            if matches!(operator, crate::CompareOp::Like) {
-                return value
-                    .as_str()
-                    .map(|pattern| Condition::Like(name, pattern.to_string()))
-                    .ok_or_else(|| {
-                        crate::error::DbError::InvalidArgument(
-                            "LIKE predicate requires string value".to_string(),
-                        )
-                    });
-            }
-            let value = predicate_value(value);
-            match operator {
-                crate::CompareOp::Eq => Condition::Eq(name, value),
-                crate::CompareOp::Ne => Condition::Ne(name, value),
-                crate::CompareOp::Gt => Condition::Gt(name, value),
-                crate::CompareOp::Lt => Condition::Lt(name, value),
-                crate::CompareOp::Gte => Condition::Gte(name, value),
-                crate::CompareOp::Lte => Condition::Lte(name, value),
-                crate::CompareOp::Like => {
-                    return Err(crate::error::DbError::InvalidArgument(
-                        "LIKE predicate normalization failed".to_string(),
-                    ));
-                }
-            }
-        }
+        crate::Predicate::Compare(field, operator, value) => condition_from_op(
+            field.as_str().to_string(),
+            *operator,
+            predicate_value(value),
+        )?,
         crate::Predicate::In(field, values) => Condition::In(
             field.as_str().to_string(),
             values.iter().map(predicate_value).collect(),

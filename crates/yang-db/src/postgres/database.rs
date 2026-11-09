@@ -5,9 +5,62 @@ use crate::postgres::transaction::{
 };
 use crate::postgres::{QueryBuilder, Transaction};
 use crate::{BackendCapabilities, PoolStatus, POSTGRES_CAPABILITIES};
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgPool, PgSslMode};
 use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::OnceCell;
+
+/// PostgreSQL `application_name` 的字节上限（`NAMEDATALEN - 1`）。
+const MAX_APPLICATION_NAME_BYTES: usize = 63;
+
+/// `DISCARD ALL`（归还连接前的会话状态清理）。
+const DISCARD_ALL_SQL: &str = "DISCARD ALL";
+
+/// 取消目标后端正在执行的语句（不影响连接，语句以 SQLSTATE 57014 结束）。
+const CANCEL_BACKEND_SQL: &str = "SELECT pg_cancel_backend($1)";
+
+/// 强制终止目标后端连接（以 SQLSTATE 57P01 结束）。
+const TERMINATE_BACKEND_SQL: &str = "SELECT pg_terminate_backend($1)";
+
+/// PostgreSQL 连接 TLS 模式（与 libpq `sslmode` 对齐）。
+///
+/// 只暴露常用的 5 种：`Disable` / `Prefer` / `Require` / `VerifyCa` / `VerifyFull`。
+/// 通过 [`DatabaseConfig::with_ssl_mode`] 设置；未设置时沿用连接串中的 `sslmode`
+/// （连接串也没写时 sqlx 默认 `Prefer`，可能回退到明文）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SslMode {
+    /// 只尝试非 TLS 连接。
+    Disable,
+    /// 优先 TLS，失败时回退到非 TLS。
+    Prefer,
+    /// 只建立 TLS 连接，但**不校验**服务端证书（与 libpq 一致）。需要校验证书请用
+    /// [`SslMode::VerifyCa`] / [`SslMode::VerifyFull`]。
+    Require,
+    /// 只建立 TLS 连接，并校验服务端证书由受信任 CA 签发。
+    VerifyCa,
+    /// 只建立 TLS 连接，并校验 CA 签发与主机名。
+    VerifyFull,
+}
+
+impl SslMode {
+    fn as_pg_ssl_mode(self) -> PgSslMode {
+        match self {
+            Self::Disable => PgSslMode::Disable,
+            Self::Prefer => PgSslMode::Prefer,
+            Self::Require => PgSslMode::Require,
+            Self::VerifyCa => PgSslMode::VerifyCa,
+            Self::VerifyFull => PgSslMode::VerifyFull,
+        }
+    }
+
+    /// 该模式是否校验 CA 证书（需要根证书）。
+    fn requires_root_cert(self) -> bool {
+        matches!(self, Self::VerifyCa | Self::VerifyFull)
+    }
+}
 
 /// 数据库配置
 ///
@@ -72,6 +125,43 @@ pub struct DatabaseConfig {
     ///
     /// 下发方式同 [`Self::statement_timeout_ms`]。
     pub idle_in_transaction_timeout_ms: Option<u64>,
+    /// 连接建立时写入的 `application_name`（出现在 `pg_stat_activity` 中）。
+    ///
+    /// 通过 `after_connect` 钩子的 `set_config('application_name', $1, false)`
+    /// 应用，值走绑定参数；最长 63 字节（服务端 `NAMEDATALEN - 1`）。
+    pub application_name: Option<String>,
+    /// 预编译语句缓存容量；`None`（默认）沿用 sqlx 默认值（100）。
+    ///
+    /// 经 PgBouncer 等事务级连接池时设为 `Some(0)` 关闭语句缓存，避免服务端
+    /// prepared statement 与连接绑定不一致。
+    pub statement_cache_size: Option<usize>,
+    /// 连接归还池前是否执行 `DISCARD ALL`。默认 `false`。
+    ///
+    /// 开启后由 `after_release` 钩子下发，清理 `search_path`/`LISTEN`/临时表/
+    /// prepared statement/advisory lock 等会话状态；同时在 `before_acquire` 钩子
+    /// 重新应用本配置的会话 GUC（`DISCARD ALL` 中的 `RESET ALL` 会清掉它们）。
+    pub reset_on_release: bool,
+    /// 连接建立后是否校验收到的 `client_encoding` 为 UTF8。默认 `true`（fail-closed）。
+    ///
+    /// 非 UTF8（如 `SQL_ASCII`/`LATIN1`）会返回连接/配置错误，避免把非 UTF-8
+    /// 字节当成 Rust `String`。
+    pub require_utf8_client_encoding: bool,
+    /// TLS 模式；`None`（默认）沿用连接串中的 `sslmode`，若连接串也没写则 sqlx
+    /// 默认 `Prefer`，可能回退到明文连接。
+    ///
+    /// 配置了 [`Self::ssl_root_cert`] 时，`None` 会被推导为 `VerifyCa`（见
+    /// [`Self::effective_ssl_mode`]），避免根证书被静默忽略；此时显式设置
+    /// `Prefer`/`Require`/`Disable` 会与根证书冲突并在 [`Self::validate`] 中报错。
+    pub ssl_mode: Option<SslMode>,
+    /// 根证书（CA）PEM 文件路径；`VerifyCa`/`VerifyFull` 必填。
+    ///
+    /// 只在 `ssl_mode` 为 `None`（自动推导为 `VerifyCa`）、`VerifyCa` 或
+    /// `VerifyFull` 时允许配置。
+    pub ssl_root_cert: Option<PathBuf>,
+    /// 客户端证书 PEM 文件路径；与 [`Self::ssl_client_key`] 成对出现。
+    pub ssl_client_cert: Option<PathBuf>,
+    /// 客户端私钥 PEM 文件路径；与 [`Self::ssl_client_cert`] 成对出现。
+    pub ssl_client_key: Option<PathBuf>,
 }
 
 impl Default for DatabaseConfig {
@@ -88,6 +178,14 @@ impl Default for DatabaseConfig {
             statement_timeout_ms: None,
             lock_timeout_ms: None,
             idle_in_transaction_timeout_ms: None,
+            application_name: None,
+            statement_cache_size: None,
+            reset_on_release: false,
+            require_utf8_client_encoding: true,
+            ssl_mode: None,
+            ssl_root_cert: None,
+            ssl_client_cert: None,
+            ssl_client_key: None,
         }
     }
 }
@@ -138,6 +236,69 @@ impl DatabaseConfig {
         timeout_ms: impl Into<Option<u64>>,
     ) -> Self {
         self.idle_in_transaction_timeout_ms = timeout_ms.into();
+        self
+    }
+
+    /// 设置 `application_name`（链式）。`None` 表示不设置。
+    pub fn with_application_name(mut self, application_name: impl Into<String>) -> Self {
+        self.application_name = Some(application_name.into());
+        self
+    }
+
+    /// 设置预编译语句缓存容量（链式）；`Some(0)` 关闭缓存（PgBouncer 事务池）。
+    pub fn with_statement_cache_size(mut self, capacity: usize) -> Self {
+        self.statement_cache_size = Some(capacity);
+        self
+    }
+
+    /// 设置连接归还前是否执行 `DISCARD ALL`（链式，默认关闭）。
+    pub fn with_reset_on_release(mut self, enabled: bool) -> Self {
+        self.reset_on_release = enabled;
+        self
+    }
+
+    /// 设置是否强制 `client_encoding` 为 UTF8（链式，默认开启）。
+    pub fn with_require_utf8_client_encoding(mut self, enabled: bool) -> Self {
+        self.require_utf8_client_encoding = enabled;
+        self
+    }
+
+    /// 设置 TLS 模式（链式）；`None` 沿用连接串中的 `sslmode`。
+    pub fn with_ssl_mode(mut self, mode: Option<SslMode>) -> Self {
+        self.ssl_mode = mode;
+        self
+    }
+
+    /// 设置根证书 PEM 路径（链式）。
+    pub fn with_ssl_root_cert(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ssl_root_cert = Some(path.into());
+        self
+    }
+
+    /// 实际生效的 TLS 模式。
+    ///
+    /// - `ssl_mode = Some(m)`：原样返回 `Some(m)`；
+    /// - `ssl_mode = None` 且配置了 [`Self::ssl_root_cert`]：返回
+    ///   `Some(SslMode::VerifyCa)`，避免根证书被静默忽略；
+    /// - 其余情况返回 `None`，沿用连接串中的 `sslmode`（连接串也没写时 sqlx 默认
+    ///   `Prefer`，可能回退到明文）。
+    pub fn effective_ssl_mode(&self) -> Option<SslMode> {
+        match self.ssl_mode {
+            Some(mode) => Some(mode),
+            None if self.ssl_root_cert.is_some() => Some(SslMode::VerifyCa),
+            None => None,
+        }
+    }
+
+    /// 设置客户端证书 PEM 路径（链式）；需同时设置 [`Self::with_ssl_client_key`]。
+    pub fn with_ssl_client_cert(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ssl_client_cert = Some(path.into());
+        self
+    }
+
+    /// 设置客户端私钥 PEM 路径（链式）；需同时设置 [`Self::with_ssl_client_cert`]。
+    pub fn with_ssl_client_key(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ssl_client_key = Some(path.into());
         self
     }
 
@@ -193,6 +354,53 @@ impl DatabaseConfig {
                 }
             }
         }
+        if let Some(application_name) = &self.application_name {
+            if application_name.is_empty() {
+                return Err(DbError::InvalidArgument(
+                    "PostgreSQL application_name 不能为空字符串".to_string(),
+                ));
+            }
+            if application_name.contains('\0') {
+                return Err(DbError::InvalidArgument(
+                    "PostgreSQL application_name 不能包含 NUL 字符".to_string(),
+                ));
+            }
+            if application_name.len() > MAX_APPLICATION_NAME_BYTES {
+                return Err(DbError::InvalidArgument(format!(
+                    "PostgreSQL application_name 不能超过 {MAX_APPLICATION_NAME_BYTES} 字节，当前 {} 字节",
+                    application_name.len()
+                )));
+            }
+        }
+        if let Some(mode) = self.ssl_mode {
+            if mode.requires_root_cert() && self.ssl_root_cert.is_none() {
+                return Err(DbError::InvalidArgument(format!(
+                    "PostgreSQL ssl_mode = {mode:?} 必须提供 ssl_root_cert（CA 证书）"
+                )));
+            }
+            if self.ssl_root_cert.is_some()
+                && matches!(mode, SslMode::Prefer | SslMode::Require | SslMode::Disable)
+            {
+                return Err(DbError::InvalidArgument(format!(
+                    "PostgreSQL ssl_mode = {mode:?} 不能与 ssl_root_cert 同时配置；根证书只适用于 \
+                     VerifyCa/VerifyFull（ssl_mode 为 None 时会自动按 VerifyCa 使用根证书）"
+                )));
+            }
+            if mode == SslMode::Disable
+                && (self.ssl_root_cert.is_some()
+                    || self.ssl_client_cert.is_some()
+                    || self.ssl_client_key.is_some())
+            {
+                return Err(DbError::InvalidArgument(
+                    "PostgreSQL ssl_mode = Disable 时不能配置 TLS 证书".to_string(),
+                ));
+            }
+        }
+        if self.ssl_client_cert.is_some() != self.ssl_client_key.is_some() {
+            return Err(DbError::InvalidArgument(
+                "PostgreSQL ssl_client_cert 与 ssl_client_key 必须成对提供".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -227,6 +435,8 @@ pub struct Database {
     config: DatabaseConfig,
     /// 服务端 `server_version_num` 的进程内缓存（首次探测后固定）。
     server_version: OnceCell<i32>,
+    /// 正在等待连接的 acquire 计数（池已无空闲连接且达到上限时计入）。
+    waiting: Arc<AtomicUsize>,
 }
 
 impl Database {
@@ -282,6 +492,24 @@ impl Database {
                 .join(",");
             connect_options = connect_options.options([("search_path", normalized)]);
         }
+        // TLS 配置：模式与证书都已在上面的 validate() 中校验（verify-ca/full 必须
+        // 提供根证书，客户端证书与私钥必须成对）。effective_ssl_mode 会把
+        // “有根证书但未指定模式”推导为 VerifyCa，避免根证书被静默忽略。
+        if let Some(mode) = config.effective_ssl_mode() {
+            connect_options = connect_options.ssl_mode(mode.as_pg_ssl_mode());
+        }
+        if let Some(path) = &config.ssl_root_cert {
+            connect_options = connect_options.ssl_root_cert(path);
+        }
+        if let Some(path) = &config.ssl_client_cert {
+            connect_options = connect_options.ssl_client_cert(path);
+        }
+        if let Some(path) = &config.ssl_client_key {
+            connect_options = connect_options.ssl_client_key(path);
+        }
+        if let Some(capacity) = config.statement_cache_size {
+            connect_options = connect_options.statement_cache_capacity(capacity);
+        }
 
         // 语句/锁/事务空闲超时通过每条新连接的 after_connect 钩子下发。三个值均为
         // 受控 u64，直接拼进 SET 语句无注入面。
@@ -303,15 +531,31 @@ impl Database {
             "SET standard_conforming_strings = on".to_string(),
         ];
         session_statements.extend(timeout_statements);
+        let session_setup = SessionSetup {
+            application_name: config.application_name.clone(),
+            statements: session_statements,
+            require_utf8_client_encoding: config.require_utf8_client_encoding,
+        };
+        let after_connect_setup = session_setup.clone();
         options = options.after_connect(move |conn, _meta| {
-            let session_statements = session_statements.clone();
-            Box::pin(async move {
-                for sql in &session_statements {
-                    sqlx::query(sql).execute(&mut *conn).await?;
-                }
-                Ok(())
-            })
+            let setup = after_connect_setup.clone();
+            Box::pin(async move { setup.apply(conn).await })
         });
+        if config.reset_on_release {
+            // 归还前 DISCARD ALL 清空会话状态；它内含 RESET ALL，会清掉 after_connect
+            // 设置的 GUC，所以借出复用连接时（before_acquire）重新应用一遍。
+            options = options.after_release(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(DISCARD_ALL_SQL).execute(&mut *conn).await?;
+                    Ok(true)
+                })
+            });
+            let before_acquire_setup = session_setup;
+            options = options.before_acquire(move |conn, _meta| {
+                let setup = before_acquire_setup.clone();
+                Box::pin(async move { setup.apply(conn).await.map(|_| true) })
+            });
+        }
 
         let pool = options.connect_with(connect_options).await?;
 
@@ -319,12 +563,17 @@ impl Database {
             pool,
             config,
             server_version: OnceCell::new(),
+            waiting: Arc::new(AtomicUsize::new(0)),
         })
     }
 
     /// 从调用方已创建的连接池构造数据库入口。
     ///
     /// 该构造器不建立连接，也不写入进程全局状态，供显式资源所有权与离线测试使用。
+    ///
+    /// 注意：`after_connect`/`after_release` 等会话钩子只在
+    /// [`Self::connect_with_config`] 建立的连接池上生效；`from_pool` 的既有连接
+    /// 需要调用方自行设置，可用 [`Self::reset_connection`] 手工清理单条连接。
     ///
     /// # 错误
     ///
@@ -335,6 +584,7 @@ impl Database {
             pool,
             config,
             server_version: OnceCell::new(),
+            waiting: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -354,11 +604,13 @@ impl Database {
 
     /// 返回连接池状态快照（与 MySQL / Redis 后端对称；NEW-12）。
     ///
-    /// 字段映射（sqlx `PgPool` 无「等待者数」直接 API，故 `waiting` 恒为 0）：
     /// - `max_size`：配置的最大连接数（`config.max_connections`）
     /// - `size`：当前池内连接总数（`pool.size()`）
     /// - `available`：当前空闲可借出连接数（`pool.num_idle()`）
-    /// - `waiting`：sqlx 未暴露，恒为 0
+    /// - `waiting`：调用 [`Database`] 自身入口（query/execute/transaction/acquire/
+    ///   流式游标/advisory lock/COPY 等）时，处于「池已无空闲连接且已达上限」的
+    ///   在途 acquire 数。sqlx 不直接暴露等待者数，因此这是本库维护的近似值：
+    ///   直接经 [`Self::pool`] 借出的调用（含 `QueryBuilder` 执行路径）不计入。
     ///
     /// 连接耗尽排查：`available == 0 && size == max_size` 即池被打满。
     pub fn pool_status(&self) -> PoolStatus {
@@ -366,8 +618,34 @@ impl Database {
             max_size: self.config.max_connections as usize,
             size: self.pool.size() as usize,
             available: self.pool.num_idle(),
-            waiting: 0,
+            waiting: self.waiting.load(Ordering::Relaxed),
         }
+    }
+
+    /// 记录一次连接获取：调用时池已无空闲连接且达到上限，则计为潜在等待者。
+    ///
+    /// 返回的 guard 在 acquire 完成（成功或失败）后立即 drop，避免把执行时间
+    /// 误算成等待时间。
+    fn track_acquire(&self) -> AcquireWaiter<'_> {
+        let would_wait = self.pool.num_idle() == 0
+            && self.pool.size() >= self.pool.options().get_max_connections();
+        if would_wait {
+            self.waiting.fetch_add(1, Ordering::Relaxed);
+        }
+        AcquireWaiter {
+            counter: &self.waiting,
+            armed: would_wait,
+        }
+    }
+
+    /// 从连接池借出一条连接，并计入 [`Self::pool_status`] 的 `waiting` 统计。
+    pub(crate) async fn acquire(
+        &self,
+    ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, DbError> {
+        let waiter = self.track_acquire();
+        let conn = self.pool.acquire().await?;
+        drop(waiter);
+        Ok(conn)
     }
 
     /// 健康检查：执行 `SELECT 1` 验证连接可用（与 MySQL 后端对称；NEW-12）。
@@ -376,7 +654,8 @@ impl Database {
     /// - `Ok(true)`：连接正常
     /// - `Err(DbError)`：查询失败（连接不可用）
     pub async fn health_check(&self) -> Result<bool, DbError> {
-        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        let mut conn = self.acquire().await?;
+        sqlx::query("SELECT 1").execute(&mut *conn).await?;
         Ok(true)
     }
 
@@ -433,7 +712,9 @@ impl Database {
 
     /// 开始事务（使用数据库默认隔离级别 READ COMMITTED）
     pub async fn transaction(&self) -> Result<Transaction, DbError> {
+        let waiter = self.track_acquire();
         let tx = self.pool.begin().await?;
+        drop(waiter);
         Ok(Transaction::new(tx, self.config.enable_logging))
     }
 
@@ -458,7 +739,9 @@ impl Database {
         &self,
         options: TransactionOptions,
     ) -> Result<Transaction, DbError> {
+        let waiter = self.track_acquire();
         let mut tx = self.pool.begin().await?;
+        drop(waiter);
         if let Some(sql) = options.set_transaction_sql() {
             if self.config.enable_logging {
                 log::debug!("设置 PostgreSQL 事务属性: {}", sql);
@@ -539,30 +822,28 @@ impl Database {
     }
 
     /// 初始化数据库（执行 SQL 脚本）
+    ///
+    /// 已弃用：直接委托给 [`Self::execute_script`]（整脚本单事务、dollar-quote/
+    /// 注释感知的分句器）。新代码请直接用 `execute_script`。
     #[deprecated(
         since = "0.1.4",
-        note = "分号切割无法正确处理函数/DO 块；请使用逐 migration 语句或专用脚本执行器"
+        note = "请使用 execute_script（整脚本单事务，正确处理函数/DO 块与 dollar-quote）"
     )]
-    #[allow(deprecated)]
     pub async fn init(&self, sql_script: &str) -> Result<(), DbError> {
-        // 按分号分割多个 SQL 语句
-        let statements: Vec<&str> = sql_script
-            .split(';')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        for statement in statements {
-            self.execute(statement).await?;
-        }
-
-        Ok(())
+        self.execute_script(sql_script).await.map(|_| ())
     }
 
-    /// 创建表
-    #[allow(deprecated)]
+    /// 创建表（执行一条可信 `CREATE TABLE` SQL）。
+    ///
+    /// 已弃用：本方法只透传裸 SQL，不做拆分、事务或标识符校验。请改用
+    /// [`Self::execute_script`]（单事务、正确切分多语句）或外部迁移工具。
+    #[deprecated(
+        since = "0.2.2",
+        note = "裸 SQL 建表逃生舱；请使用 execute_script（单事务、可含多条 DDL）或外部迁移工具"
+    )]
     pub async fn create_table(&self, create_sql: &str) -> Result<(), DbError> {
-        self.execute(create_sql).await?;
+        let mut conn = self.acquire().await?;
+        sqlx::query(create_sql).execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -570,11 +851,11 @@ impl Database {
     ///
     /// 表名经 `quote_identifier` 校验+转义（DB-6，双引号方言）；非法表名返回
     /// `InvalidArgument`。
-    #[allow(deprecated)]
     pub async fn drop_table(&self, table_name: &crate::TableRef) -> Result<(), DbError> {
         let quoted = crate::postgres::identifier::quote_table(table_name.as_str())?;
         let sql = format!("DROP TABLE IF EXISTS {}", quoted);
-        self.execute(&sql).await?;
+        let mut conn = self.acquire().await?;
+        sqlx::query(&sql).execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -631,12 +912,13 @@ impl Database {
         }
 
         // 构建查询并逐一绑定参数
+        let mut conn = self.acquire().await?;
         let mut query = sqlx::query_as::<_, T>(sql);
         for param in &params {
             query = bind_json_param_as(query, param);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&mut *conn).await?;
         Ok(rows)
     }
 
@@ -673,12 +955,13 @@ impl Database {
         }
 
         // 构建查询并逐一绑定参数
+        let mut conn = self.acquire().await?;
         let mut query = sqlx::query(sql);
         for param in &params {
             query = bind_json_param(query, param);
         }
 
-        let result = query.execute(&self.pool).await?;
+        let result = query.execute(&mut *conn).await?;
         Ok(result.rows_affected())
     }
 
@@ -723,7 +1006,7 @@ impl Database {
             ));
         }
         let body = normalize_stream_sql(sql)?;
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.acquire().await?;
         // 服务端游标必须存在于事务块内；统一用只读事务，明确流式入口只面向查询。
         sqlx::query("BEGIN READ ONLY").execute(&mut *conn).await?;
 
@@ -750,32 +1033,69 @@ impl Database {
         ))
     }
 
-    /// 获取会话级 advisory lock（`pg_advisory_lock`），阻塞直到拿到锁。
+    /// 获取会话级排他 advisory lock（`pg_advisory_lock`），阻塞直到拿到锁。
     ///
     /// 会话级锁绑定在具体连接上，因此返回的 [`PgAdvisoryLock`] 持有该连接：
     /// 显式 [`PgAdvisoryLock::unlock`] 或丢弃 guard（导致连接关闭、服务端回收锁）
     /// 之前，这条连接不会再归还池中。guard 存活期间会占用一个池连接名额。
     pub async fn advisory_lock(&self, key: i64) -> Result<PgAdvisoryLock, DbError> {
-        let mut conn = self.pool.acquire().await?;
+        self.acquire_advisory_lock(key, AdvisoryLockMode::Exclusive)
+            .await
+    }
+
+    /// 获取会话级共享 advisory lock（`pg_advisory_lock_shared`），阻塞直到拿到锁。
+    ///
+    /// 共享锁彼此不互斥，但与同 key 的排他锁互斥；其余语义与
+    /// [`advisory_lock`](Self::advisory_lock) 相同（RAII 解锁、绑定单条连接）。
+    pub async fn advisory_lock_shared(&self, key: i64) -> Result<PgAdvisoryLock, DbError> {
+        self.acquire_advisory_lock(key, AdvisoryLockMode::Shared)
+            .await
+    }
+
+    /// 尝试获取会话级排他 advisory lock（`pg_try_advisory_lock`），不阻塞。
+    ///
+    /// 返回 `None` 表示锁被其他会话占用；连接随即归还池。
+    pub async fn try_advisory_lock(&self, key: i64) -> Result<Option<PgAdvisoryLock>, DbError> {
+        self.try_acquire_advisory_lock(key, AdvisoryLockMode::Exclusive)
+            .await
+    }
+
+    /// 尝试获取会话级共享 advisory lock（`pg_try_advisory_lock_shared`），不阻塞。
+    pub async fn try_advisory_lock_shared(
+        &self,
+        key: i64,
+    ) -> Result<Option<PgAdvisoryLock>, DbError> {
+        self.try_acquire_advisory_lock(key, AdvisoryLockMode::Shared)
+            .await
+    }
+
+    async fn acquire_advisory_lock(
+        &self,
+        key: i64,
+        mode: AdvisoryLockMode,
+    ) -> Result<PgAdvisoryLock, DbError> {
+        let mut conn = self.acquire().await?;
         if self.config.enable_logging {
-            log::debug!("获取 PG 会话级 advisory lock: {}", key);
+            log::debug!("获取 PG 会话级 advisory lock: key={key}, mode={mode:?}");
         }
-        sqlx::query("SELECT pg_advisory_lock($1)")
+        sqlx::query(mode.lock_sql())
             .bind(key)
             .execute(&mut *conn)
             .await?;
         Ok(PgAdvisoryLock {
             conn: Some(conn),
             key,
+            mode,
         })
     }
 
-    /// 尝试获取会话级 advisory lock（`pg_try_advisory_lock`），不阻塞。
-    ///
-    /// 返回 `None` 表示锁被其他会话占用；连接随即归还池。
-    pub async fn try_advisory_lock(&self, key: i64) -> Result<Option<PgAdvisoryLock>, DbError> {
-        let mut conn = self.pool.acquire().await?;
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+    async fn try_acquire_advisory_lock(
+        &self,
+        key: i64,
+        mode: AdvisoryLockMode,
+    ) -> Result<Option<PgAdvisoryLock>, DbError> {
+        let mut conn = self.acquire().await?;
+        let acquired: bool = sqlx::query_scalar(mode.try_lock_sql())
             .bind(key)
             .fetch_one(&mut *conn)
             .await?;
@@ -783,6 +1103,7 @@ impl Database {
             Ok(Some(PgAdvisoryLock {
                 conn: Some(conn),
                 key,
+                mode,
             }))
         } else {
             Ok(None)
@@ -796,9 +1117,10 @@ impl Database {
         let version = self
             .server_version
             .get_or_try_init(|| async {
+                let mut conn = self.acquire().await?;
                 let value: i32 =
                     sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
-                        .fetch_one(&self.pool)
+                        .fetch_one(&mut *conn)
                         .await?;
                 Ok::<i32, DbError>(value)
             })
@@ -835,7 +1157,8 @@ impl Database {
         if self.config.enable_logging {
             log::debug!("提交已准备事务: gid={gid}");
         }
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let mut conn = self.acquire().await?;
+        sqlx::query(&sql).execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -848,7 +1171,8 @@ impl Database {
         if self.config.enable_logging {
             log::debug!("回滚已准备事务: gid={gid}");
         }
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let mut conn = self.acquire().await?;
+        sqlx::query(&sql).execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -872,7 +1196,8 @@ impl Database {
         for param in &params {
             query = bind_json_param_as(query, param);
         }
-        let rows = query.fetch_all(&self.pool).await?;
+        let mut conn = self.acquire().await?;
+        let rows = query.fetch_all(&mut *conn).await?;
         explain_rows_to_strings(rows)
     }
 
@@ -881,6 +1206,7 @@ impl Database {
     /// 包含当前连接自身；`client_addr` 以 `host()` 文本形式返回，避免 inet 解码
     /// 依赖。`query` 为最近一次执行的语句文本。
     pub async fn active_queries(&self) -> Result<Vec<ActiveQuery>, DbError> {
+        let mut conn = self.acquire().await?;
         let rows = sqlx::query_as::<_, ActiveQuery>(
             "SELECT pid,
                     usename::text AS usename,
@@ -894,7 +1220,7 @@ impl Database {
              FROM pg_stat_activity
              ORDER BY query_start DESC NULLS LAST, pid",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
         Ok(rows)
     }
@@ -904,6 +1230,7 @@ impl Database {
     /// 每条记录表示一个未授予的锁请求及其一个阻塞者；同一等待者若有多个阻塞者
     /// 会出现多行（`pg_blocking_pids` 语义）。无阻塞时返回空列表。
     pub async fn lock_waits(&self) -> Result<Vec<LockWait>, DbError> {
+        let mut conn = self.acquire().await?;
         let rows = sqlx::query_as::<_, LockWait>(
             "SELECT blocked.pid AS blocked_pid,
                     blocking.pid AS blocking_pid,
@@ -923,9 +1250,93 @@ impl Database {
              WHERE NOT l.granted
              ORDER BY blocked.pid, blocking.pid",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
         Ok(rows)
+    }
+
+    /// 借出一条连接，并返回绑定该连接后端 PID 的 [`CancelToken`]。
+    ///
+    /// 调用方在返回的连接上执行长查询（可直接用 sqlx 在该连接上执行），另一个
+    /// 任务/线程用 token 调 [`CancelToken::cancel`] 取消它。连接由调用方持有，
+    /// 归还池时照常触发 `after_release` 清理。
+    ///
+    /// 取消操作需要另借一条连接，因此 `max_connections < 2` 时直接返回
+    /// [`DbError::InvalidArgument`]（池上限为 1 时取消会与目标查询互相等待）。
+    ///
+    /// token 中的 `backend_pid` 只在目标连接仍被持有时有效；连接归还池并被复用
+    /// 后，同一 PID 可能已指向另一个会话，此时不应再用该 token。
+    pub async fn acquire_with_cancel_token(
+        &self,
+    ) -> Result<(sqlx::pool::PoolConnection<sqlx::Postgres>, CancelToken), DbError> {
+        if self.config.max_connections < 2 {
+            return Err(DbError::InvalidArgument(format!(
+                "PostgreSQL 取消令牌需要至少 2 条连接（取消要另借一条连接），当前 \
+                 max_connections = {}",
+                self.config.max_connections
+            )));
+        }
+        let mut conn = self.acquire().await?;
+        let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *conn)
+            .await?;
+        let token = CancelToken {
+            pool: self.pool.clone(),
+            backend_pid,
+        };
+        Ok((conn, token))
+    }
+
+    /// 清洗连接池中一条连接的会话状态（`DISCARD ALL`）。
+    ///
+    /// 清空会话级 GUC、临时表、游标、prepared statement、LISTEN 与 advisory lock。
+    /// 注意：`DISCARD ALL` 不能在事务块内执行。`Database::from_pool` 的调用方可用
+    /// 它在借出/归还前后手工清理。
+    pub async fn reset_connection(&self) -> Result<(), DbError> {
+        let mut conn = self.acquire().await?;
+        sqlx::query(DISCARD_ALL_SQL).execute(&mut *conn).await?;
+        Ok(())
+    }
+}
+
+/// 查询取消令牌：记录目标后端 PID，可在另一条连接上取消/终止其当前语句。
+///
+/// 关闭连接不会取消它正在执行的查询；只有 `pg_cancel_backend`（语句级，连接可
+/// 继续使用）或 `pg_terminate_backend`（连接级）会。取消成功后目标语句以
+/// SQLSTATE 57014 结束，映射为 [`crate::SqlErrorKind::QueryCanceled`] /
+/// [`crate::DbErrorCategory::Timeout`]。
+///
+/// **生命周期约束**：token 只在目标连接仍被持有时有效。连接一旦归还连接池并被
+/// 复用，`backend_pid` 可能已指向另一个会话，此时用该 token 取消会误伤其他查询。
+#[derive(Debug, Clone)]
+pub struct CancelToken {
+    pool: PgPool,
+    backend_pid: i32,
+}
+
+impl CancelToken {
+    /// 目标连接的服务端后端 PID。
+    pub fn backend_pid(&self) -> i32 {
+        self.backend_pid
+    }
+
+    /// 取消目标后端正在执行的语句（`pg_cancel_backend`）。
+    ///
+    /// 返回 `true` 表示信号已送达；语句是否立即结束取决于服务端。后端已结束或
+    /// 不存在时返回 `false`。
+    pub async fn cancel(&self) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(CANCEL_BACKEND_SQL)
+            .bind(self.backend_pid)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    /// 强制终止目标后端连接（`pg_terminate_backend`）。
+    pub async fn terminate(&self) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(TERMINATE_BACKEND_SQL)
+            .bind(self.backend_pid)
+            .fetch_one(&self.pool)
+            .await?)
     }
 }
 
@@ -1036,14 +1447,115 @@ fn retry_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis((10u64 << exponent).min(1_000))
 }
 
+/// `waiting` 计数的 RAII guard：离开作用域时把计入的等待者数减回去。
+struct AcquireWaiter<'a> {
+    counter: &'a AtomicUsize,
+    armed: bool,
+}
+
+impl Drop for AcquireWaiter<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.counter.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// 每条新连接需要下发的会话初始化动作（`after_connect` / `before_acquire` 共用）。
+#[derive(Debug, Clone)]
+struct SessionSetup {
+    /// `application_name`，经 `set_config(..., false)` 绑定写入。
+    application_name: Option<String>,
+    /// 会话 GUC 基线（时区/日期格式/超时等）。
+    statements: Vec<String>,
+    /// 是否要求 `client_encoding = UTF8`（fail-closed）。
+    require_utf8_client_encoding: bool,
+}
+
+impl SessionSetup {
+    /// 在指定连接上应用全部会话初始化动作。
+    ///
+    /// 返回 `sqlx::Error` 以便直接作为连接池钩子的错误；非 UTF8 编码返回
+    /// `Error::Configuration`，经 `DbError::from` 映射为连接错误。
+    async fn apply(&self, conn: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+        if let Some(application_name) = &self.application_name {
+            sqlx::query("SELECT set_config('application_name', $1, false)")
+                .bind(application_name)
+                .execute(&mut *conn)
+                .await?;
+        }
+        for sql in &self.statements {
+            sqlx::query(sql).execute(&mut *conn).await?;
+        }
+        if self.require_utf8_client_encoding {
+            let encoding: String = sqlx::query_scalar("SELECT current_setting('client_encoding')")
+                .fetch_one(&mut *conn)
+                .await?;
+            if !client_encoding_is_utf8(&encoding) {
+                return Err(sqlx::Error::Configuration(
+                    format!(
+                        "PostgreSQL client_encoding 必须为 UTF8，当前为 {encoding:?}；\
+                         如确需其他编码请设置 DatabaseConfig::with_require_utf8_client_encoding(false)"
+                    )
+                    .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `client_encoding` 是否为 UTF8（服务端返回 `UTF8`；大小写不敏感）。
+fn client_encoding_is_utf8(encoding: &str) -> bool {
+    matches!(
+        encoding.trim().to_ascii_uppercase().as_str(),
+        "UTF8" | "UTF-8" | "UNICODE"
+    )
+}
+
+/// 会话级 advisory lock 的共享/排他模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdvisoryLockMode {
+    Exclusive,
+    Shared,
+}
+
+impl AdvisoryLockMode {
+    /// 阻塞获取锁的 SQL。
+    fn lock_sql(self) -> &'static str {
+        match self {
+            Self::Exclusive => "SELECT pg_advisory_lock($1)",
+            Self::Shared => "SELECT pg_advisory_lock_shared($1)",
+        }
+    }
+
+    /// 非阻塞尝试获取锁的 SQL。
+    fn try_lock_sql(self) -> &'static str {
+        match self {
+            Self::Exclusive => "SELECT pg_try_advisory_lock($1)",
+            Self::Shared => "SELECT pg_try_advisory_lock_shared($1)",
+        }
+    }
+
+    /// 释放会话级锁的 SQL（共享锁必须用 `_shared` 版本解锁）。
+    fn unlock_sql(self) -> &'static str {
+        match self {
+            Self::Exclusive => "SELECT pg_advisory_unlock($1)",
+            Self::Shared => "SELECT pg_advisory_unlock_shared($1)",
+        }
+    }
+}
+
 /// 会话级 advisory lock 的 RAII guard。
 ///
 /// 锁绑定在 guard 持有的那条连接上：显式 [`unlock`](Self::unlock) 会执行
-/// `pg_advisory_unlock` 并把连接归还池；未解锁即丢弃时无法在同步 `Drop` 中执行
-/// 异步解锁，因此 `detach` 连接使其关闭，由服务端回收该会话持有的全部会话级锁。
+/// `pg_advisory_unlock`（共享锁为 `pg_advisory_unlock_shared`）并把连接归还池；
+/// 未解锁即丢弃时无法在同步 `Drop` 中执行异步解锁，因此 `detach` 连接使其关闭，
+/// 由服务端回收该会话持有的全部会话级锁。
 pub struct PgAdvisoryLock {
     conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
     key: i64,
+    mode: AdvisoryLockMode,
 }
 
 impl PgAdvisoryLock {
@@ -1052,18 +1564,36 @@ impl PgAdvisoryLock {
         self.key
     }
 
-    /// 释放锁并归还连接；返回服务端 `pg_advisory_unlock` 的结果。
+    /// 是否为共享锁（`pg_advisory_lock_shared`）。
+    pub fn is_shared(&self) -> bool {
+        self.mode == AdvisoryLockMode::Shared
+    }
+
+    /// 释放锁；返回服务端解锁函数的结果。
+    ///
+    /// 返回 `true` 表示锁已真正释放，连接可安全归还池。返回 `false` 表示服务端
+    /// 未释放该锁（例如锁不属于此会话或已被释放）——此时连接里可能仍带着会话级
+    /// 锁，直接还池会让锁泄漏到池中，因此改为 `detach` 连接使其关闭，由服务端
+    /// 回收该会话的全部会话级锁。
     pub async fn unlock(mut self) -> Result<bool, DbError> {
+        let mode = self.mode;
         let conn = self
             .conn
             .as_mut()
             .ok_or_else(|| DbError::TransactionError("advisory lock 已释放".to_string()))?;
-        let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        let unlocked: bool = sqlx::query_scalar(mode.unlock_sql())
             .bind(self.key)
             .fetch_one(&mut **conn)
             .await?;
-        // 锁已释放，连接可以安全归还连接池。
-        self.conn.take();
+        if unlocked {
+            // 锁已释放，连接可以安全归还连接池。
+            self.conn.take();
+        } else {
+            // 服务端未确认释放：关闭会话，让服务端回收锁，避免泄漏到池中。
+            if let Some(conn) = self.conn.take() {
+                let _ = conn.detach();
+            }
+        }
         Ok(unlocked)
     }
 
@@ -1198,6 +1728,36 @@ impl Drop for PgRowCursor {
     }
 }
 
+/// 未类型化 NULL 参数。
+///
+/// PARSE 阶段发送参数类型 OID 0（未指定），让 PostgreSQL 依据 SQL 上下文推断
+/// 参数类型（与字符串字面量一致）。这使 `$1::text`、`$1::uuid`、
+/// `$1::timestamptz`、`$1::numeric`、`$1::int + 1` 等显式 cast 场景都能接受
+/// NULL；若固定绑定成 `int4`，这些 cast 会报 42883。绑定值本身编码为 NULL
+/// （长度 -1），不写入任何数据。
+#[derive(Debug, Clone, Copy)]
+struct PgUntypedNull;
+
+impl sqlx::Type<sqlx::Postgres> for PgUntypedNull {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        // OID 0 = 未指定类型，由服务端推断。
+        sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(0))
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for PgUntypedNull {
+    fn encode_by_ref(
+        &self,
+        _buffer: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        Ok(sqlx::encode::IsNull::Yes)
+    }
+
+    fn size_hint(&self) -> usize {
+        0
+    }
+}
+
 /// 共享 `serde_json::Value` 参数绑定逻辑的内部宏
 ///
 /// `Query` 与 `QueryAs` 的 `bind` 是各自的固有方法、没有公共 trait，
@@ -1207,7 +1767,9 @@ impl Drop for PgRowCursor {
 /// PostgreSQL 适配要点：
 /// - 数字优先按 `i64` 绑定，浮点按 `f64` 原生绑定（PostgreSQL 不会把文本
 ///   隐式转换为数值列，故不能像 MySQL 那样以字符串绑定浮点）。
-/// - NULL 绑定为 `Option::<i32>::None`。
+/// - NULL 绑定为未类型化 NULL（[`PgUntypedNull`]），由服务端按 SQL 上下文推断
+///   参数类型；固定绑定成 `int4` 会让 `$1::uuid` / `$1::timestamptz` 等显式
+///   cast 报 42883。
 /// - 数组 / 对象作为原生 `serde_json::Value` 绑定（sqlx 的 json feature 已开启，
 ///   对应 PostgreSQL 的 JSON / JSONB），而非序列化成字符串。
 macro_rules! bind_json_value {
@@ -1220,12 +1782,12 @@ macro_rules! bind_json_value {
                 Some(crate::json_param::JsonNumber::Int(i)) => $query.bind(i),
                 Some(crate::json_param::JsonNumber::Uint(u)) => $query.bind(u.to_string()),
                 Some(crate::json_param::JsonNumber::Float(f)) => $query.bind(f),
-                None => $query.bind(Option::<i32>::None),
+                None => $query.bind(PgUntypedNull),
             },
             // 布尔类型绑定
             serde_json::Value::Bool(b) => $query.bind(*b),
-            // NULL 类型绑定为类型化 None，规避 PostgreSQL 未类型化 NULL 限制
-            serde_json::Value::Null => $query.bind(Option::<i32>::None),
+            // 未类型化 NULL：PARSE 时发送 OID 0，由服务端按上下文推断类型
+            serde_json::Value::Null => $query.bind(PgUntypedNull),
             // 数组和对象作为原生 JSON / JSONB 绑定
             other => $query.bind(other.clone()),
         }
@@ -1375,6 +1937,7 @@ mod tests {
             pool,
             config: DatabaseConfig::default(),
             server_version: OnceCell::new(),
+            waiting: Arc::new(AtomicUsize::new(0)),
         };
 
         db.close().await;
@@ -1488,5 +2051,290 @@ mod tests {
         let plans = explain_rows_to_strings(vec![(serde_json::json!({"Plan": {}}),)]).unwrap();
         assert_eq!(plans.len(), 1);
         assert!(plans[0].contains("Plan"));
+    }
+
+    /// 取消令牌需要另一条连接：池上限 < 2 时必须立即报错，而不是等到超时。
+    #[tokio::test]
+    async fn acquire_with_cancel_token_requires_at_least_two_connections() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://postgres:test@127.0.0.1:5432/test")
+            .unwrap();
+        let db = Database {
+            pool,
+            config: DatabaseConfig {
+                max_connections: 1,
+                ..DatabaseConfig::default()
+            },
+            server_version: OnceCell::new(),
+            waiting: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(matches!(
+            db.acquire_with_cancel_token().await,
+            Err(DbError::InvalidArgument(_))
+        ));
+    }
+
+    /// P1-19：取消 SQL 必须绑定参数，57014 映射为 Timeout 且不可重试。
+    #[test]
+    fn cancel_token_sql_and_57014_mapping() {
+        use crate::error::{DbErrorCategory, SqlErrorInfo};
+
+        assert_eq!(CANCEL_BACKEND_SQL, "SELECT pg_cancel_backend($1)");
+        assert_eq!(TERMINATE_BACKEND_SQL, "SELECT pg_terminate_backend($1)");
+        assert!(CANCEL_BACKEND_SQL.contains("$1"));
+        assert!(TERMINATE_BACKEND_SQL.contains("$1"));
+
+        let canceled = DbError::DatabaseError(Box::new(SqlErrorInfo::new(
+            "57014",
+            "canceling statement due to user request",
+        )));
+        assert_eq!(canceled.sqlstate(), Some("57014"));
+        assert_eq!(canceled.category(), DbErrorCategory::Timeout);
+        assert!(!canceled.is_retryable());
+    }
+
+    /// P1-18：会话级共享锁使用 `_shared` 函数，排他锁保持原函数。
+    #[test]
+    fn advisory_lock_sql_covers_shared_and_exclusive() {
+        assert_eq!(
+            AdvisoryLockMode::Exclusive.lock_sql(),
+            "SELECT pg_advisory_lock($1)"
+        );
+        assert_eq!(
+            AdvisoryLockMode::Shared.lock_sql(),
+            "SELECT pg_advisory_lock_shared($1)"
+        );
+        assert_eq!(
+            AdvisoryLockMode::Exclusive.try_lock_sql(),
+            "SELECT pg_try_advisory_lock($1)"
+        );
+        assert_eq!(
+            AdvisoryLockMode::Shared.try_lock_sql(),
+            "SELECT pg_try_advisory_lock_shared($1)"
+        );
+        assert_eq!(
+            AdvisoryLockMode::Exclusive.unlock_sql(),
+            "SELECT pg_advisory_unlock($1)"
+        );
+        assert_eq!(
+            AdvisoryLockMode::Shared.unlock_sql(),
+            "SELECT pg_advisory_unlock_shared($1)"
+        );
+    }
+
+    /// unlock 返回 false 时不得把仍可能持锁的连接还池，必须 detach 关闭会话。
+    #[tokio::test]
+    #[ignore = "需要真实 PostgreSQL 实例"]
+    async fn advisory_unlock_false_detaches_instead_of_returning_connection() {
+        let url = std::env::var("PG_TEST_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:55432/test".to_string());
+        let db = Database::connect(&url).await.expect("PG 必须可连接");
+        let conn = db.acquire().await.expect("借出连接应成功");
+        assert_eq!(db.pool.size(), 1);
+
+        // 该会话从未持有这把锁，服务端 pg_advisory_unlock 返回 false。
+        let lock = PgAdvisoryLock {
+            conn: Some(conn),
+            key: 987_654_321,
+            mode: AdvisoryLockMode::Exclusive,
+        };
+        assert!(!lock.unlock().await.expect("解锁调用应成功"));
+        assert_eq!(
+            db.pool.size(),
+            0,
+            "unlock 返回 false 时必须 detach 关闭会话，而不是把连接还池"
+        );
+    }
+
+    /// P1-20：application_name / statement cache / DISCARD ALL / UTF-8 校验配置。
+    #[test]
+    fn runtime_config_defaults_and_setters() {
+        let default = DatabaseConfig::default();
+        assert!(default.application_name.is_none());
+        assert!(default.statement_cache_size.is_none());
+        assert!(!default.reset_on_release);
+        assert!(default.require_utf8_client_encoding);
+        assert!(default.ssl_mode.is_none());
+
+        let config = DatabaseConfig::default()
+            .with_application_name("yang-test")
+            .with_statement_cache_size(0)
+            .with_reset_on_release(true)
+            .with_require_utf8_client_encoding(false);
+        assert_eq!(config.application_name.as_deref(), Some("yang-test"));
+        assert_eq!(config.statement_cache_size, Some(0));
+        assert!(config.reset_on_release);
+        assert!(!config.require_utf8_client_encoding);
+        assert!(config.validate().is_ok());
+
+        assert_eq!(DISCARD_ALL_SQL, "DISCARD ALL");
+    }
+
+    #[test]
+    fn application_name_is_validated() {
+        for invalid in [String::new(), "a\0b".to_string(), "a".repeat(64)] {
+            let config = DatabaseConfig::default().with_application_name(invalid.clone());
+            assert!(
+                matches!(config.validate(), Err(DbError::InvalidArgument(_))),
+                "application_name 应拒绝 {invalid:?}"
+            );
+        }
+        // 63 字节上限内合法。
+        let config = DatabaseConfig::default().with_application_name("a".repeat(63));
+        assert!(config.validate().is_ok());
+    }
+
+    /// P1-21：TLS 配置组合校验与 sqlx 模式映射。
+    #[test]
+    fn ssl_config_validation_and_mode_mapping() {
+        assert!(matches!(
+            SslMode::Disable.as_pg_ssl_mode(),
+            PgSslMode::Disable
+        ));
+        assert!(matches!(
+            SslMode::Prefer.as_pg_ssl_mode(),
+            PgSslMode::Prefer
+        ));
+        assert!(matches!(
+            SslMode::Require.as_pg_ssl_mode(),
+            PgSslMode::Require
+        ));
+        assert!(matches!(
+            SslMode::VerifyCa.as_pg_ssl_mode(),
+            PgSslMode::VerifyCa
+        ));
+        assert!(matches!(
+            SslMode::VerifyFull.as_pg_ssl_mode(),
+            PgSslMode::VerifyFull
+        ));
+
+        // verify-ca / verify-full 缺根证书必须报错。
+        for mode in [SslMode::VerifyCa, SslMode::VerifyFull] {
+            let missing = DatabaseConfig::default().with_ssl_mode(Some(mode));
+            assert!(
+                matches!(missing.validate(), Err(DbError::InvalidArgument(_))),
+                "{mode:?} 缺 ssl_root_cert 应报错"
+            );
+            let with_root = DatabaseConfig::default()
+                .with_ssl_mode(Some(mode))
+                .with_ssl_root_cert("/etc/ssl/root.pem");
+            assert!(with_root.validate().is_ok());
+        }
+
+        // disable 模式不允许证书。
+        assert!(matches!(
+            DatabaseConfig::default()
+                .with_ssl_mode(Some(SslMode::Disable))
+                .with_ssl_root_cert("/etc/ssl/root.pem")
+                .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
+
+        // 客户端证书与私钥必须成对。
+        assert!(matches!(
+            DatabaseConfig::default()
+                .with_ssl_mode(Some(SslMode::Require))
+                .with_ssl_client_cert("/etc/ssl/client.pem")
+                .validate(),
+            Err(DbError::InvalidArgument(_))
+        ));
+        assert!(DatabaseConfig::default()
+            .with_ssl_mode(Some(SslMode::Require))
+            .with_ssl_client_cert("/etc/ssl/client.pem")
+            .with_ssl_client_key("/etc/ssl/client.key")
+            .validate()
+            .is_ok());
+
+        // 未指定模式且无根证书：沿用连接串 sslmode。
+        assert!(DatabaseConfig::default().effective_ssl_mode().is_none());
+        // 未指定模式但有根证书：自动按 verify-ca 使用根证书（不能静默忽略）。
+        assert_eq!(
+            DatabaseConfig::default()
+                .with_ssl_root_cert("/etc/ssl/root.pem")
+                .effective_ssl_mode(),
+            Some(SslMode::VerifyCa)
+        );
+        // 显式模式原样返回。
+        for mode in [
+            SslMode::Disable,
+            SslMode::Prefer,
+            SslMode::Require,
+            SslMode::VerifyCa,
+            SslMode::VerifyFull,
+        ] {
+            assert_eq!(
+                DatabaseConfig::default()
+                    .with_ssl_mode(Some(mode))
+                    .effective_ssl_mode(),
+                Some(mode)
+            );
+        }
+        // 有根证书但未指定模式：validate 通过。
+        assert!(DatabaseConfig::default()
+            .with_ssl_root_cert("/etc/ssl/root.pem")
+            .validate()
+            .is_ok());
+
+        // prefer/require 不允许携带根证书（sqlx 在这两种模式下不校验证书，
+        // 根证书会被静默忽略）；需要校验请显式用 verify-ca/verify-full。
+        for mode in [SslMode::Prefer, SslMode::Require] {
+            assert!(
+                matches!(
+                    DatabaseConfig::default()
+                        .with_ssl_mode(Some(mode))
+                        .with_ssl_root_cert("/etc/ssl/root.pem")
+                        .validate(),
+                    Err(DbError::InvalidArgument(_))
+                ),
+                "{mode:?} + ssl_root_cert 应报错（根证书不会被该校验模式使用）"
+            );
+        }
+    }
+
+    /// P1-22：client_encoding 判定口径（UTF8 大小写/别名容忍，其余 fail-closed）。
+    #[test]
+    fn client_encoding_must_be_utf8() {
+        for ok in ["UTF8", "utf8", "Utf-8", "UNICODE", " UTF8 "] {
+            assert!(client_encoding_is_utf8(ok), "{ok:?} 应视为 UTF8");
+        }
+        for bad in ["SQL_ASCII", "LATIN1", "WIN1252", "EUC_JP", ""] {
+            assert!(!client_encoding_is_utf8(bad), "{bad:?} 不应视为 UTF8");
+        }
+    }
+
+    /// P1-20：waiting 计数在 acquire 结束时归还，pool_status 读取同一原子值。
+    #[tokio::test]
+    async fn waiting_counter_is_raii_and_reflected_in_pool_status() -> Result<(), sqlx::Error> {
+        let counter = AtomicUsize::new(0);
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
+            let _waiter = AcquireWaiter {
+                counter: &counter,
+                armed: true,
+            };
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        // 未计入等待的 guard 不应改动计数。
+        {
+            let _waiter = AcquireWaiter {
+                counter: &counter,
+                armed: false,
+            };
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:test@127.0.0.1:5432/test")?;
+        let db = Database {
+            pool,
+            config: DatabaseConfig::default(),
+            server_version: OnceCell::new(),
+            waiting: Arc::new(AtomicUsize::new(3)),
+        };
+        assert_eq!(db.pool_status().waiting, 3);
+        Ok(())
     }
 }

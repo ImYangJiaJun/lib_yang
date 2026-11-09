@@ -131,7 +131,23 @@ pub enum SqlValue {
     /// PostgreSQL 数组（`type[]`），元素按顺序作为单个数组绑定参数传输，
     /// 不展开为多个标量参数。可承载的 From 转换见 `Vec<i64>` / `Vec<String>` /
     /// `Vec<f64>` / `Vec<bool>`。
+    ///
+    /// 元素类型按首个非 NULL 元素推断；空数组/全 NULL 数组没有类型线索，
+    /// 类型敏感场景请用 [`SqlValue::TypedArray`]。
     Array(Vec<SqlValue>),
+    /// 带显式元素类型的 PostgreSQL 数组（如 `int4[]` / `bytea[]`）。
+    ///
+    /// `element_type` 是受控的内置类型名（`int2`/`int4`/`int8`/`float4`/`float8`/
+    /// `bool`/`text`/`varchar`/`bytea`/`uuid`/`date`/`time`/`timestamp`/
+    /// `timestamptz`/`numeric`/`jsonb`/`inet`/`cidr`/`macaddr`/`macaddr8`），
+    /// 决定绑定使用的 Rust 数组类型；空数组与全 NULL 数组也能按真实列类型绑定，
+    /// 不再退化为 `text[]`。
+    TypedArray {
+        /// 元素类型名（受控白名单，见枚举文档）。
+        element_type: &'static str,
+        /// 元素值，按顺序绑定。
+        values: Vec<SqlValue>,
+    },
     /// PostgreSQL `inet` 文本值；渲染时追加 `::inet`。
     Inet(String),
     /// PostgreSQL `cidr` 文本值；渲染时追加 `::cidr`。
@@ -174,6 +190,22 @@ pub enum Condition {
     Between(String, SqlValue, SqlValue),
     /// LIKE 条件
     Like(String, String),
+    /// 大小写不敏感 LIKE 条件（`ILIKE`）。
+    ILike(String, String),
+    /// 大小写不敏感 LIKE 取反（`NOT ILIKE`）。
+    NotILike(String, String),
+    /// POSIX 正则匹配（`~`）。
+    RegexMatch(String, String),
+    /// 大小写不敏感 POSIX 正则匹配（`~*`）。
+    RegexIMatch(String, String),
+    /// POSIX 正则不匹配（`!~`）。
+    NotRegexMatch(String, String),
+    /// 大小写不敏感 POSIX 正则不匹配（`!~*`）。
+    NotRegexIMatch(String, String),
+    /// NULL-safe 不相等（`IS DISTINCT FROM`）。
+    IsDistinctFrom(String, SqlValue),
+    /// NULL-safe 相等（`IS NOT DISTINCT FROM`）。
+    IsNotDistinctFrom(String, SqlValue),
     /// IS NULL 条件
     IsNull(String),
     /// IS NOT NULL 条件
@@ -450,6 +482,26 @@ fn into_node(condition: Condition) -> crate::dialect::CondNode<SqlValue> {
         Condition::NotIn(field, values) => Node::NotIn(field, values),
         Condition::Between(field, start, end) => Node::Between(field, start, end),
         Condition::Like(field, pattern) => Node::Like(field, SqlValue::String(pattern)),
+        Condition::ILike(field, pattern) => {
+            Node::PatternMatch(field, "ILIKE", SqlValue::String(pattern))
+        }
+        Condition::NotILike(field, pattern) => {
+            Node::PatternMatch(field, "NOT ILIKE", SqlValue::String(pattern))
+        }
+        Condition::RegexMatch(field, pattern) => {
+            Node::PatternMatch(field, "~", SqlValue::String(pattern))
+        }
+        Condition::RegexIMatch(field, pattern) => {
+            Node::PatternMatch(field, "~*", SqlValue::String(pattern))
+        }
+        Condition::NotRegexMatch(field, pattern) => {
+            Node::PatternMatch(field, "!~", SqlValue::String(pattern))
+        }
+        Condition::NotRegexIMatch(field, pattern) => {
+            Node::PatternMatch(field, "!~*", SqlValue::String(pattern))
+        }
+        Condition::IsDistinctFrom(field, value) => Node::DistinctFrom(field, true, value),
+        Condition::IsNotDistinctFrom(field, value) => Node::DistinctFrom(field, false, value),
         Condition::IsNull(field) => Node::IsNull(field),
         Condition::IsNotNull(field) => Node::IsNotNull(field),
         Condition::ColumnComparison(left, op, right) => {

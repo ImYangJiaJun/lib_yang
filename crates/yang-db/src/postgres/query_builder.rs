@@ -126,8 +126,125 @@ macro_rules! bind_value_match {
                         .map(array_element_decimal)
                         .collect::<Vec<Option<bigdecimal::BigDecimal>>>(),
                 ),
+                Some(SqlValue::Timestamp(_)) => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_timestamp)
+                        .collect::<Vec<Option<i64>>>(),
+                ),
+                Some(SqlValue::Bytes(_)) => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_bytes)
+                        .collect::<Vec<Option<Vec<u8>>>>(),
+                ),
+                Some(SqlValue::Json(_)) => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_json)
+                        .collect::<Vec<Option<serde_json::Value>>>(),
+                ),
                 // 其余（含空数组与混合数组）按 TEXT[] 绑定；空数组没有元素类型信息，
                 // 调用方应避免与非文本数组列比较。
+                _ => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_string)
+                        .collect::<Vec<Option<String>>>(),
+                ),
+            },
+            // 显式元素类型的数组：按真实列元素类型绑定，空数组/全 NULL 数组也
+            // 不会退化为 TEXT[]（int4[] 与 int8[] 的等值谓词依赖这一点）。
+            SqlValue::TypedArray {
+                element_type,
+                values,
+            } => match *element_type {
+                "int2" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_i16)
+                        .collect::<Vec<Option<i16>>>(),
+                ),
+                "int4" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_i32)
+                        .collect::<Vec<Option<i32>>>(),
+                ),
+                "int8" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_i64)
+                        .collect::<Vec<Option<i64>>>(),
+                ),
+                "float4" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_f32)
+                        .collect::<Vec<Option<f32>>>(),
+                ),
+                "float8" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_f64)
+                        .collect::<Vec<Option<f64>>>(),
+                ),
+                "bool" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_bool)
+                        .collect::<Vec<Option<bool>>>(),
+                ),
+                "bytea" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_bytes)
+                        .collect::<Vec<Option<Vec<u8>>>>(),
+                ),
+                "uuid" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_uuid)
+                        .collect::<Vec<Option<uuid::Uuid>>>(),
+                ),
+                "date" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_date)
+                        .collect::<Vec<Option<chrono::NaiveDate>>>(),
+                ),
+                "time" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_time)
+                        .collect::<Vec<Option<chrono::NaiveTime>>>(),
+                ),
+                "timestamp" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_datetime)
+                        .collect::<Vec<Option<chrono::NaiveDateTime>>>(),
+                ),
+                "timestamptz" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_datetime_tz)
+                        .collect::<Vec<Option<chrono::DateTime<chrono::Utc>>>>(),
+                ),
+                "numeric" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_decimal)
+                        .collect::<Vec<Option<bigdecimal::BigDecimal>>>(),
+                ),
+                "jsonb" => $query.bind(
+                    values
+                        .iter()
+                        .map(array_element_json)
+                        .collect::<Vec<Option<serde_json::Value>>>(),
+                ),
+                // text / varchar / inet / cidr / macaddr / macaddr8：Element 以
+                // 字符串绑定为 TEXT[]，非 text 类型由 `cast_suffix` 追加显式转换。
                 _ => $query.bind(
                     values
                         .iter()
@@ -154,6 +271,35 @@ const UPDATE_BATCH_SIZE: usize = 1000;
 /// 参数计数同为 Int16，上限一致。
 const MAX_BIND_PARAMS: usize = 65_535;
 
+/// MERGE 自 PostgreSQL 15 起提供（`server_version_num >= 150000`）。
+const MERGE_MIN_SERVER_VERSION: i32 = 150_000;
+
+/// `WHEN NOT MATCHED BY SOURCE` 自 PostgreSQL 17 起提供。
+const MERGE_BY_SOURCE_MIN_SERVER_VERSION: i32 = 170_000;
+
+/// 纯函数版本门控：便于单测在不连库的情况下覆盖版本分支。
+fn merge_version_supported(version: i32) -> bool {
+    version >= MERGE_MIN_SERVER_VERSION
+}
+
+/// 读取当前连接的 `server_version_num`（如 PG16.15 → 160015）。
+async fn server_version_num(
+    executor: &mut QueryExecutor<'_>,
+) -> Result<i32, crate::error::DbError> {
+    let sql = "SELECT current_setting('server_version_num')::int";
+    match executor {
+        QueryExecutor::Pool(pool) => Ok(sqlx::query_scalar::<_, i32>(sql).fetch_one(*pool).await?),
+        QueryExecutor::Transaction(transaction) => {
+            let connection = transaction.executor().ok_or_else(|| {
+                crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+            })?;
+            Ok(sqlx::query_scalar::<_, i32>(sql)
+                .fetch_one(&mut *connection)
+                .await?)
+        }
+    }
+}
+
 /// 由「非主键列数」推导 CASE WHEN 批量更新的安全批大小（与 MySQL 侧同口径）。
 fn derive_update_batch_size(field_count: usize, requested: usize) -> usize {
     let per_record = field_count.saturating_mul(2).saturating_add(1);
@@ -161,6 +307,14 @@ fn derive_update_batch_size(field_count: usize, requested: usize) -> usize {
         return requested;
     }
     (MAX_BIND_PARAMS / per_record).max(1).min(requested)
+}
+
+/// 由「每行列数」推导批量 INSERT 的安全批大小（单语句参数上限 65535）。
+fn derive_insert_batch_size(column_count: usize, requested: usize) -> usize {
+    if column_count == 0 {
+        return requested;
+    }
+    (MAX_BIND_PARAMS / column_count).max(1).min(requested)
 }
 
 /// 由「每行列数」推导批量 UPSERT 的安全批大小。
@@ -227,6 +381,38 @@ fn push_typed_placeholder(
     }
 }
 
+/// 返回数组元素类型对应的受控 PG 内置类型名（用于 [`SqlValue::TypedArray`]）。
+///
+/// `Standard` 表示整数/浮点共享的隐式绑定类型；这里选择 `int8`：
+/// 空数组与全 NULL 数组按 `int8[]` 绑定后，可被 INTEGER[]/BIGINT[]/REAL[]/
+/// DOUBLE PRECISION[] 列按赋值转换接受。布尔数组没有可用的隐式超类型，
+/// 因此 [`FieldType::Bool`] 显式映射为 `bool`，空 BOOLEAN[] 也能正确绑定。
+fn pg_array_element_type_name(field_type: &FieldType) -> Option<&'static str> {
+    match field_type {
+        FieldType::Standard => Some("int8"),
+        FieldType::Bool => Some("bool"),
+        FieldType::Text => Some("text"),
+        FieldType::Blob => Some("bytea"),
+        FieldType::Uuid => Some("uuid"),
+        FieldType::Date => Some("date"),
+        FieldType::Time => Some("time"),
+        FieldType::DateTime => Some("timestamp"),
+        FieldType::TimestampTz => Some("timestamptz"),
+        FieldType::Timestamp => Some("int8"),
+        FieldType::Decimal => Some("numeric"),
+        FieldType::Json | FieldType::Jsonb => Some("jsonb"),
+        FieldType::Inet => Some("inet"),
+        FieldType::Cidr => Some("cidr"),
+        FieldType::MacAddr => Some("macaddr"),
+        FieldType::MacAddr8 => Some("macaddr8"),
+        FieldType::Array(_)
+        | FieldType::Bit
+        | FieldType::Varbit
+        | FieldType::Range(_)
+        | FieldType::Multirange(_) => None,
+    }
+}
+
 /// SQL 生成器（内部使用）
 #[allow(dead_code)]
 pub(crate) struct SqlGenerator {
@@ -273,11 +459,20 @@ impl SqlGenerator {
     }
 
     fn append_condition(&mut self, condition: Condition) -> Result<(), crate::error::DbError> {
+        let rendered = self.render_condition_fragment(condition)?;
+        self.sql.push_str(&rendered);
+        Ok(())
+    }
+
+    /// 渲染条件片段并把其绑定参数追加到参数列表（占位符编号基于当前长度接续）。
+    fn render_condition_fragment(
+        &mut self,
+        condition: Condition,
+    ) -> Result<String, crate::error::DbError> {
         let rendered =
             crate::postgres::condition::render_condition_checked(condition, self.params.len())?;
-        self.sql.push_str(&rendered.sql);
         self.params.extend(rendered.params);
-        Ok(())
+        Ok(rendered.sql)
     }
 
     /// 清空生成器（保留已分配容量，避免重复分配）
@@ -448,11 +643,11 @@ impl SqlGenerator {
             let mut projection = builder.fields.clone();
             for (expression, alias) in &builder.projection_exprs {
                 let placeholder = self.params.len() + 1;
-                let (fragment, param) = expression.postgres_render(placeholder);
-                if let Some(value) = param {
-                    self.params.push(SqlValue::Int(value));
+                let rendered = expression.postgres_render(placeholder);
+                for param in rendered.params {
+                    self.params.push(param.into());
                 }
-                let mut piece = fragment;
+                let mut piece = rendered.sql;
                 if let Some(alias) = alias {
                     piece.push_str(" AS ");
                     piece.push_str(&super::identifier::quote_identifier(alias)?);
@@ -460,7 +655,7 @@ impl SqlGenerator {
                 projection.push(piece);
             }
             for window in &builder.window_exprs {
-                projection.push(window.render()?);
+                projection.push(window.render(self)?);
             }
             self.append(&projection.join(", "));
         }
@@ -498,6 +693,29 @@ impl SqlGenerator {
             self.build_having(&builder.having_clause, &builder.having_exprs)?;
         }
 
+        // WINDOW 子句：位于 HAVING 之后、ORDER BY 之前。
+        if !builder.named_windows.is_empty() {
+            self.build_window_clause(&builder.named_windows)?;
+        }
+
+        Ok(())
+    }
+
+    /// 渲染 `WINDOW <name> AS (<window spec>), ...`。
+    fn build_window_clause(
+        &mut self,
+        windows: &[(String, WindowSpec)],
+    ) -> Result<(), crate::error::DbError> {
+        self.append(" WINDOW ");
+        for (index, (name, spec)) in windows.iter().enumerate() {
+            if index > 0 {
+                self.append(", ");
+            }
+            self.append(&super::identifier::quote_identifier(name)?);
+            self.append(" AS (");
+            self.append(&spec.render_body()?);
+            self.append(")");
+        }
         Ok(())
     }
 
@@ -783,11 +1001,11 @@ impl SqlGenerator {
         for (key, expression) in set_exprs {
             fields.push(super::identifier::quote_identifier(key)?);
             let placeholder = self.params.len() + 1;
-            let (fragment, param) = expression.postgres_render(placeholder);
-            if let Some(value) = param {
-                self.params.push(SqlValue::Int(value));
+            let rendered = expression.postgres_render(placeholder);
+            for param in rendered.params {
+                self.params.push(param.into());
             }
-            placeholders.push(fragment);
+            placeholders.push(rendered.sql);
         }
 
         // 构建 INSERT 语句（表名 quote）
@@ -962,11 +1180,11 @@ impl SqlGenerator {
                 .push_str(&super::identifier::quote_identifier(key)?);
             self.sql.push_str(" = ");
             let placeholder = self.params.len() + 1;
-            let (fragment, param) = expression.postgres_render(placeholder);
-            if let Some(value) = param {
-                self.params.push(SqlValue::Int(value));
+            let rendered = expression.postgres_render(placeholder);
+            for param in rendered.params {
+                self.params.push(param.into());
             }
-            self.sql.push_str(&fragment);
+            self.sql.push_str(&rendered.sql);
         }
         Ok(())
     }
@@ -1119,6 +1337,27 @@ impl SqlGenerator {
         source_key: &crate::FieldRef,
         columns: &[&crate::FieldRef],
     ) -> Result<(), crate::error::DbError> {
+        self.build_merge_with_options(
+            table,
+            source,
+            target_key,
+            source_key,
+            columns,
+            &MergeOptions::default(),
+        )
+    }
+
+    /// 生成带可选分支的 MERGE；`not_matched_by_source` 为 PostgreSQL 17+ 语法，
+    /// 版本门控由 [`QueryBuilder::merge_with_options`] 负责。
+    pub(crate) fn build_merge_with_options(
+        &mut self,
+        table: &str,
+        source: &crate::TableRef,
+        target_key: &crate::FieldRef,
+        source_key: &crate::FieldRef,
+        columns: &[&crate::FieldRef],
+        options: &MergeOptions,
+    ) -> Result<(), crate::error::DbError> {
         self.clear();
         if columns.is_empty() {
             return Err(crate::error::DbError::InvalidArgument(
@@ -1142,7 +1381,12 @@ impl SqlGenerator {
         self.append(" = ");
         self.append(&qualify_merge_field(source_key, source_qualifier)?);
 
-        self.append(" WHEN MATCHED THEN UPDATE SET ");
+        self.append(" WHEN MATCHED");
+        if let Some(condition) = &options.matched_condition {
+            self.append(" AND ");
+            self.append_condition(condition.clone())?;
+        }
+        self.append(" THEN UPDATE SET ");
         for (index, column) in columns.iter().enumerate() {
             if index > 0 {
                 self.sql.push_str(", ");
@@ -1167,6 +1411,34 @@ impl SqlGenerator {
             .collect();
         self.append(&values?.join(", "));
         self.append(")");
+
+        match &options.not_matched_by_source {
+            None => {}
+            Some(MergeNotMatchedBySource::Delete) => {
+                self.append(" WHEN NOT MATCHED BY SOURCE THEN DELETE");
+            }
+            Some(MergeNotMatchedBySource::Update(assignments)) => {
+                if assignments.is_empty() {
+                    return Err(crate::error::DbError::InvalidArgument(
+                        "WHEN NOT MATCHED BY SOURCE 的 UPDATE 赋值列表不能为空".to_string(),
+                    ));
+                }
+                self.append(" WHEN NOT MATCHED BY SOURCE THEN UPDATE SET ");
+                for (index, (column, expression)) in assignments.iter().enumerate() {
+                    if index > 0 {
+                        self.sql.push_str(", ");
+                    }
+                    // BY SOURCE 分支没有源行，赋值目标只能是目标表列（非限定）。
+                    self.append(&super::identifier::quote_identifier(column.as_str())?);
+                    self.append(" = ");
+                    let rendered = expression.postgres_render(self.params.len() + 1);
+                    for param in rendered.params {
+                        self.params.push(param.into());
+                    }
+                    self.append(&rendered.sql);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1322,6 +1594,7 @@ impl SqlGenerator {
         data: &serde_json::Value,
         field_types: &HashMap<String, FieldType>,
         conflict: &ConflictTarget,
+        conflict_predicate: Option<&str>,
         do_nothing: bool,
         update_columns: Option<&[String]>,
         update_where: &[Condition],
@@ -1376,6 +1649,7 @@ impl SqlGenerator {
             table,
             &fields,
             conflict,
+            conflict_predicate,
             do_nothing,
             update_columns,
             update_where,
@@ -1384,30 +1658,49 @@ impl SqlGenerator {
 
     /// 追加 `ON CONFLICT ...` 子句（单条与批量 UPSERT 共用）。
     ///
-    /// 冲突目标为列列表或命名约束；空列列表等价于「任意约束冲突」。
+    /// 冲突目标为列列表、命名约束或未指定；未指定/空列列表只允许
+    /// `DO NOTHING`，`DO UPDATE` 在客户端直接报错（避免把无目标语法发到数据库）。
     /// `fields` 为插入列集（用于默认更新列推导与白名单校验）。
+    #[allow(clippy::too_many_arguments)]
     fn append_on_conflict(
         &mut self,
         table: &str,
         fields: &[String],
         conflict: &ConflictTarget,
+        predicate: Option<&str>,
         do_nothing: bool,
         update_columns: Option<&[String]>,
         update_where: &[Condition],
     ) -> Result<(), crate::error::DbError> {
-        // 冲突目标：列列表或约束名；空列列表等价于「任意约束冲突」。
+        if predicate.is_some()
+            && !matches!(conflict, ConflictTarget::Columns(columns) if !columns.is_empty())
+        {
+            return Err(crate::error::DbError::InvalidArgument(
+                "ON CONFLICT 谓词只能与显式冲突列列表一起使用".to_string(),
+            ));
+        }
+        // 冲突目标：列列表或约束名；未指定/空列列表等价于「任意约束冲突」。
         let quoted_conflict: Vec<String> = match conflict {
             ConflictTarget::Columns(columns) => columns
                 .iter()
                 .map(|column| super::identifier::quote_identifier(column))
                 .collect::<Result<_, _>>()?,
-            ConflictTarget::Constraint(_) => Vec::new(),
+            ConflictTarget::Unspecified | ConflictTarget::Constraint(_) => Vec::new(),
         };
         let has_column_target =
             matches!(conflict, ConflictTarget::Columns(columns) if !columns.is_empty());
+        if !has_column_target && !matches!(conflict, ConflictTarget::Constraint(_)) && !do_nothing {
+            return Err(crate::error::DbError::InvalidArgument(
+                "upsert 必须显式指定冲突目标（on_conflict / on_conflict_constraint / \
+                 on_conflict_with_predicate）；如只想忽略冲突请使用 do_nothing()"
+                    .to_string(),
+            ));
+        }
         match conflict {
+            ConflictTarget::Unspecified => {
+                self.sql.push_str(" ON CONFLICT");
+            }
             ConflictTarget::Columns(_) if !has_column_target => {
-                // 无冲突目标：仅允许 `ON CONFLICT DO NOTHING`。
                 self.sql.push_str(" ON CONFLICT");
             }
             ConflictTarget::Columns(_) => {
@@ -1420,6 +1713,13 @@ impl SqlGenerator {
                 self.sql
                     .push_str(&super::identifier::quote_identifier(name)?);
             }
+        }
+
+        if let Some(predicate) = predicate {
+            let predicate = validate_conflict_predicate(predicate)?;
+            self.sql.push_str(" WHERE (");
+            self.sql.push_str(predicate);
+            self.sql.push(')');
         }
 
         if do_nothing || matches!(conflict, ConflictTarget::Columns(columns) if columns.is_empty())
@@ -1451,7 +1751,9 @@ impl SqlGenerator {
                     ConflictTarget::Columns(columns) => !columns.contains(field),
                     // ON CONSTRAINT 无法从构造器推断冲突列；按惯例排除 `id`，避免把
                     // 已存在行的主键覆盖成插入值。其他主键名请显式 update_columns()。
-                    ConflictTarget::Constraint(_) => !field.eq_ignore_ascii_case("id"),
+                    ConflictTarget::Unspecified | ConflictTarget::Constraint(_) => {
+                        !field.eq_ignore_ascii_case("id")
+                    }
                 })
                 .collect(),
         };
@@ -1473,7 +1775,7 @@ impl SqlGenerator {
         if selected.is_empty() {
             let fallback = match conflict {
                 ConflictTarget::Columns(columns) => columns.first(),
-                ConflictTarget::Constraint(_) => fields.first(),
+                ConflictTarget::Unspecified | ConflictTarget::Constraint(_) => fields.first(),
             }
             .ok_or_else(|| crate::error::DbError::InvalidArgument("没有可更新的列".to_string()))?;
             let quoted = super::identifier::quote_identifier(fallback)?;
@@ -1521,6 +1823,7 @@ impl SqlGenerator {
         data_list: &[serde_json::Value],
         field_types: &HashMap<String, FieldType>,
         conflict_columns: &[String],
+        conflict_predicate: Option<&str>,
         do_nothing: bool,
         update_columns: Option<&[String]>,
         update_where: &[Condition],
@@ -1544,6 +1847,7 @@ impl SqlGenerator {
             table,
             &fields,
             &ConflictTarget::Columns(conflict_columns.to_vec()),
+            conflict_predicate,
             do_nothing,
             update_columns,
             update_where,
@@ -1742,6 +2046,19 @@ impl SqlGenerator {
                     for element in elements {
                         converted.push(self.json_value_to_sql_value(element, Some(inner))?);
                     }
+                    // 空数组/全 NULL 数组没有元素类型线索：按登记的元素类型显式
+                    // 绑定，避免统一退化为 TEXT[] 触发 42804。
+                    let typeless = converted
+                        .iter()
+                        .all(|value| matches!(value, SqlValue::Null));
+                    if typeless {
+                        if let Some(element_type) = pg_array_element_type_name(inner) {
+                            return Ok(SqlValue::TypedArray {
+                                element_type,
+                                values: converted,
+                            });
+                        }
+                    }
                     return Ok(SqlValue::Array(converted));
                 }
                 FieldType::Inet | FieldType::Cidr | FieldType::MacAddr | FieldType::MacAddr8 => {
@@ -1782,7 +2099,7 @@ impl SqlGenerator {
                         )));
                     }
                 }
-                FieldType::Standard => {}
+                FieldType::Standard | FieldType::Bool => {}
             }
         }
 
@@ -1910,6 +2227,8 @@ pub enum FrameMode {
     Rows,
     /// 按排序值范围。
     Range,
+    /// 按排序值相同的一组行（peer group）偏移；要求窗口带 `ORDER BY`。
+    Groups,
 }
 
 /// 窗口帧边界。
@@ -1966,6 +2285,18 @@ impl WindowFrame {
         }
     }
 
+    /// `GROUPS BETWEEN <start> AND <end>`（按排序值相同的一组行偏移）。
+    ///
+    /// `GROUPS` 帧要求窗口定义包含 `ORDER BY`，否则渲染期返回
+    /// [`crate::error::DbError::InvalidArgument`]。
+    pub fn groups_between(start: FrameBound, end: FrameBound) -> Self {
+        Self {
+            mode: FrameMode::Groups,
+            start,
+            end,
+        }
+    }
+
     fn render(&self) -> Result<String, crate::error::DbError> {
         if matches!(self.start, FrameBound::UnboundedFollowing) {
             return Err(crate::error::DbError::InvalidArgument(
@@ -1980,6 +2311,7 @@ impl WindowFrame {
         let mode = match self.mode {
             FrameMode::Rows => "ROWS",
             FrameMode::Range => "RANGE",
+            FrameMode::Groups => "GROUPS",
         };
         Ok(format!(
             "{mode} BETWEEN {} AND {}",
@@ -1997,12 +2329,24 @@ pub struct WindowSpec {
     partition_by: Vec<crate::FieldRef>,
     order_by: Vec<(crate::FieldRef, crate::SortOrder)>,
     frame: Option<WindowFrame>,
+    /// 命名窗口引用（`OVER "w"`）；与分区/排序/帧互斥。
+    reference: Option<String>,
 }
 
 impl WindowSpec {
     /// 空窗口：`OVER ()`。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 引用 [`QueryBuilder::window`] 定义的命名窗口：`OVER "name"`。
+    ///
+    /// 不能与 `PARTITION BY` / `ORDER BY` / 帧组合，渲染期会校验。
+    pub fn reference(name: &str) -> Self {
+        Self {
+            reference: Some(name.to_string()),
+            ..Self::default()
+        }
     }
 
     /// 追加 `PARTITION BY` 字段。
@@ -2024,7 +2368,16 @@ impl WindowSpec {
         self
     }
 
-    fn render(&self) -> Result<String, crate::error::DbError> {
+    /// 渲染窗口体（不含 `OVER` 包裹），供 `WINDOW w AS (...)` 复用。
+    fn render_body(&self) -> Result<String, crate::error::DbError> {
+        // GROUPS 帧按 peer group 计算，PostgreSQL 要求窗口定义必须有 ORDER BY。
+        if matches!(self.frame.map(|frame| frame.mode), Some(FrameMode::Groups))
+            && self.order_by.is_empty()
+        {
+            return Err(crate::error::DbError::InvalidArgument(
+                "GROUPS 帧要求窗口定义包含 ORDER BY".to_string(),
+            ));
+        }
         let mut parts: Vec<String> = Vec::new();
         if !self.partition_by.is_empty() {
             let fields: Vec<&str> = self
@@ -2051,7 +2404,22 @@ impl WindowSpec {
         if let Some(frame) = &self.frame {
             parts.push(frame.render()?);
         }
-        Ok(format!("OVER ({})", parts.join(" ")))
+        Ok(parts.join(" "))
+    }
+
+    fn render(&self) -> Result<String, crate::error::DbError> {
+        if let Some(name) = &self.reference {
+            if !self.partition_by.is_empty() || !self.order_by.is_empty() || self.frame.is_some() {
+                return Err(crate::error::DbError::InvalidArgument(
+                    "引用命名窗口时不能再附带 PARTITION BY / ORDER BY / 帧".to_string(),
+                ));
+            }
+            return Ok(format!(
+                "OVER {}",
+                super::identifier::quote_identifier(name)?
+            ));
+        }
+        Ok(format!("OVER ({})", self.render_body()?))
     }
 }
 
@@ -2074,21 +2442,28 @@ enum WindowFunctionKind {
 ///
 /// 排名函数无操作数；`COUNT(*)` 用 [`Self::count_all`] 表达；其余聚合/取值函数
 /// 必须提供列参数，构造器已强制。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct WindowFunction {
     kind: WindowFunctionKind,
     field: Option<crate::FieldRef>,
+    /// 聚合过滤：`FILTER (WHERE <condition>)`。
+    filter: Option<Condition>,
 }
 
 impl WindowFunction {
     fn rank_like(kind: WindowFunctionKind) -> Self {
-        Self { kind, field: None }
+        Self {
+            kind,
+            field: None,
+            filter: None,
+        }
     }
 
     fn with_field(kind: WindowFunctionKind, field: &crate::FieldRef) -> Self {
         Self {
             kind,
             field: Some(field.clone()),
+            filter: None,
         }
     }
 
@@ -2147,7 +2522,18 @@ impl WindowFunction {
         Self::with_field(WindowFunctionKind::Lead, field)
     }
 
-    fn render(&self) -> String {
+    /// 为聚合窗口函数追加 `FILTER (WHERE <condition>)`。
+    ///
+    /// PostgreSQL 只允许聚合函数使用 `FILTER`；排名/取值函数（`ROW_NUMBER`、
+    /// `RANK`、`DENSE_RANK`、`LAG`、`LEAD`）在渲染期返回
+    /// [`crate::error::DbError::InvalidArgument`]。
+    pub fn filter(mut self, condition: Condition) -> Self {
+        self.filter = Some(condition);
+        self
+    }
+
+    /// 渲染函数调用；`FILTER` 条件中的绑定参数追加到生成器参数列表。
+    fn render(&self, generator: &mut SqlGenerator) -> Result<String, crate::error::DbError> {
         let name = match self.kind {
             WindowFunctionKind::RowNumber => "ROW_NUMBER",
             WindowFunctionKind::Rank => "RANK",
@@ -2160,12 +2546,29 @@ impl WindowFunction {
             WindowFunctionKind::Lag => "LAG",
             WindowFunctionKind::Lead => "LEAD",
         };
-        match &self.field {
+        let call = match &self.field {
             Some(field) => format!("{name}({})", field.postgres_quoted()),
             // 只有 COUNT(*) 允许空操作数。
             None if self.kind == WindowFunctionKind::Count => "COUNT(*)".to_string(),
             None => format!("{name}()"),
+        };
+        let Some(filter) = &self.filter else {
+            return Ok(call);
+        };
+        if !matches!(
+            self.kind,
+            WindowFunctionKind::Sum
+                | WindowFunctionKind::Avg
+                | WindowFunctionKind::Count
+                | WindowFunctionKind::Min
+                | WindowFunctionKind::Max
+        ) {
+            return Err(crate::error::DbError::InvalidArgument(format!(
+                "{name} 不是聚合函数，不能使用 FILTER (WHERE ...)"
+            )));
         }
+        let fragment = generator.render_condition_fragment(filter.clone())?;
+        Ok(format!("{call} FILTER (WHERE {fragment})"))
     }
 }
 
@@ -2177,11 +2580,11 @@ struct WindowProjection {
 }
 
 impl WindowProjection {
-    fn render(&self) -> Result<String, crate::error::DbError> {
+    fn render(&self, generator: &mut SqlGenerator) -> Result<String, crate::error::DbError> {
         let alias = super::identifier::quote_identifier(&self.alias)?;
         Ok(format!(
             "{} {} AS {alias}",
-            self.function.render(),
+            self.function.render(generator)?,
             self.spec.render()?
         ))
     }
@@ -2209,19 +2612,74 @@ fn comparison_operator_sql(operator: ComparisonOperator) -> &'static str {
 /// UPSERT 冲突目标：显式列列表或命名约束。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConflictTarget {
-    /// `ON CONFLICT (col, ...)`；空列表表示 `ON CONFLICT DO NOTHING`。
+    /// 未显式指定冲突目标。仅允许 `DO NOTHING`；`DO UPDATE` 必须在客户端报错。
+    Unspecified,
+    /// `ON CONFLICT (col, ...)`；空列表表示「未指定」，只允许 `DO NOTHING`。
     Columns(Vec<String>),
     /// `ON CONFLICT ON CONSTRAINT <name>`。
     Constraint(String),
 }
 
-/// `RETURNING` 目标：单列或 `*`。
+/// `RETURNING` 的单个目标列（可选输出别名）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReturningColumn {
+    /// 列名（未加引号）。
+    pub(crate) column: String,
+    /// 输出别名（未加引号）。
+    pub(crate) alias: Option<String>,
+}
+
+/// `RETURNING` 目标：单列、多列（可带别名）或 `*`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReturningTarget {
     /// `RETURNING "<column>"`。
     Column(String),
+    /// `RETURNING "<col>" [AS "<alias>"], ...`。
+    Columns(Vec<ReturningColumn>),
     /// `RETURNING *`。
     All,
+}
+
+/// MERGE 的 `WHEN NOT MATCHED BY SOURCE` 分支动作。
+///
+/// 该分支自 PostgreSQL 17 起才被支持；在更低版本执行会返回
+/// [`crate::error::DbError::UnsupportedOperator`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MergeNotMatchedBySource {
+    /// `WHEN NOT MATCHED BY SOURCE THEN DELETE`。
+    Delete,
+    /// `WHEN NOT MATCHED BY SOURCE THEN UPDATE SET <col> = <expr>, ...`。
+    ///
+    /// 表达式的动态部分走绑定参数；`col` 必须是目标表的非限定列名。
+    Update(Vec<(crate::FieldRef, crate::SqlExpr)>),
+}
+
+/// MERGE 的可选分支配置。
+///
+/// 默认值表示现有的「命中更新 + 未命中插入」行为，与 [`QueryBuilder::merge`]
+/// 完全一致；使用带条件的命中分支或 `NOT MATCHED BY SOURCE` 时改用
+/// [`QueryBuilder::merge_with_options`]。
+#[derive(Debug, Clone, Default)]
+pub struct MergeOptions {
+    /// `WHEN MATCHED AND <condition> THEN ...` 的附加条件。
+    matched_condition: Option<Condition>,
+    /// `WHEN NOT MATCHED BY SOURCE THEN ...` 分支（PostgreSQL 17+）。
+    not_matched_by_source: Option<MergeNotMatchedBySource>,
+}
+
+impl MergeOptions {
+    /// 为 `WHEN MATCHED` 分支追加 `AND <condition>`。
+    pub fn matched_condition(mut self, condition: Condition) -> Self {
+        self.matched_condition = Some(condition);
+        self
+    }
+
+    /// 追加 `WHEN NOT MATCHED BY SOURCE` 分支（PostgreSQL 17+）。
+    pub fn not_matched_by_source(mut self, action: MergeNotMatchedBySource) -> Self {
+        self.not_matched_by_source = Some(action);
+        self
+    }
 }
 
 impl ArithmeticOperator {
@@ -2264,6 +2722,28 @@ fn qualify_condition_fields(condition: Condition, qualifier: &str) -> Condition 
             Condition::Between(qualify(field, qualifier), start, end)
         }
         Condition::Like(field, pattern) => Condition::Like(qualify(field, qualifier), pattern),
+        Condition::ILike(field, pattern) => Condition::ILike(qualify(field, qualifier), pattern),
+        Condition::NotILike(field, pattern) => {
+            Condition::NotILike(qualify(field, qualifier), pattern)
+        }
+        Condition::RegexMatch(field, pattern) => {
+            Condition::RegexMatch(qualify(field, qualifier), pattern)
+        }
+        Condition::RegexIMatch(field, pattern) => {
+            Condition::RegexIMatch(qualify(field, qualifier), pattern)
+        }
+        Condition::NotRegexMatch(field, pattern) => {
+            Condition::NotRegexMatch(qualify(field, qualifier), pattern)
+        }
+        Condition::NotRegexIMatch(field, pattern) => {
+            Condition::NotRegexIMatch(qualify(field, qualifier), pattern)
+        }
+        Condition::IsDistinctFrom(field, value) => {
+            Condition::IsDistinctFrom(qualify(field, qualifier), value)
+        }
+        Condition::IsNotDistinctFrom(field, value) => {
+            Condition::IsNotDistinctFrom(qualify(field, qualifier), value)
+        }
         Condition::IsNull(field) => Condition::IsNull(qualify(field, qualifier)),
         Condition::IsNotNull(field) => Condition::IsNotNull(qualify(field, qualifier)),
         Condition::ColumnComparison(left, operator, right) => {
@@ -2379,7 +2859,31 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for IntegerPk {
     }
 }
 
-/// 把封闭比较操作符映射为条件枚举的比较操作符；LIKE 不适用。
+/// 校验 `ON CONFLICT (cols) WHERE (<predicate>)` 的受信谓词。
+///
+/// 谓词按受信 SQL 表达式处理（允许列名/算术/函数），但拒绝能把片段拆成第二条
+/// 语句或注释掉后续子句的字符序列：`;`、`--`、`/*`、`*/` 与 NUL。
+fn validate_conflict_predicate(predicate: &str) -> Result<&str, crate::error::DbError> {
+    let trimmed = predicate.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::DbError::InvalidArgument(
+            "ON CONFLICT 谓词不能为空".to_string(),
+        ));
+    }
+    if trimmed.contains('\0')
+        || trimmed.contains(';')
+        || trimmed.contains("--")
+        || trimmed.contains("/*")
+        || trimmed.contains("*/")
+    {
+        return Err(crate::error::DbError::InvalidArgument(
+            "ON CONFLICT 谓词不能包含分号、注释标记或 NUL".to_string(),
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// 把封闭比较操作符映射为条件枚举的比较操作符；模式匹配与 NULL-safe 比较不适用。
 fn comparison_operator(op: crate::CompareOp) -> Option<ComparisonOperator> {
     match op {
         crate::CompareOp::Eq => Some(ComparisonOperator::Eq),
@@ -2388,36 +2892,50 @@ fn comparison_operator(op: crate::CompareOp) -> Option<ComparisonOperator> {
         crate::CompareOp::Lt => Some(ComparisonOperator::Lt),
         crate::CompareOp::Gte => Some(ComparisonOperator::Gte),
         crate::CompareOp::Lte => Some(ComparisonOperator::Lte),
-        crate::CompareOp::Like => None,
+        _ => None,
     }
 }
 
-/// 由 `(字段, 操作符, 值)` 构造条件；LIKE 仅接受字符串模式。
+/// 由 `(字段, 操作符, 值)` 构造条件（PostgreSQL）。
+///
+/// 模式匹配类操作符（LIKE/ILIKE/正则）只接受字符串模式值；NULL-safe 比较接受
+/// 任意值。其余操作符走 [`comparison_operator`] 的受控映射。
 fn comparison_condition(
-    field: &crate::FieldRef,
+    field: &str,
     op: crate::CompareOp,
     value: SqlValue,
 ) -> Result<Condition, crate::error::DbError> {
-    let field = field.as_str().to_string();
-    if matches!(op, crate::CompareOp::Like) {
-        return match value {
-            SqlValue::String(pattern) => Ok(Condition::Like(field, pattern)),
-            _ => Err(crate::error::DbError::UnsupportedOperator(
-                "LIKE 仅支持字符串模式值".to_string(),
-            )),
-        };
+    let field = field.to_string();
+    let pattern = |value: SqlValue| match value {
+        SqlValue::String(pattern) => Ok(pattern),
+        _ => Err(crate::error::DbError::UnsupportedOperator(
+            "模式匹配操作符仅支持字符串模式值".to_string(),
+        )),
+    };
+    match op {
+        crate::CompareOp::Like => Ok(Condition::Like(field, pattern(value)?)),
+        crate::CompareOp::ILike => Ok(Condition::ILike(field, pattern(value)?)),
+        crate::CompareOp::NotILike => Ok(Condition::NotILike(field, pattern(value)?)),
+        crate::CompareOp::RegexMatch => Ok(Condition::RegexMatch(field, pattern(value)?)),
+        crate::CompareOp::RegexIMatch => Ok(Condition::RegexIMatch(field, pattern(value)?)),
+        crate::CompareOp::NotRegexMatch => Ok(Condition::NotRegexMatch(field, pattern(value)?)),
+        crate::CompareOp::NotRegexIMatch => Ok(Condition::NotRegexIMatch(field, pattern(value)?)),
+        crate::CompareOp::IsDistinctFrom => Ok(Condition::IsDistinctFrom(field, value)),
+        crate::CompareOp::IsNotDistinctFrom => Ok(Condition::IsNotDistinctFrom(field, value)),
+        _ => {
+            let operator = comparison_operator(op).ok_or_else(|| {
+                crate::error::DbError::UnsupportedOperator("不支持的比较操作符".to_string())
+            })?;
+            Ok(match operator {
+                ComparisonOperator::Eq => Condition::Eq(field, value),
+                ComparisonOperator::Ne => Condition::Ne(field, value),
+                ComparisonOperator::Gt => Condition::Gt(field, value),
+                ComparisonOperator::Lt => Condition::Lt(field, value),
+                ComparisonOperator::Gte => Condition::Gte(field, value),
+                ComparisonOperator::Lte => Condition::Lte(field, value),
+            })
+        }
     }
-    let operator = comparison_operator(op).ok_or_else(|| {
-        crate::error::DbError::UnsupportedOperator("不支持的比较操作符".to_string())
-    })?;
-    Ok(match operator {
-        ComparisonOperator::Eq => Condition::Eq(field, value),
-        ComparisonOperator::Ne => Condition::Ne(field, value),
-        ComparisonOperator::Gt => Condition::Gt(field, value),
-        ComparisonOperator::Lt => Condition::Lt(field, value),
-        ComparisonOperator::Gte => Condition::Gte(field, value),
-        ComparisonOperator::Lte => Condition::Lte(field, value),
-    })
 }
 
 pub struct QueryBuilder<'a> {
@@ -2428,6 +2946,8 @@ pub struct QueryBuilder<'a> {
     projection_exprs: Vec<(crate::SqlExpr, Option<String>)>,
     /// `window_expr` 登记的窗口函数投影。
     window_exprs: Vec<WindowProjection>,
+    /// `window` 登记的命名窗口定义（`WINDOW <name> AS (...)`）。
+    named_windows: Vec<(String, WindowSpec)>,
     conditions: Vec<Condition>,
     joins: Vec<JoinSpec<'a>>,
     order_by: Vec<OrderClause>,
@@ -2451,10 +2971,12 @@ pub struct QueryBuilder<'a> {
     set_exprs: Vec<(String, crate::SqlExpr)>,
     /// UPSERT 的冲突目标。
     ///
-    /// 默认 `Columns(["id"])` 仅为兼容历史调用；**该默认值在唯一约束不落在 `id`
-    /// 上时需要显式覆盖**（`on_conflict` / `on_conflict_constraint`），否则 PostgreSQL
-    /// 会因找不到匹配的唯一索引而报错。
+    /// 默认 [`ConflictTarget::Unspecified`]：`DO UPDATE` 必须显式指定目标
+    /// （`on_conflict` / `on_conflict_constraint` / `on_conflict_with_predicate`），
+    /// 否则在客户端返回 [`crate::DbError::InvalidArgument`]；`do_nothing()` 可省略目标。
     conflict_target: ConflictTarget,
+    /// 部分唯一索引谓词：`ON CONFLICT (cols) WHERE (<predicate>)`。
+    conflict_predicate: Option<String>,
     /// 显式 `DO NOTHING`（忽略更新列与 DO UPDATE WHERE）。
     do_nothing: bool,
     /// DO UPDATE 的列白名单；`None` 表示更新所有非冲突列。
@@ -2475,6 +2997,7 @@ impl<'a> QueryBuilder<'a> {
             fields: Vec::new(),
             projection_exprs: Vec::new(),
             window_exprs: Vec::new(),
+            named_windows: Vec::new(),
             conditions: Vec::new(),
             joins: Vec::new(),
             order_by: Vec::new(),
@@ -2490,7 +3013,8 @@ impl<'a> QueryBuilder<'a> {
             set_ops: Vec::new(),
             field_types: HashMap::new(),
             set_exprs: Vec::new(),
-            conflict_target: ConflictTarget::Columns(vec!["id".to_string()]),
+            conflict_target: ConflictTarget::Unspecified,
+            conflict_predicate: None,
             do_nothing: false,
             update_columns: None,
             upsert_where: Vec::new(),
@@ -2510,6 +3034,7 @@ impl<'a> QueryBuilder<'a> {
             fields: Vec::new(),
             projection_exprs: Vec::new(),
             window_exprs: Vec::new(),
+            named_windows: Vec::new(),
             conditions: Vec::new(),
             joins: Vec::new(),
             order_by: Vec::new(),
@@ -2525,7 +3050,8 @@ impl<'a> QueryBuilder<'a> {
             set_ops: Vec::new(),
             field_types: HashMap::new(),
             set_exprs: Vec::new(),
-            conflict_target: ConflictTarget::Columns(vec!["id".to_string()]),
+            conflict_target: ConflictTarget::Unspecified,
+            conflict_predicate: None,
             do_nothing: false,
             update_columns: None,
             upsert_where: Vec::new(),
@@ -2726,6 +3252,15 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// 定义命名窗口：`WINDOW <name> AS (<spec>)`。
+    ///
+    /// 投影通过 [`WindowSpec::reference`] 以 `OVER "<name>"` 复用该定义。
+    /// 名称在渲染期按单段标识符校验并加引号。
+    pub fn window(mut self, name: &str, spec: WindowSpec) -> Self {
+        self.named_windows.push((name.to_string(), spec));
+        self
+    }
+
     /// 使用 UNION 组合一个显式投影且输出列数相同的查询。
     pub fn union(self, other: QueryBuilder<'a>) -> Result<Self, crate::error::DbError> {
         self.add_set_operation(other, SetOperator::Union)
@@ -2807,16 +3342,9 @@ impl<'a> QueryBuilder<'a> {
 
     /// 设置 UPSERT 的冲突目标列（PostgreSQL `ON CONFLICT (...)`）
     ///
-    /// 默认冲突列为 `["id"]`，可通过本方法覆盖，例如
-    /// `.on_conflict(&[yang_db::field!("email")])`；传空切片等价于无目标
-    /// `ON CONFLICT DO NOTHING`。
-    ///
-    /// # 默认值警告
-    ///
-    /// 默认 `["id"]` 只是历史兼容：PostgreSQL 要求冲突目标能匹配一个唯一索引。
-    /// 若唯一约束建立在其它列上，必须显式调用本方法或
-    /// [`Self::on_conflict_constraint`]，否则 `upsert` 会在数据库端报
-    /// `there is no unique or exclusion constraint matching the ON CONFLICT specification`。
+    /// 例：`.on_conflict(&[yang_db::field!("email")])`；传空切片等价于未指定目标，
+    /// 此时仅允许配合 [`Self::do_nothing`] 使用（`DO NOTHING`）；`DO UPDATE` 会在
+    /// 客户端返回 [`crate::DbError::InvalidArgument`]，不会把语法错误留给数据库。
     pub fn on_conflict(mut self, columns: &[&crate::FieldRef]) -> Self {
         self.conflict_target = ConflictTarget::Columns(
             columns
@@ -2824,6 +3352,7 @@ impl<'a> QueryBuilder<'a> {
                 .map(|column| column.as_str().to_string())
                 .collect(),
         );
+        self.conflict_predicate = None;
         self
     }
 
@@ -2832,6 +3361,28 @@ impl<'a> QueryBuilder<'a> {
     /// `constraint` 只需传入约束名（按单段标识符校验并加引号）。
     pub fn on_conflict_constraint(mut self, constraint: &crate::FieldRef) -> Self {
         self.conflict_target = ConflictTarget::Constraint(constraint.as_str().to_string());
+        self.conflict_predicate = None;
+        self
+    }
+
+    /// 带部分唯一索引谓词的冲突目标：
+    /// `ON CONFLICT (<columns>) WHERE (<predicate>) DO UPDATE ...`。
+    ///
+    /// `predicate` 是受信 SQL 表达式（如 `"active"` 或 `"tenant_id > 0"`），按原样
+    /// 包进括号；分号、注释标记（`--`、`/*`、`*/`）与 NUL 会被拒绝并返回
+    /// [`crate::DbError::InvalidArgument`]，避免把调用方输入变成第二条语句。
+    pub fn on_conflict_with_predicate(
+        mut self,
+        columns: &[&crate::FieldRef],
+        predicate: &str,
+    ) -> Self {
+        self.conflict_target = ConflictTarget::Columns(
+            columns
+                .iter()
+                .map(|column| column.as_str().to_string())
+                .collect(),
+        );
+        self.conflict_predicate = Some(predicate.to_string());
         self
     }
 
@@ -2869,7 +3420,7 @@ impl<'a> QueryBuilder<'a> {
     where
         V: Into<SqlValue>,
     {
-        let condition = comparison_condition(field, op, value.into())?;
+        let condition = comparison_condition(field.as_str(), op, value.into())?;
         self.upsert_where.push(condition);
         Ok(self)
     }
@@ -2880,6 +3431,48 @@ impl<'a> QueryBuilder<'a> {
     /// 当自增主键列名不是 `id` 时，用本方法指定。
     pub fn returning(mut self, column: &crate::FieldRef) -> Self {
         self.returning = ReturningTarget::Column(column.as_str().to_string());
+        self
+    }
+
+    /// 设置多列 `RETURNING`：`RETURNING "a", "b", ...`。
+    ///
+    /// 列名与别名都按 PostgreSQL 标识符规则校验并加引号；非法标识符在执行前返回
+    /// [`crate::DbError::InvalidArgument`]。可与其他 `returning_*` 方法链式调用，
+    /// 后调用者覆盖先前的目标。
+    pub fn returning_columns(mut self, columns: &[&crate::FieldRef]) -> Self {
+        self.returning = ReturningTarget::Columns(
+            columns
+                .iter()
+                .map(|column| ReturningColumn {
+                    column: column.as_str().to_string(),
+                    alias: None,
+                })
+                .collect(),
+        );
+        self
+    }
+
+    /// 追加一个带输出别名的 `RETURNING` 列：`RETURNING "col" AS "alias"`。
+    ///
+    /// 连续调用会按顺序累加；若当前目标是 `RETURNING *` 或单列（含默认 `id`），
+    /// 第一次调用会以本列作为新的显式列表起点（单列/整行目标被替换）。
+    /// 别名必须是单段 PostgreSQL 标识符（渲染期按标识符规则校验并加引号，
+    /// 非法别名返回 `InvalidArgument`）。
+    pub fn returning_column_as(
+        mut self,
+        column: &crate::FieldRef,
+        alias: &crate::FieldRef,
+    ) -> Self {
+        let target = ReturningColumn {
+            column: column.as_str().to_string(),
+            alias: Some(alias.as_str().to_string()),
+        };
+        match &mut self.returning {
+            ReturningTarget::Columns(columns) => columns.push(target),
+            ReturningTarget::Column(_) | ReturningTarget::All => {
+                self.returning = ReturningTarget::Columns(vec![target]);
+            }
+        }
         self
     }
 
@@ -2896,6 +3489,27 @@ impl<'a> QueryBuilder<'a> {
                 " RETURNING {}",
                 super::identifier::quote_identifier(column)?
             )),
+            ReturningTarget::Columns(columns) => {
+                if columns.is_empty() {
+                    return Err(crate::error::DbError::InvalidArgument(
+                        "returning_columns 至少需要一个列".to_string(),
+                    ));
+                }
+                let rendered = columns
+                    .iter()
+                    .map(|target| {
+                        let column = super::identifier::quote_identifier(&target.column)?;
+                        match &target.alias {
+                            Some(alias) => Ok(format!(
+                                "{column} AS {}",
+                                super::identifier::quote_identifier(alias)?
+                            )),
+                            None => Ok(column),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, crate::error::DbError>>()?;
+                Ok(format!(" RETURNING {}", rendered.join(", ")))
+            }
             ReturningTarget::All => Ok(" RETURNING *".to_string()),
         }
     }
@@ -2932,29 +3546,14 @@ impl<'a> QueryBuilder<'a> {
     {
         let field = field.as_str().to_string();
         let value = self.coerce_condition_value(&field, value.into());
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                SqlValue::String(value) => Condition::Like(field, value),
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let condition = comparison_condition(&field, op, value)?;
         self.conditions.push(condition);
         Ok(self)
     }
 
     /// 添加 OR 条件
     ///
-    /// 遇到不支持的操作符或 LIKE 收到非字符串模式时返回 `Err(DbError::UnsupportedOperator)`。
+    /// 遇到不支持的操作符或模式匹配收到非字符串模式时返回 `Err(DbError::UnsupportedOperator)`。
     pub fn where_or<V>(
         mut self,
         field: &crate::FieldRef,
@@ -2964,24 +3563,9 @@ impl<'a> QueryBuilder<'a> {
     where
         V: Into<SqlValue>,
     {
-        let field = field.as_str().to_string();
-        let value = self.coerce_condition_value(&field, value.into());
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                SqlValue::String(value) => Condition::Like(field, value),
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let name = field.as_str().to_string();
+        let value = self.coerce_condition_value(&name, value.into());
+        let condition = comparison_condition(&name, op, value)?;
 
         if !self.conditions.is_empty() {
             let mut existing = std::mem::take(&mut self.conditions);
@@ -3093,7 +3677,9 @@ impl<'a> QueryBuilder<'a> {
         right: &crate::FieldRef,
     ) -> Result<Self, crate::error::DbError> {
         let operator = comparison_operator(op).ok_or_else(|| {
-            crate::error::DbError::UnsupportedOperator("列比较不支持 LIKE 操作符".to_string())
+            crate::error::DbError::UnsupportedOperator(
+                "列比较不支持 LIKE/ILIKE/正则/NULL-safe 比较符".to_string(),
+            )
         })?;
         self.conditions.push(Condition::ColumnComparison(
             left.as_str().to_string(),
@@ -3254,7 +3840,9 @@ impl<'a> QueryBuilder<'a> {
         expression: crate::SqlExpr,
     ) -> Result<Self, crate::error::DbError> {
         let operator = comparison_operator(op).ok_or_else(|| {
-            crate::error::DbError::UnsupportedOperator("表达式比较不支持 LIKE 操作符".to_string())
+            crate::error::DbError::UnsupportedOperator(
+                "表达式比较不支持 LIKE/ILIKE/正则/NULL-safe 比较符".to_string(),
+            )
         })?;
         self.conditions.push(Condition::FieldExpr(
             field.as_str().to_string(),
@@ -3276,22 +3864,7 @@ impl<'a> QueryBuilder<'a> {
     {
         let field = field.as_str().to_string();
         let value = self.coerce_condition_value(&field, value.into());
-        let condition = match op {
-            crate::CompareOp::Eq => Condition::Eq(field, value),
-            crate::CompareOp::Ne => Condition::Ne(field, value),
-            crate::CompareOp::Gt => Condition::Gt(field, value),
-            crate::CompareOp::Lt => Condition::Lt(field, value),
-            crate::CompareOp::Gte => Condition::Gte(field, value),
-            crate::CompareOp::Lte => Condition::Lte(field, value),
-            crate::CompareOp::Like => match value {
-                SqlValue::String(value) => Condition::Like(field, value),
-                _ => {
-                    return Err(crate::error::DbError::UnsupportedOperator(
-                        "LIKE 仅支持字符串模式值".to_string(),
-                    ))
-                }
-            },
-        };
+        let condition = comparison_condition(&field, op, value)?;
         self.having_clause.push(condition);
         Ok(self)
     }
@@ -3299,7 +3872,8 @@ impl<'a> QueryBuilder<'a> {
     /// 添加 HAVING 聚合表达式比较（如 `HAVING COUNT(*) > 1`）。
     ///
     /// 左侧来自受控 [`crate::SelectExpr`]，表达式本体渲染，不携带输出别名；
-    /// 值走绑定参数。LIKE 不适用于聚合表达式，返回 `UnsupportedOperator`。
+    /// 值走绑定参数。模式匹配/NULL-safe 比较不适用于聚合表达式，返回
+    /// `UnsupportedOperator`。
     pub fn having_expr<V>(
         mut self,
         expression: crate::SelectExpr,
@@ -3311,7 +3885,7 @@ impl<'a> QueryBuilder<'a> {
     {
         let operator = comparison_operator(op).ok_or_else(|| {
             crate::error::DbError::UnsupportedOperator(
-                "HAVING 聚合表达式不支持 LIKE 操作符".to_string(),
+                "HAVING 聚合表达式不支持 LIKE/ILIKE/正则/NULL-safe 比较符".to_string(),
             )
         })?;
         self.having_exprs.push(HavingExpr {
@@ -3501,21 +4075,8 @@ impl<'a> QueryBuilder<'a> {
         &self,
         lock: Option<crate::RowLock>,
     ) -> Result<(String, Vec<SqlValue>), crate::error::DbError> {
-        if lock.is_some()
-            && (self.distinct
-                || !self.distinct_on.is_empty()
-                || !self.group_by.is_empty()
-                || !self.grouping_constructs.is_empty()
-                || !self.having_clause.is_empty()
-                || !self.having_exprs.is_empty()
-                || !self.window_exprs.is_empty()
-                || !self.ctes.is_empty()
-                || !self.set_ops.is_empty())
-        {
-            return Err(crate::error::DbError::InvalidArgument(
-                "行锁不支持 DISTINCT、GROUP BY/分组集、HAVING、窗口函数、CTE 或集合运算查询"
-                    .to_string(),
-            ));
+        if lock.is_some() {
+            self.ensure_row_lock_supported()?;
         }
         let mut generator = SqlGenerator::new();
         generator.build_select(self)?;
@@ -3523,6 +4084,96 @@ impl<'a> QueryBuilder<'a> {
             generator.sql.push(' ');
             generator.sql.push_str(lock.as_sql());
         }
+        Ok((generator.sql, generator.params))
+    }
+
+    /// 行锁查询的共享前置校验：DISTINCT/GROUP BY/HAVING/窗口/CTE/集合运算不可加锁。
+    fn ensure_row_lock_supported(&self) -> Result<(), crate::error::DbError> {
+        if self.distinct
+            || !self.distinct_on.is_empty()
+            || !self.group_by.is_empty()
+            || !self.grouping_constructs.is_empty()
+            || !self.having_clause.is_empty()
+            || !self.having_exprs.is_empty()
+            || !self.window_exprs.is_empty()
+            || !self.ctes.is_empty()
+            || !self.set_ops.is_empty()
+        {
+            return Err(crate::error::DbError::InvalidArgument(
+                "行锁不支持 DISTINCT、GROUP BY/分组集、HAVING、窗口函数、CTE 或集合运算查询"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 渲染带完整行锁组合的 SELECT（调试/自定义执行入口）。
+    ///
+    /// `lock` 决定锁模式（含 `NO KEY UPDATE` / `KEY SHARE`）；`of` 为
+    /// `FOR ... OF` 的表/别名列表（空切片表示不加 OF）；`nowait` 与 `skip_locked`
+    /// 互斥，同时为 `true` 时返回 [`crate::error::DbError::InvalidArgument`]。
+    /// `ForUpdateSkipLocked` / `ForShareSkipLocked` 隐含 `SKIP LOCKED`。
+    ///
+    /// 例：`FOR NO KEY UPDATE OF "orders" SKIP LOCKED`。
+    pub fn try_to_sql_with_lock(
+        &self,
+        lock: crate::RowLock,
+        of: &[&crate::FieldRef],
+        nowait: bool,
+        skip_locked: bool,
+    ) -> Result<String, crate::error::DbError> {
+        Ok(self.render_with_lock(lock, of, nowait, skip_locked)?.0)
+    }
+
+    /// 渲染带行锁的 SELECT，同时返回绑定参数（事务内执行入口使用）。
+    pub(crate) fn render_with_lock(
+        &self,
+        lock: crate::RowLock,
+        of: &[&crate::FieldRef],
+        nowait: bool,
+        skip_locked: bool,
+    ) -> Result<(String, Vec<SqlValue>), crate::error::DbError> {
+        let implied_skip = matches!(
+            lock,
+            crate::RowLock::ForUpdateSkipLocked | crate::RowLock::ForShareSkipLocked
+        );
+        if nowait && (skip_locked || implied_skip) {
+            return Err(crate::error::DbError::InvalidArgument(
+                "行锁的 NOWAIT 与 SKIP LOCKED 不能同时使用".to_string(),
+            ));
+        }
+        self.ensure_row_lock_supported()?;
+        let mut generator = SqlGenerator::new();
+        generator.build_select(self)?;
+
+        let base = match lock {
+            crate::RowLock::ForUpdate | crate::RowLock::ForUpdateSkipLocked => "FOR UPDATE",
+            crate::RowLock::ForShare | crate::RowLock::ForShareSkipLocked => "FOR SHARE",
+            crate::RowLock::NoKeyUpdate => "FOR NO KEY UPDATE",
+            crate::RowLock::KeyShare => "FOR KEY SHARE",
+        };
+        let mut clause = String::from(base);
+        if !of.is_empty() {
+            let quoted = of
+                .iter()
+                .map(|table| super::identifier::quote_qualified(table.as_str()))
+                .collect::<Result<Vec<_>, _>>()?;
+            clause.push_str(" OF ");
+            clause.push_str(&quoted.join(", "));
+        }
+        if skip_locked
+            || matches!(
+                lock,
+                crate::RowLock::ForUpdateSkipLocked | crate::RowLock::ForShareSkipLocked
+            )
+        {
+            clause.push_str(" SKIP LOCKED");
+        } else if nowait {
+            clause.push_str(" NOWAIT");
+        }
+
+        generator.sql.push(' ');
+        generator.sql.push_str(&clause);
         Ok((generator.sql, generator.params))
     }
 
@@ -3804,10 +4455,10 @@ impl<'a> QueryBuilder<'a> {
     where
         T: serde::Serialize,
     {
-        // insert() 只解码单个整型返回值；RETURNING * 的列顺序不代表主键位置。
-        if matches!(self.returning, ReturningTarget::All) {
+        // insert() 只解码单个整型返回值；多列/整行 RETURNING 的列顺序不代表主键位置。
+        if !matches!(self.returning, ReturningTarget::Column(_)) {
             return Err(crate::error::DbError::InvalidArgument(
-                "insert() 不支持 returning_all()；请使用 insert_returning::<T, R>() 按整行解码"
+                "insert() 仅支持单列 RETURNING；多列或整行请使用 insert_returning::<T, R>()"
                     .to_string(),
             ));
         }
@@ -3968,6 +4619,14 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
 
+        // 宽表按列数收敛批大小：单语句占位符上限 65535，超过会被服务端拒绝。
+        let column_count = serde_json::to_value(&data[0])
+            .map_err(|e| crate::error::DbError::SerializationError(format!("数据序列化失败: {e}")))?
+            .as_object()
+            .map(|object| object.len())
+            .unwrap_or(0);
+        let batch_size = derive_insert_batch_size(column_count, batch_size);
+
         // 单批次走 pool 免事务；多批次单事务包裹整体回滚（DB-4，比照 update_batch）。
         let chunks: Vec<&[T]> = data.chunks(batch_size).collect();
         if chunks.len() == 1 {
@@ -4094,6 +4753,197 @@ impl<'a> QueryBuilder<'a> {
                 Err(db_err)
             }
         }
+    }
+    /// 批量插入并返回 `RETURNING` 行（按列的真实类型解码）。
+    ///
+    /// 目标由 [`Self::returning`] / [`Self::returning_columns`] /
+    /// [`Self::returning_column_as`] / [`Self::returning_all`] 决定。所有分片在同一个
+    /// 事务内执行：任一分片失败或解码失败都会整体回滚，返回已插入的全部行。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "insert", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn insert_batch_returning<T, R>(
+        self,
+        data: &[T],
+    ) -> Result<Vec<R>, crate::error::DbError>
+    where
+        T: serde::Serialize,
+        R: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    {
+        if !self.set_exprs.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "insert_batch_returning 不支持 set_expr；请逐条 insert_returning".to_string(),
+            ));
+        }
+        if data.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "批量插入数据不能为空".to_string(),
+            ));
+        }
+        let returning = self.returning_clause()?;
+        let json_data_list: Vec<serde_json::Value> = data
+            .iter()
+            .map(|item| {
+                serde_json::to_value(item).map_err(|error| {
+                    crate::error::DbError::SerializationError(format!("数据序列化失败: {error}"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let column_count = json_data_list[0]
+            .as_object()
+            .map(|object| object.len())
+            .unwrap_or(0);
+        let batch_size = derive_insert_batch_size(column_count, INSERT_BATCH_SIZE);
+
+        let mut rows = Vec::new();
+        match self.executor {
+            QueryExecutor::Pool(pool) => {
+                let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
+                for chunk in json_data_list.chunks(batch_size) {
+                    rows.extend(
+                        execute_insert_batch_returning::<R>(
+                            &mut transaction,
+                            &self.table,
+                            chunk,
+                            &self.field_types,
+                            &returning,
+                        )
+                        .await?,
+                    );
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::DbError::from)?;
+            }
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                for chunk in json_data_list.chunks(batch_size) {
+                    rows.extend(
+                        execute_insert_batch_returning::<R>(
+                            &mut *connection,
+                            &self.table,
+                            chunk,
+                            &self.field_types,
+                            &returning,
+                        )
+                        .await?,
+                    );
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    /// 批量 UPSERT 并返回 `RETURNING` 行（按列的真实类型解码）。
+    ///
+    /// 冲突列必须显式传入（`do_nothing()` 时可省略）；冲突列为空且非 DO NOTHING
+    /// 时在客户端返回 [`crate::error::DbError::InvalidArgument`]。所有分片在同一事务内执行。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "upsert", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn upsert_batch_returning<T, R>(
+        self,
+        data: &[T],
+        conflict_columns: &[&crate::FieldRef],
+    ) -> Result<Vec<R>, crate::error::DbError>
+    where
+        T: serde::Serialize,
+        R: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    {
+        if !self.set_exprs.is_empty() {
+            return Err(crate::error::DbError::InvalidArgument(
+                "upsert_batch_returning 不支持 set_expr；请逐条 upsert_returning".to_string(),
+            ));
+        }
+        if data.is_empty() {
+            return Err(crate::error::DbError::SerializationError(
+                "批量 upsert 数据不能为空".to_string(),
+            ));
+        }
+        let conflict: Vec<String> = conflict_columns
+            .iter()
+            .map(|column| column.as_str().to_string())
+            .collect();
+        if conflict.is_empty() && !self.do_nothing {
+            return Err(crate::error::DbError::InvalidArgument(
+                "批量 upsert 必须显式指定冲突列；如使用 id 请显式传入，\
+                 或调用 do_nothing() 走 ON CONFLICT DO NOTHING"
+                    .to_string(),
+            ));
+        }
+
+        let returning = self.returning_clause()?;
+        let json_data_list: Vec<serde_json::Value> = data
+            .iter()
+            .map(|item| {
+                serde_json::to_value(item).map_err(|error| {
+                    crate::error::DbError::SerializationError(format!("数据序列化失败: {error}"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let column_count = json_data_list[0]
+            .as_object()
+            .map(|object| object.len())
+            .unwrap_or(0);
+        let batch_size = derive_upsert_batch_size(column_count, INSERT_BATCH_SIZE);
+
+        let mut rows = Vec::new();
+        match self.executor {
+            QueryExecutor::Pool(pool) => {
+                let mut transaction = pool.begin().await.map_err(crate::error::DbError::from)?;
+                for chunk in json_data_list.chunks(batch_size) {
+                    rows.extend(
+                        execute_upsert_batch_returning::<R>(
+                            &mut transaction,
+                            &self.table,
+                            chunk,
+                            &self.field_types,
+                            &conflict,
+                            self.conflict_predicate.as_deref(),
+                            self.do_nothing,
+                            self.update_columns.as_deref(),
+                            &self.upsert_where,
+                            &returning,
+                        )
+                        .await?,
+                    );
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::DbError::from)?;
+            }
+            QueryExecutor::Transaction(transaction) => {
+                let connection = transaction.executor().ok_or_else(|| {
+                    crate::error::DbError::TransactionError("事务已提交或回滚".to_string())
+                })?;
+                for chunk in json_data_list.chunks(batch_size) {
+                    rows.extend(
+                        execute_upsert_batch_returning::<R>(
+                            &mut *connection,
+                            &self.table,
+                            chunk,
+                            &self.field_types,
+                            &conflict,
+                            self.conflict_predicate.as_deref(),
+                            self.do_nothing,
+                            self.update_columns.as_deref(),
+                            &self.upsert_where,
+                            &returning,
+                        )
+                        .await?,
+                    );
+                }
+            }
+        }
+        Ok(rows)
     }
     /// 更新数据
     ///
@@ -4672,8 +5522,10 @@ impl<'a> QueryBuilder<'a> {
     /// UPSERT - 插入或更新记录
     ///
     /// 使用 PostgreSQL `INSERT ... ON CONFLICT (...) DO UPDATE SET col = EXCLUDED.col`
-    /// 语法。冲突目标列默认 `["id"]`，可用 [`QueryBuilder::on_conflict`] 覆盖。
-    /// 返回 `rows_affected()`。
+    /// 语法。冲突目标必须用 [`QueryBuilder::on_conflict`] /
+    /// [`QueryBuilder::on_conflict_constraint`] / [`QueryBuilder::on_conflict_with_predicate`]
+    /// 显式指定；未指定且非 [`QueryBuilder::do_nothing`] 时在客户端返回
+    /// [`crate::DbError::InvalidArgument`]。返回 `rows_affected()`。
     #[tracing::instrument(
         name = "db.query",
         skip_all,
@@ -4702,6 +5554,7 @@ impl<'a> QueryBuilder<'a> {
             &json_data,
             &self.field_types,
             &self.conflict_target,
+            self.conflict_predicate.as_deref(),
             self.do_nothing,
             self.update_columns.as_deref(),
             &self.upsert_where,
@@ -4740,8 +5593,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// UPSERT 并返回 `RETURNING` 行（按真实列类型解码）。
     ///
-    /// 冲突目标默认 `["id"]`（见 [`Self::on_conflict`] 的默认值警告）；
-    /// 默认 `RETURNING <id>`，可用 [`QueryBuilder::returning_all`] 取整行。
+    /// 冲突目标必须显式指定（见 [`Self::on_conflict`]）；默认 `RETURNING <id>`，
+    /// 可用 [`QueryBuilder::returning_all`] / [`QueryBuilder::returning_columns`] 调整。
     #[tracing::instrument(
         name = "db.query",
         skip_all,
@@ -4771,6 +5624,7 @@ impl<'a> QueryBuilder<'a> {
             &json_data,
             &self.field_types,
             &self.conflict_target,
+            self.conflict_predicate.as_deref(),
             self.do_nothing,
             self.update_columns.as_deref(),
             &self.upsert_where,
@@ -4920,6 +5774,7 @@ impl<'a> QueryBuilder<'a> {
                         &json_data_list,
                         &self.field_types,
                         &conflict,
+                        self.conflict_predicate.as_deref(),
                         self.do_nothing,
                         self.update_columns.as_deref(),
                         &self.upsert_where,
@@ -4936,6 +5791,7 @@ impl<'a> QueryBuilder<'a> {
                         &json_data_list,
                         &self.field_types,
                         &conflict,
+                        self.conflict_predicate.as_deref(),
                         self.do_nothing,
                         self.update_columns.as_deref(),
                         &self.upsert_where,
@@ -4956,6 +5812,7 @@ impl<'a> QueryBuilder<'a> {
                         chunk,
                         &self.field_types,
                         &conflict,
+                        self.conflict_predicate.as_deref(),
                         self.do_nothing,
                         self.update_columns.as_deref(),
                         &self.upsert_where,
@@ -4978,6 +5835,7 @@ impl<'a> QueryBuilder<'a> {
                         chunk,
                         &self.field_types,
                         &conflict,
+                        self.conflict_predicate.as_deref(),
                         self.do_nothing,
                         self.update_columns.as_deref(),
                         &self.upsert_where,
@@ -5002,6 +5860,9 @@ impl<'a> QueryBuilder<'a> {
     /// 本方法不做版本探测，调用方需自行保证服务端版本（推荐 PG 16/17）。
     ///
     /// 不支持 `where` / `set_expr`：匹配条件请放入 `ON` 参数。返回受影响行数。
+    ///
+    /// 执行前会读取 `server_version_num`（PostgreSQL 15 起提供 MERGE）；低于 150000
+    /// 时直接返回 [`crate::DbError::UnsupportedOperator`]，不会把不支持的语法发到服务端。
     #[tracing::instrument(
         name = "db.query",
         skip_all,
@@ -5014,15 +5875,62 @@ impl<'a> QueryBuilder<'a> {
         source_key: &crate::FieldRef,
         columns: &[&crate::FieldRef],
     ) -> Result<u64, crate::error::DbError> {
+        self.merge_with_options(
+            source,
+            target_key,
+            source_key,
+            columns,
+            MergeOptions::default(),
+        )
+        .await
+    }
+
+    /// 带可选分支的 MERGE（PostgreSQL 15+）。
+    ///
+    /// 支持 `WHEN MATCHED AND <condition>` 与 PostgreSQL 17+ 的
+    /// `WHEN NOT MATCHED BY SOURCE THEN DELETE/UPDATE`；后者在更低版本上返回
+    /// [`crate::DbError::UnsupportedOperator`]，不会把不支持的语法发到服务端。
+    /// 其余语义与 [`Self::merge`] 相同。
+    #[tracing::instrument(
+        name = "db.query",
+        skip_all,
+        fields(db.system = "postgresql", db.operation = "merge", db.collection = %self.table, otel.kind = "client")
+    )]
+    pub async fn merge_with_options(
+        mut self,
+        source: &crate::TableRef,
+        target_key: &crate::FieldRef,
+        source_key: &crate::FieldRef,
+        columns: &[&crate::FieldRef],
+        options: MergeOptions,
+    ) -> Result<u64, crate::error::DbError> {
         if !self.conditions.is_empty() || !self.set_exprs.is_empty() {
             return Err(crate::error::DbError::InvalidArgument(
                 "merge 不支持 where / set_expr；匹配条件请放入 ON 参数".to_string(),
             ));
         }
+        let version = server_version_num(&mut self.executor).await?;
+        if !merge_version_supported(version) {
+            return Err(crate::error::DbError::UnsupportedOperator(format!(
+                "MERGE 需要 PostgreSQL 15+（server_version_num >= {MERGE_MIN_SERVER_VERSION}），当前为 {version}"
+            )));
+        }
+        if options.not_matched_by_source.is_some() && version < MERGE_BY_SOURCE_MIN_SERVER_VERSION {
+            return Err(crate::error::DbError::UnsupportedOperator(format!(
+                "WHEN NOT MATCHED BY SOURCE 需要 PostgreSQL 17+（server_version_num >= {MERGE_BY_SOURCE_MIN_SERVER_VERSION}），当前为 {version}"
+            )));
+        }
         let mut generator = SqlGenerator::new();
-        generator.build_merge(&self.table, source, target_key, source_key, columns)?;
+        generator.build_merge_with_options(
+            &self.table,
+            source,
+            target_key,
+            source_key,
+            columns,
+            &options,
+        )?;
         if self.enable_logging {
-            log::debug!("执行 merge() SQL: {}", generator.get_sql());
+            log::debug!("执行 merge_with_options() SQL: {}", generator.get_sql());
         }
         execute_generated(self.executor, generator.get_sql(), generator.get_params()).await
     }
@@ -5036,6 +5944,7 @@ async fn execute_upsert_batch_chunk(
     data: &[serde_json::Value],
     field_types: &HashMap<String, FieldType>,
     conflict_columns: &[String],
+    conflict_predicate: Option<&str>,
     do_nothing: bool,
     update_columns: Option<&[String]>,
     update_where: &[Condition],
@@ -5046,6 +5955,7 @@ async fn execute_upsert_batch_chunk(
         data,
         field_types,
         conflict_columns,
+        conflict_predicate,
         do_nothing,
         update_columns,
         update_where,
@@ -5073,6 +5983,36 @@ fn array_element_i64(value: &SqlValue) -> Option<i64> {
     }
 }
 
+fn array_element_i16(value: &SqlValue) -> Option<i16> {
+    array_element_i64(value).and_then(|value| i16::try_from(value).ok())
+}
+
+fn array_element_i32(value: &SqlValue) -> Option<i32> {
+    array_element_i64(value).and_then(|value| i32::try_from(value).ok())
+}
+
+fn array_element_f32(value: &SqlValue) -> Option<f32> {
+    match value {
+        SqlValue::Float(value) => Some(*value as f32),
+        SqlValue::Int(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn array_element_bytes(value: &SqlValue) -> Option<Vec<u8>> {
+    match value {
+        SqlValue::Bytes(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn array_element_json(value: &SqlValue) -> Option<serde_json::Value> {
+    match value {
+        SqlValue::Json(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
 fn array_element_f64(value: &SqlValue) -> Option<f64> {
     match value {
         SqlValue::Float(value) => Some(*value),
@@ -5082,7 +6022,20 @@ fn array_element_f64(value: &SqlValue) -> Option<f64> {
 
 fn array_element_string(value: &SqlValue) -> Option<String> {
     match value {
-        SqlValue::String(value) => Some(value.clone()),
+        SqlValue::String(value)
+        | SqlValue::Inet(value)
+        | SqlValue::Cidr(value)
+        | SqlValue::MacAddr(value)
+        | SqlValue::MacAddr8(value)
+        | SqlValue::Range(value)
+        | SqlValue::Multirange(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn array_element_timestamp(value: &SqlValue) -> Option<i64> {
+    match value {
+        SqlValue::Timestamp(value) => Some(*value),
         _ => None,
     }
 }
@@ -5235,6 +6188,62 @@ where
     Ok(query.execute(connection).await?.rows_affected())
 }
 
+async fn execute_insert_batch_returning<R>(
+    connection: &mut sqlx::PgConnection,
+    table: &str,
+    data: &[serde_json::Value],
+    field_types: &HashMap<String, FieldType>,
+    returning: &str,
+) -> Result<Vec<R>, crate::error::DbError>
+where
+    R: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+{
+    let mut generator = SqlGenerator::new();
+    generator.build_insert_batch(table, data, field_types)?;
+    let sql = format!("{}{}", generator.get_sql(), returning);
+    let mut query = sqlx::query_as::<_, R>(&sql);
+    for param in generator.get_params() {
+        query = bind_param(query, param);
+    }
+    Ok(query.fetch_all(connection).await?)
+}
+
+/// 执行一个批量 UPSERT 分片并返回 `RETURNING` 行。
+#[allow(clippy::too_many_arguments)]
+async fn execute_upsert_batch_returning<R>(
+    connection: &mut sqlx::PgConnection,
+    table: &str,
+    data: &[serde_json::Value],
+    field_types: &HashMap<String, FieldType>,
+    conflict_columns: &[String],
+    conflict_predicate: Option<&str>,
+    do_nothing: bool,
+    update_columns: Option<&[String]>,
+    update_where: &[Condition],
+    returning: &str,
+) -> Result<Vec<R>, crate::error::DbError>
+where
+    R: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+{
+    let mut generator = SqlGenerator::new();
+    generator.build_upsert_batch(
+        table,
+        data,
+        field_types,
+        conflict_columns,
+        conflict_predicate,
+        do_nothing,
+        update_columns,
+        update_where,
+    )?;
+    let sql = format!("{}{}", generator.get_sql(), returning);
+    let mut query = sqlx::query_as::<_, R>(&sql);
+    for param in generator.get_params() {
+        query = bind_param(query, param);
+    }
+    Ok(query.fetch_all(connection).await?)
+}
+
 async fn execute_update_chunk(
     connection: &mut sqlx::PgConnection,
     table: &str,
@@ -5254,31 +6263,7 @@ async fn execute_update_chunk(
 fn predicate_condition(predicate: &crate::Predicate) -> Result<Condition, crate::error::DbError> {
     let condition = match predicate {
         crate::Predicate::Compare(field, operator, value) => {
-            let name = field.as_str().to_string();
-            if matches!(operator, crate::CompareOp::Like) {
-                return value
-                    .as_str()
-                    .map(|pattern| Condition::Like(name, pattern.to_string()))
-                    .ok_or_else(|| {
-                        crate::error::DbError::InvalidArgument(
-                            "LIKE predicate requires string value".to_string(),
-                        )
-                    });
-            }
-            let value = predicate_value(value);
-            match operator {
-                crate::CompareOp::Eq => Condition::Eq(name, value),
-                crate::CompareOp::Ne => Condition::Ne(name, value),
-                crate::CompareOp::Gt => Condition::Gt(name, value),
-                crate::CompareOp::Lt => Condition::Lt(name, value),
-                crate::CompareOp::Gte => Condition::Gte(name, value),
-                crate::CompareOp::Lte => Condition::Lte(name, value),
-                crate::CompareOp::Like => {
-                    return Err(crate::error::DbError::InvalidArgument(
-                        "LIKE predicate normalization failed".to_string(),
-                    ));
-                }
-            }
+            comparison_condition(field.as_str(), *operator, predicate_value(value))?
         }
         crate::Predicate::In(field, values) => Condition::In(
             field.as_str().to_string(),
@@ -5624,7 +6609,7 @@ mod tests {
             "a.b.c.d",
             "users.id --",
             "users/*x*/.id",
-            "用户.id",
+            // 中文限定标识符在 PostgreSQL 规则下合法（见 reference 单测），不再列入拒绝集。
             "users.\"id\"",
             "users.id\0",
         ];
@@ -5868,8 +6853,17 @@ mod tests {
         let mut g = SqlGenerator::new();
         let data = serde_json::json!({"id": 1, "name": "张三", "email": "z@example.com"});
         let conflict = ConflictTarget::Columns(vec!["id".to_string()]);
-        g.build_upsert("users", &data, &empty_types(), &conflict, false, None, &[])
-            .unwrap();
+        g.build_upsert(
+            "users",
+            &data,
+            &empty_types(),
+            &conflict,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let sql = g.get_sql();
         // 字母序字段：email($1), id($2), name($3)
         assert!(sql.starts_with(
@@ -5892,7 +6886,8 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Columns(vec![]),
-            false,
+            None,
+            true,
             None,
             &[],
         )
@@ -5915,6 +6910,7 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Columns(vec!["id".to_string()]),
+            None,
             false,
             None,
             &where_cond,
@@ -5936,6 +6932,7 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Constraint("users_email_key".to_string()),
+            None,
             false,
             None,
             &[],
@@ -5958,6 +6955,7 @@ mod tests {
                 &data,
                 &empty_types(),
                 &ConflictTarget::Constraint("users_pkey".to_string()),
+                None,
                 false,
                 None,
                 &[],
@@ -6041,10 +7039,8 @@ mod tests {
         let pool = make_sync_test_pool();
         let qb = QueryBuilder::new(pool, "users", false);
         assert_eq!(qb.returning, ReturningTarget::Column("id".to_string()));
-        assert_eq!(
-            qb.conflict_target,
-            ConflictTarget::Columns(vec!["id".to_string()])
-        );
+        // P0-8：不再默认 `["id"]`；DO UPDATE 必须显式指定冲突目标。
+        assert_eq!(qb.conflict_target, ConflictTarget::Unspecified);
         let qb2 = qb
             .returning(yang_db::field!("uid"))
             .on_conflict(&[yang_db::field!("email"), yang_db::field!("tenant_id")]);
@@ -6075,6 +7071,7 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Constraint("users_email_key".to_string()),
+            None,
             false,
             Some(&["name".to_string()]),
             &[],
@@ -6095,6 +7092,7 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Columns(vec!["id".to_string()]),
+            None,
             true,
             Some(&["name".to_string()]),
             &[],
@@ -6115,6 +7113,7 @@ mod tests {
             &data,
             &empty_types(),
             &ConflictTarget::Columns(vec!["id".to_string()]),
+            None,
             false,
             None,
             &update_where,
@@ -6358,6 +7357,96 @@ mod phase_b_tests {
     }
 
     #[test]
+    fn groups_frame_filter_and_named_window_render() {
+        let named = WindowSpec::new()
+            .partition_by(&[field!("dept")])
+            .order_by(field!("id"), SortOrder::Asc);
+        let builder = QueryBuilder::new(test_pool(), "sales", false)
+            .field(field!("dept"))
+            .window("w", named)
+            .window_expr(
+                WindowFunction::sum(field!("amount"))
+                    .filter(Condition::Gt("amount".to_string(), SqlValue::Int(100))),
+                WindowSpec::new()
+                    .order_by(field!("id"), SortOrder::Asc)
+                    .frame(WindowFrame::groups_between(
+                        FrameBound::Preceding(1),
+                        FrameBound::CurrentRow,
+                    )),
+                field!("running"),
+            )
+            .window_expr(
+                WindowFunction::row_number(),
+                WindowSpec::reference("w"),
+                field!("rn"),
+            );
+
+        assert_eq!(
+            render(&builder),
+            "SELECT \"dept\", \
+             SUM(\"amount\") FILTER (WHERE \"amount\" > $1) \
+             OVER (ORDER BY \"id\" ASC GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) AS \"running\", \
+             ROW_NUMBER() OVER \"w\" AS \"rn\" \
+             FROM \"sales\" WINDOW \"w\" AS (PARTITION BY \"dept\" ORDER BY \"id\" ASC)"
+        );
+        let mut generator = SqlGenerator::new();
+        generator.build_select(&builder).expect("窗口 SQL 应可渲染");
+        assert!(matches!(generator.get_params(), [SqlValue::Int(100)]));
+    }
+
+    #[test]
+    fn groups_frame_requires_order_by() {
+        let builder = QueryBuilder::new(test_pool(), "sales", false).window_expr(
+            WindowFunction::sum(field!("amount")),
+            WindowSpec::new().frame(WindowFrame::groups_between(
+                FrameBound::Preceding(1),
+                FrameBound::CurrentRow,
+            )),
+            field!("running"),
+        );
+        assert!(matches!(
+            builder.try_to_sql(),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn filter_on_non_aggregate_window_function_fails_closed() {
+        let builder = QueryBuilder::new(test_pool(), "sales", false).window_expr(
+            WindowFunction::row_number()
+                .filter(Condition::Gt("amount".to_string(), SqlValue::Int(0))),
+            WindowSpec::new(),
+            field!("rn"),
+        );
+        assert!(matches!(
+            builder.try_to_sql(),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn named_window_reference_rejects_extra_spec_parts() {
+        let builder = QueryBuilder::new(test_pool(), "sales", false).window_expr(
+            WindowFunction::row_number(),
+            WindowSpec::reference("w").partition_by(&[field!("dept")]),
+            field!("rn"),
+        );
+        assert!(matches!(
+            builder.try_to_sql(),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+
+        let invalid_name = QueryBuilder::new(test_pool(), "sales", false)
+            .window("bad name", WindowSpec::new())
+            .window_expr(
+                WindowFunction::row_number(),
+                WindowSpec::reference("w"),
+                field!("rn"),
+            );
+        assert!(invalid_name.try_to_sql().is_err());
+    }
+
+    #[test]
     fn grouping_sets_rollup_and_cube_render() {
         let grouping_sets = QueryBuilder::new(test_pool(), "sales", false)
             .field(field!("region"))
@@ -6595,6 +7684,7 @@ mod phase_b_tests {
                 &data,
                 &HashMap::new(),
                 &["id".to_string()],
+                None,
                 false,
                 None,
                 &[],
@@ -6610,14 +7700,23 @@ mod phase_b_tests {
         // 冲突列必填（未调用 do_nothing 时）。
         let mut generator = SqlGenerator::new();
         assert!(matches!(
-            generator.build_upsert_batch("users", &data, &HashMap::new(), &[], false, None, &[]),
+            generator.build_upsert_batch(
+                "users",
+                &data,
+                &HashMap::new(),
+                &[],
+                None,
+                false,
+                None,
+                &[]
+            ),
             Err(crate::error::DbError::InvalidArgument(_))
         ));
 
         // do_nothing 时允许空冲突列 → ON CONFLICT DO NOTHING。
         let mut generator = SqlGenerator::new();
         generator
-            .build_upsert_batch("users", &data, &HashMap::new(), &[], true, None, &[])
+            .build_upsert_batch("users", &data, &HashMap::new(), &[], None, true, None, &[])
             .expect("DO NOTHING 批量 UPSERT 应可渲染");
         assert!(generator.get_sql().ends_with("ON CONFLICT DO NOTHING"));
 
@@ -6629,6 +7728,7 @@ mod phase_b_tests {
                 &data,
                 &HashMap::new(),
                 &["id".to_string()],
+                None,
                 false,
                 Some(&["missing".to_string()]),
                 &[]
@@ -6756,6 +7856,75 @@ mod phase_b_tests {
     }
 
     #[test]
+    fn merge_renders_matched_condition_and_by_source_delete() {
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_merge_with_options(
+                "users",
+                &crate::TableRef::new("incoming").expect("合法表名"),
+                field!("id"),
+                field!("id"),
+                &[field!("name")],
+                &MergeOptions::default()
+                    .matched_condition(Condition::Eq(
+                        "users.name".to_string(),
+                        SqlValue::String("x".to_string()),
+                    ))
+                    .not_matched_by_source(MergeNotMatchedBySource::Delete),
+            )
+            .expect("带条件的 MERGE 应可渲染");
+        assert_eq!(
+            generator.get_sql(),
+            "MERGE INTO \"users\" USING \"incoming\" ON \"users\".\"id\" = \"incoming\".\"id\" \
+             WHEN MATCHED AND \"users\".\"name\" = $1 THEN UPDATE SET \"name\" = \"incoming\".\"name\" \
+             WHEN NOT MATCHED THEN INSERT (\"name\") VALUES (\"incoming\".\"name\") \
+             WHEN NOT MATCHED BY SOURCE THEN DELETE"
+        );
+        assert!(matches!(generator.get_params(), [SqlValue::String(x)] if x == "x"));
+    }
+
+    #[test]
+    fn merge_renders_by_source_update_with_controlled_expr() {
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_merge_with_options(
+                "users",
+                &crate::TableRef::new("incoming").expect("合法表名"),
+                field!("id"),
+                field!("id"),
+                &[field!("name")],
+                &MergeOptions::default().not_matched_by_source(MergeNotMatchedBySource::Update(
+                    vec![(field!("updated_at").clone(), crate::SqlExpr::now())],
+                )),
+            )
+            .expect("BY SOURCE UPDATE 应可渲染");
+        assert!(
+            generator
+                .get_sql()
+                .ends_with("WHEN NOT MATCHED BY SOURCE THEN UPDATE SET \"updated_at\" = now()"),
+            "{}",
+            generator.get_sql()
+        );
+    }
+
+    #[test]
+    fn merge_by_source_update_rejects_empty_assignments() {
+        let mut generator = SqlGenerator::new();
+        let error = generator
+            .build_merge_with_options(
+                "users",
+                &crate::TableRef::new("incoming").expect("合法表名"),
+                field!("id"),
+                field!("id"),
+                &[field!("name")],
+                &MergeOptions::default()
+                    .not_matched_by_source(MergeNotMatchedBySource::Update(vec![])),
+            )
+            .expect_err("空赋值列表必须报错");
+        assert!(matches!(error, crate::error::DbError::InvalidArgument(_)));
+    }
+
+    #[test]
     fn array_field_type_converts_json_array_recursively() {
         let mut field_types = HashMap::new();
         field_types.insert(
@@ -6818,6 +7987,40 @@ mod phase_b_tests {
         ));
     }
 
+    /// 空数组/全 NULL 布尔数组必须按 `bool[]` 绑定，而不是回退到 `int8[]`。
+    #[test]
+    fn empty_and_all_null_boolean_arrays_bind_as_bool_array() {
+        let mut field_types = HashMap::new();
+        field_types.insert(
+            "flags".to_string(),
+            FieldType::Array(Box::new(FieldType::Bool)),
+        );
+        for value in [serde_json::json!([]), serde_json::json!([null, null])] {
+            let mut generator = SqlGenerator::new();
+            generator
+                .build_insert(
+                    "docs",
+                    &serde_json::json!({"flags": value}),
+                    &field_types,
+                    &[],
+                )
+                .expect("布尔数组插入应可渲染");
+            match generator.get_params() {
+                [SqlValue::TypedArray {
+                    element_type,
+                    values,
+                }] => {
+                    assert_eq!(
+                        *element_type, "bool",
+                        "空/全 NULL 布尔数组必须按 bool[] 绑定"
+                    );
+                    assert!(values.iter().all(|value| matches!(value, SqlValue::Null)));
+                }
+                other => panic!("期望 TypedArray(bool)，实得 {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn network_field_types_accept_text_literals() {
         let mut field_types = HashMap::new();
@@ -6860,6 +8063,220 @@ mod phase_b_tests {
             generator.get_params(),
             [SqlValue::Json(_), SqlValue::String(key), SqlValue::Array(ids), SqlValue::Array(scores)]
                 if key == "active" && ids.len() == 2 && scores.len() == 1
+        ));
+    }
+
+    #[test]
+    fn wave2_compare_ops_render_postgres_operators() {
+        let cases: &[(crate::CompareOp, &str)] = &[
+            (crate::CompareOp::ILike, "ILIKE"),
+            (crate::CompareOp::NotILike, "NOT ILIKE"),
+            (crate::CompareOp::RegexMatch, "~"),
+            (crate::CompareOp::RegexIMatch, "~*"),
+            (crate::CompareOp::NotRegexMatch, "!~"),
+            (crate::CompareOp::NotRegexIMatch, "!~*"),
+        ];
+        for (op, operator) in cases {
+            let builder = QueryBuilder::new(test_pool(), "users", false)
+                .where_and(field!("name"), *op, "%a%")
+                .expect("模式匹配条件应合法");
+            assert_eq!(
+                render(&builder),
+                format!("SELECT * FROM \"users\" WHERE \"name\" {operator} $1")
+            );
+        }
+
+        let builder = QueryBuilder::new(test_pool(), "users", false)
+            .where_and(field!("name"), crate::CompareOp::IsDistinctFrom, "a")
+            .expect("NULL-safe 比较应合法");
+        assert_eq!(
+            render(&builder),
+            "SELECT * FROM \"users\" WHERE \"name\" IS DISTINCT FROM $1"
+        );
+        let builder = QueryBuilder::new(test_pool(), "users", false)
+            .where_and(
+                field!("name"),
+                crate::CompareOp::IsNotDistinctFrom,
+                SqlValue::Null,
+            )
+            .expect("NULL-safe NULL 比较应合法");
+        assert_eq!(
+            render(&builder),
+            "SELECT * FROM \"users\" WHERE \"name\" IS NOT DISTINCT FROM NULL"
+        );
+
+        // 模式匹配只接受字符串模式值。
+        let result = QueryBuilder::new(test_pool(), "users", false).where_and(
+            field!("name"),
+            crate::CompareOp::ILike,
+            42,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::DbError::UnsupportedOperator(_))
+        ));
+    }
+
+    #[test]
+    fn wave2_returning_columns_aliases_and_validation() {
+        let builder = QueryBuilder::new(test_pool(), "users", false)
+            .returning_columns(&[field!("id"), field!("email")]);
+        assert_eq!(
+            builder.returning_clause().unwrap(),
+            " RETURNING \"id\", \"email\""
+        );
+
+        let builder = QueryBuilder::new(test_pool(), "users", false)
+            .returning_column_as(field!("id"), field!("user_id"))
+            .returning_column_as(field!("email"), field!("mail"));
+        assert_eq!(
+            builder.returning_clause().unwrap(),
+            " RETURNING \"id\" AS \"user_id\", \"email\" AS \"mail\""
+        );
+
+        assert_eq!(
+            QueryBuilder::new(test_pool(), "users", false)
+                .returning_all()
+                .returning_clause()
+                .unwrap(),
+            " RETURNING *"
+        );
+
+        // 非法别名在渲染期被拒绝（Error 而不是拼接）。
+        let mut invalid = QueryBuilder::new(test_pool(), "users", false);
+        invalid.returning = ReturningTarget::Columns(vec![ReturningColumn {
+            column: "id".to_string(),
+            alias: Some("bad alias".to_string()),
+        }]);
+        assert!(matches!(
+            invalid.returning_clause(),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            QueryBuilder::new(test_pool(), "users", false)
+                .returning_columns(&[])
+                .returning_clause(),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn wave2_conflict_predicate_and_unspecified_target() {
+        let data = serde_json::json!({"email": "a@x", "active": true});
+        let conflict = ConflictTarget::Columns(vec!["email".to_string()]);
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_upsert(
+                "users",
+                &data,
+                &HashMap::new(),
+                &conflict,
+                Some("active"),
+                false,
+                None,
+                &[],
+            )
+            .expect("带谓词的 UPSERT 应可渲染");
+        assert_eq!(
+            generator.get_sql(),
+            "INSERT INTO \"users\" (\"active\", \"email\") VALUES ($1, $2) \
+             ON CONFLICT (\"email\") WHERE (active) DO UPDATE SET \"active\" = EXCLUDED.\"active\""
+        );
+
+        for payload in ["active; DROP TABLE users", "active -- x", "active /* x */"] {
+            let mut generator = SqlGenerator::new();
+            let error = generator
+                .build_upsert(
+                    "users",
+                    &data,
+                    &HashMap::new(),
+                    &conflict,
+                    Some(payload),
+                    false,
+                    None,
+                    &[],
+                )
+                .expect_err("注入型谓词必须被拒绝");
+            assert!(matches!(error, crate::error::DbError::InvalidArgument(_)));
+        }
+
+        // 未指定冲突目标且非 DO NOTHING：客户端报错，不生成 SQL。
+        let mut generator = SqlGenerator::new();
+        let error = generator
+            .build_upsert(
+                "users",
+                &data,
+                &HashMap::new(),
+                &ConflictTarget::Unspecified,
+                None,
+                false,
+                None,
+                &[],
+            )
+            .expect_err("无冲突目标的 DO UPDATE 必须被拒绝");
+        assert!(matches!(error, crate::error::DbError::InvalidArgument(_)));
+
+        let mut generator = SqlGenerator::new();
+        generator
+            .build_upsert(
+                "users",
+                &data,
+                &HashMap::new(),
+                &ConflictTarget::Unspecified,
+                None,
+                true,
+                None,
+                &[],
+            )
+            .expect("无冲突目标的 DO NOTHING 应可渲染");
+        assert!(generator.get_sql().ends_with("ON CONFLICT DO NOTHING"));
+    }
+
+    #[test]
+    fn wave2_insert_batch_shrinks_by_column_count() {
+        assert_eq!(derive_insert_batch_size(0, 500), 500);
+        assert_eq!(derive_insert_batch_size(1, 500), 500);
+        assert_eq!(derive_insert_batch_size(1_000, 500), 65);
+        assert_eq!(derive_insert_batch_size(100_000, 500), 1);
+    }
+
+    #[test]
+    fn wave2_merge_version_gate() {
+        assert!(!merge_version_supported(149_999));
+        assert!(!merge_version_supported(140_000));
+        assert!(merge_version_supported(150_000));
+        assert!(merge_version_supported(160_015));
+    }
+
+    #[test]
+    fn wave2_row_lock_variants_and_combinations() {
+        let builder = QueryBuilder::new(test_pool(), "users", false);
+        assert_eq!(
+            builder
+                .try_to_sql_with_lock(crate::RowLock::NoKeyUpdate, &[field!("users")], false, true,)
+                .unwrap(),
+            "SELECT * FROM \"users\" FOR NO KEY UPDATE OF \"users\" SKIP LOCKED"
+        );
+        assert_eq!(
+            builder
+                .try_to_sql_with_lock(crate::RowLock::KeyShare, &[], true, false)
+                .unwrap(),
+            "SELECT * FROM \"users\" FOR KEY SHARE NOWAIT"
+        );
+        assert_eq!(
+            builder
+                .try_to_sql_with_lock(crate::RowLock::ForUpdateSkipLocked, &[], false, false)
+                .unwrap(),
+            "SELECT * FROM \"users\" FOR UPDATE SKIP LOCKED"
+        );
+        assert!(matches!(
+            builder.try_to_sql_with_lock(crate::RowLock::ForUpdate, &[], true, true),
+            Err(crate::error::DbError::InvalidArgument(_))
+        ));
+        // 隐含 SKIP LOCKED 的模式同样不能与 NOWAIT 组合。
+        assert!(matches!(
+            builder.try_to_sql_with_lock(crate::RowLock::ForUpdateSkipLocked, &[], true, false),
+            Err(crate::error::DbError::InvalidArgument(_))
         ));
     }
 }

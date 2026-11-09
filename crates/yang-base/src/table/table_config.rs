@@ -61,11 +61,17 @@ impl TableConfig {
 pub(crate) struct IndexConfig {
     pub(crate) name: Option<String>,
     pub(crate) fields: Vec<String>,
+    /// PostgreSQL 15+ 唯一索引的 `NULLS NOT DISTINCT` 语义；MySQL 明确不支持。
+    pub(crate) nulls_not_distinct: bool,
 }
 
 impl IndexConfig {
-    pub(crate) fn new(name: Option<String>, fields: Vec<String>) -> Self {
-        Self { name, fields }
+    pub(crate) fn new(name: Option<String>, fields: Vec<String>, nulls_not_distinct: bool) -> Self {
+        Self {
+            name,
+            fields,
+            nulls_not_distinct,
+        }
     }
 }
 

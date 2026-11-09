@@ -285,16 +285,70 @@ fn build_rejects_invalid_validator_configuration() {
 }
 
 #[test]
-fn build_rejects_varchar_over_mysql_limit() {
+fn build_rejects_varchar_over_backend_limit() {
+    // 上界按编译期方言选择：MySQL 16,383，PostgreSQL 10,485,760。
+    let limit = crate::table::MAX_VARCHAR_LENGTH;
+
     let over = Table::new("documents")
-        .fields([Field::id("id"), Field::string("body", 16_384)])
+        .fields([Field::id("id"), Field::string("body", limit + 1)])
         .build();
     assert!(over.is_err());
 
     let at_limit = Table::new("documents")
-        .fields([Field::id("id"), Field::string("body", 16_383)])
+        .fields([Field::id("id"), Field::string("body", limit)])
         .build();
     assert!(at_limit.is_ok());
+}
+
+/// VARCHAR(100000) 的接受/拒绝按启用后端决定：
+/// - 只用 MySQL 时构建期拒绝；
+/// - 启用 PostgreSQL（含双 feature）时构建期接受，方言 DDL 再各自校验。
+#[test]
+fn varchar_100000_acceptance_follows_enabled_backends() {
+    let result = Table::new("documents")
+        .fields([Field::id("id"), Field::string("body", 100_000)])
+        .build();
+
+    #[cfg(all(feature = "mysql", not(feature = "postgres")))]
+    assert!(result.is_err(), "MySQL-only 构建必须拒绝 VARCHAR(100000)");
+    #[cfg(feature = "postgres")]
+    assert!(
+        result.is_ok(),
+        "启用 PostgreSQL 的构建必须接受 VARCHAR(100000)"
+    );
+    #[cfg(not(any(feature = "mysql", feature = "postgres")))]
+    assert!(result.is_err(), "未启用数据库 feature 时沿用 MySQL 上界");
+}
+
+#[test]
+fn build_rejects_non_scalar_array_elements() {
+    // 标量元素数组合法。
+    assert!(Table::new("arrays")
+        .fields([
+            Field::id("id"),
+            Field::array("numbers", FieldType::Integer),
+            Field::array("tags", FieldType::Text),
+            Field::uuid("uid"),
+            Field::bytes("payload"),
+        ])
+        .build()
+        .is_ok());
+
+    // 嵌套数组与 JSON 元素明确拒绝。
+    assert!(Table::new("arrays")
+        .fields([
+            Field::id("id"),
+            Field::array("nested", FieldType::array(FieldType::Text)),
+        ])
+        .build()
+        .is_err());
+    assert!(Table::new("arrays")
+        .fields([
+            Field::id("id"),
+            Field::array("json_values", FieldType::Json)
+        ])
+        .build()
+        .is_err());
 }
 
 #[test]
@@ -347,4 +401,29 @@ fn named_unique_index_is_escape_hatch_for_long_generated_name() {
             .as_deref(),
         Some("uk_users_email")
     );
+}
+
+#[test]
+fn unique_index_nulls_not_distinct_flag_is_compiled() {
+    let table = Table::new("accounts")
+        .fields([Field::id("id"), Field::string("code", 32)])
+        .unique_nulls_not_distinct(["code"])
+        .build()
+        .expect("NULLS NOT DISTINCT 唯一索引声明应有效");
+    let unique = &table.shared_config().unique_indexes[0];
+    assert_eq!(unique.fields, ["code"]);
+    assert!(unique.nulls_not_distinct);
+
+    let named = Table::new("accounts")
+        .fields([Field::id("id"), Field::string("code", 32)])
+        .unique_named_nulls_not_distinct("uk_accounts_code", ["code"])
+        .build()
+        .expect("具名 NULLS NOT DISTINCT 唯一索引声明应有效");
+    let unique = &named.shared_config().unique_indexes[0];
+    assert_eq!(unique.name.as_deref(), Some("uk_accounts_code"));
+    assert!(unique.nulls_not_distinct);
+
+    // 普通唯一索引默认保持 NULLS DISTINCT。
+    let plain = users().expect("合法表定义应构建成功");
+    assert!(!plain.shared_config().unique_indexes[0].nulls_not_distinct);
 }
