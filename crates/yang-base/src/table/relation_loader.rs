@@ -1,6 +1,8 @@
 //! 关系字段批量加载：查询次数只与关系种类有关，不随结果行数增长。
 
-use super::{Record, TableDefinition, TableQuery};
+use super::Record;
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+use super::{TableDefinition, TableQuery};
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 use crate::database::AnyDatabase;
 use crate::definition::FieldRef;

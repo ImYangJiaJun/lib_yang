@@ -334,8 +334,10 @@ async fn wave3_merge_matched_condition_and_by_source_version_gate() {
         ]
     );
 
-    // PG16 不支持 WHEN NOT MATCHED BY SOURCE：必须在客户端门控，不下发语法。
-    let error = db
+    // PG16 不支持 WHEN NOT MATCHED BY SOURCE：客户端门控，不下发语法；
+    // PG17+ 支持该语法，应真正执行删除（id=2 未出现在 source 中）。
+    let supports_by_source = db.supports(170_000).await.expect("版本探测应成功");
+    let result = db
         .table(&merge_target)
         .merge_with_options(
             &merge_source,
@@ -344,11 +346,28 @@ async fn wave3_merge_matched_condition_and_by_source_version_gate() {
             &[field!("v")],
             MergeOptions::default().not_matched_by_source(MergeNotMatchedBySource::Delete),
         )
-        .await
-        .expect_err("PG16 上 BY SOURCE 分支必须被版本门控拒绝");
-    assert!(
-        matches!(error, DbError::UnsupportedOperator(_)),
-        "{error:?}"
-    );
+        .await;
+    if supports_by_source {
+        assert_eq!(result.expect("PG17+ 上 BY SOURCE 应成功"), 3);
+        let remaining: Vec<(i64, i32, String)> = db
+            .table(&merge_target)
+            .field(field!("id"))
+            .field(field!("v"))
+            .field(field!("tag"))
+            .order(field!("id"), SortOrder::Asc)
+            .select::<(i64, i32, String)>()
+            .await
+            .expect("BY SOURCE 后查询应成功");
+        assert_eq!(
+            remaining,
+            vec![(1, 100, "s1".to_string()), (3, 300, "s3".to_string())]
+        );
+    } else {
+        let error = result.expect_err("PG16 上 BY SOURCE 分支必须被版本门控拒绝");
+        assert!(
+            matches!(error, DbError::UnsupportedOperator(_)),
+            "{error:?}"
+        );
+    }
     cleanup(&db, &schema).await;
 }

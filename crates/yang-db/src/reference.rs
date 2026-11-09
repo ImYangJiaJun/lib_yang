@@ -514,6 +514,7 @@ impl From<bool> for SqlExprParam {
 }
 
 /// 受控表达式的渲染结果：固定 SQL 片段（自带占位符）与按占位符顺序排列的参数。
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderedSqlExpr {
     pub(crate) sql: String,
@@ -1003,6 +1004,7 @@ mod tests {
 
     #[test]
     fn string_expressions_render_dialect_specific_sql_with_bound_operands() {
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
         let field = FieldRef::new("t.c").expect("限定字段名应合法");
 
         #[cfg(feature = "mysql")]
@@ -1128,8 +1130,6 @@ mod tests {
     /// COALESCE / NULLIF 字面量按 `SqlExprParam` 推断类型绑定，而不是固定 TEXT。
     #[test]
     fn expression_literals_infer_binding_types() {
-        let field = FieldRef::new("t.c").expect("限定字段名应合法");
-
         assert_eq!(SqlExprParam::from("0"), SqlExprParam::Int(0));
         assert_eq!(SqlExprParam::from("-7"), SqlExprParam::Int(-7));
         assert_eq!(
@@ -1147,6 +1147,7 @@ mod tests {
 
         #[cfg(feature = "postgres")]
         {
+            let field = FieldRef::new("t.c").expect("限定字段名应合法");
             let rendered = SqlExpr::coalesce(&field, "0").postgres_render(1);
             assert_eq!(rendered.sql, "COALESCE(\"t\".\"c\", $1)");
             assert_eq!(rendered.params, vec![SqlExprParam::Int(0)]);
