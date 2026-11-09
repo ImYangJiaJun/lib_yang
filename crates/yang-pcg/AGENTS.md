@@ -9,7 +9,11 @@ Deterministic procedural map generator for UE5/Roguelike workflows. Produces top
 ```text
 yang-pcg/
 ├── src/
-│   ├── lib.rs              # 17 public modules + common re-exports
+│   ├── lib.rs              # 18 public modules + common re-exports
+│   ├── backend/            # pipeline backend abstraction (TopDownBackend)
+│   ├── chunked.rs          # RuntimeChunked / HybridPrecompute incremental generation
+│   ├── digest.rs           # config digest for stable hashing
+│   ├── rng.rs              # stable deterministic RNG streams
 │   ├── generator.rs        # MapGenerator orchestration entry point
 │   ├── config.rs           # GenerationConfig, NormalizedConfig, capability flags
 │   ├── error.rs            # PcgError + PcgResult<Box<PcgError>>
@@ -55,7 +59,7 @@ GenerationRequest
 | Config defaults/ranges | `src/config.rs` | config normalization and capability flags |
 | Deterministic RNG | `src/rng.rs` | stable seed derivation; changing stream names breaks reproducibility |
 | Topology | `src/topology/planner.rs` | start/boss path, branches, room type assignment |
-| Layout | `src/layout/solver.rs` | row-style room placement; known overlap gaps |
+| Layout | `src/layout/solver.rs` | row-style placement + deterministic anti-overlap (nudge_clear) |
 | Terrain | `src/terrain/` | child AGENTS.md covers strategies and fallback |
 | Spawn points | `src/spawn/items.rs`, `src/spawn/enemies.rs` | per-room item/enemy point generation and debug variants |
 | Constraints | `src/constraint/` | anchors, exclusion zones, template references |
@@ -88,7 +92,7 @@ GenerationRequest
 - Config/docs live in `docs/`; `.kiro/` references in legacy docs may no longer exist — verify before relying on them.
 
 ## TESTING
-- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (309 passing, 0 ignored as of 2026-07).
+- `cargo test --lib -p yang-pcg` runs unit, model, terrain, export, chunked, task26/task27 tests (357 passing, 0 ignored as of 2026-11). CI's auxiliary gate uses `cargo test --all-targets -p yang-pcg`, which additionally runs the 11 `pcg_cli` bin tests and the 4 ignored benchmark tests in `tests/generation_bench.rs`.
 - `src/tests_task27/property_tests.rs` contains 6 proptest invariants; **all are now enabled (no `#[ignore]`)**. The three historically-ignored properties (room overlap / terrain connectivity / spawn spacing) were fixed by constructive algorithm passes and re-enabled — they now guard real invariants, not document gaps.
 - `tests/generation_bench.rs` contains ignored benchmark-style tests, not criterion benches.
 - `proptest-regressions/tests_task27/property_tests.txt` is intentional and should remain.
@@ -101,14 +105,13 @@ GenerationRequest
 - Do not assume Grammar is complete; selector and grammar fields exist, but external Shape Grammar integration is not implemented here.
 
 ## DETERMINISM IS PER-MODE
-The "same seed+config → same map" contract holds **within a single generation mode**. The three modes derive RNG with different stream labels (`terrain` in `OfflineFullFloor` vs `terrain:chunk:{chunk}:{room}` in chunked/hybrid paths), so **the same seed produces different maps across modes**. This is by design (chunks must derive independently to stream on demand). Callers must fix one mode for reproducibility. When `seed: None`, the seed is **derived deterministically from the config** (`ConfigDigest::seed_from_config`), so the same config still reproduces the same map; pass an explicit seed (or change the config) when you want a different result.
+The "same seed+config → same map" contract holds **within a single generation mode**. The three modes derive RNG with different stream labels (`terrain` in `OfflineFullFloor`, `terrain:{room}` in `RuntimeChunked`, `terrain:chunk:{chunk}:{room}` in `HybridPrecompute`), so **the same seed produces different maps across modes**. This is by design (chunks must derive independently to stream on demand). Callers must fix one mode for reproducibility. When `seed: None`, the seed is **derived deterministically from the config** (`ConfigDigest::seed_from_config`), so the same config still reproduces the same map; pass an explicit seed (or change the config) when you want a different result.
 
 ## KNOWN GAPS / STATUS (updated 2026-06)
 - ~~Layout can produce overlapping room bounds~~ — FIXED: `solve_room_bounds` deterministic anti-overlap (branch vertical extrusion); guarded by `prop_no_room_overlap` + hard validation.
 - ~~Terrain connectivity can fail~~ — FIXED: `repair_terrain_connectivity` forced fallback pass; guarded by `prop_terrain_connectivity` + hard validation.
 - ~~Cross-type spawn spacing only caught by validation~~ — FIXED: enemy sampling avoids placed items; guarded by `prop_spawn_spacing` + hard validation.
 - UE adapter channel types (`NamedChannel`/`PcgPoint`/`PropertyValue`/`ChannelKind`) now **derive `Serialize + Deserialize`**; they can be serialized via `export_named_channels_json()`. For UE5 file export the primary paths are still `export_json`/`export_binary` over the whole `GenerationResult`.
-- Public structs (`GenerationRequest`/`GenerationConfig` and nested config) are all-pub-field with no `#[non_exhaustive]`; adding a field is a breaking change for all construction sites. Consider a builder before 1.0.
-- `INSTALL.md.md` is a double-extension documentation artifact.
+- Public structs (`GenerationRequest`/`GenerationConfig` and nested config) are `#[non_exhaustive]`; external code constructs requests via `GenerationRequest::new` / `with_seed` / `with_trace_id`, so adding a field is not a breaking change for all construction sites.
 - No `LICENSE` file in the crate despite `license = "MIT OR Apache-2.0"`; add before publishing.
 - `docs/task_4_summary.md` is a historical summary from 2026-05, not a source-of-truth spec.

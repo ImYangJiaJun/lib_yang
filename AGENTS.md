@@ -1,14 +1,14 @@
 # AGENTS.md — lib_yang
 
-**刷新日期:** 2026-11-09（对照 commit bfa1563 现场核实；上一版生成于 2026-09-05 / b8e511d）
+**刷新日期:** 2026-11-09（对照工作区 HEAD d7f4cf1 现场核实；上一版生成于 2026-09-05 / b8e511d）
 
 ## OVERVIEW
-YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system` 用于本地联合调试。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
+YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system`（本地联合调试）与 `project/receivables-system`（另行联调，均从根 workspace 排除）。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
 
 ## STRUCTURE
 ```text
 lib_yang/
-├── Cargo.toml                # workspace root: members=["crates/*"], exclude project/yang-system
+├── Cargo.toml                # workspace root: members=["crates/*"], exclude project/yang-system 与 project/receivables-system
 ├── clippy.toml               # disallowed-types 豁免（RUSTSEC-2026-0009）——NOTES 勿再写"无 clippy.toml"
 ├── deny.toml                 # cargo-deny 策略（advisories/licenses/sources）
 ├── rust-toolchain.toml       # channel 1.97.1
@@ -16,11 +16,12 @@ lib_yang/
 ├── crates/
 │   ├── yang-db/              # MySQL/PG 查询构建 + Redis 客户端（v0.2.1）
 │   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.4.0）
-│   ├── yang-base-derive/     # #[derive(Action)]/#[derive(TableEntity)] + params! 宏（v0.3.0）
+│   ├── yang-base-derive/     # #[derive(Action)] + params! 宏（v0.3.0）
 │   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.1.0）
 │   ├── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.2.0）
-│   └── yang-feishu/          # 飞书开放平台协议客户端（v0.2.0）
+│   └── yang-feishu/          # 飞书开放平台协议客户端（v0.3.0）
 ├── project/yang-system/      # 嵌套独立 Git/Cargo 应用（有自己的 .git/AGENTS.md/compose.yaml）；不在 workspace
+├── project/receivables-system/ # 嵌套独立 Cargo 应用（PG + axum，依赖仓外 fin_receivables_rs）；不在 workspace
 ├── scripts/
 │   ├── run_ci.py             # quick/full/integration 统一入口（唯一 CI 门禁入口）
 │   ├── verify_ci_contract.py / verify_feature_isolation.py
@@ -40,7 +41,8 @@ python scripts/run_ci.py integration  # 需 MySQL 8.0 / PostgreSQL 16 / Redis 7�
 # 与 CI 对齐的分 crate 手拼命令（三组跑法不同，别漏 auxiliary）
 cargo test --lib -p yang-db --locked
 cargo test --lib -p yang-base --locked
-cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu --locked
+cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime --locked
+cargo test --all-targets -p yang-feishu --all-features --locked
 
 cargo fmt --all -- --check
 cargo clippy -p yang-db -p yang-base -p yang-base-derive -p yang-pcg -p yang-runtime -p yang-feishu \
@@ -72,7 +74,7 @@ cargo run --example <name> -p <crate> --locked
 | Redis 操作 | `crates/yang-db/src/redis/` | `client.rs` 主 API；`pubsub/streams/lock/codec/bytes/commands/scan/namespace` 为分层能力；`backend.rs` 统一 standalone/cluster/sentinel |
 | 资源所有权 | `crates/yang-base/src/tools.rs` | `ToolsBuilder` → `Tools`；Global 单例已删除 |
 | 定义内核 | `crates/yang-base/src/definition/` | `builder/` 子模块化（app/catalog/compile/handle/project/registry/validate） |
-| Action 系统 | `crates/yang-base/src/action/` | child AGENTS.md；请求链路：`ModuleRouter::dispatch` → middleware 洋葱链 → `authorize_and_dispatch` 鉴权派发；`auth/` 子模块化（login/refresh/password/middleware…） |
+| Action 系统 | `crates/yang-base/src/action/` | child AGENTS.md；请求链路：`Registry::dispatch` → 中间件洋葱链 → `authorize(AuthorizationPolicy)` → `DynAction::dispatch`；`auth/` 子模块化（login/refresh/password/middleware…） |
 | auth/认证 | `crates/yang-base/src/action/auth/` | browser_session/email_verification/rate_limit/audit 等子模块 |
 | HTTP 传输 | `crates/yang-base/src/transport/` | transport-axum feature：`axum.rs`（router 入口）+ client_ip.rs |
 | HTTP 客户端 | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
@@ -103,16 +105,16 @@ cargo run --example <name> -p <crate> --locked
 | `MultipartSpec` / `UploadedFile` | structs | `crates/yang-base/src/definition/media.rs`、`crates/yang-base/src/action/upload.rs` | 受限 multipart 契约与上传句柄 |
 | `router` / `serve` | functions | `crates/yang-base/src/transport/axum.rs` | Axum 0.8 传输适配器入口 |
 | `TableQuery` | struct | `crates/yang-base/src/table/table_query/mod.rs` | table-aware query builder with permissions |
-| `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL field validation and type mapping |
+| `FieldType` | enum | `crates/yang-base/src/table/field_type.rs` | JSON/MySQL/PostgreSQL field validation and type mapping |
 | `MapGenerator` | struct | `crates/yang-pcg/src/generator.rs` | PCG orchestration entry point |
 | `PcgError` | enum | `crates/yang-pcg/src/error.rs` | PCG structured error codes/context |
 | `run_full_validation` | fn(pub(crate)) | `crates/yang-pcg/src/validation.rs` | reachability/overlap/connectivity/spawn invariant report（仅 crate 内使用） |
 | `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/builder.rs`、`registry.rs` | build-time registration + runtime registry |
 
 ## CONVENTIONS
-- edition `2021`（各 crate `edition.workspace = true`）；`project/yang-system` 从根 workspace 排除，Cargo 命令须进该目录跑。
+- edition `2021`（各 crate `edition.workspace = true`）；`project/yang-system` 与 `project/receivables-system` 从根 workspace 排除，Cargo 命令须进各自目录跑。
 - 面向用户的对话、comments/public docs/commit message 一律中文（工具调用参数可用英文）；`yang-base` `#![warn(missing_docs)]`。
-- Unit tests colocated 在 `__tests__/`；integration tests 在 crate `tests/`；`yang-pcg` 另有 `tests_task26/`、`tests_task27/`、`chunked_tests.rs`。
+- Unit tests colocated 在 `__tests__/`；integration tests 在 crate `tests/`；`yang-pcg` 的主测试在 `src/**/__tests__/` 与 `src/bin/pcg_cli.rs`，`tests/generation_bench.rs` 为 ignored 基准。
 - 需求追踪注释用 `验证需求: X.Y` 前缀。
 - Docker tests `#[ignore]`、单线程跑；`proptest-regressions/` 是 `yang-db`/`yang-pcg` 的意图性保留。
 

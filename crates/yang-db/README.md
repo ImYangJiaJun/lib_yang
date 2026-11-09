@@ -123,13 +123,15 @@ PG_TEST_URL=postgres://postgres:postgres@127.0.0.1:55432/test \
 
 ## 模块结构
 
-- `database`: 数据库连接管理
-- `query_builder`: 查询构建器
-- `condition`: 查询条件和 SQL 值类型
-- `field`: 字段类型和 JOIN/ORDER 子句
-- `transaction`: 事务管理
-- `error`: 错误类型定义
-- `init`: 数据库初始化
+- `mysql`: MySQL 连接、查询构建、事务、字段类型与标识符（`mysql::database`、`mysql::query_builder`、`mysql::condition` 等）
+- `postgres`: PostgreSQL 对称能力，另含 `copy`（COPY CSV）、`listener`（LISTEN/NOTIFY）、`init`
+- `redis`: Redis 客户端、配置、Pipeline/事务、PubSub、Streams、分布式锁、codec、SCAN、命名空间与后端拓扑
+- `pool`: `PoolStatus`
+- `capability`: `BackendCapabilities` 机读能力契约
+- `row_lock`: `RowLock` 行锁模式
+- `reference`: `TableRef` / `FieldRef` / `Predicate` / `SqlExpr` 白名单
+- `isolation`: `IsolationLevel`
+- `error`: `DbError`
 
 ## 核心类型
 

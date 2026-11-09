@@ -69,39 +69,45 @@ yang-base = { version = "0.4.0", default-features = false, features = ["redis"] 
 ## 快速开始：定义表并注册 CRUD
 
 ```rust
-use yang_base::router::{AppRouter, ModuleRouter};
-use yang_base::table::{col, Field, Table};
-use yang_base::BaseError;
+use std::sync::Arc;
+use yang_base::definition::{
+    AddonSpec, AppBuilder, BuildError, BuiltApp, Key, ModuleSpec, Str, TableSpec, Timestamp,
+};
+use yang_base::tools::Tools;
+use yang_base::{addon, fields, module, table};
 
-fn build_router() -> Result<AppRouter, BaseError> {
-    let users = Table::new("users")
-        .label("用户表")
-        .fields([
-            Field::id("id").label("ID"),
-            Field::string("username", 64)
-                .label("用户名")
-                .required()
-                .length(3..=64)
-                .unique()
-                .filterable()
-                .sortable(),
-            Field::string("email", 128)
-                .label("邮箱")
-                .required()
+fn build_app(tools: Arc<Tools>) -> Result<BuiltApp, BuildError> {
+    let users = TableSpec::new(table!("users"))
+        .title("用户表")
+        .fields(fields! {
+            id => Key::new(),
+            username => Str::new()
+                .title("用户名")
+                .require(true)
+                .min_length(3)
+                .max_length(64)
+                .unique(true)
+                .filterable(true)
+                .sortable(true),
+            email => Str::new()
+                .title("邮箱")
+                .require(true)
+                .max_length(128)
                 .email()
-                .unique(),
-            Field::created_at("created_at"),
-            Field::updated_at("updated_at"),
-            Field::soft_delete("deleted_at"),
-        ])
-        .default_order(col("created_at").desc())
-        .build()?;
+                .unique(true),
+            created_at => Timestamp::new().created_at(),
+            updated_at => Timestamp::new().updated_at(),
+            deleted_at => Timestamp::new().soft_delete(),
+        });
 
-    let user_module = ModuleRouter::new("user", "用户管理")
+    let user_module = ModuleSpec::new(module!("user.users"))
         .table(users)
-        .crud()?;
+        .crud()
+        .expect("合法主表应注册六个标准 CRUD Action");
 
-    AppRouter::new().module(user_module)
+    Ok(AppBuilder::new()
+        .addon(AddonSpec::new(addon!("user")).module(user_module))
+        .build(tools)?)
 }
 ```
 
@@ -109,42 +115,43 @@ fn build_router() -> Result<AppRouter, BaseError> {
 
 | Action | Method | Path | 用途 |
 |---|---|---|---|
-| `add` | `POST` | `/api/user` | 插入一条 `Record` |
-| `put` | `PUT` | `/api/user` | 按主键更新 `data` 中的字段 |
-| `del` | `DELETE` | `/api/user` | 按主键删除或软删除 |
-| `get` | `GET` | `/api/user` | 按主键读取一条 `Record` |
-| `select` | `POST` | `/api/user/query` | where 树、排序与分页查询 |
-| `table` | `GET` | `/api/user/schema` | 返回输入/输出 JSON Schema |
+| `add` | `POST` | `/api/user/users` | 插入一条 `Record` |
+| `put` | `PUT` | `/api/user/users` | 按主键更新 `data` 中的字段 |
+| `del` | `DELETE` | `/api/user/users` | 按主键删除或软删除 |
+| `get` | `GET` | `/api/user/users` | 按主键读取一条 `Record` |
+| `select` | `POST` | `/api/user/users/query` | where 树、排序与分页查询 |
+| `table` | `GET` | `/api/user/users/schema` | 返回输入/输出 JSON Schema |
 
-`.crud()` 同时生成运行时授权契约：`add`、`put`、`del` 需要 `user:write`，`get`、`select`、`table` 需要 `user:read`；把模块名替换为实际的 `module_name` 即得到其它模块的权限名。六个 Action 的 Catalog schema 不是通用 `Record` 占位符，而是从当前主表的 `TableDefinition` 生成，包含真实主键类型、可读/可写字段，以及允许筛选和排序的字段枚举。
+默认前缀由完整 Module 名生成（点替换为 `/`），`user.users` 即上表路径；需要自定义路径时改用 `crud_at`。`.crud()` 同时生成运行时授权契约：`add`、`put`、`del` 需要 `user.users:write`，`get`、`select`、`table` 需要 `user.users:read`；把 `user.users` 替换为实际的 Module 全名即得到其它模块的权限名。六个 Action 的 Catalog schema 不是通用 `Record` 占位符，而是从当前主表的 `TableDefinition` 生成，包含真实主键类型、可读/可写字段，以及允许筛选和排序的字段枚举。
 
-`ModuleRouter::table` 绑定模块主表；只参与启动期 schema 汇总的附属表使用 `ModuleRouter::schema`。
+`ModuleSpec::table` 绑定模块主表；当前定义内核只支持单个主表，不提供附属表 schema 入口。
 
 ## 自定义 API
 
-自定义 Action 实现 `TypedHandler` 并派生 `Action`。注册时用 `Api` 将 handler、HTTP method、path、operation id、状态码和标签放在同一个值中：
+自定义 Action 实现 `TypedHandler` 并派生 `Action`。注册时用 `ModuleSpec::action` 将 handler 与承载 HTTP method、path、operation id、状态码和标签的 `ActionSpec` 原子绑定：
 
 ```rust
 use yang_base::action::TypedAction;
-use yang_base::router::{Api, ModuleRouter};
-use yang_base::BaseError;
+use yang_base::definition::{ActionSpec, HttpMethod, ModuleSpec, RouteSpec};
+use yang_base::{action_name, module};
 
-fn build_system_module(
-    health_action: impl TypedAction,
-) -> Result<ModuleRouter, BaseError> {
-    ModuleRouter::new("system", "系统").api(
-        Api::get("/health", health_action)
-            .operation_id("system.health")
-            .tag("system"),
+fn build_system_module(health_action: impl TypedAction) -> ModuleSpec {
+    ModuleSpec::new(module!("system.health")).action(
+        ActionSpec::new(
+            action_name!("health"),
+            RouteSpec::new(HttpMethod::Get, "/health", "system.health"),
+        )
+        .tag("system"),
+        health_action,
     )
 }
 ```
 
-多个端点使用 `ModuleRouter::apis`。`Api::{get,post,put,patch,delete}` 会先把具体 Action 擦除成统一注册值，因此数组或 `Vec<Api>` 可以容纳不同的 Action 类型。
+多个端点可链式多次调用 `ModuleSpec::action`；每次调用接受不同的 `DynAction` 实现。
 
-公开与受保护 Action 可以注册在同一个 `ModuleRouter`。Action 默认受保护，只有带 `#[action(..., public)]` 的端点跳过认证；`TokenAuthMiddleware` 的 scope 固定为 `ProtectedActions`，因此登录、注册等公开端点不会被强制要求 Bearer Token，日志、限流等普通中间件仍默认覆盖全部端点。
+公开与受保护 Action 可以注册在同一个 `ModuleSpec`。Action 默认受保护，只有带 `#[action(..., public)]` 的端点跳过认证；`TokenAuthMiddleware` 默认 scope 为 `ProtectedActions`，因此登录、注册等公开端点不会被强制要求 Bearer Token；调用 `authenticate_public_actions()` 后切换为 `AllActions`（公开端点也会校验可选的 Bearer Token）。日志、限流等普通中间件仍默认覆盖全部端点。
 
-`ModuleRouter::api` / `apis` 会立即校验路由；`AppRouter::catalog()` 再校验跨模块冲突。动态段必须使用 Axum 0.8 的 `/users/{id}` 与 `/files/{*path}` 语法，旧式 `:id` / `*path` 会在 transport 启动前返回配置错误。同一路径可以注册不同 HTTP method，但匹配集合相同的模板会被视为冲突。
+路由模板与跨模块冲突统一在 `AppBuilder::build` 构建期校验。动态段必须使用 Axum 0.8 的 `/users/{id}` 与 `/files/{*path}` 语法，旧式 `:id` / `*path` 会在 transport 启动前返回配置错误。同一路径可以注册不同 HTTP method，但匹配集合相同的模板会被视为冲突。
 
 ## 动态行：Record
 
@@ -227,7 +234,7 @@ async fn build_tools() -> Result<Arc<yang_base::tools::Tools>, BaseError> {
 }
 ```
 
-面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`Tools::db()` 返回的是不受保护的连接池，只适合初始化、系统任务和明确承担授权责任的底层操作。
+面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`Tools::mysql()`（MySQL 连接池）与 `Tools::database()`（`AnyDatabase`）返回的都是不受保护的数据库句柄，只适合初始化、系统任务和明确承担授权责任的底层操作。
 
 `TableQuery` 会在 SQL 生成前按 `TableDefinition` 校验 WHERE 字段、筛选权限、操作符和值类型；`IN` 与 `BETWEEN` 的每个值都逐项校验。`where_eq(field, null)` / `where_ne(field, null)` 分别生成 `IS NULL` / `IS NOT NULL`，也可以显式调用 `where_null` / `where_not_null`，不会生成语义错误的 `= NULL` 或 `!= NULL`。
 

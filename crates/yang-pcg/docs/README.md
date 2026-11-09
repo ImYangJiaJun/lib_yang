@@ -17,6 +17,7 @@
 - [配置管理](config_management.md) - `GenerationConfig` 各字段与归一化
 - [错误处理](error_handling.md) - `PcgError` 结构化错误模型
 - [生产审核报告 2026-06](PRODUCTION_AUDIT_2026-06.md) - 全量审核结论（含后续修复后记）
+- [生产就绪度审计 2026-06-24](PRODUCTION_AUDIT_2026-06-24.md) - 生产就绪度审计（91/100）
 
 ## 🚀 快速链接
 

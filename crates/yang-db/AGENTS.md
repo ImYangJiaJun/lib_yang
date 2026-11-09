@@ -3,7 +3,7 @@
 **Parent:** lib_yang workspace
 
 ## OVERVIEW
-Type-safe MySQL query builder plus Redis client. Exposes `Database`, `QueryBuilder`, `Condition`, transactions, `RedisClient`, pipelines, Redis transactions, script helpers, config, values, and `DbError`. Consumed by `yang-base`.
+Type-safe MySQL/PostgreSQL query builders plus Redis client（standalone/Cluster/Sentinel）. Exposes `Database`/`PgDatabase`, `QueryBuilder`/`PgQueryBuilder`, `Condition`/`PgCondition`, transactions, `RedisClient`, pipelines, Redis transactions/scripts/PubSub/Streams/分布式锁, config, values, capability contracts, and `DbError`. Consumed by `yang-base`.
 
 ## STRUCTURE
 ```text
@@ -13,6 +13,13 @@ yang-db/
 │   ├── error.rs            # DbError conversions
 │   ├── isolation.rs        # IsolationLevel enum (NG-2)
 │   ├── dialect.rs          # SQL 方言抽象：引号/占位符风格 + 条件树共享渲染（crate 内部）
+│   ├── pool.rs             # PoolStatus（后端无关池健康快照）
+│   ├── backend_api.rs      # Backend trait（后端无关数据库 API）
+│   ├── capability.rs       # BackendKind / BackendCapability / BackendCapabilities（机读能力契约）
+│   ├── row_lock.rs         # RowLock（FOR UPDATE 等行锁模式）
+│   ├── sql_types.rs        # 跨方言 SQL 类型
+│   ├── json_param.rs       # JSON 参数绑定
+│   ├── reference.rs        # TableRef/FieldRef/Predicate/SelectExpr/SqlExpr 白名单
 │   ├── mysql/
 │   │   ├── query_builder/  # SQL builder（mod.rs 定义类型，impl 按职责分散于 generator/builder/render/read/aggregate/write/predicate/bind）
 │   │   ├── condition.rs     # Condition / SqlValue / SQL conversion
@@ -27,13 +34,25 @@ yang-db/
 │   │   ├── database.rs      # sqlx PgPool wrapper
 │   │   ├── transaction.rs   # PostgreSQL transaction wrapper
 │   │   ├── field.rs         # PgFieldType, JoinClause, OrderClause
-│   │   └── identifier.rs    # SQL标识符校验与转义 (PG方言)
+│   │   ├── identifier.rs    # SQL标识符校验与转义 (PG方言)
+│   │   ├── copy.rs          # COPY FROM/TO CSV
+│   │   ├── listener.rs      # LISTEN/NOTIFY（PgNotificationListener）
+│   │   └── init.rs          # dollar-quote 初始化脚本
 │   └── redis/
 │       ├── client.rs        # 2.2k-line Redis API surface
 │       ├── config.rs        # RedisConfig + pool params
+│       ├── backend.rs       # standalone/Cluster/Sentinel 统一后端
 │       ├── pipeline.rs      # RedisPipeline wrapper over redis::pipe()
 │       ├── transaction.rs   # WATCH/MULTI/EXEC helper
-│       └── value.rs         # RedisValue conversions
+│       ├── value.rs         # RedisValue conversions
+│       ├── pubsub.rs        # RedisPubSub / RedisMessage
+│       ├── streams.rs       # Streams / 消费者组
+│       ├── lock.rs          # RedisLock / RedisLockGuard
+│       ├── codec.rs         # RedisCodec / JsonCodec
+│       ├── bytes.rs         # 二进制安全读写
+│       ├── commands.rs      # SetOptions / ZAddOptions / GetExOption
+│       ├── scan.rs          # SCAN/HSCAN 遍历
+│       └── namespace.rs     # KeyNamespace 键前缀
 ├── tests/                  # integration tests; many Docker-dependent/ignored
 ├── docs/                   # examples/testing/reference docs
 └── proptest-regressions/   # query_builder regression corpus
@@ -46,7 +65,7 @@ yang-db/
 | Query building | `src/mysql/query_builder/` | select/find/value/count/sum/avg/min/max/insert/update/delete/upsert/batch；类型在 `mod.rs`，执行逻辑分属 `read.rs`/`aggregate.rs`/`write.rs` |
 | Conditions | `src/mysql/condition.rs` | `Condition`, `SqlValue`, `condition_to_sql(_owned)` |
 | Transactions | `src/mysql/transaction.rs` | `Transaction`, `TransactionQueryBuilder` |
-| Redis operations | `src/redis/client.rs` | string/hash/list/set/zset/key/pubsub/lua/scan/health |
+| Redis operations | `src/redis/client.rs` | string/hash/list/set/zset/key/pubsub/lua/scan/health；进阶能力在 `pubsub.rs`/`streams.rs`/`lock.rs`/`codec.rs`/`bytes.rs`/`commands.rs`/`scan.rs`/`namespace.rs`，拓扑统一经 `backend.rs` |
 | Redis config | `src/redis/config.rs` | max connections, connect/wait timeout, logging |
 | Redis pipeline | `src/redis/pipeline.rs` | wrapper around `redis::pipe()` |
 | Redis transaction | `src/redis/transaction.rs` | optimistic locking with retry |
@@ -57,6 +76,11 @@ yang-db/
 | PostgreSQL conditions | `src/postgres/condition.rs` | `PgCondition`, `pg_condition_to_sql` |
 | PostgreSQL transactions | `src/postgres/transaction.rs` | `PgTransaction`, transaction query builder |
 | PostgreSQL field types | `src/postgres/field.rs` | `PgFieldType`, `JoinClause`, `OrderClause` |
+| PostgreSQL COPY | `src/postgres/copy.rs` | `copy_from_csv` / `copy_to_csv` |
+| PostgreSQL LISTEN/NOTIFY | `src/postgres/listener.rs` | `PgNotificationListener` / `Database::notify` |
+| PostgreSQL 初始化脚本 | `src/postgres/init.rs` | dollar-quote 脚本 |
+| 能力契约 | `src/capability.rs` | `BackendCapabilities::supports` / `enforces` |
+| 行锁 | `src/row_lock.rs` | `RowLock`（FOR UPDATE 等） |
 | Redis pool health | `src/redis/client.rs` | `RedisClient::pool_status()` → `PoolStatus` |
 | Transaction isolation | `src/isolation.rs` | `IsolationLevel` enum, `as_sql()` |
 
@@ -79,7 +103,12 @@ yang-db/
 | `PgQueryBuilder` | `src/postgres/query_builder.rs` | PostgreSQL chainable SQL builder |
 | `PgCondition` | `src/postgres/condition.rs` | PostgreSQL nested boolean condition tree |
 | `PgFieldType` | `src/postgres/field.rs` | PostgreSQL field type markers |
-| `PoolStatus` | `src/redis/client.rs` | Redis pool health snapshot |
+| `PoolStatus` | `src/pool.rs` | 后端无关/Redis 池健康快照 |
+| `BackendCapabilities` | `src/capability.rs` | 机读后端能力契约 |
+| `RowLock` | `src/row_lock.rs` | 行锁模式 |
+| `PgNotificationListener` | `src/postgres/listener.rs` | LISTEN/NOTIFY 订阅 |
+| `RedisPubSub` | `src/redis/pubsub.rs` | Pub/Sub 订阅流 |
+| `RedisLock` | `src/redis/lock.rs` | 分布式锁 |
 | `IsolationLevel` | `src/isolation.rs` | SQL标准四级事务隔离 |
 | `Dialect` / `CondNode` / `render_condition` | `src/dialect.rs` | crate 内部方言抽象；mysql/postgres 的 identifier/condition 为其薄封装 |
 

@@ -27,6 +27,10 @@
 - [属性测试](testing/property_tests.md) - 属性测试说明
 - [更新删除测试](testing/update_delete_tests.md) - UPDATE/DELETE 属性测试
 
+### 📦 参考文档
+
+- [Redis Lua 脚本](redis_lua_script.md) - Lua 脚本封装说明
+
 ## 🚀 快速链接
 
 - [主 README](../README.md) - 返回模块主页

@@ -11,9 +11,9 @@
 
 为 Action struct 生成 `TypedAction` impl 与静态 `ActionMeta` 聚合体：
 
-- impl `TypedAction`（`name` / `display_name` / `description` / `is_public` / `permissions`）。
+- impl `TypedAction`（`name` / `display_name` / `description` / `is_public` / `permissions` / `permission_mode` / `http_method` / `path` / `success_status` / `response_kind` / `multipart_spec`）。
 - 用 `schemars::schema_for!` 从 `TypedHandler::Input` / `Output` 生成静态 JSON Schema。
-- 聚合出 `OnceLock<ActionMeta>`，供 `ModuleRouter::dispatch` 读取以做鉴权与派发。
+- `ActionMeta` 由 `TypedAction::meta_static()` 以 `OnceLock` 构造，经 `DynAction::meta()` 供运行时读取；鉴权策略在 `AppBuilder` 构建期由 `permissions` / `is_public` / `permission_mode` 冻结为 `AuthorizationPolicy`。
 
 依赖手写的 `TypedHandler`（声明 `Input` / `Output` 关联类型 + `handle` 业务逻辑）；本宏只补元数据与 trait 胶水。
 
@@ -27,6 +27,31 @@
 - `public`：公开 Action，默认关闭。
 - `permissions("a", "b")`：权限列表。
 - `permission_mode = "all" | "any"`：权限组合模式，默认 `all`；其它取值编译期报错。
+- `method = "..."`：HTTP method，默认 `POST`；仅接受 `GET` / `POST` / `PUT` / `PATCH` / `DELETE` / `OPTIONS` / `HEAD`，其它取值编译期报错。
+- `path = "..."`：HTTP path，须以 `/` 开头；未提供时由 Action 名生成。
+- `success_status = ...`：成功状态码，默认 `200`。
+- `response_kind = "..."`：成功响应类别，默认 `json`；可选 `json` / `download` / `preview` / `redirect`。
+- `request_media = "..."`：请求媒体类型，默认 `json`；可选 `json` / `multipart`。
+- `content_types("image/png", ...)`：multipart 必须声明的精确 MIME 类型，须为小写。
+- `max_fields = ...` / `max_files = ...`：multipart 非文件字段数 / 文件数上限。
+- `max_file_bytes = ...` / `max_total_bytes = ...`：multipart 单文件 / 整请求字节上限，须大于 0，且 `max_file_bytes` 不得大于 `max_total_bytes`。
+
+multipart 相关选项只能与 `request_media = "multipart"` 同用，且此时 `method` 限 `POST` / `PUT` / `PATCH`。
+
+### `params!`
+
+一次声明强类型 Input 结构与唯一的原生 `Params` 定义：生成实现 `ParamInput` 的 struct（含 `Deserialize` / `JsonSchema`），可直接作为 `Action::Input` / `TypedHandler::Input`。字段默认取自 body，可用 `#[param(source = body|query|path|header)]` 指定来源。
+
+```rust
+yang_base::params! {
+    #[deny_unknown_fields]
+    LoginInput {
+        username: Str::new().require(true),
+        #[param(source = header)]
+        x_trace_id: Str::new().require(true),
+    }
+}
+```
 
 ## 使用示例
 

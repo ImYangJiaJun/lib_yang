@@ -214,6 +214,7 @@ pub enum FailureKind {
 | `TokenExpired` | 客户端内部已清缓存强刷一次；仍失败按 Fatal/原样上抛 |
 | `UuidConflict` | 60012：按 uuid 反查，不要写终态 |
 | `InstanceNotFound` | 1390003：并发窗口，回到 create 或退避 |
+| 1390007 | 审批定义事件订阅已存在或已取消，按幂等成功处理（`SubscribeOutcome::AlreadySubscribed`） |
 | `Fatal { code }` | 配置/权限错误，不重试；按 code 补运维文案 |
 
 `Error::Display` 固定 `飞书出站调用失败: {message}`；中文 hint 由宿主展示层补。

@@ -65,7 +65,7 @@ fn crate_readmes_publish_current_versions_and_features() {
             "`admin-metadata`",
             "TableDefinition",
             "Record",
-            "Api::get",
+            "ModuleSpec::action",
             ".crud()",
         ],
     );

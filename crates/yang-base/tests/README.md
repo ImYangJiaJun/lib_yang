@@ -4,15 +4,18 @@
 
 ## 测试文件
 
-- `database_integration_test.rs` - 数据库管理集成测试（需要 Docker）
-- `database_initializer_test.rs` - 数据库初始化器测试（需要手动配置数据库）
-- `database_test.rs` - 数据库基础功能测试
-- `plugin_test.rs` - 插件管理测试
-- `error_test.rs` - 错误处理测试
+- 契约与基础测试：`admin_metadata_contract.rs`、`compatibility_contract.rs`、`release_candidate_contract.rs`、`release_docs_contract.rs`、`error_test.rs`、`field_type_test.rs`、`observability_test.rs`、`plugin_test.rs`、`schema_snapshots.rs`
+- MySQL testcontainers（需要 Docker）：`table_query_crud_test.rs`、`table_query_paginate_test.rs`、`table_query_transaction_test.rs`、`schema_sync_integration_test.rs`、`typed_action_integration.rs`
+- PostgreSQL 集成（`postgres` feature，需要 `PG_TEST_URL`；仅部分测试额外接受 `YANG_POSTGRES_URL` 作为回退）：`integration_pg_wave*.rs`、`integration_record_pg.rs`、`integration_schema_sync_pg*.rs`、`integration_table_query_pg*.rs`
+- Redis 集成（`redis` feature，可选设置 `REDIS_TEST_URL` 复用外部实例；`cache_integration.rs` 未设置时连接本地 `redis://127.0.0.1:6379`（连接失败即失败），其余测试启动 Docker Redis）：`cache_integration.rs`、`token_revocation_integration.rs`、`email_verification_integration.rs`
+- Axum 传输（`transport-axum` feature）：`transport_axum.rs`、`transport_inbound_observability.rs`
+- `database_test.rs` - 数据库基础功能测试（需要本地 MySQL，`#[ignore]`）
 
 ## 运行测试
 
-### 1. 运行所有测试（不包括需要 Docker 的测试）
+### 1. 运行所有测试
+
+默认 `cargo test` 需要可达的 Redis（`REDIS_TEST_URL` 或 `redis://127.0.0.1:6379`）；需要 Docker 的测试均标记 `#[ignore]`，默认不执行。
 
 ```bash
 cargo test
@@ -29,12 +32,15 @@ cargo test
 **运行测试**：
 
 ```bash
-# 运行所有数据库集成测试
-cargo test --test database_integration_test -- --ignored --test-threads=1
+# 运行所有 MySQL 容器化测试（typed_action_integration 同时需要 Docker Redis）
+cargo test --test table_query_crud_test -- --ignored --test-threads=1
+cargo test --test table_query_paginate_test -- --ignored --test-threads=1
+cargo test --test table_query_transaction_test -- --ignored --test-threads=1
+cargo test --test schema_sync_integration_test -- --ignored --test-threads=1
+cargo test --test typed_action_integration -- --ignored --test-threads=1
 
 # 运行特定的测试
-cargo test --test database_integration_test test_global_database_initialization -- --ignored
-cargo test --test database_integration_test test_migration_execution_and_idempotency -- --ignored
+cargo test --test table_query_crud_test test_crud_complete_flow -- --ignored
 ```
 
 **注意**：
@@ -42,54 +48,18 @@ cargo test --test database_integration_test test_migration_execution_and_idempot
 - 使用 `--test-threads=1` 确保测试串行执行，避免端口冲突
 - 首次运行会下载 MySQL Docker 镜像，可能需要较长时间
 
-### 3. 运行手动数据库测试
+### 3. 运行 PostgreSQL / Redis 集成测试
 
-某些测试需要手动配置的 MySQL 数据库：
+PostgreSQL 测试需要设置 `PG_TEST_URL`（仅部分测试额外接受 `YANG_POSTGRES_URL` 作为回退）并启用 `postgres` feature；Redis 测试使用 `REDIS_TEST_URL`，`cache_integration` 未设置时回退到 `redis://127.0.0.1:6379`：
 
 ```bash
-# 修改测试文件中的数据库连接字符串
-# 默认：mysql://root:password@localhost:3306/test_db
+# 运行特定 PostgreSQL 集成测试
+PG_TEST_URL=postgres://postgres:postgres@localhost:5432/test \
+  cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave2_read -- --ignored --test-threads=1
 
-# 运行测试
-cargo test --test database_initializer_test -- --ignored
+# 运行 Redis 集成测试
+REDIS_TEST_URL=redis://127.0.0.1:6379 cargo test --test token_revocation_integration -- --ignored --test-threads=1
 ```
-
-## 测试覆盖的功能
-
-### 数据库管理集成测试 (database_integration_test.rs)
-
-- ✅ 全局数据库初始化 (需求 6.1, 6.4)
-- ✅ 数据库初始化流程 - 非事务模式 (需求 4.1-4.6, 11.2)
-- ✅ 数据库初始化流程 - 事务模式 (需求 4.1-4.6, 11.3, 11.4)
-- ✅ 迁移记录表创建 (需求 9.2)
-- ✅ 迁移执行和幂等性 (需求 9.3, 9.4)
-- ✅ 事务回滚测试 (需求 11.3, 11.4)
-- ✅ 依赖顺序初始化 (需求 4.2, 4.3)
-
-### 测试场景
-
-1. **全局数据库初始化**
-   - 验证全局数据库实例的创建和访问
-   - 验证数据库配置的应用
-
-2. **数据库初始化流程**
-   - 测试多个插件的数据库表创建
-   - 测试插件依赖关系的正确处理
-   - 测试迁移脚本的执行
-
-3. **迁移管理**
-   - 测试迁移记录表的创建
-   - 测试迁移的幂等性（重复执行不会重复应用）
-   - 测试迁移版本的记录和查询
-
-4. **事务处理**
-   - 测试事务模式下的初始化
-   - 测试失败时的事务回滚
-   - 验证事务的原子性
-
-5. **依赖管理**
-   - 测试插件依赖关系的拓扑排序
-   - 验证依赖插件先于当前插件初始化
 
 ## 故障排除
 
@@ -124,7 +94,7 @@ cargo test --test database_initializer_test -- --ignored
 ### 添加新的集成测试
 
 1. 在测试函数上添加 `#[tokio::test]` 和 `#[ignore]` 属性
-2. 使用 `setup_test_db!` 宏创建测试数据库
+2. 参考现有测试文件中的 testcontainers 辅助函数（`GenericImage::new("mysql", "8.0")` + `wait_for_mysql`）创建测试数据库
 3. 编写测试逻辑
 4. 在测试注释中标注验证的需求编号
 
@@ -137,7 +107,8 @@ cargo test --test database_initializer_test -- --ignored
 #[tokio::test]
 #[ignore] // 需要 Docker 环境
 async fn test_new_feature() {
-    let db_url = setup_test_db!(_docker, _container);
+    // 参考现有测试文件中的 setup_mysql / wait_for_mysql 辅助函数
+    let (_container, db_url) = setup_mysql().await.expect("需要 Docker 环境");
     
     // 测试逻辑
     let db = Database::connect(&db_url).await.unwrap();
@@ -165,12 +136,10 @@ async fn test_new_feature() {
     sudo systemctl start docker
     
     # 运行测试
-    cargo test --test database_integration_test -- --ignored --test-threads=1
+    cargo test --test table_query_crud_test -- --ignored --test-threads=1
 ```
 
 ## 参考资料
 
 - [testcontainers-rs 文档](https://docs.rs/testcontainers/)
-- [yang-db 文档](../yang-db/README.md)
-- [设计文档](../.kiro/specs/plugin-management-system/design.md)
-- [需求文档](../.kiro/specs/plugin-management-system/requirements.md)
+- [yang-db 文档](../../yang-db/README.md)

@@ -13,14 +13,16 @@ lib_yang/
 │   ├── yang-base/          # 后端服务、Action、路由、Token 与数据库编排
 │   ├── yang-base-derive/   # Action 派生宏
 │   ├── yang-runtime/       # 配置源、可观测性与进程生命周期
-│   └── yang-pcg/           # UE5/Roguelike 过程式地图生成
+│   ├── yang-pcg/           # UE5/Roguelike 过程式地图生成
+│   └── yang-feishu/        # 飞书开放平台协议客户端
 └── project/
-    └── yang-system/        # 基于 yang-base 的基础系统与联合调试入口
+    ├── yang-system/        # 基于 yang-base 的基础系统与联合调试入口
+    └── receivables-system/ # 另行联调的独立应用（PG + axum，不在根 workspace）
 ```
 
 `project/yang-system` 是独立 Git/Cargo 项目，并从根 workspace 排除。它通过相对路径直接依赖 `../../crates/yang-base`、`../../crates/yang-db` 和 `../../crates/yang-runtime`，因此基础库修改会直接参与基础系统编译，无需 Cargo patch。
 
-`yang-base 0.2.0` 的注册边界同时承担契约和安全校验：同一 `ModuleRouter` 可以组合公开与受保护 API，`TokenAuthMiddleware` 只拦截受保护 Action；`.crud()` 自动为写接口生成 `{module}:write`、为读接口生成 `{module}:read`，并把具体 `TableDefinition` 的字段、主键和查询能力投影到 `ApiCatalog`。路由模板在注册/目录构建期按 Axum 0.8 的 `{name}` / `{*name}` 语法检查，`TableQuery` 则在生成 SQL 前校验 WHERE 字段、操作符和值类型，并把与 `null` 的等值比较规范化为 `IS NULL` / `IS NOT NULL`。
+`yang-base 0.4.0` 的注册边界同时承担契约和安全校验：同一 `ModuleSpec` 可以组合公开与受保护 API，`TokenAuthMiddleware` 默认只拦截受保护 Action；`.crud()` 自动为写接口生成 `{module}:write`、为读接口生成 `{module}:read`（`{module}` 为完整限定 Module 名），并把具体 `TableDefinition` 的字段、主键和查询能力投影到 `ApiCatalog`。路由模板与跨模块冲突在 `AppBuilder::build` 构建期按 Axum 0.8 的 `{name}` / `{*name}` 语法检查，`TableQuery` 则在生成 SQL 前校验 WHERE 字段、操作符和值类型，并把与 `null` 的等值比较规范化为 `IS NULL` / `IS NOT NULL`。
 
 ## 本地开发环境
 
@@ -78,11 +80,11 @@ pnpm --dir frontend dev
 |---|---|
 | 后端 HTTP | `http://127.0.0.1:8080` |
 | 存活 / 就绪检查 | `http://127.0.0.1:8080/health/live` / `http://127.0.0.1:8080/health/ready` |
-| 前端 | `http://127.0.0.1:5173` |
+| 前端 | `http://127.0.0.1:5273` |
 | MySQL | `127.0.0.1:3306`，数据库 `yang_system` |
 | Redis | `127.0.0.1:6379` |
 
-前端已经将 `/api`、`/.well-known` 和 `/health` 代理到本地后端。
+前端开发服务器已经将 `/api` 与 `/.well-known` 代理到本地后端（`/health` 仅在生产的 Nginx 配置中代理）。
 
 ### 集成测试
 
@@ -92,7 +94,7 @@ pnpm --dir frontend dev
 Set-Location project/yang-system
 $env:YANG_SYSTEM_TEST_DATABASE_URL = "mysql://root:yang-local@127.0.0.1:3306/yang_system_test"
 $env:YANG_SYSTEM_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
-cargo test --test system_integration -- --ignored --test-threads=1
+python scripts/run_ci.py integration
 ```
 
 这些环境变量只供集成测试读取；应用运行配置只读取 `config.toml`，不接受环境变量覆盖。

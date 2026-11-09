@@ -9,12 +9,14 @@ Application-facing backend primitives built on `yang-db`: build-time definition 
 ```text
 yang-base/
 ├── src/
-│   ├── lib.rs           # 13 public modules; feature-gated http/token/transport-axum 等
+│   ├── lib.rs           # 16 public modules; feature-gated http/token/transport-axum 等
+│   ├── admin.rs         # admin-metadata 后台展示元数据（只引用稳定 ID，不改变 dispatch）
+│   ├── cache.rs         # redis 通用缓存与限流门面（cache-aside/TTL 抖动/single-flight）
 │   ├── config.rs        # EngineConfig（YANG_* 环境变量）
 │   ├── lifecycle.rs     # 优雅停机（插件 → Tools 逆序）
 │   ├── observability.rs # ObservabilityConfig 纯数据（经 Tools config 槽注册；无全局单例）
 │   ├── tools.rs         # ToolsBuilder/Tools：mysql/cache/token/http + 类型化 extension/config
-│   ├── database/        # DatabaseInitializer + schema_sync/（additive schema 同步，按 model/render/inspect/plan/preflight/sync 拆分；测试在 __tests__/）
+│   ├── database/        # DatabaseInitializer + backend.rs（AnyDatabase/AnyTransaction）+ schema_sync/（additive schema 同步，按 model/render/inspect/plan/preflight/sync 拆分；测试在 __tests__/）
 │   ├── definition/      # 定义内核：AppBuilder/BuiltApp/Catalog/Registry/Spec/字段与参数定义；builder/ 已按职责拆分（app/catalog/compile/handle/project/registry/validate）
 │   ├── plugin/          # 旧代插件生命周期（新链路以 definition Addon 组织业务）；已拆分：traits.rs 接口 + manager.rs + builder.rs + registry.rs
 │   ├── action/          # child AGENTS.md: Action(业务 trait)/TypedHandler/TypedAction/DynAction；auth/ 内含认证通用机制
@@ -74,6 +76,7 @@ yang-base/
 | `token` | `src/token`, `TokenManager`（自动启用 `redis`）；并启用 `action::auth` 认证通用机制（PasswordEngine/AuthRateLimiter/邮箱验证码/BrowserSession，拉入 argon2/rand_core/hmac/http-uri） |
 | `http` | `src/http` reqwest wrapper + Tools http 槽 |
 | `mysql` | sqlx-backed table/action/database execution |
+| `postgres` | PostgreSQL 数据库执行：`AnyDatabase` PostgreSQL 资源槽、声明式 schema 同步、`Record` 动态解码、`TableQuery`/内置 CRUD 的 PG 执行分支 |
 | `redis` | Redis client resource slot |
 | `validator` | stricter regex-backed field validators |
 | `plugin-schema` | JSON Schema plugin config validation |

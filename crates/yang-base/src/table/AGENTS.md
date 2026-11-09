@@ -3,19 +3,19 @@
 **Parent:** `crates/yang-base/AGENTS.md`
 
 ## OVERVIEW
-Schema-first table definitions, field validation and permissions, dynamic `Record` rows, schema compatibility checks, and guarded MySQL query execution.
+Schema-first table definitions, field validation and permissions, dynamic `Record` rows, schema compatibility checks, and guarded MySQL/PostgreSQL query execution.
 
 ## STRUCTURE
 ```text
 table/
 ├── mod.rs                # public re-exports
 ├── definition.rs         # Table / Field builders, TableDefinition, TableHandle
-├── field_type.rs         # FieldType enum, MySQL mapping, JSON validation
+├── field_type.rs         # FieldType enum, MySQL/PostgreSQL mapping, JSON validation
 ├── field_config.rs       # internal field metadata, permissions and relations
 ├── table_config.rs       # internal normalized schema metadata
 ├── query_params.rs       # filters, sorting and pagination request model
 ├── table_query/          # permission-aware query builder and execution（mod.rs 持 TableQuery 结构体与 MAX_TABLE_QUERY_PAGE_SIZE；impl 按职责分散于 build/filters/validation/plan/read/write；sql_render.rs 与 sql_param.rs 为 cfg(test) SQL 文本渲染与参数类型）
-├── record.rs             # Record and MySQL row decoding
+├── record.rs             # Record and MySQL/PostgreSQL row decoding
 ├── schema_validation.rs  # live-schema compatibility report
 ├── validator.rs          # Validator enum and validation helpers
 └── __tests__/            # colocated unit tests
@@ -27,7 +27,7 @@ table/
 | Define an application table | `definition.rs` | Compose `Table::new(...).fields([...]).build()` |
 | Define fields | `definition.rs` | `Field` constructors plus validation, permission, index and relation modifiers |
 | Inspect immutable metadata | `definition.rs` | `TableDefinition` and `FieldMetadata` read-only views |
-| Bind a database | `definition.rs` | `TableDefinition::bind` creates `TableHandle` when `mysql` is enabled |
+| Bind a database | `definition.rs` | `TableDefinition::bind`（mysql，兼容入口）或 `bind_pool(AnyPool)`（mysql/postgres）创建 `TableHandle` |
 | Dynamic rows | `record.rs` | `Record` is the transparent JSON object used by queries and builtin CRUD |
 | Query request model | `query_params.rs` | selected fields, Boolean where trees, sort and pagination |
 | DB query execution | `table_query/` | select/get/insert/update/delete/count/page operations（读路径 `read.rs`，写路径 `write.rs`，计划编译 `plan.rs`，链式入口 `filters.rs`，权限校验 `validation.rs`） |
@@ -41,7 +41,7 @@ table/
 | `Field` | `definition.rs` | typed field builder with validation, permissions, indexes and relations |
 | `TableDefinition` | `definition.rs` | immutable runtime schema and JSON Schema source |
 | `FieldMetadata` | `definition.rs` | read-only view returned by `TableDefinition::field(s)` |
-| `TableHandle` | `definition.rs` | a definition bound to a MySQL pool |
+| `TableHandle` | `definition.rs` | a definition bound to an `AnyPool`（MySQL/PostgreSQL） |
 | `Record` | `record.rs` | transparent dynamic row with typed `require` / `optional` reads |
 | `FieldType` | `field_type.rs` | String/Integer/BigInt/Float/Double/Boolean/Date/DateTime/Timestamp/Json/Text/Enum storage types |
 | `RelationType` | `field_config.rs` | OneToOne/OneToMany/ManyToOne/ManyToMany relation metadata |
@@ -70,7 +70,7 @@ let users = Table::new("users")
 
 - Application code constructs schemas only through `Table` and `Field`.
 - `build` is the validation boundary and returns an immutable `TableDefinition`.
-- A module binds its primary definition with `ModuleRouter::table`; extra startup-only schemas use `ModuleRouter::schema`.
+- A module binds its primary definition with `ModuleSpec::table(TableSpec)` + `.crud()`; 定义内核目前只支持单个主表，不提供附属表 schema 入口。
 - Builtin CRUD and `TableQuery` exchange dynamic rows as `Record`.
 
 ## CONVENTIONS
@@ -83,7 +83,7 @@ let users = Table::new("users")
 - Soft delete updates the declared soft-delete field instead of physically deleting a row.
 
 ## FEATURE NOTES
-- `mysql` enables `TableHandle` and async execution methods in `TableQuery`.
+- `mysql` / `postgres` enable `TableHandle` and async execution methods in `TableQuery`（可同时启用，按 `AnyPool` 分派方言）。
 - `validator` enables strict regex-backed Email/Phone/Regex validation.
 - Date/DateTime/Timestamp validation lives in `field_type.rs`; keep accepted formats and tests aligned.
 

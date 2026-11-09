@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   缓存 TTL = `expire - 300`；锁 TTL 30s > `TOKEN_RETRY` 最坏 19s。
 - `has_more=true` 但 `page_token` 缺失/空串必须硬失败；`code=0` 但缺 `data` 必须报错。
 - 记录页 `page_size` 上限 500；字段/表/视图页上限 100；重复游标硬失败。
-- 60012 = uuid 已创建（响应丢了）；1390003 = 实例不存在；1390007 = 已订阅（幂等成功）。
+- 60012 = uuid 已创建（响应丢了）；1390003 = 实例不存在；1390007 = 已订阅或已取消订阅（按幂等成功处理；已取消时事件会断流）。
 - 金额控件 `currency` 只能从审批定义 `option.currencyRange` 取。
 - `DateInterval` 是真实字段；外部选项 `linkage_params` 的真机值是文案，不是 `@i18n@id`。
 - 文本列含 URL 会被切成富文本分段，取第一段会丢正文。

@@ -10,7 +10,7 @@ Strategy-based room terrain generation. Converts laid-out rooms and door anchors
 terrain/
 ├── mod.rs                  # generate_terrains orchestration
 ├── strategy.rs             # TerrainStrategy trait
-├── selector.rs             # choose strategy by room type/theme/config
+├── selector.rs             # choose strategy by room type/theme tags
 ├── default_strategy.rs     # DefaultCarveStrategy wrapper
 ├── carve.rs                # wall/floor/obstacle/reserved carving helpers
 ├── connectivity.rs         # connectivity summary helpers
@@ -27,7 +27,7 @@ terrain/
 |------|----------|-------|
 | Terrain entry point | `mod.rs` | `generate_terrains` iterates rooms and selects strategy |
 | Strategy contract | `strategy.rs` | `TerrainStrategy::name`, `generate` |
-| Strategy choice | `selector.rs` | selection priority and fallback |
+| Strategy choice | `selector.rs` | selection by RoomType + theme_tags; fallback happens in `mod.rs` |
 | Default room carving | `carve.rs`, `default_strategy.rs` | wall borders, doors, reserved zones, obstacles |
 | Boss rooms | `open_arena.rs` | open center, sparse edge obstacles, connectivity cleanup |
 | Maze rooms | `maze.rs` | recursive backtracking, doorway connection forcing |
@@ -40,9 +40,9 @@ terrain/
 ```text
 for each Room:
   collect DoorAnchor for room
-  select TerrainStrategy by RoomType/theme/config
+  select TerrainStrategy by RoomType/theme_tags
   strategy.generate(room, anchors, config, rng)
-  if strategy fails where fallback is allowed -> DefaultCarveStrategy
+  if strategy fails -> DefaultCarveStrategy (fallback in mod.rs)
   summarize connectivity
 ```
 

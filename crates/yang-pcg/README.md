@@ -52,13 +52,9 @@ yang-pcg (Rust 生成)  ──export_json / export_binary──>  .json / .ypcg 
 ```rust
 use yang_pcg::{export_json, GenerationConfig, GenerationRequest, MapGenerator};
 
-let result = MapGenerator::new().generate(GenerationRequest {
-    seed: Some(20260610),                 // None 时从 config 派生确定性种子
-    config: GenerationConfig::default(),
-    constraints: vec![],
-    runtime_context: None,
-    trace_id: None,
-})?;
+let result = MapGenerator::new().generate(
+    GenerationRequest::new(GenerationConfig::default()).with_seed(20260610),
+)?;
 std::fs::write("floor.json", export_json(&result)?)?;
 ```
 
