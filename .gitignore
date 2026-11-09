@@ -11,3 +11,6 @@
 .codegraph/
 .evolver/
 */tests/
+
+# 独立应用，不属于本仓库
+/project/receivables-system/
