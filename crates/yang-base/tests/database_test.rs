@@ -1,3 +1,4 @@
+#![cfg(feature = "mysql")]
 //! 显式数据库资源集成测试。
 
 use yang_base::tools::ToolsBuilder;

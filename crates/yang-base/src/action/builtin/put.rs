@@ -1,5 +1,5 @@
 //! PutAction - 按主键更新指定字段
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::builtin::add::AffectedResult;
 use crate::action::{ActionContext, TypedHandler};

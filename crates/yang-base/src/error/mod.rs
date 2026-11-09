@@ -446,6 +446,30 @@ impl From<yang_db::DbError> for BaseError {
             | D::UnsupportedOperator(_)
             | D::Unknown(_) => BaseError::DatabaseQueryFailed(err),
 
+            // 结构化 SQLSTATE：唯一键冲突归因为参数错误；连接类保留错误链；
+            // 其余约束/语法/数据错误统一落到执行失败，避免把数据完整性问题
+            // 误报成用户输入错误。
+            D::DatabaseError(info) => match info.kind() {
+                yang_db::SqlErrorKind::UniqueViolation => {
+                    let field = info
+                        .constraint()
+                        .and_then(|constraint| constraint.rsplit('.').next())
+                        .map(str::to_string)
+                        .or_else(|| duplicate_key_field(info.message()))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    BaseError::ParamInvalid(field, "该值已存在".to_string())
+                }
+                yang_db::SqlErrorKind::UndefinedTable => BaseError::DatabaseQueryFailed(err),
+                yang_db::SqlErrorKind::ConnectionFailure
+                | yang_db::SqlErrorKind::TooManyConnections => {
+                    BaseError::DatabaseConnectionDbError(err)
+                }
+                _ => BaseError::DatabaseExecuteFailed(err),
+            },
+
+            // 连接池关闭不可重试，保留错误链供运维定位。
+            D::PoolClosed => BaseError::DatabaseConnectionDbError(err),
+
             // 唯一键冲突：**先于**通用执行类分支判定，让它变成可归因的参数错误。
             // 报文不匹配时原样落回 DatabaseExecuteFailed——外键/非空/CHECK 都走这一支。
             D::ConstraintError(message) => match duplicate_key_field(message) {

@@ -1,3 +1,4 @@
+#![cfg(feature = "mysql")]
 //! TableQuery 分页查询集成测试
 //!
 //! 测试 paginate 方法的完整功能，包括：

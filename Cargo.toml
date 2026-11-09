@@ -67,11 +67,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # 时间与唯一标识
 chrono = "0.4.44"
 uuid = { version = "=1.12.1", features = ["v4"] }
+# 精确十进制（PostgreSQL NUMERIC 绑定/解码；仅 yang-db 的 postgres feature 启用）
+bigdecimal = "0.4"
 
 # 正则表达式
 regex = "1.12.3"
 
 # 数据库
+# uuid / bigdecimal 的类型支持由 yang-db 的 postgres feature 追加
+# （`sqlx/uuid`、`sqlx/bigdecimal`），避免 MySQL-only 构建也拉入这两个类型依赖。
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "chrono", "json"] }
 
 # HTTP 客户端

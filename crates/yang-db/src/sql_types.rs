@@ -29,36 +29,38 @@ impl Identifier {
     }
 }
 
-/// 一段或两段 SQL 标识符（`column` / `table.column`）。
+/// 一到三段 SQL 标识符（`column` / `table.column` / `schema.table.column`）。
+///
+/// 段数上限由 [`QualifiedIdentifier::parse_with_max_parts`] 显式控制：表名最多
+/// `schema.table` 两段，字段名最多 `schema.table.column` 三段。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum QualifiedIdentifier {
-    Unqualified(Identifier),
-    Qualified(Identifier, Identifier),
-}
+pub(crate) struct QualifiedIdentifier(Vec<Identifier>);
 
 impl QualifiedIdentifier {
+    /// 按字段名口径解析（最多三段）。
     pub(crate) fn parse(value: &str) -> Result<Self, DbError> {
-        match value.split_once('.') {
-            None => Ok(Self::Unqualified(Identifier::parse(value)?)),
-            Some((qualifier, name)) => Ok(Self::Qualified(
-                Identifier::parse(qualifier)?,
-                Identifier::parse(name)?,
-            )),
+        Self::parse_with_max_parts(value, 3)
+    }
+
+    /// 按给定段数上限解析：每段都必须通过严格 ASCII 标识符校验。
+    pub(crate) fn parse_with_max_parts(value: &str, max_parts: usize) -> Result<Self, DbError> {
+        let parts = value
+            .split('.')
+            .map(Identifier::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        if parts.is_empty() || parts.len() > max_parts {
+            return Err(invalid_identifier(value));
         }
+        Ok(Self(parts))
     }
 
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn render(&self, quote: char) -> String {
-        match self {
-            Self::Unqualified(name) => quote_part(name, quote),
-            Self::Qualified(qualifier, name) => {
-                format!(
-                    "{}.{}",
-                    quote_part(qualifier, quote),
-                    quote_part(name, quote)
-                )
-            }
-        }
+        self.0
+            .iter()
+            .map(|identifier| quote_part(identifier, quote))
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
@@ -90,7 +92,7 @@ mod tests {
             "",
             ".id",
             "users.",
-            "a.b.c",
+            "a.b.c.d",
             "users.id--",
             "用户",
             "a\0b",
@@ -103,6 +105,10 @@ mod tests {
 
         assert!(Identifier::parse("users_1").is_ok());
         assert!(QualifiedIdentifier::parse("users.id").is_ok());
+        assert!(QualifiedIdentifier::parse("public.users.id").is_ok());
+        // 表名口径只接受 schema.table 两段。
+        assert!(QualifiedIdentifier::parse_with_max_parts("public.users", 2).is_ok());
+        assert!(QualifiedIdentifier::parse_with_max_parts("a.b.c", 2).is_err());
     }
 
     #[cfg(any(feature = "mysql", feature = "postgres"))]
@@ -121,7 +127,7 @@ mod tests {
         fn accepted_identifiers_always_match_the_strict_grammar(value in any::<String>()) {
             if QualifiedIdentifier::parse(&value).is_ok() {
                 let parts: Vec<_> = value.split('.').collect();
-                prop_assert!((1..=2).contains(&parts.len()));
+                prop_assert!(parts.len() <= 3);
                 for part in parts {
                     let mut chars = part.chars();
                     prop_assert!(matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_'));

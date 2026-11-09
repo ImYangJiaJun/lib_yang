@@ -60,7 +60,7 @@ mod validator;
 #[cfg(test)]
 mod __tests__;
 
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 pub use definition::TableHandle;
 pub use definition::{col, ColumnName, Field, FieldMetadata, Order, Table, TableDefinition};
 pub(crate) use field_config::FieldConfig;
@@ -80,7 +80,7 @@ pub use relation_options::{RelationOption, RelationOptionsRequest, RelationOptio
 pub use schema_validation::{SchemaColumn, SchemaIssue, SchemaIssueKind, SchemaValidationReport};
 pub use table_config::SortOrder;
 pub(crate) use table_config::TableConfig;
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 pub(crate) use table_config::{CheckConfig, ForeignKeyConfig};
 pub use table_query::{TableQuery, MAX_TABLE_QUERY_PAGE_SIZE};
 pub use tables::{

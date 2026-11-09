@@ -1,5 +1,5 @@
 //! SelectAction - 分页查询带 where 条件 + 排序
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::sql_bridge::count_query;
 use crate::action::{ActionContext, TypedHandler};

@@ -1,5 +1,5 @@
 //! 受字段权限、租户范围与分页边界保护的默认关系 options Action。
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::{Action as ActionHandler, ActionContext};
 use crate::error::BaseError;

@@ -335,7 +335,7 @@ impl ActionSpec {
         self
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     fn bind_builtin_contract(
         mut self,
         contract: crate::action::builtin::BuiltinActionContract,
@@ -537,7 +537,7 @@ impl ModuleSpec {
     }
 
     /// 为模块主表注册标准 add/put/del/get/select/table Actions。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn crud(self) -> Result<Self, crate::error::BaseError> {
         let prefix = format!("/api/{}", self.name.as_str().replace('.', "/"));
         self.crud_at(prefix)
@@ -547,7 +547,7 @@ impl ModuleSpec {
     ///
     /// 用于版本化或资源复数化路由；`operation_id` 仍始终使用
     /// `<module>.<action>`，不与 HTTP 路径耦合。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn crud_at(self, prefix: impl Into<String>) -> Result<Self, crate::error::BaseError> {
         use crate::action::builtin::{AddAction, DelAction, PutAction};
 
@@ -561,7 +561,7 @@ impl ModuleSpec {
     /// [`Record`](crate::table::Record)、
     /// [`PutInput`](crate::action::builtin::PutInput) 与
     /// [`GetByPk`](crate::action::builtin::GetByPk) 输入，并返回对应的标准结果。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn crud_at_with_mutations<A, P, D>(
         self,
         prefix: impl Into<String>,

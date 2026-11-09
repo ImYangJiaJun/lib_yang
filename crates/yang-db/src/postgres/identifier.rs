@@ -19,9 +19,15 @@ pub fn quote_identifier(ident: &str) -> Result<String, DbError> {
     dialect::quote_identifier(dialect::POSTGRES, ident)
 }
 
-/// 校验并转义可能带限定前缀的标识符：`name` → `"name"`，`users.name` → `"users"."name"`。
+/// 校验并转义可能带限定前缀的标识符：`name` → `"name"`，`users.name` → `"users"."name"`，
+/// `schema.users.name` → `"schema"."users"."name"`（字段名最多三段）。
 pub fn quote_qualified(ident: &str) -> Result<String, DbError> {
     dialect::quote_qualified(dialect::POSTGRES, ident)
+}
+
+/// 校验并转义表名：只接受 `table` 或 `schema.table`（最多两段）。
+pub fn quote_table(ident: &str) -> Result<String, DbError> {
+    dialect::quote_table(dialect::POSTGRES, ident)
 }
 
 #[cfg(test)]
@@ -49,6 +55,18 @@ mod tests {
     fn test_quote_qualified() {
         assert_eq!(quote_qualified("name").unwrap(), "\"name\"");
         assert_eq!(quote_qualified("u.name").unwrap(), "\"u\".\"name\"");
-        assert!(quote_qualified("a.b.c").is_err());
+        assert_eq!(
+            quote_qualified("audit.u.name").unwrap(),
+            "\"audit\".\"u\".\"name\""
+        );
+        assert!(quote_qualified("a.b.c.d").is_err());
+    }
+
+    #[test]
+    fn test_quote_table() {
+        assert_eq!(quote_table("users").unwrap(), "\"users\"");
+        assert_eq!(quote_table("audit.users").unwrap(), "\"audit\".\"users\"");
+        assert!(quote_table("a.b.c").is_err());
+        assert!(quote_table("users;DROP").is_err());
     }
 }

@@ -133,7 +133,7 @@ mod tests {
                 "非法表名被接受: {payload:?}"
             );
         }
-        for payload in ["", "id) FROM users --", "COUNT(*)", "a.b.c", "id\0"] {
+        for payload in ["", "id) FROM users --", "COUNT(*)", "a.b.c.d", "id\0"] {
             assert!(
                 Subquery::new("orders", payload).is_err(),
                 "非法投影被接受: {payload:?}"
@@ -734,7 +734,7 @@ mod tests {
             "",
             ".id",
             "users.",
-            "a.b.c",
+            "a.b.c.d",
             "users.id --",
             "users/*x*/.id",
             "用户.id",
@@ -811,7 +811,7 @@ mod tests {
             "",
             ".id",
             "users.",
-            "a.b.c",
+            "a.b.c.d",
             "users.id;DROP",
             "users.id --",
             "users.`id`",

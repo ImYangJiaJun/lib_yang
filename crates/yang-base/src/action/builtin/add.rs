@@ -1,5 +1,5 @@
 //! AddAction - 插入单条记录
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;
@@ -15,15 +15,17 @@ pub struct AffectedResult {
     pub affected: u64,
 }
 
-/// 新增记录的返回值：受影响行数 + 自增主键。
+/// 新增记录的返回值：受影响行数 + 整型主键。
 ///
-/// 相比仅返回受影响行数，额外携带本次 INSERT 产生的自增主键（`last_insert_id`），
-/// 便于调用方拿到新建记录的 ID。
+/// 相比仅返回受影响行数，额外携带本次 INSERT 产生的整型自增主键，便于调用方拿到
+/// 新建记录的 ID。MySQL 与 PostgreSQL 的整型主键路径都由
+/// [`TableQuery::insert`](crate::table::TableQuery::insert) 收敛为 `u64`；非整型
+/// 主键会返回明确错误，不会被截断或臆造。
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct InsertResult {
     /// 受影响行数
     pub affected: u64,
-    /// 新插入记录的自增主键值（无自增列时为 0）
+    /// 新插入记录的整型自增主键值（无自增列时为 0）
     pub id: u64,
 }
 

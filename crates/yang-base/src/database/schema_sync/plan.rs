@@ -1,25 +1,24 @@
-use super::inspect::load_existing_schema;
-use super::model::{ExistingTableSchema, SchemaPreflightCheck, TableSyncPlan};
-use super::render::{
-    desired_indexes, existing_column_name, expression_for_existing_schema, foreign_key_matches,
-    normalize_check_expression, quote_identifier, quote_string, render_check, render_column,
-    render_create_table, render_foreign_key, validate_table_config,
+use super::dialect::SchemaDialect;
+use super::driver::{SchemaConnection, SchemaDriver};
+use super::model::{
+    existing_column_name, foreign_key_matches, ExistingTableSchema, PlanStep, SchemaPreflightCheck,
+    TableSyncPlan,
 };
 use super::{SchemaSyncChange, SchemaSyncChangeKind};
 use crate::error::BaseError;
 use crate::table::{FieldConfig, FieldType, SchemaIssueKind, TableDefinition};
-use sqlx::mysql::MySqlConnection;
 use std::collections::BTreeMap;
 
 pub(super) async fn plan_locked(
-    connection: &mut MySqlConnection,
+    driver: SchemaDriver,
+    connection: &mut SchemaConnection<'_>,
     definitions: &[&TableDefinition],
 ) -> Result<Vec<TableSyncPlan>, BaseError> {
     let mut plans = Vec::with_capacity(definitions.len());
     for definition in definitions {
-        let existing = load_existing_schema(connection, definition).await?;
-        let plan = plan_table_sync(definition, &existing)?;
-        if plan.statements.len() != plan.changes.len() {
+        let existing = driver.introspect(connection, definition).await?;
+        let plan = driver.plan_changes(definition, &existing)?;
+        if plan.steps.len() != plan.changes.len() {
             return Err(BaseError::DatabaseInitFailed(format!(
                 "表 {} 的 schema 计划内部不一致",
                 definition.name()
@@ -37,41 +36,65 @@ pub(super) fn report_tables(definitions: &[&TableDefinition]) -> Vec<String> {
         .collect()
 }
 
+/// MySQL 兼容入口：既有单元测试直接调用本函数。
+#[cfg(all(test, feature = "mysql"))]
 pub(crate) fn plan_table_sync(
     definition: &TableDefinition,
     existing: &ExistingTableSchema,
 ) -> Result<TableSyncPlan, BaseError> {
-    let table = definition.config();
-    validate_table_config(table)?;
+    plan_table_sync_with(SchemaDialect::MySql, definition, existing)
+}
+
+/// 按方言计算单表变更计划。
+pub(crate) fn plan_table_sync_with(
+    dialect: SchemaDialect,
+    definition: &TableDefinition,
+    existing: &ExistingTableSchema,
+) -> Result<TableSyncPlan, BaseError> {
+    let config = definition.shared_config();
+    let table = config.as_ref();
+    dialect.validate_table_config(table)?;
     if !existing.exists {
-        let mut statements = vec![render_create_table(table, false)?];
-        let mut changes = vec![SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: table.table_name.clone(),
-            kind: SchemaSyncChangeKind::CreatedTable,
-        }];
-        for foreign_key in &table.foreign_keys {
-            statements.push(format!(
-                "ALTER TABLE {} ADD {}",
-                quote_identifier(&table.table_name)?,
-                render_foreign_key(foreign_key)?
-            ));
-            changes.push(SchemaSyncChange {
+        let mut statements = Vec::new();
+        let mut changes = Vec::new();
+        let mut steps = Vec::new();
+        let create_statements = dialect.render_create_table_statements(table, false)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            create_statements,
+            SchemaSyncChange {
                 table: table.table_name.clone(),
-                object: foreign_key.name.clone(),
-                kind: SchemaSyncChangeKind::AddedForeignKey,
-            });
+                object: table.table_name.clone(),
+                kind: SchemaSyncChangeKind::CreatedTable,
+            },
+        );
+        for foreign_key in &table.foreign_keys {
+            let statement = dialect.render_add_foreign_key(table, foreign_key)?;
+            push_step(
+                &mut statements,
+                &mut steps,
+                &mut changes,
+                vec![statement],
+                SchemaSyncChange {
+                    table: table.table_name.clone(),
+                    object: foreign_key.name.clone(),
+                    kind: SchemaSyncChangeKind::AddedForeignKey,
+                },
+            );
         }
         return Ok(TableSyncPlan {
             statements,
             changes,
+            steps,
             preflight: Vec::new(),
         });
     }
 
-    let quoted_table = quote_identifier(&table.table_name)?;
     let mut statements = Vec::new();
     let mut changes = Vec::new();
+    let mut steps = Vec::new();
     let mut preflight = Vec::new();
     let mut renamed_columns = BTreeMap::new();
     let mut fields: Vec<&FieldConfig> = table.fields.values().collect();
@@ -99,16 +122,18 @@ pub(crate) fn plan_table_sync(
             continue;
         }
         if let Some(legacy_name) = field.renamed_from.as_deref().filter(|_| legacy_exists) {
-            statements.push(format!(
-                "ALTER TABLE {quoted_table} RENAME COLUMN {} TO {}",
-                quote_identifier(legacy_name)?,
-                quote_identifier(&field.name)?
-            ));
-            changes.push(SchemaSyncChange {
-                table: table.table_name.clone(),
-                object: format!("{legacy_name}->{}", field.name),
-                kind: SchemaSyncChangeKind::RenamedColumn,
-            });
+            let statement = dialect.render_rename_column(table, legacy_name, &field.name)?;
+            push_step(
+                &mut statements,
+                &mut steps,
+                &mut changes,
+                vec![statement],
+                SchemaSyncChange {
+                    table: table.table_name.clone(),
+                    object: format!("{legacy_name}->{}", field.name),
+                    kind: SchemaSyncChangeKind::RenamedColumn,
+                },
+            );
             renamed_columns.insert(legacy_name.to_string(), field.name.clone());
             continue;
         }
@@ -128,15 +153,18 @@ pub(crate) fn plan_table_sync(
                 table.table_name, field.name
             )));
         }
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} ADD COLUMN {}",
-            render_column(field)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: field.name.clone(),
-            kind: SchemaSyncChangeKind::AddedColumn,
-        });
+        let statement = dialect.render_add_column(table, field)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            vec![statement],
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: field.name.clone(),
+                kind: SchemaSyncChangeKind::AddedColumn,
+            },
+        );
     }
 
     let effective_columns = existing
@@ -150,7 +178,7 @@ pub(crate) fn plan_table_sync(
             column
         })
         .collect::<Vec<_>>();
-    let report = table.validate_schema(&effective_columns);
+    let report = dialect.validate_schema(table, &effective_columns);
     let unsafe_issues = report
         .issues
         .iter()
@@ -167,17 +195,9 @@ pub(crate) fn plan_table_sync(
                     let data_type = effective_columns
                         .iter()
                         .find(|column| column.name == issue.field)
-                        .map(|column| column.data_type.as_str());
-                    match field.field_type {
-                        FieldType::String { .. } => !matches!(
-                            data_type,
-                            Some("char" | "varchar" | "text" | "mediumtext" | "longtext")
-                        ),
-                        FieldType::Enum { .. } => {
-                            !matches!(data_type, Some("char" | "varchar" | "enum"))
-                        }
-                        _ => true,
-                    }
+                        .map(|column| column.data_type.as_str())
+                        .unwrap_or_default();
+                    dialect.is_unsafe_type_change(&field.field_type, data_type)
                 }
                 SchemaIssueKind::AutoIncrementMismatch | SchemaIssueKind::MissingColumn => true,
             }
@@ -205,7 +225,7 @@ pub(crate) fn plan_table_sync(
     for field_name in changed_fields {
         let field = &table.fields[field_name];
         let existing_name = existing_column_name(field_name, &renamed_columns);
-        let quoted_existing = quote_identifier(&existing_name)?;
+        let quoted_existing = dialect.quote_identifier(&existing_name)?;
         let issues = report
             .issues
             .iter()
@@ -236,7 +256,7 @@ pub(crate) fn plan_table_sync(
                 FieldType::Enum { values } => {
                     let allowed = values
                         .iter()
-                        .map(|value| quote_string(value))
+                        .map(|value| dialect.quote_string(value))
                         .collect::<Vec<_>>()
                         .join(", ");
                     preflight.push(SchemaPreflightCheck::ColumnPredicate {
@@ -249,15 +269,20 @@ pub(crate) fn plan_table_sync(
                 _ => {}
             }
         }
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} MODIFY COLUMN {}",
-            render_column(field)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: field.name.clone(),
-            kind: SchemaSyncChangeKind::ModifiedColumn,
-        });
+        let kinds = issues.iter().map(|issue| issue.kind).collect::<Vec<_>>();
+        let column_statements =
+            dialect.render_modify_column(table, &existing_name, field, &kinds)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            column_statements,
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: field.name.clone(),
+                kind: SchemaSyncChangeKind::ModifiedColumn,
+            },
+        );
     }
 
     let desired_primary = vec![table.primary_key.clone()];
@@ -272,15 +297,18 @@ pub(crate) fn plan_table_sync(
         })
         .collect::<Vec<_>>();
     if effective_primary.is_empty() {
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} ADD PRIMARY KEY ({})",
-            quote_identifier(&table.primary_key)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: table.primary_key.clone(),
-            kind: SchemaSyncChangeKind::AddedPrimaryKey,
-        });
+        let statement = dialect.render_add_primary_key(table)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            vec![statement],
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: table.primary_key.clone(),
+                kind: SchemaSyncChangeKind::AddedPrimaryKey,
+            },
+        );
     } else if effective_primary != desired_primary {
         return Err(BaseError::DatabaseInitFailed(format!(
             "表 {} 的主键 {:?} 与声明 {:?} 不一致，拒绝自动修改",
@@ -301,7 +329,7 @@ pub(crate) fn plan_table_sync(
             index
         })
         .collect::<Vec<_>>();
-    for desired in desired_indexes(table)? {
+    for desired in dialect.desired_indexes(table)? {
         if let Some(existing_named) = effective_indexes
             .iter()
             .find(|index| index.name == desired.name)
@@ -321,26 +349,18 @@ pub(crate) fn plan_table_sync(
         if already_exists {
             continue;
         }
-        let columns = desired
-            .columns
-            .iter()
-            .map(|column| quote_identifier(column))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
-        let kind = if desired.unique {
-            "UNIQUE INDEX"
-        } else {
-            "INDEX"
-        };
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} ADD {kind} {} ({columns})",
-            quote_identifier(&desired.name)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: desired.name.clone(),
-            kind: SchemaSyncChangeKind::AddedIndex,
-        });
+        let statement = dialect.render_add_index(table, &desired)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            vec![statement],
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: desired.name.clone(),
+                kind: SchemaSyncChangeKind::AddedIndex,
+            },
+        );
         if desired.unique {
             // 新加的列还没有任何数据，不可能有重复值——跳过 preflight 检查，
             // 否则 preflight SQL 会引用尚未添加的列，导致 "Unknown column" 报错。
@@ -368,8 +388,8 @@ pub(crate) fn plan_table_sync(
 
     for check in &table.checks {
         if let Some(existing_check) = existing.checks.iter().find(|item| item.name == check.name) {
-            if normalize_check_expression(&existing_check.expression)
-                == normalize_check_expression(&check.expression)
+            if dialect.normalize_check_expression(&existing_check.expression)
+                == dialect.normalize_check_expression(&check.expression)
             {
                 continue;
             }
@@ -377,28 +397,31 @@ pub(crate) fn plan_table_sync(
                 "表 {} 的 CHECK {} 已存在但表达式不同，拒绝覆盖: actual={}, expected={}",
                 table.table_name,
                 check.name,
-                normalize_check_expression(&existing_check.expression),
-                normalize_check_expression(&check.expression)
+                dialect.normalize_check_expression(&existing_check.expression),
+                dialect.normalize_check_expression(&check.expression)
             )));
         }
         if existing.checks.iter().any(|item| {
-            normalize_check_expression(&item.expression)
-                == normalize_check_expression(&check.expression)
+            dialect.normalize_check_expression(&item.expression)
+                == dialect.normalize_check_expression(&check.expression)
         }) {
             continue;
         }
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} ADD {}",
-            render_check(check)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: check.name.clone(),
-            kind: SchemaSyncChangeKind::AddedCheck,
-        });
+        let statement = dialect.render_add_check(table, check)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            vec![statement],
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: check.name.clone(),
+                kind: SchemaSyncChangeKind::AddedCheck,
+            },
+        );
         preflight.push(SchemaPreflightCheck::Check {
             object: check.name.clone(),
-            expression: expression_for_existing_schema(&check.expression, &renamed_columns),
+            expression: dialect.expression_for_existing_schema(&check.expression, &renamed_columns),
         });
     }
 
@@ -428,15 +451,18 @@ pub(crate) fn plan_table_sync(
         {
             continue;
         }
-        statements.push(format!(
-            "ALTER TABLE {quoted_table} ADD {}",
-            render_foreign_key(foreign_key)?
-        ));
-        changes.push(SchemaSyncChange {
-            table: table.table_name.clone(),
-            object: foreign_key.name.clone(),
-            kind: SchemaSyncChangeKind::AddedForeignKey,
-        });
+        let statement = dialect.render_add_foreign_key(table, foreign_key)?;
+        push_step(
+            &mut statements,
+            &mut steps,
+            &mut changes,
+            vec![statement],
+            SchemaSyncChange {
+                table: table.table_name.clone(),
+                object: foreign_key.name.clone(),
+                kind: SchemaSyncChangeKind::AddedForeignKey,
+            },
+        );
         preflight.push(SchemaPreflightCheck::ForeignKey {
             object: foreign_key.name.clone(),
             columns: existing_columns,
@@ -448,6 +474,22 @@ pub(crate) fn plan_table_sync(
     Ok(TableSyncPlan {
         statements,
         changes,
+        steps,
         preflight,
     })
+}
+
+fn push_step(
+    statements: &mut Vec<String>,
+    steps: &mut Vec<PlanStep>,
+    changes: &mut Vec<SchemaSyncChange>,
+    step_statements: Vec<String>,
+    change: SchemaSyncChange,
+) {
+    statements.extend(step_statements.iter().cloned());
+    steps.push(PlanStep {
+        statements: step_statements,
+        change: change.clone(),
+    });
+    changes.push(change);
 }

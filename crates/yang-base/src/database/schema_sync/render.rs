@@ -1,78 +1,14 @@
-use super::model::{DesiredIndex, ExistingForeignKey};
+//! MySQL 方言的纯渲染逻辑。
+//!
+//! 这些函数由 [`super::dialect::SchemaDialect::MySql`] 调用；PostgreSQL 走
+//! `dialect` 内的独立渲染，不复用本模块，避免 MySQL 历史输出被无意改动。
+
+use super::dialect::has_redundant_outer_parentheses;
+use super::model::DesiredIndex;
 use crate::error::BaseError;
 use crate::table::{
-    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, TableConfig, TableDefinition,
-    MAX_VARCHAR_LENGTH,
+    CheckConfig, FieldConfig, FieldType, ForeignKeyConfig, TableConfig, MAX_VARCHAR_LENGTH,
 };
-use std::collections::BTreeMap;
-
-pub(super) fn normalize_definitions<'a>(
-    definitions: &'a [&'a TableDefinition],
-) -> Result<Vec<&'a TableDefinition>, BaseError> {
-    let mut normalized: BTreeMap<&str, (&TableDefinition, String)> = BTreeMap::new();
-    for definition in definitions {
-        let table = definition.config();
-        validate_table_config(table)?;
-        let signature = render_create_table(table, true)?;
-        if let Some((_, existing_signature)) = normalized.get(table.table_name.as_str()) {
-            if existing_signature != &signature {
-                return Err(BaseError::ConfigError(format!(
-                    "表配置冲突: {} 在多个模块中声明不同 schema",
-                    table.table_name
-                )));
-            }
-            continue;
-        }
-        normalized.insert(table.table_name.as_str(), (*definition, signature));
-    }
-    Ok(normalized
-        .into_values()
-        .map(|(definition, _)| definition)
-        .collect())
-}
-
-pub(super) fn validate_table_config(table: &TableConfig) -> Result<(), BaseError> {
-    quote_identifier(&table.table_name)?;
-    if table.fields.is_empty() {
-        return Err(BaseError::ConfigError(format!(
-            "表 {} 没有声明字段",
-            table.table_name
-        )));
-    }
-    let primary = table.fields.get(&table.primary_key).ok_or_else(|| {
-        BaseError::ConfigError(format!(
-            "表 {} 的主键字段 {} 未声明",
-            table.table_name, table.primary_key
-        ))
-    })?;
-    if !primary.required {
-        return Err(BaseError::ConfigError(format!(
-            "表 {} 的主键字段 {} 必须 required",
-            table.table_name, table.primary_key
-        )));
-    }
-    for field in table.fields.values() {
-        quote_identifier(&field.name)?;
-        if field.auto_increment
-            && (field.name != table.primary_key
-                || !matches!(field.field_type, FieldType::Integer | FieldType::BigInt))
-        {
-            return Err(BaseError::ConfigError(format!(
-                "表 {} 的 auto_increment 仅允许用于整数主键字段: {}",
-                table.table_name, field.name
-            )));
-        }
-        if field.auto_increment && field.default_value.is_some() {
-            return Err(BaseError::ConfigError(format!(
-                "表 {} 的自增字段不能同时声明默认值: {}",
-                table.table_name, field.name
-            )));
-        }
-        let _ = render_column(field)?;
-    }
-    let _ = desired_indexes(table)?;
-    Ok(())
-}
 
 pub(super) fn render_create_table(
     table: &TableConfig,
@@ -212,87 +148,6 @@ pub(super) fn normalize_check_expression(expression: &str) -> String {
         normalized = normalized[1..normalized.len() - 1].to_string();
     }
     normalized
-}
-
-fn has_redundant_outer_parentheses(expression: &str) -> bool {
-    if !expression.starts_with('(') || !expression.ends_with(')') {
-        return false;
-    }
-    let mut depth = 0_i32;
-    let mut quoted = false;
-    let mut previous_quote = false;
-    for (index, character) in expression.char_indices() {
-        if character == '\'' {
-            if quoted && previous_quote {
-                previous_quote = false;
-                continue;
-            }
-            previous_quote = quoted;
-            quoted = !quoted;
-            continue;
-        }
-        previous_quote = false;
-        if quoted {
-            continue;
-        }
-        match character {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 && index + character.len_utf8() != expression.len() {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-        if depth < 0 {
-            return false;
-        }
-    }
-    depth == 0 && !quoted
-}
-
-pub(super) fn foreign_key_matches(
-    existing: &ExistingForeignKey,
-    desired: &ForeignKeyConfig,
-    renamed_columns: &BTreeMap<String, String>,
-) -> bool {
-    let columns = existing
-        .columns
-        .iter()
-        .map(|column| {
-            renamed_columns
-                .get(column)
-                .cloned()
-                .unwrap_or_else(|| column.clone())
-        })
-        .collect::<Vec<_>>();
-    columns == desired.columns
-        && existing.referenced_table == desired.referenced_table
-        && existing.referenced_columns == desired.referenced_columns
-        && matches!(existing.update_rule.as_str(), "RESTRICT" | "NO ACTION")
-        && matches!(existing.delete_rule.as_str(), "RESTRICT" | "NO ACTION")
-}
-
-pub(super) fn existing_column_name(
-    column: &str,
-    renamed_columns: &BTreeMap<String, String>,
-) -> String {
-    renamed_columns
-        .iter()
-        .find_map(|(legacy, current)| (current == column).then(|| legacy.clone()))
-        .unwrap_or_else(|| column.to_string())
-}
-
-pub(super) fn expression_for_existing_schema(
-    expression: &str,
-    renamed_columns: &BTreeMap<String, String>,
-) -> String {
-    renamed_columns
-        .iter()
-        .fold(expression.to_string(), |expression, (legacy, current)| {
-            expression.replace(&format!("`{current}`"), &format!("`{legacy}`"))
-        })
 }
 
 pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
@@ -436,13 +291,4 @@ pub(super) fn quote_identifier(identifier: &str) -> Result<String, BaseError> {
 
 pub(super) fn quote_string(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
-}
-
-pub(super) fn schema_lock_name(database_name: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in database_name.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("yang_base_schema_{hash:016x}")
 }

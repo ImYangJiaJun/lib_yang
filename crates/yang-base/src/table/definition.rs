@@ -8,7 +8,7 @@ use super::field_config::{Audience, FieldConfig, FieldPermissions, RelationConfi
 use super::table_config::{
     CheckConfig, ForeignKeyConfig, IndexConfig, TableConfig, TimestampFields,
 };
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 use super::TableQuery;
 use super::{FieldType, RegexCache, SortOrder, Validator, MAX_VARCHAR_LENGTH};
 use crate::error::BaseError;
@@ -969,7 +969,7 @@ impl TableDefinition {
     }
 
     /// 返回指定数据库字段的底层 JSON Schema，供内置 API 描述投影使用。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn field_schema(&self, name: &str) -> Option<Value> {
         self.config.fields.get(name).map(field_json_schema)
     }
@@ -1035,9 +1035,18 @@ impl TableDefinition {
         self.config.validate_schema(columns)
     }
 
-    /// 将表定义绑定到 MySQL 连接池。
+    /// 将表定义绑定到 MySQL 连接池（兼容入口）。
+    ///
+    /// 内部会包装为 [`AnyPool::MySql`](crate::database::AnyPool)；需要 PostgreSQL
+    /// 或其他运行时后端时请使用 [`TableDefinition::bind_pool`]。
     #[cfg(feature = "mysql")]
     pub fn bind(&self, pool: Arc<sqlx::MySqlPool>) -> TableHandle {
+        self.bind_pool(crate::database::AnyPool::MySql(pool))
+    }
+
+    /// 将表定义绑定到任意受支持的数据库连接池。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn bind_pool(&self, pool: crate::database::AnyPool) -> TableHandle {
         TableHandle {
             definition: self.clone(),
             pool,
@@ -1109,14 +1118,14 @@ impl<'a> FieldMetadata<'a> {
 }
 
 /// 绑定数据库连接池后的表句柄。
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 #[derive(Debug, Clone)]
 pub struct TableHandle {
     definition: TableDefinition,
-    pool: Arc<sqlx::MySqlPool>,
+    pool: crate::database::AnyPool,
 }
 
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 impl TableHandle {
     /// 返回不可变表定义。
     pub fn definition(&self) -> &TableDefinition {
@@ -1134,7 +1143,7 @@ impl TableHandle {
         TableQuery::new(
             self.definition.shared_config(),
             roles,
-            Some(Arc::clone(&self.pool)),
+            Some(self.pool.clone()),
         )
     }
 }

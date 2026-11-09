@@ -1,5 +1,5 @@
 //! TableAction - 返回表的元信息
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::{ActionContext, TypedHandler};
 use crate::error::BaseError;

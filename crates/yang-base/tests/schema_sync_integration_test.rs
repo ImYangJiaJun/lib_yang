@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used)]
+#![cfg(feature = "mysql")]
 
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};

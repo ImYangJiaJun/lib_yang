@@ -1,3 +1,4 @@
+#![cfg(feature = "mysql")]
 //! TableQuery 事务传播（C1 / DB-5）集成测试
 //!
 //! 验证受保护层 `*_in_tx` 系列方法的原子性与一致性：
@@ -21,6 +22,7 @@ use sqlx::mysql::MySqlPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
+use yang_base::database::AnyTransaction;
 use yang_base::table::{Field, Record, Table, TableDefinition, TableQuery};
 use yang_db::Database;
 
@@ -176,7 +178,7 @@ async fn test_transaction_rollback_discards_all_inserts() {
 
     let config = create_test_users_table_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
 
     admin_query(&config, &pool)
         .insert_in_tx(
@@ -208,7 +210,7 @@ async fn test_transaction_drop_without_commit_rolls_back() {
     let config = create_test_users_table_definition();
 
     {
-        let mut tx = db.transaction().await.unwrap();
+        let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
         admin_query(&config, &pool)
             .insert_in_tx(
                 &mut tx,
@@ -234,7 +236,7 @@ async fn test_transaction_commit_persists_all_inserts() {
 
     let config = create_test_users_table_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
 
     admin_query(&config, &pool)
         .insert_in_tx(
@@ -268,7 +270,7 @@ async fn test_transaction_read_sees_uncommitted_write() {
 
     let config = create_test_users_table_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
 
     let (_affected, new_id) = admin_query(&config, &pool)
         .insert_returning_id_in_tx(
@@ -310,7 +312,7 @@ async fn test_transaction_multi_step_atomic_on_failure() {
 
     let config = create_test_users_table_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
 
     // 第一步：成功插入
     admin_query(&config, &pool)
@@ -352,7 +354,7 @@ async fn test_transaction_update_commit() {
         .1;
 
     // 事务内更新
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let upd = Record::new().set("age", 99).set("status", "inactive");
     let affected = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
@@ -392,7 +394,7 @@ async fn test_transaction_delete_rollback_keeps_row() {
         .unwrap()
         .1;
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(new_id))
         .unwrap()
@@ -433,7 +435,7 @@ async fn test_transaction_soft_delete_in_tx() {
     let product_id = products[0].require::<i64>("id").unwrap();
     assert_eq!(products[0].optional::<i64>("deleted_at").unwrap(), None);
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .where_eq("id", serde_json::json!(product_id))
         .unwrap()
@@ -470,7 +472,7 @@ async fn test_independent_transactions_isolated() {
 
     let config = create_test_users_table_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     admin_query(&config, &pool)
         .insert_in_tx(&mut tx, user_data("甲方", "jia@example.com", 21, "active"))
         .await
@@ -479,7 +481,7 @@ async fn test_independent_transactions_isolated() {
 
     // commit(self) 已 move 掉 tx，编译期即不允许复用同一事务。
     // 用一个独立事务写入后回滚，验证两事务互不影响。
-    let mut tx2 = db.transaction().await.unwrap();
+    let mut tx2 = AnyTransaction::MySql(db.transaction().await.unwrap());
     let r = admin_query(&config, &pool)
         .insert_in_tx(&mut tx2, user_data("乙方", "yi@example.com", 22, "active"))
         .await;
@@ -614,7 +616,7 @@ async fn batch_upsert_inserts_then_updates_without_touching_created_at() {
     let update_columns = ["label", "sort_order"];
 
     // 首轮：两行全新 → 全插入
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -641,7 +643,7 @@ async fn batch_upsert_inserts_then_updates_without_touching_created_at() {
     tokio::time::sleep(Duration::from_millis(1_100)).await;
 
     // 第二轮：`opt_a` 改 label、`opt_b` 原样 —— 两行都命中唯一键，走 UPDATE 分支
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -676,7 +678,7 @@ async fn batch_upsert_inserts_then_updates_without_touching_created_at() {
     assert_eq!(sort_after, 1);
 
     // 第三轮：原样再批 —— 业务列一个都不许变（`updated_at` 例外，它每轮都写）。
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -723,7 +725,7 @@ async fn batch_upsert_rows_affected_semantics() {
     let update_columns = ["label", "sort_order"];
 
     // ① 全插入：每行计 1
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -740,7 +742,7 @@ async fn batch_upsert_rows_affected_semantics() {
     assert_eq!(affected, 3, "全插入 = N");
 
     // ② 全更新且值有变：每行计 2
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -757,7 +759,7 @@ async fn batch_upsert_rows_affected_semantics() {
     assert_eq!(affected, 6, "全更新且值有变 = 2N");
 
     // ③ 全命中但整行没有任何变化：CLIENT_FOUND_ROWS 把它计成 N（不是 0）
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let affected = admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -788,7 +790,7 @@ async fn batch_upsert_only_writes_the_whitelisted_columns() {
     create_test_batch_options_table(&db).await.unwrap();
     let config = create_test_batch_options_definition();
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -806,7 +808,7 @@ async fn batch_upsert_only_writes_the_whitelisted_columns() {
             .unwrap();
 
     // 第二次：label 与 sort_order 都带了新值，但赋值列只点名 label
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     admin_query(&config, &pool)
         .upsert_batch_in_tx(
             &mut tx,
@@ -857,8 +859,10 @@ async fn batch_upsert_is_atomic_across_chunks() {
         }),
     ];
 
-    let mut tx = db.transaction().await.unwrap();
+    let mut tx = AnyTransaction::MySql(db.transaction().await.unwrap());
     let result = tx
+        .as_mysql()
+        .expect("测试事务应为 MySQL 后端")
         .table(&table)
         .upsert_batch_with_size(&rows, &update_columns, 1)
         .await;

@@ -520,7 +520,7 @@ impl TableQuery {
     /// 该入口只供 crate 内已经持有可信上限的算法使用（例如树查询的
     /// `max_nodes + 1` 截断检测），不接受终端用户分页参数，因此不套用公开分页的
     /// 100 行产品限制。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn prefetch_limit(mut self, limit: usize) -> Result<Self, BaseError> {
         if limit == 0 {
             return Err(BaseError::ParamInvalid(
@@ -626,7 +626,7 @@ impl TableQuery {
     /// 内置 get/put/del 的主键定位是 Action 自有寻址机制，不是调用方可选的结构化
     /// 筛选，因此与 [`Self::scope_tenant`] 一样绕过 filterable 业务筛选权限；
     /// 值仍按主键字段类型校验（null 交由渲染器规范化为 IS NULL，匹配不到记录）。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
         let field = self.table_config.primary_key.clone();
         let config = self.table_config.get_field(&field).ok_or_else(|| {

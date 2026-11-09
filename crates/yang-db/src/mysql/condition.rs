@@ -847,6 +847,72 @@ mod tests {
         assert_eq!(sql, "`id` = ?");
         assert_eq!(params.len(), 1);
     }
+
+    /// NULL 归一：`= NULL`/`!= NULL` 改写成 IS NULL / IS NOT NULL，不产生绑定参数。
+    #[test]
+    fn test_null_comparison_normalization() {
+        let mut params = Vec::new();
+        let sql = super::condition_to_sql(
+            &Condition::Eq("name".to_string(), SqlValue::Null),
+            &mut params,
+        );
+        assert_eq!(sql, "`name` IS NULL");
+        assert!(params.is_empty());
+
+        let mut params = Vec::new();
+        let sql = super::condition_to_sql(
+            &Condition::Ne("name".to_string(), SqlValue::Null),
+            &mut params,
+        );
+        assert_eq!(sql, "`name` IS NOT NULL");
+        assert!(params.is_empty());
+
+        // 大小比较与 NULL 恒为 UNKNOWN：渲染为 SQL NULL 字面量，NOT 也不会反转成 TRUE。
+        for cond in [
+            Condition::Gt("n".to_string(), SqlValue::Null),
+            Condition::Lt("n".to_string(), SqlValue::Null),
+            Condition::Gte("n".to_string(), SqlValue::Null),
+            Condition::Lte("n".to_string(), SqlValue::Null),
+            Condition::Between("n".to_string(), SqlValue::Null, SqlValue::Int(1)),
+        ] {
+            let mut params = Vec::new();
+            assert_eq!(super::condition_to_sql(&cond, &mut params), "NULL");
+            assert!(params.is_empty());
+        }
+    }
+
+    /// IN 按 SQL 三值逻辑处理 NULL：丢弃 NULL 项；NOT IN 含 NULL 时恒不为 TRUE。
+    #[test]
+    fn test_in_with_null_follows_sql_three_valued_logic() {
+        let mut params = Vec::new();
+        let sql = super::condition_to_sql(
+            &Condition::In(
+                "id".to_string(),
+                vec![SqlValue::Int(1), SqlValue::Null, SqlValue::Int(2)],
+            ),
+            &mut params,
+        );
+        assert_eq!(sql, "`id` IN (?, ?)");
+        assert_eq!(params.len(), 2);
+
+        let mut params = Vec::new();
+        let sql = super::condition_to_sql(
+            &Condition::NotIn("id".to_string(), vec![SqlValue::Null, SqlValue::Int(2)]),
+            &mut params,
+        );
+        assert_eq!(sql, "NULL");
+        assert!(params.is_empty());
+
+        let mut params = Vec::new();
+        assert_eq!(
+            super::condition_to_sql(
+                &Condition::In("id".to_string(), vec![SqlValue::Null]),
+                &mut params
+            ),
+            "NULL"
+        );
+        assert!(params.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -860,10 +926,10 @@ mod property_tests {
         "[a-z][a-z0-9_]{0,30}"
     }
 
-    // 生成 SqlValue 策略
+    // 生成 SqlValue 策略（不含 NULL：NULL 会被归一为 IS NULL/IS NOT NULL/FALSE，
+    // 不再产生绑定占位符，由下方 test_null_* 专项覆盖）
     fn sql_value_strategy() -> impl Strategy<Value = SqlValue> {
         prop_oneof![
-            Just(SqlValue::Null),
             any::<bool>().prop_map(SqlValue::Bool),
             any::<i64>().prop_map(SqlValue::Int),
             any::<f64>().prop_map(|f| {

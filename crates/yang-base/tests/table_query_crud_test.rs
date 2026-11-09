@@ -1,3 +1,4 @@
+#![cfg(feature = "mysql")]
 //! TableQuery CRUD 操作集成测试
 //!
 //! 测试 TableQuery 的完整 CRUD 操作流程，包括：

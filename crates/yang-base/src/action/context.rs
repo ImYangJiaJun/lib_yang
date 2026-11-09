@@ -369,23 +369,24 @@ impl ActionContext {
 
     /// 创建表查询构建器
     ///
-    /// 基于当前上下文的表配置和用户角色创建 TableQuery 实例。启用 `mysql`
-    /// feature 时，从当前上下文的 [`Tools`] 注入共享连接池，使内置 CRUD Action
-    /// 能直接执行数据库操作；若应用未配置数据库，则返回
-    /// `BaseError::DatabaseNotInitialized`。
+    /// 基于当前上下文的表配置和用户角色创建 TableQuery 实例。启用 `mysql` 或
+    /// `postgres` feature 时，从当前上下文的 [`Tools`] 注入共享连接池（按运行时
+    /// 后端分派），使内置 CRUD Action 能直接执行数据库操作；若应用未配置数据库，
+    /// 查询对象仍可构建，但执行时返回 `BaseError::DatabaseNotInitialized`。
     ///
     /// # 返回
     ///
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
     fn base_table_query(&self, definition: &TableDefinition) -> Result<TableQuery, BaseError> {
-        // 启用 mysql feature 时，从当前应用资源注入连接池。
-        #[cfg(feature = "mysql")]
-        let pool = self
-            .tools
-            .optional_mysql()?
-            .map(|database| Arc::new(database.pool().clone()));
-        #[cfg(not(feature = "mysql"))]
+        // 从当前应用资源注入连接池；未配置数据库时保持 None，由执行层统一报错。
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        let pool = match self.tools.database() {
+            Ok(database) => Some(database.pool()),
+            Err(BaseError::DatabaseNotInitialized) => None,
+            Err(error) => return Err(error),
+        };
+        #[cfg(not(any(feature = "mysql", feature = "postgres")))]
         let pool = None;
 
         // 注入可观测性：慢查询阈值（Tools 配置槽）+ 本次派发 request_id，
@@ -445,16 +446,17 @@ impl ActionContext {
 
     /// 开启一个数据库事务（受保护层多步写的原子作用域）
     ///
-    /// 返回 [`yang_db::Transaction`]，可传入 `TableQuery` 的 `*_in_tx` 系列方法
-    /// （`insert_in_tx`/`update_in_tx`/`delete_in_tx`/`select_in_tx` 等），使受
-    /// 权限/校验/软删保护的多步写在同一事务内原子提交或整体回滚。调用方负责
-    /// 显式 `commit()`；若 `Transaction` 在未提交时被 drop，sqlx 会尽力回滚。
+    /// 返回 [`AnyTransaction`](crate::database::AnyTransaction)，可传入 `TableQuery`
+    /// 的 `*_in_tx` 系列方法（`insert_in_tx`/`update_in_tx`/`delete_in_tx`/
+    /// `select_in_tx` 等），使受权限/校验/软删保护的多步写在同一事务内原子提交或
+    /// 整体回滚。调用方负责显式 `commit()`；若 `AnyTransaction` 在未提交时被 drop，
+    /// sqlx 会尽力回滚。
     ///
-    /// 仅在启用 `mysql` feature 时可用。
+    /// 仅在启用 `mysql` 或 `postgres` feature 时可用。
     ///
     /// # 返回
     ///
-    /// - `Ok(Transaction)`：活动事务
+    /// - `Ok(AnyTransaction)`：活动事务（按运行时后端分派）
     /// - `Err(BaseError::DatabaseNotInitialized)`：当前应用未配置数据库
     /// - `Err(BaseError::DatabaseTransactionFailed)`：开启事务失败
     ///
@@ -466,13 +468,76 @@ impl ActionContext {
     /// ctx.table_query()?.insert_in_tx(&mut tx, child_with(id)).await?;
     /// tx.commit().await?;
     /// ```
-    #[cfg(feature = "mysql")]
-    pub async fn begin_transaction(&self) -> Result<yang_db::Transaction, BaseError> {
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub async fn begin_transaction(&self) -> Result<crate::database::AnyTransaction, BaseError> {
         self.tools
-            .mysql()?
-            .transaction()
+            .database()?
+            .begin()
             .await
             .map_err(BaseError::DatabaseTransactionFailed)
+    }
+
+    /// 事务局部会话配置的默认键：当前租户 ID。
+    ///
+    /// PostgreSQL RLS 策略可用 `current_setting('app.tenant_id')` 读取该值；
+    /// 调用方也可用自定义键直接调 [`ActionContext::set_local`]，本常量只是默认约定。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub const TENANT_LOCAL_KEY: &'static str = "app.tenant_id";
+
+    /// 把键值写入当前事务的局部会话配置（PostgreSQL `SET LOCAL` 语义）。
+    ///
+    /// 委托 `yang_db` 的 `Transaction::set_local`：键名经严格标识符校验后作为字符串
+    /// 常量进入 SQL，值走绑定参数；作用域限于当前事务，提交或回滚后由 PostgreSQL
+    /// 自动还原。使用连接池时会话级配置可能被后续请求复用，因此这里固定用事务局部
+    /// （`is_local = true`），不提供会话级写入。
+    ///
+    /// 仅 PostgreSQL 支持；MySQL 事务返回 [`BaseError::ConfigError`]（MySQL 没有
+    /// 等价的事务级 `SET LOCAL`，会话变量会跨池化连接泄漏）。
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let mut tx = ctx.begin_transaction().await?;
+    /// ctx.set_local(&mut tx, "app.tenant_id", "42").await?;
+    /// // 事务内 RLS 策略可读取 current_setting('app.tenant_id')
+    /// tx.commit().await?;
+    /// ```
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub async fn set_local(
+        &self,
+        tx: &mut crate::database::AnyTransaction,
+        key: &str,
+        value: &str,
+    ) -> Result<(), BaseError> {
+        // 仅 MySQL 时 PostgreSQL 分支不参与编译，键值参数保持未使用。
+        #[cfg(not(feature = "postgres"))]
+        let _ = (key, value);
+        match tx {
+            #[cfg(feature = "postgres")]
+            crate::database::AnyTransaction::Postgres(tx) => tx
+                .set_local(key, value)
+                .await
+                .map_err(BaseError::DatabaseExecuteFailed),
+            #[cfg(feature = "mysql")]
+            crate::database::AnyTransaction::MySql(_) => Err(BaseError::ConfigError(
+                "MySQL 不支持事务级 SET LOCAL；该能力仅在 PostgreSQL 下可用".to_string(),
+            )),
+        }
+    }
+
+    /// 把当前 [`TenantContext`] 的租户 ID 写入事务局部配置
+    /// [`ActionContext::TENANT_LOCAL_KEY`]（默认 `app.tenant_id`）。
+    ///
+    /// 供 PostgreSQL RLS 策略读取；缺少普通租户 capability 时返回
+    /// [`BaseError::Unauthorized`]。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub async fn set_tenant_local(
+        &self,
+        tx: &mut crate::database::AnyTransaction,
+    ) -> Result<(), BaseError> {
+        let tenant_id = self.tenant()?.id().get();
+        self.set_local(tx, Self::TENANT_LOCAL_KEY, &tenant_id.to_string())
+            .await
     }
 
     /// 获取用户角色列表（克隆为 Vec）

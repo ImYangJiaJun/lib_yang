@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used)]
+#![cfg(feature = "token")]
 
 use jsonwebtoken::Algorithm;
 use serde_json::json;

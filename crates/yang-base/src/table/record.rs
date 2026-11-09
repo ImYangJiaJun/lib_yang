@@ -1,8 +1,8 @@
 //! 数据库记录类型
 //!
-//! 提供 `Record` 类型，用于在不知道具体 Rust 实体时安全读取 MySQL 查询结果。
-//! 每一行数据以 `serde_json::Map<String, serde_json::Value>` 的形式存储，
-//! 支持所有常见 MySQL 类型到 JSON 类型的映射。
+//! 提供 `Record` 类型，用于在不知道具体 Rust 实体时安全读取 MySQL / PostgreSQL
+//! 查询结果。每一行数据以 `serde_json::Map<String, serde_json::Value>` 的形式存储，
+//! 支持两个后端常见类型到 JSON 类型的映射。
 //!
 //! # MySQL 类型映射规则
 //!
@@ -19,6 +19,45 @@
 //! | NULL | Null |
 //! | BLOB / BINARY | String (Base64) |
 //! | JSON | Object / Array |
+//!
+//! # PostgreSQL 类型映射规则
+//!
+//! 按 `PgColumn::type_info()` 的 OID / `PgTypeKind` 分派，而不是按类型名字符串，
+//! 避免同名的用户自定义类型被误判。
+//!
+//! | PostgreSQL 类型 | JSON 类型 |
+//! |-----------------|----------|
+//! | BOOL | Bool |
+//! | INT2 / INT4 / INT8 | Number (i64) |
+//! | FLOAT4 / FLOAT8 | Number (f64)（NaN / Infinity 无法表示，返回解码错误） |
+//! | NUMERIC | String（十进制文本，保留 scale） |
+//! | TEXT / VARCHAR / BPCHAR / NAME / ENUM | String |
+//! | BYTEA | String (Base64) |
+//! | DATE | String（ISO 8601 `YYYY-MM-DD`） |
+//! | TIME | String（ISO 8601 `HH:MM:SS[.fffffffff]`） |
+//! | TIMETZ | String（ISO 8601 `HH:MM:SS[.f]±HH:MM`） |
+//! | TIMESTAMP | String（ISO 8601 `YYYY-MM-DDTHH:MM:SS[.f]`，无时区） |
+//! | TIMESTAMPTZ | String（UTC RFC 3339，如 `2026-11-08T10:00:00Z`） |
+//! | INTERVAL | Object `{"months":i32,"days":i32,"microseconds":i64}` |
+//! | UUID | String（连字符小写形式） |
+//! | JSON / JSONB | 对应 JSON 值 |
+//! | INET / CIDR | String（PostgreSQL 文本表示，含掩码时形如 `192.168.1.1/24`） |
+//! | 数组（一维） | JSON Array，元素按上表转换，数组内 NULL → JSON Null |
+//! | SQL NULL | Null |
+//!
+//! ## PostgreSQL 解码约定
+//!
+//! - 列名保持数据库返回的原样；重复列名时后者覆盖前者（JSON Object 无法保留重复键）。
+//! - SQL NULL 与 JSONB 字面量 `null` 都映射为 JSON `Null`，不引入额外 sidecar 区分。
+//! - 未知 OID / 不支持的类型（如 POINT、RANGE、COMPOSITE）返回
+//!   `sqlx::Error::ColumnDecode`，消息包含列名、序号、OID 与类型名，绝不静默置 Null。
+//! - 数组仅支持一维（sqlx 的数组解码限制）；多维数组返回解码错误。
+//! - INTERVAL 用无损的三段整数对象表示：PostgreSQL 的 months / days / microseconds
+//!   三者符号可以不一致，ISO 8601 duration 无法精确表达这种组合。
+//! - sqlx 的多数解码实现同时支持二进制（扩展协议）与文本（简单协议）结果格式；
+//!   例外是 INTERVAL 的文本格式 sqlx 尚未实现，此时返回解码错误而非错误值。
+//! - 自定义 ENUM / DOMAIN / 自定义数组依赖扩展协议解析出的类型元数据；简单协议
+//!   （如 `sqlx::raw_sql`）无法解析自定义 OID，会返回带 OID 的结构化错误。
 //!
 //! # 示例
 //!
@@ -360,6 +399,653 @@ fn decode_mysql_column(
     Ok(serde_json::Value::String(val))
 }
 
+/// PostgreSQL 标量列的解码类别。
+///
+/// 按 OID 归类后再统一走标量与数组两条路径，保证同一个类型在标量和数组中的
+/// JSON 表示完全一致。
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgScalarKind {
+    Bool,
+    Int2,
+    Int4,
+    Int8,
+    Float4,
+    Float8,
+    Numeric,
+    /// TEXT / VARCHAR / BPCHAR / NAME。
+    Text,
+    Bytea,
+    Date,
+    Time,
+    TimeTz,
+    Timestamp,
+    TimestampTz,
+    Interval,
+    Uuid,
+    /// JSON / JSONB。
+    Json,
+    Inet,
+    Cidr,
+    /// 用户自定义枚举，按标签文本输出。
+    Enum,
+}
+
+/// 列的解码计划。
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PgDecodePlan {
+    /// 标量类型。
+    Scalar(PgScalarKind),
+    /// 一维数组，元素沿用同一套标量解码。
+    Array(Box<PgDecodePlan>),
+    /// 不支持的类型，携带类型名与 OID 供结构化错误使用。
+    Unsupported(String),
+}
+
+/// 按 PostgreSQL 内置类型的稳定 OID 归类标量类型。
+///
+/// 只在 `PgTypeKind::Simple` 分支使用；未知 OID 返回 `None`，由调用方转成结构化错误。
+#[cfg(feature = "postgres")]
+fn pg_scalar_kind(oid: u32) -> Option<PgScalarKind> {
+    Some(match oid {
+        // pg_type.dat 中的内置 OID 是稳定的。
+        16 => PgScalarKind::Bool,
+        21 => PgScalarKind::Int2,
+        23 => PgScalarKind::Int4,
+        20 => PgScalarKind::Int8,
+        700 => PgScalarKind::Float4,
+        701 => PgScalarKind::Float8,
+        1700 => PgScalarKind::Numeric,
+        25 | 1043 | 1042 | 19 => PgScalarKind::Text,
+        17 => PgScalarKind::Bytea,
+        1082 => PgScalarKind::Date,
+        1083 => PgScalarKind::Time,
+        1266 => PgScalarKind::TimeTz,
+        1114 => PgScalarKind::Timestamp,
+        1184 => PgScalarKind::TimestampTz,
+        1186 => PgScalarKind::Interval,
+        2950 => PgScalarKind::Uuid,
+        114 | 3802 => PgScalarKind::Json,
+        869 => PgScalarKind::Inet,
+        650 => PgScalarKind::Cidr,
+        _ => return None,
+    })
+}
+
+/// 按 PostgreSQL 内置数组类型的稳定 OID 归类其元素类型。
+///
+/// 直接识别内置数组 OID 可以绕开 `PgTypeKind::Array`，从而同时适配
+/// 扩展协议（二进制）与简单协议（文本）结果。
+#[cfg(feature = "postgres")]
+fn pg_array_element_kind(oid: u32) -> Option<PgScalarKind> {
+    Some(match oid {
+        1000 => PgScalarKind::Bool,
+        1001 => PgScalarKind::Bytea,
+        1003 => PgScalarKind::Text,
+        1005 => PgScalarKind::Int2,
+        1007 => PgScalarKind::Int4,
+        1009 => PgScalarKind::Text,
+        1014 => PgScalarKind::Text,
+        1015 => PgScalarKind::Text,
+        1016 => PgScalarKind::Int8,
+        1021 => PgScalarKind::Float4,
+        1022 => PgScalarKind::Float8,
+        1041 => PgScalarKind::Inet,
+        651 => PgScalarKind::Cidr,
+        1115 => PgScalarKind::Timestamp,
+        1182 => PgScalarKind::Date,
+        1183 => PgScalarKind::Time,
+        1185 => PgScalarKind::TimestampTz,
+        1187 => PgScalarKind::Interval,
+        1231 => PgScalarKind::Numeric,
+        1270 => PgScalarKind::TimeTz,
+        199 => PgScalarKind::Json,
+        2951 => PgScalarKind::Uuid,
+        3807 => PgScalarKind::Json,
+        _ => return None,
+    })
+}
+
+/// 生成不支持类型的描述（类型名 + OID），用于结构化解码错误。
+#[cfg(feature = "postgres")]
+fn pg_unsupported_description(oid: Option<u32>, type_name: &str) -> String {
+    match oid {
+        Some(oid) => format!("{type_name}（OID {oid}）"),
+        None => format!("{type_name}（OID 未知）"),
+    }
+}
+
+/// 根据列类型信息生成解码计划。
+///
+/// 先按稳定的内置 OID 直接分派标量与数组；只有自定义类型才依赖 `PgTypeKind`
+/// 递归（`Array` / `Domain` / `Enum`）。
+#[cfg(feature = "postgres")]
+fn pg_decode_plan(type_info: &sqlx::postgres::PgTypeInfo) -> PgDecodePlan {
+    use sqlx::postgres::PgTypeKind;
+    use sqlx::TypeInfo;
+
+    let oid = type_info.oid().map(|oid| oid.0);
+
+    // 内置标量与内置数组的 OID 是稳定的，且不依赖类型名解析。
+    if let Some(kind) = oid.and_then(pg_scalar_kind) {
+        return PgDecodePlan::Scalar(kind);
+    }
+    if let Some(kind) = oid.and_then(pg_array_element_kind) {
+        return PgDecodePlan::Array(Box::new(PgDecodePlan::Scalar(kind)));
+    }
+
+    // 简单协议（如 sqlx::raw_sql）无法解析自定义类型的 OID，sqlx 会留下
+    // `DeclareWithOid`，其 name() 为 "?"；此时调用 kind() 会 panic（sqlx 内部
+    // unreachable!），必须提前转成结构化错误。
+    if type_info.name() == "?" {
+        let detail = match oid {
+            Some(oid) => {
+                format!("未解析的自定义类型（OID {oid}；文本协议无法解析类型名，请使用扩展协议）")
+            }
+            None => "未解析的自定义类型（OID 未知）".to_string(),
+        };
+        return PgDecodePlan::Unsupported(detail);
+    }
+
+    match type_info.kind() {
+        PgTypeKind::Array(element) => PgDecodePlan::Array(Box::new(pg_decode_plan(element))),
+        PgTypeKind::Domain(inner) => pg_decode_plan(inner),
+        kind => pg_decode_plan_from_kind(oid, type_info.name(), kind),
+    }
+}
+
+/// 类型类别分派（不含 Array / Domain 递归，便于在无数据库环境做单元测试）。
+#[cfg(feature = "postgres")]
+fn pg_decode_plan_from_kind(
+    oid: Option<u32>,
+    type_name: &str,
+    kind: &sqlx::postgres::PgTypeKind,
+) -> PgDecodePlan {
+    use sqlx::postgres::PgTypeKind;
+
+    match kind {
+        PgTypeKind::Enum(_) => PgDecodePlan::Scalar(PgScalarKind::Enum),
+        PgTypeKind::Simple => match oid.and_then(pg_scalar_kind) {
+            Some(kind) => PgDecodePlan::Scalar(kind),
+            None => PgDecodePlan::Unsupported(pg_unsupported_description(oid, type_name)),
+        },
+        // Array / Domain 由 pg_decode_plan 递归处理；其余结构（Range / Composite /
+        // Pseudo）不在本轮能力范围内。
+        _ => PgDecodePlan::Unsupported(pg_unsupported_description(oid, type_name)),
+    }
+}
+
+/// 构造带列上下文的「不支持类型」错误。
+#[cfg(feature = "postgres")]
+fn unsupported_pg_type_error(column_name: &str, ordinal: usize, detail: &str) -> sqlx::Error {
+    sqlx::Error::ColumnDecode {
+        index: format!("{column_name}#{ordinal}"),
+        source: format!("不支持的 PostgreSQL 列类型：{detail}").into(),
+    }
+}
+
+/// `INET` / `CIDR` 的轻量解码包装。
+///
+/// sqlx 默认不启用 `ipnetwork` feature，这里只按 PostgreSQL 二进制/文本格式提取
+/// 地址与掩码，再按 `INET` 或 `CIDR` 的文本表示输出。
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone)]
+struct PgInetValue {
+    address: String,
+    bits: u8,
+    max_bits: u8,
+}
+
+#[cfg(feature = "postgres")]
+impl PgInetValue {
+    /// 输出 PostgreSQL 文本表示：`INET` 在掩码等于全宽时省略 `/bits`，`CIDR` 始终保留。
+    fn to_json(&self, is_cidr: bool) -> serde_json::Value {
+        if is_cidr || self.bits != self.max_bits {
+            serde_json::Value::String(format!("{}/{}", self.address, self.bits))
+        } else {
+            serde_json::Value::String(self.address.clone())
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl sqlx::Type<sqlx::Postgres> for PgInetValue {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("inet")
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl sqlx::postgres::PgHasArrayType for PgInetValue {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("_inet")
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for PgInetValue {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        match value.format() {
+            sqlx::postgres::PgValueFormat::Binary => parse_pg_inet_bytes(value.as_bytes()?),
+            sqlx::postgres::PgValueFormat::Text => parse_pg_inet_text(value.as_str()?),
+        }
+    }
+}
+
+/// 解析 `INET` / `CIDR` 的二进制格式：
+/// family(1) + bits(1) + is_cidr(1) + 地址字节数(1) + 地址字节
+/// （IPv4 4 字节 / IPv6 16 字节）。
+#[cfg(feature = "postgres")]
+fn parse_pg_inet_bytes(bytes: &[u8]) -> Result<PgInetValue, sqlx::error::BoxDynError> {
+    if bytes.len() < 4 {
+        return Err("INET 二进制值长度不足 4 字节".into());
+    }
+
+    let family = bytes[0];
+    let bits = bytes[1];
+    let address_len = usize::from(bytes[3]);
+    let address = &bytes[4..];
+
+    let (address, max_bits) = match (family, address_len, address.len()) {
+        // PGSQL_AF_INET
+        (2, 4, 4) => (
+            std::net::Ipv4Addr::new(address[0], address[1], address[2], address[3]).to_string(),
+            32,
+        ),
+        // PGSQL_AF_INET6
+        (3, 16, 16) => {
+            let octets: [u8; 16] = address.try_into().map_err(|_| "INET 二进制地址长度非法")?;
+            (std::net::Ipv6Addr::from(octets).to_string(), 128)
+        }
+        _ => {
+            return Err(format!(
+                "未知的 INET 地址族或长度：family={family}, address_len={address_len}, len={}",
+                address.len()
+            )
+            .into())
+        }
+    };
+
+    if bits > max_bits {
+        return Err(format!("INET 掩码位数 {bits} 超出 {max_bits}").into());
+    }
+
+    Ok(PgInetValue {
+        address,
+        bits,
+        max_bits,
+    })
+}
+
+/// 解析文本格式的 `INET` / `CIDR`（简单协议结果）。
+#[cfg(feature = "postgres")]
+fn parse_pg_inet_text(text: &str) -> Result<PgInetValue, sqlx::error::BoxDynError> {
+    let (address, bits) = match text.split_once('/') {
+        Some((address, bits)) => (address, Some(bits)),
+        None => (text, None),
+    };
+
+    let max_bits = if address.contains(':') { 128 } else { 32 };
+    let bits = match bits {
+        Some(bits) => bits.parse::<u8>()?,
+        None => max_bits,
+    };
+    if bits > max_bits {
+        return Err(format!("INET 掩码位数 {bits} 超出 {max_bits}").into());
+    }
+
+    // 解析一次地址，顺带统一为 IPv6 压缩表示。
+    let address = if max_bits == 128 {
+        address.parse::<std::net::Ipv6Addr>()?.to_string()
+    } else {
+        address.parse::<std::net::Ipv4Addr>()?.to_string()
+    };
+
+    Ok(PgInetValue {
+        address,
+        bits,
+        max_bits,
+    })
+}
+
+/// 千分位以下的纳秒按 ISO 8601 输出：整秒不带小数点，否则去掉尾部零。
+#[cfg(feature = "postgres")]
+fn format_pg_time(time: chrono::NaiveTime) -> String {
+    use chrono::Timelike;
+    let base = time.format("%H:%M:%S").to_string();
+    let nanos = time.nanosecond();
+    if nanos == 0 {
+        base
+    } else {
+        let fraction = format!("{nanos:09}");
+        format!("{base}.{}", fraction.trim_end_matches('0'))
+    }
+}
+
+/// 输出 `±HH:MM[:SS]` 形式的时区偏移。
+#[cfg(feature = "postgres")]
+fn format_pg_offset(offset: chrono::FixedOffset) -> String {
+    let seconds = offset.local_minus_utc();
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let seconds = seconds.abs();
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if secs == 0 {
+        format!("{sign}{hours:02}:{minutes:02}")
+    } else {
+        format!("{sign}{hours:02}:{minutes:02}:{secs:02}")
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn pg_bool_to_json(value: bool) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::Bool(value))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_i64_to_json(value: i64) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::Number(value.into()))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_f64_to_json(value: f64) -> Result<serde_json::Value, sqlx::Error> {
+    // NaN / Infinity 无法编码为 JSON Number，返回结构化解码错误而非静默归零。
+    serde_json::Number::from_f64(value)
+        .map(serde_json::Value::Number)
+        .ok_or_else(|| {
+            sqlx::Error::Decode("浮点数值为 NaN 或 Infinity，无法编码为 JSON Number".into())
+        })
+}
+
+#[cfg(feature = "postgres")]
+fn pg_bigdecimal_to_json(value: sqlx::types::BigDecimal) -> Result<serde_json::Value, sqlx::Error> {
+    // 保留 NUMERIC 的十进制 scale，不经过 f64。
+    Ok(serde_json::Value::String(value.to_string()))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_string_to_json(value: String) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(value))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_bytea_to_json(value: Vec<u8>) -> Result<serde_json::Value, sqlx::Error> {
+    use base64::Engine;
+    Ok(serde_json::Value::String(
+        base64::engine::general_purpose::STANDARD.encode(value),
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_date_to_json(value: chrono::NaiveDate) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(
+        value.format("%Y-%m-%d").to_string(),
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_time_to_json(value: chrono::NaiveTime) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(format_pg_time(value)))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_timetz_to_json(
+    value: sqlx::postgres::types::PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>,
+) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(format!(
+        "{}{}",
+        format_pg_time(value.time),
+        format_pg_offset(value.offset)
+    )))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_timestamp_to_json(value: chrono::NaiveDateTime) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(format!(
+        "{}T{}",
+        value.date().format("%Y-%m-%d"),
+        format_pg_time(value.time())
+    )))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_timestamptz_to_json(
+    value: chrono::DateTime<chrono::Utc>,
+) -> Result<serde_json::Value, sqlx::Error> {
+    // sqlx 已把 TIMESTAMPTZ 归一化为 UTC；RFC 3339 是 ISO 8601 的子集。
+    Ok(serde_json::Value::String(
+        value.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_interval_to_json(
+    value: sqlx::postgres::types::PgInterval,
+) -> Result<serde_json::Value, sqlx::Error> {
+    // 三段整数无损表达 PostgreSQL interval；各段符号可能独立。
+    Ok(serde_json::json!({
+        "months": value.months,
+        "days": value.days,
+        "microseconds": value.microseconds,
+    }))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_uuid_to_json(value: sqlx::types::Uuid) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(serde_json::Value::String(value.to_string()))
+}
+
+#[cfg(feature = "postgres")]
+fn pg_json_to_json(value: serde_json::Value) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(value)
+}
+
+#[cfg(feature = "postgres")]
+fn pg_inet_to_json(value: PgInetValue, is_cidr: bool) -> Result<serde_json::Value, sqlx::Error> {
+    Ok(value.to_json(is_cidr))
+}
+
+/// 解码单个 PostgreSQL 标量列。
+#[cfg(feature = "postgres")]
+fn decode_pg_scalar(
+    row: &sqlx::postgres::PgRow,
+    ordinal: usize,
+    kind: PgScalarKind,
+) -> Result<serde_json::Value, sqlx::Error> {
+    use sqlx::Row;
+
+    // 这里全部使用 `try_get_unchecked`：类型已经由 OID / PgTypeKind 精确匹配，
+    // 且 Domain / Enum 的类型信息无法通过 `Type::compatible` 的默认规则匹配。
+    match kind {
+        PgScalarKind::Bool => pg_bool_to_json(row.try_get_unchecked(ordinal)?),
+        PgScalarKind::Int2 => {
+            pg_i64_to_json(i64::from(row.try_get_unchecked::<i16, _>(ordinal)?))
+        }
+        PgScalarKind::Int4 => {
+            pg_i64_to_json(i64::from(row.try_get_unchecked::<i32, _>(ordinal)?))
+        }
+        PgScalarKind::Int8 => pg_i64_to_json(row.try_get_unchecked::<i64, _>(ordinal)?),
+        PgScalarKind::Float4 => {
+            pg_f64_to_json(f64::from(row.try_get_unchecked::<f32, _>(ordinal)?))
+        }
+        PgScalarKind::Float8 => pg_f64_to_json(row.try_get_unchecked::<f64, _>(ordinal)?),
+        PgScalarKind::Numeric => {
+            pg_bigdecimal_to_json(row.try_get_unchecked::<sqlx::types::BigDecimal, _>(ordinal)?)
+        }
+        PgScalarKind::Text | PgScalarKind::Enum => {
+            pg_string_to_json(row.try_get_unchecked::<String, _>(ordinal)?)
+        }
+        PgScalarKind::Bytea => {
+            pg_bytea_to_json(row.try_get_unchecked::<Vec<u8>, _>(ordinal)?)
+        }
+        PgScalarKind::Date => {
+            pg_date_to_json(row.try_get_unchecked::<chrono::NaiveDate, _>(ordinal)?)
+        }
+        PgScalarKind::Time => {
+            pg_time_to_json(row.try_get_unchecked::<chrono::NaiveTime, _>(ordinal)?)
+        }
+        PgScalarKind::TimeTz => pg_timetz_to_json(row.try_get_unchecked::<
+            sqlx::postgres::types::PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>,
+            _,
+        >(ordinal)?),
+        PgScalarKind::Timestamp => {
+            pg_timestamp_to_json(row.try_get_unchecked::<chrono::NaiveDateTime, _>(ordinal)?)
+        }
+        PgScalarKind::TimestampTz => {
+            pg_timestamptz_to_json(row.try_get_unchecked::<chrono::DateTime<chrono::Utc>, _>(
+                ordinal,
+            )?)
+        }
+        PgScalarKind::Interval => pg_interval_to_json(
+            row.try_get_unchecked::<sqlx::postgres::types::PgInterval, _>(ordinal)?,
+        ),
+        PgScalarKind::Uuid => {
+            pg_uuid_to_json(row.try_get_unchecked::<sqlx::types::Uuid, _>(ordinal)?)
+        }
+        PgScalarKind::Json => {
+            pg_json_to_json(row.try_get_unchecked::<serde_json::Value, _>(ordinal)?)
+        }
+        PgScalarKind::Inet => {
+            pg_inet_to_json(row.try_get_unchecked::<PgInetValue, _>(ordinal)?, false)
+        }
+        PgScalarKind::Cidr => {
+            pg_inet_to_json(row.try_get_unchecked::<PgInetValue, _>(ordinal)?, true)
+        }
+    }
+}
+
+/// 解码一维 PostgreSQL 数组；元素转换与标量路径共用同一套函数。
+#[cfg(feature = "postgres")]
+fn decode_pg_array(
+    row: &sqlx::postgres::PgRow,
+    ordinal: usize,
+    column_name: &str,
+    element: &PgDecodePlan,
+) -> Result<serde_json::Value, sqlx::Error> {
+    use sqlx::Row;
+
+    let PgDecodePlan::Scalar(kind) = element else {
+        return Err(match element {
+            PgDecodePlan::Unsupported(detail) => {
+                unsupported_pg_type_error(column_name, ordinal, detail)
+            }
+            _ => sqlx::Error::Decode("不支持多维 PostgreSQL 数组".into()),
+        });
+    };
+
+    // 数组内 NULL 用 `Option<T>` 保留；PostgreSQL 数组允许 NULL 元素。
+    macro_rules! decode_elements {
+        ($ty:ty, $convert:expr) => {{
+            let values: Vec<Option<$ty>> = row.try_get_unchecked(ordinal)?;
+            let mut elements = Vec::with_capacity(values.len());
+            for value in values {
+                elements.push(match value {
+                    Some(value) => $convert(value)?,
+                    None => serde_json::Value::Null,
+                });
+            }
+            Ok(serde_json::Value::Array(elements))
+        }};
+    }
+
+    match kind {
+        PgScalarKind::Bool => decode_elements!(bool, pg_bool_to_json),
+        PgScalarKind::Int2 => {
+            decode_elements!(i16, |value: i16| { pg_i64_to_json(i64::from(value)) })
+        }
+        PgScalarKind::Int4 => {
+            decode_elements!(i32, |value: i32| { pg_i64_to_json(i64::from(value)) })
+        }
+        PgScalarKind::Int8 => decode_elements!(i64, pg_i64_to_json),
+        PgScalarKind::Float4 => {
+            decode_elements!(f32, |value: f32| { pg_f64_to_json(f64::from(value)) })
+        }
+        PgScalarKind::Float8 => decode_elements!(f64, pg_f64_to_json),
+        PgScalarKind::Numeric => {
+            decode_elements!(sqlx::types::BigDecimal, pg_bigdecimal_to_json)
+        }
+        PgScalarKind::Text | PgScalarKind::Enum => {
+            decode_elements!(String, pg_string_to_json)
+        }
+        PgScalarKind::Bytea => decode_elements!(Vec<u8>, pg_bytea_to_json),
+        PgScalarKind::Date => decode_elements!(chrono::NaiveDate, pg_date_to_json),
+        PgScalarKind::Time => decode_elements!(chrono::NaiveTime, pg_time_to_json),
+        PgScalarKind::TimeTz => decode_elements!(
+            sqlx::postgres::types::PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>,
+            pg_timetz_to_json
+        ),
+        PgScalarKind::Timestamp => {
+            decode_elements!(chrono::NaiveDateTime, pg_timestamp_to_json)
+        }
+        PgScalarKind::TimestampTz => {
+            decode_elements!(chrono::DateTime<chrono::Utc>, pg_timestamptz_to_json)
+        }
+        PgScalarKind::Interval => {
+            decode_elements!(sqlx::postgres::types::PgInterval, pg_interval_to_json)
+        }
+        PgScalarKind::Uuid => decode_elements!(sqlx::types::Uuid, pg_uuid_to_json),
+        PgScalarKind::Json => decode_elements!(serde_json::Value, pg_json_to_json),
+        PgScalarKind::Inet => decode_elements!(PgInetValue, |value: PgInetValue| {
+            pg_inet_to_json(value, false)
+        }),
+        PgScalarKind::Cidr => decode_elements!(PgInetValue, |value: PgInetValue| {
+            pg_inet_to_json(value, true)
+        }),
+    }
+}
+
+/// 解码单个 PostgreSQL 列。
+#[cfg(feature = "postgres")]
+fn decode_pg_column(
+    row: &sqlx::postgres::PgRow,
+    ordinal: usize,
+    column_name: &str,
+    plan: &PgDecodePlan,
+) -> Result<serde_json::Value, sqlx::Error> {
+    match plan {
+        PgDecodePlan::Scalar(kind) => decode_pg_scalar(row, ordinal, *kind),
+        PgDecodePlan::Array(element) => decode_pg_array(row, ordinal, column_name, element),
+        PgDecodePlan::Unsupported(detail) => {
+            Err(unsupported_pg_type_error(column_name, ordinal, detail))
+        }
+    }
+}
+
+/// 实现 `sqlx::FromRow`，支持从 PostgreSQL 查询结果动态解码。
+///
+/// 与 MySQL 实现并存，按 feature 分别编译。类型分派基于 OID / `PgTypeKind`，
+/// 不依赖可能被用户自定义类型复用的类型名。
+#[cfg(feature = "postgres")]
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Record {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Column;
+        use sqlx::Row;
+        use sqlx::ValueRef;
+
+        let mut columns = serde_json::Map::new();
+
+        for col in row.columns() {
+            let name = col.name().to_string();
+            let ordinal = col.ordinal();
+
+            // SQL NULL 直接映射为 JSON Null，不再推断具体类型。
+            if row.try_get_raw(ordinal)?.is_null() {
+                columns.insert(name, serde_json::Value::Null);
+                continue;
+            }
+
+            let plan = pg_decode_plan(col.type_info());
+            let value = decode_pg_column(row, ordinal, &name, &plan)?;
+            // 列名保持数据库原样；重复列名时后者覆盖前者。
+            columns.insert(name, value);
+        }
+
+        Ok(Record { columns })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +1098,235 @@ mod tests {
         assert_eq!(mysql_integer_kind("MEDIUMINT"), MysqlIntegerKind::Int64);
         assert_eq!(mysql_integer_kind("SMALLINT"), MysqlIntegerKind::Int64);
         assert_eq!(mysql_integer_kind("VARCHAR"), MysqlIntegerKind::Other);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_scalar_kind_covers_required_oids() {
+        // 覆盖需求列出的全部标量族，未知 OID 必须返回 None 而不是默认字符串。
+        for (oid, expected) in [
+            (16, PgScalarKind::Bool),
+            (21, PgScalarKind::Int2),
+            (23, PgScalarKind::Int4),
+            (20, PgScalarKind::Int8),
+            (700, PgScalarKind::Float4),
+            (701, PgScalarKind::Float8),
+            (1700, PgScalarKind::Numeric),
+            (25, PgScalarKind::Text),
+            (1043, PgScalarKind::Text),
+            (1042, PgScalarKind::Text),
+            (19, PgScalarKind::Text),
+            (17, PgScalarKind::Bytea),
+            (1082, PgScalarKind::Date),
+            (1083, PgScalarKind::Time),
+            (1266, PgScalarKind::TimeTz),
+            (1114, PgScalarKind::Timestamp),
+            (1184, PgScalarKind::TimestampTz),
+            (1186, PgScalarKind::Interval),
+            (2950, PgScalarKind::Uuid),
+            (114, PgScalarKind::Json),
+            (3802, PgScalarKind::Json),
+            (869, PgScalarKind::Inet),
+            (650, PgScalarKind::Cidr),
+        ] {
+            assert_eq!(pg_scalar_kind(oid), Some(expected), "OID {oid} 映射漂移");
+        }
+
+        // POINT / RANGE / 自定义类型等不得被静默归类。
+        assert_eq!(pg_scalar_kind(600), None);
+        assert_eq!(pg_scalar_kind(3904), None);
+        assert_eq!(pg_scalar_kind(50_000), None);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_array_element_kind_covers_required_arrays() {
+        assert_eq!(pg_array_element_kind(1000), Some(PgScalarKind::Bool));
+        assert_eq!(pg_array_element_kind(1005), Some(PgScalarKind::Int2));
+        assert_eq!(pg_array_element_kind(1007), Some(PgScalarKind::Int4));
+        assert_eq!(pg_array_element_kind(1016), Some(PgScalarKind::Int8));
+        assert_eq!(pg_array_element_kind(1021), Some(PgScalarKind::Float4));
+        assert_eq!(pg_array_element_kind(1022), Some(PgScalarKind::Float8));
+        assert_eq!(pg_array_element_kind(1231), Some(PgScalarKind::Numeric));
+        assert_eq!(pg_array_element_kind(1009), Some(PgScalarKind::Text));
+        assert_eq!(pg_array_element_kind(1003), Some(PgScalarKind::Text));
+        assert_eq!(pg_array_element_kind(1014), Some(PgScalarKind::Text));
+        assert_eq!(pg_array_element_kind(1015), Some(PgScalarKind::Text));
+        assert_eq!(pg_array_element_kind(1001), Some(PgScalarKind::Bytea));
+        assert_eq!(pg_array_element_kind(1182), Some(PgScalarKind::Date));
+        assert_eq!(pg_array_element_kind(1183), Some(PgScalarKind::Time));
+        assert_eq!(pg_array_element_kind(1270), Some(PgScalarKind::TimeTz));
+        assert_eq!(pg_array_element_kind(1115), Some(PgScalarKind::Timestamp));
+        assert_eq!(pg_array_element_kind(1185), Some(PgScalarKind::TimestampTz));
+        assert_eq!(pg_array_element_kind(1187), Some(PgScalarKind::Interval));
+        assert_eq!(pg_array_element_kind(2951), Some(PgScalarKind::Uuid));
+        assert_eq!(pg_array_element_kind(199), Some(PgScalarKind::Json));
+        assert_eq!(pg_array_element_kind(3807), Some(PgScalarKind::Json));
+        assert_eq!(pg_array_element_kind(1041), Some(PgScalarKind::Inet));
+        assert_eq!(pg_array_element_kind(651), Some(PgScalarKind::Cidr));
+
+        // 内置标量 OID 不应当被误判为数组。
+        assert_eq!(pg_array_element_kind(23), None);
+        assert_eq!(pg_array_element_kind(600), None);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_decode_plan_classifies_enum_simple_and_unsupported() {
+        use sqlx::postgres::PgTypeKind;
+        use std::sync::Arc;
+
+        let simple = PgTypeKind::Simple;
+        assert_eq!(
+            pg_decode_plan_from_kind(Some(23), "INT4", &simple),
+            PgDecodePlan::Scalar(PgScalarKind::Int4)
+        );
+
+        // 用户自定义枚举按标签文本解码。
+        let enum_kind = PgTypeKind::Enum(Arc::from(vec!["happy".to_string()]));
+        assert_eq!(
+            pg_decode_plan_from_kind(Some(50_000), "mood", &enum_kind),
+            PgDecodePlan::Scalar(PgScalarKind::Enum)
+        );
+
+        // 未知 OID 的描述必须带类型名与 OID，供结构化错误使用。
+        match pg_decode_plan_from_kind(Some(600), "POINT", &simple) {
+            PgDecodePlan::Unsupported(detail) => {
+                assert!(detail.contains("POINT"), "{detail}");
+                assert!(detail.contains("600"), "{detail}");
+            }
+            other => panic!("POINT 应判定为不支持，实得 {other:?}"),
+        }
+
+        // COMPOSITE / RANGE 等结构类型同样判为不支持。
+        let composite =
+            PgTypeKind::Composite(Arc::from(Vec::<(String, sqlx::postgres::PgTypeInfo)>::new()));
+        assert!(matches!(
+            pg_decode_plan_from_kind(Some(50_001), "pair", &composite),
+            PgDecodePlan::Unsupported(ref detail) if detail.contains("pair")
+        ));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_time_formatting_is_iso8601() {
+        use chrono::NaiveTime;
+
+        let whole = NaiveTime::from_hms_opt(1, 2, 3).expect("合法时间");
+        assert_eq!(format_pg_time(whole), "01:02:03");
+
+        let fraction = NaiveTime::from_hms_nano_opt(12, 34, 56, 789_000_000).expect("合法时间");
+        assert_eq!(format_pg_time(fraction), "12:34:56.789");
+
+        // 纳秒级精度去尾零。
+        let nanos = NaiveTime::from_hms_nano_opt(0, 0, 0, 123_400_000).expect("合法时间");
+        assert_eq!(format_pg_time(nanos), "00:00:00.1234");
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).expect("合法日期");
+        let timestamp = date
+            .and_hms_nano_opt(10, 30, 0, 500_000_000)
+            .expect("合法时间");
+        assert_eq!(
+            pg_timestamp_to_json(timestamp).expect("日期时间应可编码"),
+            json!("2026-11-08T10:30:00.5")
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_timetz_formatting_includes_offset() {
+        use chrono::{FixedOffset, NaiveTime};
+        use sqlx::postgres::types::PgTimeTz;
+
+        let time = NaiveTime::from_hms_opt(10, 30, 0).expect("合法时间");
+        let east = FixedOffset::east_opt(8 * 3600).expect("合法偏移");
+        assert_eq!(format_pg_offset(east), "+08:00");
+        assert_eq!(
+            pg_timetz_to_json(PgTimeTz { time, offset: east }).expect("timetz 应可编码"),
+            json!("10:30:00+08:00")
+        );
+
+        let west = FixedOffset::east_opt(-(5 * 3600 + 30 * 60)).expect("合法偏移");
+        assert_eq!(format_pg_offset(west), "-05:30");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_interval_maps_to_lossless_object() {
+        use sqlx::postgres::types::PgInterval;
+
+        let value = pg_interval_to_json(PgInterval {
+            months: 14,
+            days: 3,
+            microseconds: 14_706_789_000,
+        })
+        .expect("interval 应可编码");
+
+        assert_eq!(
+            value,
+            json!({"months": 14, "days": 3, "microseconds": 14_706_789_000_i64})
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_inet_binary_and_text_formats() {
+        // AF_INET + 24 位掩码 + 4 字节地址长度 + 192.168.1.1
+        let masked = [2_u8, 24, 0, 4, 192, 168, 1, 1];
+        assert_eq!(
+            parse_pg_inet_bytes(&masked)
+                .expect("IPv4 应可解析")
+                .to_json(false),
+            json!("192.168.1.1/24")
+        );
+
+        // 掩码等于全宽时 INET 省略 /bits，CIDR 始终保留。
+        let host = [2_u8, 32, 0, 4, 10, 0, 0, 1];
+        assert_eq!(
+            parse_pg_inet_bytes(&host)
+                .expect("IPv4 应可解析")
+                .to_json(false),
+            json!("10.0.0.1")
+        );
+        assert_eq!(
+            parse_pg_inet_bytes(&host)
+                .expect("IPv4 应可解析")
+                .to_json(true),
+            json!("10.0.0.1/32")
+        );
+
+        // AF_INET6 + ::1
+        let mut v6 = [0_u8; 20];
+        v6[0] = 3;
+        v6[1] = 128;
+        v6[3] = 16;
+        v6[19] = 1;
+        assert_eq!(
+            parse_pg_inet_bytes(&v6)
+                .expect("IPv6 应可解析")
+                .to_json(false),
+            json!("::1")
+        );
+
+        assert_eq!(
+            parse_pg_inet_text("192.168.1.1/24")
+                .expect("文本 INET 应可解析")
+                .to_json(false),
+            json!("192.168.1.1/24")
+        );
+        assert_eq!(
+            parse_pg_inet_text("::1")
+                .expect("文本 INET 应可解析")
+                .to_json(false),
+            json!("::1")
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn pg_float_rejects_non_finite_values() {
+        assert_eq!(pg_f64_to_json(2.25).expect("有限浮点应可编码"), json!(2.25));
+        assert!(pg_f64_to_json(f64::NAN).is_err());
+        assert!(pg_f64_to_json(f64::INFINITY).is_err());
     }
 }

@@ -145,6 +145,12 @@ jobs:
           - name: yang-base-mysql
             package: yang-base
             args: --no-default-features --features mysql
+          - name: yang-base-postgres
+            package: yang-base
+            args: --no-default-features --features postgres
+          - name: yang-base-mysql-postgres
+            package: yang-base
+            args: --no-default-features --features mysql,postgres
           - name: yang-base-redis
             package: yang-base
             args: --no-default-features --features redis
@@ -260,6 +266,63 @@ jobs:
         run: cargo test -p yang-db --test integration_pg_crud_simple --locked -- --ignored --test-threads=1
       - name: PostgreSQL transaction integration
         run: cargo test -p yang-db --test integration_pg_transaction --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Record decoding integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_record_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL TableQuery integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Phase C integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg_phase_c --locked -- --ignored --test-threads=1
+
+  docker-postgres-17:
+    name: PostgreSQL 17 integration
+    runs-on: ubuntu-latest
+    env:
+      PG_TEST_URL: postgres://postgres:postgres@localhost:5432/test
+    steps:
+      - name: Start PostgreSQL 17 with 2PC enabled
+        run: |
+          docker run -d --name pg17 -p 5432:5432 \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=test \
+            postgres:17-alpine -c max_prepared_transactions=16
+          for _ in $(seq 1 30); do
+            if docker exec pg17 pg_isready -U postgres -d test; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pg17
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: PostgreSQL Phase A integration
+        run: cargo test -p yang-db --test integration_pg_phase_a --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B queries integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_queries --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B runtime integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_runtime --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B types integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_types --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase B COPY/LISTEN integration
+        run: cargo test -p yang-db --test integration_pg_phase_b_copy_listen --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Phase C integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_phase_c --locked -- --ignored --test-threads=1
+      - name: PostgreSQL type property tests
+        run: cargo test -p yang-db --no-default-features --features postgres --test proptest_pg_types --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Record decoding integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_record_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL schema sync integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL TableQuery integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Phase C integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_table_query_pg_phase_c --locked -- --ignored --test-threads=1
 
   docker-redis:
     name: Redis 7 integration

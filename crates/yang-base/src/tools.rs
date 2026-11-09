@@ -11,12 +11,12 @@ use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::Mutex;
 
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+use crate::database::AnyDatabase;
 #[cfg(feature = "http")]
 use crate::http::HttpClient;
 #[cfg(feature = "token")]
 use crate::token::TokenManager;
-#[cfg(feature = "mysql")]
-use yang_db::Database;
 #[cfg(feature = "redis")]
 use yang_db::RedisClient;
 
@@ -66,8 +66,8 @@ impl ToolsHealth {
 
 /// 构建完成后冻结的应用资源。
 pub struct Tools {
-    #[cfg(feature = "mysql")]
-    mysql: Option<Database>,
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    database: Option<AnyDatabase>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -110,18 +110,34 @@ impl Tools {
         }
     }
 
-    /// 获取 MySQL 连接池；未配置或生命周期已结束时失败。
-    #[cfg(feature = "mysql")]
-    pub fn mysql(&self) -> Result<&Database, BaseError> {
+    /// 获取运行时数据库后端；未配置或生命周期已结束时失败。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database(&self) -> Result<&AnyDatabase, BaseError> {
         self.ensure_running()?;
-        self.mysql.as_ref().ok_or(BaseError::DatabaseNotInitialized)
+        self.database
+            .as_ref()
+            .ok_or(BaseError::DatabaseNotInitialized)
     }
 
-    /// 返回可选 MySQL 连接池，供只构建查询计划而不执行 SQL 的内部路径使用。
+    /// 获取 MySQL 连接池；未配置 MySQL 后端或生命周期已结束时失败。
+    ///
+    /// 当运行期配置的是 PostgreSQL 后端时同样返回 [`BaseError::DatabaseNotInitialized`]，
+    /// 避免把 PG 连接池误当作 MySQL 使用。
     #[cfg(feature = "mysql")]
-    pub(crate) fn optional_mysql(&self) -> Result<Option<&Database>, BaseError> {
+    pub fn mysql(&self) -> Result<&yang_db::mysql::Database, BaseError> {
         self.ensure_running()?;
-        Ok(self.mysql.as_ref())
+        self.database
+            .as_ref()
+            .and_then(AnyDatabase::as_mysql)
+            .ok_or(BaseError::DatabaseNotInitialized)
+    }
+
+    /// 返回当前数据库连接池状态快照；未配置数据库时为 `None`。
+    ///
+    /// 不检查生命周期状态，便于关闭后继续观察连接池回收情况。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn pool_status(&self) -> Option<yang_db::PoolStatus> {
+        self.database.as_ref().map(AnyDatabase::pool_status)
     }
 
     /// 获取 Redis 客户端；未配置或生命周期已结束时失败。
@@ -196,20 +212,25 @@ impl Tools {
             };
         }
 
-        #[cfg(any(feature = "mysql", feature = "redis"))]
+        #[cfg(any(feature = "mysql", feature = "postgres", feature = "redis"))]
         let mut resources = Vec::new();
-        #[cfg(not(any(feature = "mysql", feature = "redis")))]
+        #[cfg(not(any(feature = "mysql", feature = "postgres", feature = "redis")))]
         let resources = Vec::new();
-        #[cfg(feature = "mysql")]
-        if let Some(mysql) = &self.mysql {
-            resources.push(match mysql.health_check().await {
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        if let Some(database) = &self.database {
+            let resource = match database.backend() {
+                yang_db::BackendKind::MySql => "mysql",
+                yang_db::BackendKind::PostgreSql => "postgres",
+                _ => "database",
+            };
+            resources.push(match database.health_check().await {
                 Ok(healthy) => ResourceHealth {
-                    resource: "mysql",
+                    resource,
                     healthy,
                     detail: None,
                 },
                 Err(error) => ResourceHealth {
-                    resource: "mysql",
+                    resource,
                     healthy: false,
                     detail: Some(error.to_string()),
                 },
@@ -236,7 +257,7 @@ impl Tools {
 
     /// 幂等关闭所有核心资源。
     ///
-    /// 关闭顺序与常见启动顺序相反：先 Redis，再 MySQL。并发调用会等待首个关闭流程完成。
+    /// 关闭顺序与常见启动顺序相反：先 Redis，再数据库。并发调用会等待首个关闭流程完成。
     pub async fn close(&self) {
         let _guard = self.close_lock.lock().await;
         if self.state() == ToolsState::Closed {
@@ -248,9 +269,9 @@ impl Tools {
         if let Some(cache) = &self.cache {
             cache.close().await;
         }
-        #[cfg(feature = "mysql")]
-        if let Some(mysql) = &self.mysql {
-            mysql.close().await;
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        if let Some(database) = &self.database {
+            database.close().await;
         }
 
         self.state.store(CLOSED, Ordering::Release);
@@ -261,8 +282,8 @@ impl Tools {
 #[derive(Default)]
 #[must_use = "ToolsBuilder 必须调用 build() 才会冻结并交给应用"]
 pub struct ToolsBuilder {
-    #[cfg(feature = "mysql")]
-    mysql: Option<Database>,
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    database: Option<AnyDatabase>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -292,13 +313,25 @@ impl ToolsBuilder {
         Self::default()
     }
 
-    /// 设置唯一 MySQL 资源。
+    /// 设置唯一 MySQL 资源（兼容入口，内部包装为 [`AnyDatabase`]）。
     #[cfg(feature = "mysql")]
-    pub fn mysql(mut self, mysql: Database) -> Self {
-        if self.mysql.replace(mysql).is_some() {
-            self.record_duplicate("MySQL");
-        }
+    pub fn mysql(mut self, mysql: yang_db::mysql::Database) -> Self {
+        self.set_database(AnyDatabase::mysql(mysql), "MySQL");
         self
+    }
+
+    /// 设置唯一运行时数据库后端（MySQL 或 PostgreSQL）。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database(mut self, database: AnyDatabase) -> Self {
+        self.set_database(database, "Database");
+        self
+    }
+
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    fn set_database(&mut self, database: AnyDatabase, resource: &str) {
+        if self.database.replace(database).is_some() {
+            self.record_duplicate(resource);
+        }
     }
 
     /// 设置唯一 Redis 客户端。
@@ -390,8 +423,8 @@ impl ToolsBuilder {
         };
 
         Ok(Tools {
-            #[cfg(feature = "mysql")]
-            mysql: self.mysql,
+            #[cfg(any(feature = "mysql", feature = "postgres"))]
+            database: self.database,
             #[cfg(feature = "redis")]
             cache: self.cache,
             #[cfg(feature = "token")]
@@ -523,5 +556,122 @@ mod tests {
             tools.http(),
             Err(BaseError::ConfigError(message)) if message == "Tools 已关闭"
         ));
+    }
+
+    /// 用惰性连接池构造 MySQL 连接池：不建立真实网络连接。
+    #[cfg(feature = "mysql")]
+    fn test_mysql_pool() -> yang_db::mysql::Database {
+        let pool = sqlx::MySqlPool::connect_lazy("mysql://root:test@127.0.0.1:3306/test")
+            .expect("惰性 MySQL 连接池应创建成功");
+        yang_db::mysql::Database::from_pool(pool, yang_db::mysql::DatabaseConfig::default())
+            .expect("默认 MySQL 配置应通过校验")
+    }
+
+    #[cfg(feature = "mysql")]
+    fn test_mysql_database() -> AnyDatabase {
+        AnyDatabase::mysql(test_mysql_pool())
+    }
+
+    /// 用惰性连接池构造 PostgreSQL 连接池：不建立真实网络连接。
+    #[cfg(feature = "postgres")]
+    fn test_postgres_pool() -> yang_db::postgres::Database {
+        let pool = sqlx::PgPool::connect_lazy("postgres://postgres:postgres@127.0.0.1:55432/test")
+            .expect("惰性 PostgreSQL 连接池应创建成功");
+        yang_db::postgres::Database::from_pool(pool, yang_db::postgres::DatabaseConfig::default())
+            .expect("默认 PostgreSQL 配置应通过校验")
+    }
+
+    #[cfg(feature = "postgres")]
+    fn test_postgres_database() -> AnyDatabase {
+        AnyDatabase::postgres(test_postgres_pool())
+    }
+
+    #[cfg(feature = "mysql")]
+    #[tokio::test]
+    async fn mysql_handler_reports_backend_and_pool_status() {
+        let tools = ToolsBuilder::new()
+            .mysql(test_mysql_pool())
+            .build()
+            .expect("配置 MySQL 后应构建成功");
+
+        assert_eq!(
+            tools.database().expect("数据库应存在").backend(),
+            yang_db::BackendKind::MySql
+        );
+        assert!(tools.mysql().is_ok());
+        assert!(tools.pool_status().is_some());
+        assert!(tools.database().expect("数据库应存在").as_mysql().is_some());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_handler_reports_backend_and_pool_status() {
+        let tools = ToolsBuilder::new()
+            .database(test_postgres_database())
+            .build()
+            .expect("配置 PostgreSQL 后应构建成功");
+
+        assert_eq!(
+            tools.database().expect("数据库应存在").backend(),
+            yang_db::BackendKind::PostgreSql
+        );
+        assert!(tools.pool_status().is_some());
+        assert!(tools
+            .database()
+            .expect("数据库应存在")
+            .as_postgres()
+            .is_some());
+    }
+
+    #[cfg(feature = "mysql")]
+    #[tokio::test]
+    async fn database_slot_errors_after_close() {
+        let tools = ToolsBuilder::new()
+            .database(test_mysql_database())
+            .build()
+            .expect("配置数据库后应构建成功");
+
+        tools.close().await;
+
+        assert!(matches!(
+            tools.database(),
+            Err(BaseError::ConfigError(message)) if message == "Tools 已关闭"
+        ));
+    }
+
+    #[cfg(feature = "mysql")]
+    #[tokio::test]
+    async fn duplicate_database_registration_is_rejected_at_build_time() {
+        let result = ToolsBuilder::new()
+            .database(test_mysql_database())
+            .database(test_mysql_database())
+            .build();
+
+        assert!(
+            matches!(result, Err(BaseError::ConfigError(message)) if message.contains("重复注册"))
+        );
+    }
+
+    #[cfg(all(feature = "mysql", feature = "postgres"))]
+    #[tokio::test]
+    async fn mysql_accessor_rejects_postgres_backend() {
+        let tools = ToolsBuilder::new()
+            .database(test_postgres_database())
+            .build()
+            .expect("配置 PostgreSQL 后应构建成功");
+
+        assert_eq!(
+            tools.database().expect("数据库应存在").backend(),
+            yang_db::BackendKind::PostgreSql
+        );
+        assert!(matches!(
+            tools.mysql(),
+            Err(BaseError::DatabaseNotInitialized)
+        ));
+        assert!(tools
+            .database()
+            .expect("数据库应存在")
+            .as_postgres()
+            .is_some());
     }
 }

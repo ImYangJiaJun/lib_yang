@@ -16,7 +16,16 @@ categories = ["database"]
 [features]
 default = ["mysql", "postgres", "redis"]
 mysql = ["dep:sqlx", "sqlx/mysql", "sqlx/derive"]
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/derive"]
+postgres = [
+    "dep:sqlx",
+    "sqlx/postgres",
+    "sqlx/derive",
+    # 类型支持只挂在 postgres feature 上：MySQL-only 构建不启用 uuid/bigdecimal。
+    "sqlx/uuid",
+    "sqlx/bigdecimal",
+    "dep:uuid",
+    "dep:bigdecimal",
+]
 redis = ["dep:deadpool-redis", "dep:redis"]
 
 # yang-db lint 配置：
@@ -49,6 +58,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # 时间处理
 chrono = { workspace = true }
+# 精确十进制与 UUID（仅 postgres feature）
+bigdecimal = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 # 日志
 log = { workspace = true }
 # 结构化数据库边界；只记录后端、操作与受控表名，不记录 SQL/参数/Redis key。
@@ -59,6 +71,9 @@ base64 = { workspace = true }
 [dev-dependencies]
 proptest.workspace = true
 testcontainers = "=0.22.0"
+# 集成测试直接构造 PG 类型参数（postgres feature 下同时是常规依赖）
+bigdecimal.workspace = true
+uuid.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

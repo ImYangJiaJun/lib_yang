@@ -1,10 +1,13 @@
 //! 查询热路径使用的受控 SQL 引用与封闭操作符。
 
-use crate::sql_types::{Identifier, QualifiedIdentifier};
+use crate::sql_types::QualifiedIdentifier;
 use crate::DbError;
 use std::fmt;
 
 /// 构建期校验完成的数据库表引用。
+///
+/// 支持单段表名（`users`）或 `schema.table` 两段限定名；每段都按严格 ASCII
+/// 标识符校验，渲染时逐段加方言引号。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TableRef {
     raw: String,
@@ -14,7 +17,7 @@ impl TableRef {
     /// 校验并创建表引用。
     pub fn new(value: impl Into<String>) -> Result<Self, DbError> {
         let raw = value.into();
-        Identifier::parse(&raw)?;
+        QualifiedIdentifier::parse_with_max_parts(&raw, 2)?;
         Ok(Self { raw })
     }
 
@@ -42,7 +45,10 @@ impl fmt::Display for TableRef {
     }
 }
 
-/// 构建期校验完成的列或 `table.column` 引用。
+/// 构建期校验完成的列引用。
+///
+/// 支持 `column`、`table.column` 与 `schema.table.column` 三种形态（最多三段），
+/// 每段都按严格 ASCII 标识符校验，渲染时逐段加方言引号。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FieldRef {
     raw: String,
@@ -125,15 +131,16 @@ impl FieldRef {
 
 #[doc(hidden)]
 pub const fn __validate_table_literal(value: &str) {
-    validate_literal(value, false);
+    validate_literal(value, 2);
 }
 
 #[doc(hidden)]
 pub const fn __validate_field_literal(value: &str) {
-    validate_literal(value, true);
+    validate_literal(value, 3);
 }
 
-const fn validate_literal(value: &str, qualified: bool) {
+/// 编译期字面量校验：`max_parts` 为允许的最大段数（点号数 + 1）。
+const fn validate_literal(value: &str, max_parts: usize) {
     let bytes = value.as_bytes();
     assert!(!bytes.is_empty(), "SQL identifier cannot be empty");
     let mut index = 0;
@@ -142,10 +149,9 @@ const fn validate_literal(value: &str, qualified: bool) {
     while index < bytes.len() {
         let byte = bytes[index];
         if byte == b'.' {
-            assert!(qualified, "table identifier cannot be qualified");
             assert!(!segment_start, "identifier segment cannot be empty");
             dots += 1;
-            assert!(dots <= 1, "field identifier accepts at most table.field");
+            assert!(dots < max_parts, "SQL identifier has too many segments");
             segment_start = true;
         } else if segment_start {
             assert!(
@@ -305,8 +311,26 @@ impl SelectExpr {
         self.render('"', "DOUBLE PRECISION")
     }
 
+    /// 渲染不含输出别名的 PostgreSQL 聚合表达式。
+    ///
+    /// 用于 `HAVING COUNT(*) > 1` 等场景：HAVING 中不允许引用 SELECT 别名，
+    /// 也不能携带 `AS` 片段。
+    #[cfg(feature = "postgres")]
+    pub(crate) fn postgres_sql_without_alias(&self) -> String {
+        self.render_expression('"', "DOUBLE PRECISION")
+    }
+
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     fn render(&self, quote: char, double_type: &str) -> String {
+        let expression = self.render_expression(quote, double_type);
+        self.alias.as_ref().map_or(expression.clone(), |alias| {
+            format!("{expression} AS {}", quote_qualified(alias.as_str(), quote))
+        })
+    }
+
+    /// 渲染聚合表达式本体（不含输出别名）。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    fn render_expression(&self, quote: char, double_type: &str) -> String {
         let function = match self.aggregate {
             Aggregate::Count => "COUNT",
             Aggregate::Sum => "SUM",
@@ -319,14 +343,11 @@ impl SelectExpr {
             |field| quote_qualified(field.as_str(), quote),
         );
         let aggregate = format!("{function}({operand})");
-        let expression = if self.cast_double {
+        if self.cast_double {
             format!("CAST({aggregate} AS {double_type})")
         } else {
             aggregate
-        };
-        self.alias.as_ref().map_or(expression.clone(), |alias| {
-            format!("{expression} AS {}", quote_qualified(alias.as_str(), quote))
-        })
+        }
     }
 }
 
@@ -342,6 +363,8 @@ pub enum SqlExpr {
     UnixTimestamp,
     /// 服务端当前 Unix 时间戳加偏移秒数；偏移量以绑定参数传递。
     UnixTimestampAdd(i64),
+    /// 服务端当前时间：PostgreSQL `now()`，MySQL `CURRENT_TIMESTAMP`。
+    Now,
 }
 
 impl SqlExpr {
@@ -356,21 +379,23 @@ impl SqlExpr {
         Self::UnixTimestampAdd(seconds)
     }
 
+    /// 服务端当前时间。
+    pub fn now() -> Self {
+        Self::Now
+    }
+
     /// 渲染 MySQL 片段，返回（固定 SQL 片段，可选的 i64 绑定参数）。
     #[cfg(feature = "mysql")]
     pub(crate) fn mysql_render(&self) -> (&'static str, Option<i64>) {
         match self {
             Self::UnixTimestamp => ("UNIX_TIMESTAMP()", None),
             Self::UnixTimestampAdd(seconds) => ("UNIX_TIMESTAMP() + ?", Some(*seconds)),
+            Self::Now => ("CURRENT_TIMESTAMP", None),
         }
     }
 
     /// 渲染 PostgreSQL 片段；`placeholder` 为携带参数时 `$n` 占位符的序号。
-    ///
-    /// PostgreSQL 构造器尚未接入表达式入口，此渲染当前仅由单元测试覆盖，
-    /// 待 PG 侧需要时直接复用。
     #[cfg(feature = "postgres")]
-    #[allow(dead_code)]
     pub(crate) fn postgres_render(&self, placeholder: usize) -> (String, Option<i64>) {
         match self {
             Self::UnixTimestamp => ("EXTRACT(EPOCH FROM now())".to_string(), None),
@@ -378,6 +403,7 @@ impl SqlExpr {
                 format!("EXTRACT(EPOCH FROM now()) + ${placeholder}"),
                 Some(*seconds),
             ),
+            Self::Now => ("now()".to_string(), None),
         }
     }
 }
@@ -418,10 +444,28 @@ mod tests {
 
     #[test]
     fn controlled_references_reject_expressions_and_injection_payloads() {
-        for invalid in ["", "users;DROP", "COUNT(*)", "users.id.extra", "用户"] {
-            assert!(TableRef::new(invalid).is_err());
-            assert!(FieldRef::new(invalid).is_err());
+        for invalid in ["", "users;DROP", "COUNT(*)", "用户", "a.b.c.d", "a..b"] {
+            assert!(TableRef::new(invalid).is_err(), "表引用应拒绝 {invalid:?}");
+            assert!(
+                FieldRef::new(invalid).is_err(),
+                "字段引用应拒绝 {invalid:?}"
+            );
         }
+        // 三段字段合法，但表名最多两段。
+        assert!(FieldRef::new("users.id.extra").is_ok());
+        assert!(TableRef::new("users.id.extra").is_err());
+    }
+
+    #[test]
+    fn qualified_schema_references_render_every_segment() {
+        let table = TableRef::new("audit.users").expect("schema.table 应合法");
+        let field = FieldRef::new("audit.users.id").expect("schema.table.column 应合法");
+        assert_eq!(table.as_str(), "audit.users");
+        assert_eq!(field.as_str(), "audit.users.id");
+        #[cfg(feature = "mysql")]
+        assert_eq!(field.mysql_quoted(), "`audit`.`users`.`id`");
+        #[cfg(feature = "postgres")]
+        assert_eq!(field.postgres_quoted(), "\"audit\".\"users\".\"id\"");
     }
 
     #[test]
@@ -451,6 +495,10 @@ mod tests {
             assert_eq!(
                 SqlExpr::unix_timestamp_add(900).postgres_render(3),
                 ("EXTRACT(EPOCH FROM now()) + $3".to_string(), Some(900))
+            );
+            assert_eq!(
+                SqlExpr::now().postgres_render(1),
+                ("now()".to_string(), None)
             );
         }
     }

@@ -13,16 +13,16 @@ impl TableQuery {
     ///
     /// - `table_config`：表配置引用
     /// - `user_roles`：用户角色列表（`Arc<[String]>` 共享所有权）
-    /// - `pool`：数据库连接池引用（可选）
+    /// - `pool`：运行时数据库连接池句柄（MySQL / PostgreSQL 按后端分派，可选）
     ///
     /// # 返回值
     ///
     /// 返回新的 TableQuery 实例
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn new(
         table_config: Arc<TableConfig>,
         user_roles: Arc<[String]>,
-        pool: Option<Arc<sqlx::MySqlPool>>,
+        pool: Option<crate::database::AnyPool>,
     ) -> Self {
         let user_roles_set: HashSet<String> = user_roles.iter().cloned().collect();
         Self {
@@ -41,8 +41,8 @@ impl TableQuery {
 
     /// 创建新的查询构建器（无数据库连接池）
     ///
-    /// 当未启用 `mysql` feature 时使用此方法。
-    #[cfg(not(feature = "mysql"))]
+    /// 当未启用任何数据库 feature 时使用此方法。
+    #[cfg(not(any(feature = "mysql", feature = "postgres")))]
     pub(crate) fn new(
         table_config: Arc<TableConfig>,
         user_roles: Arc<[String]>,

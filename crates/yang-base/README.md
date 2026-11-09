@@ -18,6 +18,7 @@ fields! / params! / #[derive(Action)]
 | Feature | 默认 | 能力 |
 |---|---:|---|
 | `mysql` | 是 | `Tools` MySQL 资源槽、schema 同步、`TableHandle`、`TableQuery` 与内置 CRUD |
+| `postgres` | 否 | `Tools` PostgreSQL 资源槽（`AnyDatabase`）、schema 同步、`Record` 动态解码与 `TableQuery` 执行 |
 | `redis` | 是 | `Tools` Redis 资源槽与 Redis 数据结构 API |
 | `token` | 是 | JWT 签发、刷新与 Redis 撤销列表；自动启用 `redis` |
 | `http` | 是 | 带超时、重试和熔断的 HTTP 客户端（`Tools` http 槽） |
@@ -54,6 +55,12 @@ yang-base = { version = "0.4.0", default-features = false }
 
 # 核心模型 + MySQL
 yang-base = { version = "0.4.0", default-features = false, features = ["mysql"] }
+
+# 核心模型 + PostgreSQL
+yang-base = { version = "0.4.0", default-features = false, features = ["postgres"] }
+
+# 核心模型 + MySQL 与 PostgreSQL 双后端
+yang-base = { version = "0.4.0", default-features = false, features = ["mysql", "postgres"] }
 
 # 核心模型 + Redis
 yang-base = { version = "0.4.0", default-features = false, features = ["redis"] }
@@ -186,7 +193,7 @@ let nickname: Option<String> = row.optional("nickname").expect("nickname 类型�
 
 ## 数据库与 Redis
 
-启用默认 feature 后，MySQL/Redis 客户端经 `ToolsBuilder` 注册进应用资源并由每个 `BuiltApp` 显式持有（无进程级全局单例）。初始化配置类型来自 `yang-db`；直接构造这些客户端的应用还需声明匹配的依赖：
+启用默认 feature 后，MySQL/Redis 客户端经 `ToolsBuilder` 注册进应用资源并由每个 `BuiltApp` 显式持有（无进程级全局单例）。`postgres` 是可选 feature，启用后 PostgreSQL 连接池进入同一个 `AnyDatabase` 数据库槽。初始化配置类型来自 `yang-db`；直接构造这些客户端的应用还需声明匹配的依赖：
 
 ```toml
 yang-db = { version = "0.2.1", default-features = false, features = ["mysql", "redis"] }
@@ -223,6 +230,40 @@ async fn build_tools() -> Result<Arc<yang_base::tools::Tools>, BaseError> {
 面向请求的单表访问优先走 `ActionContext::table_query()`；它携带字段权限、软删除、慢查询阈值和 request id。`Tools::db()` 返回的是不受保护的连接池，只适合初始化、系统任务和明确承担授权责任的底层操作。
 
 `TableQuery` 会在 SQL 生成前按 `TableDefinition` 校验 WHERE 字段、筛选权限、操作符和值类型；`IN` 与 `BETWEEN` 的每个值都逐项校验。`where_eq(field, null)` / `where_ne(field, null)` 分别生成 `IS NULL` / `IS NOT NULL`，也可以显式调用 `where_null` / `where_not_null`，不会生成语义错误的 `= NULL` 或 `!= NULL`。
+
+## PostgreSQL 接入状态
+
+`postgres` feature 与 `mysql` 独立编译，也可同时启用。下表说明能力在 yang-base 层的实际接入
+状态，而非底层数据库自身能力：
+
+| 能力 | yang-db 支持 | base 接入状态 | 说明 |
+|---|---:|---|---|
+| 连接池与生命周期（`health_check` / `close` / `pool_status`） | 是 | 已接入 | `AnyDatabase::postgres` + `Tools` 统一数据库槽 |
+| `Record` 动态行解码 | 是 | 已接入 | 覆盖 PG 类型族，见 `integration_record_pg` |
+| 声明式 schema 同步 | 是 | 已接入 | `DatabaseInitializer::from_any`；PG 使用单事务 DDL + `pg_advisory_lock`，枚举字段 fail-closed |
+| 事务 / 保存点 | 是 | 已接入（保存点需直接用 yang-db） | `ActionContext::begin_transaction` 返回 `AnyTransaction`，提交/回滚按后端分派 |
+| 事务局部配置（`SET LOCAL`） | 是 | 已接入 | `ActionContext::set_local` / `set_tenant_local` 用 `set_config(..., true)` 写入 `app.tenant_id`；仅 PostgreSQL，MySQL 明确返回配置错误 |
+| `TableQuery` / 内置 CRUD / 受保护查询 | 是 | 已接入 | SELECT/分页/COUNT/软删/租户/权限/insert/update/delete 均有 PG 执行分支 |
+| 批量 upsert（`ON CONFLICT`） | 是 | 已接入 | `TableQuery::{upsert_batch, upsert_batch_do_nothing}` 及 `_in_tx` 变体，冲突列必须显式传入 |
+| `RETURNING` / CTE / 窗口 / `SKIP LOCKED` | 是 | 未封装 | 可直接使用 `yang-db` 的 PostgreSQL API，但 base 的 `TableQuery` 未暴露这些进阶入口 |
+| `COPY` / `LISTEN` / `NOTIFY` | 是 | 未封装 | yang-db 已提供 `copy_from_csv` / `copy_to_csv` / `PgNotificationListener`；base 不额外声明 |
+| range / jsonpath / 全文检索 / EXPLAIN / 内省 / 2PC / 表锁 | 是 | 未封装 | 通过 `yang-db` 的 PostgreSQL API 使用；base 不重复包装 |
+
+逻辑复制 / FDW / backup / restore / 迁移 CLI / 多主机 / PgBouncer 属部署或运维层能力，
+不在 yang-base 与 yang-db 的承诺范围内；完整边界见
+[docs/reference/BACKEND_CAPABILITIES.md](../../docs/reference/BACKEND_CAPABILITIES.md)。
+
+`Tools::mysql()` 在运行期配置为 PostgreSQL 时返回 `DatabaseNotInitialized`，避免把 PG 连接池
+误当 MySQL 使用；需要 PG 后端时通过 `Tools::database()` 取得 `AnyDatabase`，再调用
+`as_postgres()`。
+
+PG 集成测试为 `#[ignore]`，需要真实实例：
+
+```bash
+PG_TEST_URL=postgres://postgres:postgres@127.0.0.1:55432/test \
+  cargo test -p yang-base --no-default-features --features postgres \
+  --test integration_record_pg -- --ignored --test-threads=1
+```
 
 ## 目录
 

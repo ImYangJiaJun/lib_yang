@@ -5,7 +5,7 @@
 //! # 模块
 //!
 //! - `plugin`：插件管理模块
-//! - `database`：数据库管理模块（支持 MySQL 和 Redis）
+//! - `database`：数据库管理模块（MySQL / PostgreSQL 后端运行时抽象与 MySQL Schema 同步）
 //! - `http`：HTTP 客户端模块（需启用 `http` feature）
 //! - `token`：JWT Token 管理模块（需启用 `token` feature）
 //! - `error`：错误处理模块
@@ -17,6 +17,9 @@
 //! - `token`：启用 JWT Token 管理功能（依赖 `jsonwebtoken`）
 //! - `http`：启用 HTTP 客户端功能（依赖 `reqwest`、`serde_urlencoded`）
 //! - `mysql`：启用 MySQL 数据库查询执行功能（依赖 `sqlx`）
+//! - `postgres`：启用 PostgreSQL 后端（`AnyDatabase`、`Record` 解码与 schema_sync）。
+//!   注意：`TableQuery` / 内置 CRUD 的 PostgreSQL 执行层仍在后续阶段接入，不要据此
+//!   假定受保护查询已可用。
 //! - `redis`：启用应用实例持有的 Redis 客户端（`token` 会自动启用它）
 //! - `validator`：启用正则表达式校验器（依赖 `regex`）
 //! - `plugin-schema`：启用插件 JSON Schema 配置验证（依赖 `jsonschema`）

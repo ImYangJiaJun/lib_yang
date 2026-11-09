@@ -647,10 +647,7 @@ mod tests {
         db.close().await;
 
         assert!(db.is_closed());
-        assert!(matches!(
-            db.health_check().await,
-            Err(DbError::ConnectionError(message)) if message.contains("连接池已关闭")
-        ));
+        assert!(matches!(db.health_check().await, Err(DbError::PoolClosed)));
         Ok(())
     }
 }

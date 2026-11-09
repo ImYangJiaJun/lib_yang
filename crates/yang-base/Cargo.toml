@@ -34,6 +34,9 @@ http = ["dep:reqwest", "dep:serde_urlencoded", "dep:encoding_rs", "dep:rustls"]
 # MySQL 数据库功能
 mysql = ["dep:sqlx", "dep:base64", "sqlx/mysql", "sqlx/derive", "yang-db/mysql"]
 
+# PostgreSQL 数据库功能（Record 动态解码、schema_sync 与受保护 TableQuery / 内置 CRUD 执行层）
+postgres = ["dep:sqlx", "dep:base64", "sqlx/postgres", "sqlx/derive", "sqlx/uuid", "sqlx/bigdecimal", "yang-db/postgres"]
+
 # Redis 全局访问与 token 撤销存储
 redis = ["yang-db/redis"]
 
@@ -171,6 +174,11 @@ trybuild = "=1.0.105"
 [[bench]]
 name = "runtime_baseline"
 harness = false
+required-features = ["mysql"]
+
+[[example]]
+name = "database_example"
+required-features = ["mysql"]
 
 [package.metadata.docs.rs]
 all-features = true

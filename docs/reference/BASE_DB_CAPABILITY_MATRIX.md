@@ -15,10 +15,34 @@
 | 数据治理 | checksum migration、plan/dry-run、并发占位；`SchemaValidationReport` 只读验证；从 `AppRouter` 汇总 `TableDefinition` 做 additive schema 同步 | MySQL 8 双实例并发、幂等补列、危险漂移拒绝 |
 | 插件 | 依赖拓扑、生命周期、配置 schema、迁移声明 | 循环/缺失依赖、配置反例与迁移漂移测试 |
 | MySQL 8 | 参数化 CRUD、聚合、JOIN、受控子查询、复合查询、事务行锁、原子更新 | 单元/属性测试与真实数据库集成 |
-| PostgreSQL 16 | 与 MySQL 对称的查询/事务能力，使用 `$N` 和 `RETURNING` | SQL 形态对抗测试与真实数据库集成 |
+| PostgreSQL 16 / 17 | 与 MySQL 对称的查询/事务能力，使用 `$N` 和 `RETURNING`；CTE、窗口、保存点、批量 upsert 已实现；PG17 由独立 CI job 验证 | SQL 形态对抗测试与真实数据库集成；base 接入范围见下方「PostgreSQL 能力与 base 接入状态」 |
 | Redis 7 | 连接池、String/Hash/List/Set/ZSet、Pipeline、WATCH 事务、Lua | feature 隔离、错误分类与真实 Redis 集成 |
 | 运维可见性 | 错误分类、request id、慢查询 tracing、敏感字段脱敏、可选 metrics | 日志捕获、故障注入和 Debug 泄露反例 |
 | 后台扩展 | `admin-metadata` 通过稳定 ID 引用 Action/Table/API operation | 零新增依赖，不持有或改变核心 dispatch |
+
+## PostgreSQL 能力与 base 接入状态
+
+“base 接入状态”指 yang-base 是否已提供对应封装；“yang-db 支持”来自
+`POSTGRES_CAPABILITIES`，两者不能互相替代。未接入的能力仍可直接使用 yang-db 的
+PostgreSQL API，但不能假定 `TableQuery` / 内置 CRUD 会按 PG 语义执行。
+
+| 能力 | yang-db 支持 | base 接入状态 | 说明 |
+|---|---:|---|---|
+| 连接池与生命周期 | 是 | 已接入 | `AnyDatabase::postgres`；`Tools` 统一数据库槽与 `pool_status` |
+| `Record` 动态行解码 | 是 | 已接入 | `integration_record_pg` 覆盖 PG 类型族 |
+| 声明式 schema 同步 | 是 | 已接入 | 单事务 DDL + `pg_advisory_lock`；枚举字段 fail-closed |
+| 参数化 CRUD / 聚合 / JOIN | 是 | 已接入 | `TableQuery` 的 MySQL/PG 执行分支 |
+| `TableQuery` / 内置 CRUD | 是 | 已接入 | SELECT/分页/COUNT/软删/租户/权限/写入均有 PG 分支 |
+| 事务 / 保存点 | 是 | 部分接入 | base 提供 `AnyTransaction`；保存点直接用 yang-db |
+| `RETURNING` | 是 | 未封装 | 需直接使用 yang-db PostgreSQL API |
+| `ON CONFLICT` / 批量 upsert | 是 | 已接入 | `TableQuery::{upsert_batch, upsert_batch_do_nothing}` 及 `_in_tx` 变体；冲突列必须显式传入 |
+| 事务局部配置（`SET LOCAL`） | 是 | 已接入 | `ActionContext::{set_local, set_tenant_local}`；仅 PostgreSQL，MySQL 明确返回配置错误 |
+| CTE / 窗口函数 / `SKIP LOCKED` | 是 | 未封装 | 可直接使用 yang-db QueryBuilder |
+| `COPY ... FROM STDIN` | 是 | 未封装 | yang-db 提供 `copy_from_csv` / `copy_to_csv` |
+| `LISTEN` / `NOTIFY` | 是 | 未封装 | yang-db 提供 `PgNotificationListener` / `notify` |
+| range / multirange / jsonpath / 全文检索 | 是 | 未封装 | 用 yang-db 的 `FieldType::Range` / `where_range_*`、`where_json_path_*`、`where_full_text*` |
+| `EXPLAIN` / `pg_locks` / `pg_stat_activity` 内省 | 是 | 未封装 | 用 yang-db 的 `Database::explain` / `lock_waits` / `active_queries` |
+| 两阶段提交 / 表级锁 | 是 | 未封装 | 用 yang-db 的 `prepare_transaction` / `commit_prepared` / `rollback_prepared`、`Transaction::lock_table` |
 
 ## schema-first 边界
 
@@ -45,3 +69,12 @@
 - backup、restore、database-create：属于部署/运维层，优先使用数据库原生工具处理权限、审计、加密和生命周期。
 - 通用 ORM、任意 SQL AST、破坏性或任意 schema migration：不在当前职责内。
 - `br-addon` / `br-db` 的逐方法兼容与 drop-in replacement：不提供承诺。
+- 逻辑复制 / 复制槽（publication、subscription、`pg_replication_slots`）：属集群/DBA 运维，
+  由数据库原生复制工具管理；不进入运行时 QueryBuilder。
+- FDW / 外部表（`postgres_fdw`、`file_fdw`、`IMPORT FOREIGN SCHEMA`）：跨库联邦与服务端文件
+  访问的权限模型超出基础库边界。
+- 迁移 CLI / checksum runner / 自动 diff：由 yang-base 的加法 schema 同步子集或外部迁移工具承担，
+  不新增独立迁移命令。
+- 多主机 / 故障转移（`target_session_attrs` 等运行时选主）：由部署层连接串、代理或服务发现处理。
+- PgBouncer / 事务池模式：不承诺 prepared statement 与事务池的兼容组合；部署层需选择会话池或
+  关闭服务端预编译。

@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde_json::Value as JsonValue;
 
 use crate::DbError;
@@ -116,6 +116,38 @@ pub enum SqlValue {
     Json(JsonValue),
     DateTime(NaiveDateTime),
     Timestamp(i64),
+    /// NUMERIC / DECIMAL，按精确十进制绑定，避免经 f64 丢精度。
+    Decimal(bigdecimal::BigDecimal),
+    /// UUID（`uuid` 扩展类型）。
+    Uuid(uuid::Uuid),
+    /// TIMESTAMPTZ（带时区）。
+    DateTimeTz(DateTime<Utc>),
+    /// DATE。
+    Date(NaiveDate),
+    /// TIME。
+    Time(NaiveTime),
+    /// INTERVAL，单位为微秒。
+    Interval(i64),
+    /// PostgreSQL 数组（`type[]`），元素按顺序作为单个数组绑定参数传输，
+    /// 不展开为多个标量参数。可承载的 From 转换见 `Vec<i64>` / `Vec<String>` /
+    /// `Vec<f64>` / `Vec<bool>`。
+    Array(Vec<SqlValue>),
+    /// PostgreSQL `inet` 文本值；渲染时追加 `::inet`。
+    Inet(String),
+    /// PostgreSQL `cidr` 文本值；渲染时追加 `::cidr`。
+    Cidr(String),
+    /// PostgreSQL `macaddr` 文本值；渲染时追加 `::macaddr`。
+    MacAddr(String),
+    /// PostgreSQL `macaddr8` 文本值；渲染时追加 `::macaddr8`。
+    MacAddr8(String),
+    /// 范围文本值（如 `[1,10)`）；按文本绑定并追加 `::int4range`。
+    ///
+    /// 目前仅内置默认的 32 位整数范围转换；其它范围类型需要在 SQL 文本中显式
+    /// 指定转换（`$1::tsrange` 等）。
+    Range(String),
+    /// 多范围文本值（如 `{[1,10),[20,30)}`）；按文本绑定并追加
+    /// `::int4multirange`（PostgreSQL 14+）。
+    Multirange(String),
 }
 
 /// 查询条件（PostgreSQL）
@@ -154,6 +186,32 @@ pub enum Condition {
     NotExists(Box<Subquery>),
     /// IN 子查询。
     InSubquery(String, Box<Subquery>),
+    /// 字段与受控服务端表达式的比较（如 `updated_at < now()`）。
+    FieldExpr(String, ComparisonOperator, crate::SqlExpr),
+    /// JSON/JSONB 包含谓词：`field @> $n`（右值必须是 [`SqlValue::Json`]）。
+    JsonContains(String, SqlValue),
+    /// JSON/JSONB 被包含谓词：`field <@ $n`（右值必须是 [`SqlValue::Json`]）。
+    JsonContainedBy(String, SqlValue),
+    /// JSON/JSONB 顶层键存在谓词：`field ? $n`（键名以绑定参数传入）。
+    JsonHasKey(String, String),
+    /// 数组包含任一元素：`field = ANY($n)`（右值必须是 [`SqlValue::Array`]）。
+    Any(String, SqlValue),
+    /// 数组包含全部元素：`field = ALL($n)`（右值必须是 [`SqlValue::Array`]）。
+    All(String, SqlValue),
+    /// 范围包含：`field @> $n`（右值必须是范围或多范围文本值）。
+    RangeContains(String, SqlValue),
+    /// 范围重叠：`field && $n`（右值必须是范围或多范围文本值）。
+    RangeOverlaps(String, SqlValue),
+    /// JSONB 路径存在：`jsonb_path_exists((field)::jsonb, $n::jsonpath)`。
+    JsonPathExists(String, String),
+    /// JSONB 路径谓词：`jsonb_path_match((field)::jsonb, $n::jsonpath, $m::jsonb)`。
+    JsonPathMatch(String, String, SqlValue),
+    /// 全文检索：`to_tsvector('simple', field) @@ plainto_tsquery('simple', $n)`。
+    FullText(String, String),
+    /// 全文检索（`to_tsquery` 变体，允许布尔查询语法）。
+    FullTextQuery(String, String),
+    /// NOT 包裹；渲染为 `NOT (...)`。
+    Not(Box<Condition>),
     /// AND 组合
     And(Vec<Condition>),
     /// OR 组合
@@ -222,6 +280,34 @@ impl From<Vec<u8>> for SqlValue {
     }
 }
 
+/// `BIGINT[]` / `INT8[]` 数组。
+impl From<Vec<i64>> for SqlValue {
+    fn from(v: Vec<i64>) -> Self {
+        SqlValue::Array(v.into_iter().map(SqlValue::Int).collect())
+    }
+}
+
+/// `TEXT[]` / `VARCHAR[]` 数组。
+impl From<Vec<String>> for SqlValue {
+    fn from(v: Vec<String>) -> Self {
+        SqlValue::Array(v.into_iter().map(SqlValue::String).collect())
+    }
+}
+
+/// `DOUBLE PRECISION[]` / `FLOAT8[]` 数组。
+impl From<Vec<f64>> for SqlValue {
+    fn from(v: Vec<f64>) -> Self {
+        SqlValue::Array(v.into_iter().map(SqlValue::Float).collect())
+    }
+}
+
+/// `BOOLEAN[]` / `BOOL[]` 数组。
+impl From<Vec<bool>> for SqlValue {
+    fn from(v: Vec<bool>) -> Self {
+        SqlValue::Array(v.into_iter().map(SqlValue::Bool).collect())
+    }
+}
+
 impl From<JsonValue> for SqlValue {
     fn from(v: JsonValue) -> Self {
         SqlValue::Json(v)
@@ -231,6 +317,50 @@ impl From<JsonValue> for SqlValue {
 impl From<NaiveDateTime> for SqlValue {
     fn from(v: NaiveDateTime) -> Self {
         SqlValue::DateTime(v)
+    }
+}
+
+impl From<bigdecimal::BigDecimal> for SqlValue {
+    fn from(v: bigdecimal::BigDecimal) -> Self {
+        SqlValue::Decimal(v)
+    }
+}
+
+impl From<uuid::Uuid> for SqlValue {
+    fn from(v: uuid::Uuid) -> Self {
+        SqlValue::Uuid(v)
+    }
+}
+
+impl From<DateTime<Utc>> for SqlValue {
+    fn from(v: DateTime<Utc>) -> Self {
+        SqlValue::DateTimeTz(v)
+    }
+}
+
+impl From<NaiveDate> for SqlValue {
+    fn from(v: NaiveDate) -> Self {
+        SqlValue::Date(v)
+    }
+}
+
+impl From<NaiveTime> for SqlValue {
+    fn from(v: NaiveTime) -> Self {
+        SqlValue::Time(v)
+    }
+}
+
+impl From<chrono::Duration> for SqlValue {
+    fn from(v: chrono::Duration) -> Self {
+        SqlValue::Interval(v.num_microseconds().unwrap_or_default())
+    }
+}
+
+/// 以微秒构造 INTERVAL 值。
+impl SqlValue {
+    /// INTERVAL（微秒）。
+    pub fn interval_micros(micros: i64) -> Self {
+        SqlValue::Interval(micros)
     }
 }
 
@@ -330,6 +460,27 @@ fn into_node(condition: Condition) -> crate::dialect::CondNode<SqlValue> {
         Condition::InSubquery(field, subquery) => {
             Node::InSubquery(field, Box::new(into_subquery_node(*subquery)))
         }
+        Condition::FieldExpr(field, operator, expression) => {
+            Node::ExprComparison(field, operator.as_sql(), expression)
+        }
+        Condition::JsonContains(field, value) => Node::JsonContains(field, value),
+        Condition::JsonContainedBy(field, value) => Node::JsonContainedBy(field, value),
+        Condition::JsonHasKey(field, key) => Node::JsonHasKey(field, SqlValue::String(key)),
+        Condition::Any(field, value) => Node::Any(field, value),
+        Condition::All(field, value) => Node::All(field, value),
+        Condition::RangeContains(field, value) => Node::RangeContains(field, value),
+        Condition::RangeOverlaps(field, value) => Node::RangeOverlaps(field, value),
+        Condition::JsonPathExists(field, path) => {
+            Node::JsonPathExists(field, SqlValue::String(path))
+        }
+        Condition::JsonPathMatch(field, path, vars) => {
+            Node::JsonPathMatch(field, SqlValue::String(path), vars)
+        }
+        Condition::FullText(field, query) => Node::FullText(field, SqlValue::String(query)),
+        Condition::FullTextQuery(field, query) => {
+            Node::FullTextQuery(field, SqlValue::String(query))
+        }
+        Condition::Not(condition) => Node::Not(Box::new(into_node(*condition))),
         Condition::And(conditions) => Node::And(conditions.into_iter().map(into_node).collect()),
         Condition::Or(conditions) => Node::Or(conditions.into_iter().map(into_node).collect()),
     }
@@ -346,6 +497,7 @@ fn into_subquery_node(subquery: Subquery) -> crate::dialect::SubqueryNode<SqlVal
 
 #[cfg(test)]
 #[allow(deprecated)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -511,5 +663,360 @@ mod tests {
         assert_eq!(s1, s2);
         assert_eq!(p1.len(), p2.len());
         assert_eq!(format!("{:?}", p1), format!("{:?}", p2));
+    }
+
+    #[test]
+    fn test_not_renders_and_composes_with_and_or() {
+        let mut params = Vec::new();
+        let condition = Condition::And(vec![
+            Condition::Not(Box::new(Condition::Eq(
+                "status".to_string(),
+                SqlValue::String("deleted".to_string()),
+            ))),
+            Condition::Or(vec![
+                Condition::Gt("age".to_string(), SqlValue::Int(18)),
+                Condition::Not(Box::new(Condition::IsNull("email".to_string()))),
+            ]),
+        ]);
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(
+            sql,
+            "(NOT (\"status\" = $1) AND (\"age\" > $2 OR NOT (\"email\" IS NULL)))"
+        );
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn test_field_expr_placeholder_continues_after_existing_params() {
+        let mut params = vec![SqlValue::Int(99)];
+        let condition = Condition::FieldExpr(
+            "updated_at".to_string(),
+            ComparisonOperator::Lt,
+            crate::SqlExpr::unix_timestamp_add(30),
+        );
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "\"updated_at\" < EXTRACT(EPOCH FROM now()) + $2");
+        assert_eq!(params.len(), 2);
+        assert!(matches!(params[1], SqlValue::Int(30)));
+    }
+
+    #[test]
+    fn test_field_expr_without_param_does_not_consume_numbering() {
+        let mut params = Vec::new();
+        let condition = Condition::FieldExpr(
+            "updated_at".to_string(),
+            ComparisonOperator::Gte,
+            crate::SqlExpr::now(),
+        );
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "\"updated_at\" >= now()");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_new_sql_value_from_conversions() {
+        use chrono::TimeZone;
+
+        let decimal = bigdecimal::BigDecimal::from(42);
+        assert!(matches!(
+            SqlValue::from(decimal),
+            SqlValue::Decimal(value) if value.to_string() == "42"
+        ));
+        let uuid = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        assert!(matches!(SqlValue::from(uuid), SqlValue::Uuid(_)));
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        assert!(matches!(SqlValue::from(date), SqlValue::Date(_)));
+        let time = chrono::NaiveTime::from_hms_opt(12, 30, 0).unwrap();
+        assert!(matches!(SqlValue::from(time), SqlValue::Time(_)));
+        let tz = chrono::Utc.with_ymd_and_hms(2026, 11, 8, 12, 0, 0).unwrap();
+        assert!(matches!(SqlValue::from(tz), SqlValue::DateTimeTz(_)));
+        assert!(matches!(
+            SqlValue::from(chrono::Duration::seconds(2)),
+            SqlValue::Interval(2_000_000)
+        ));
+        assert!(matches!(
+            SqlValue::interval_micros(-5),
+            SqlValue::Interval(-5)
+        ));
+    }
+
+    #[test]
+    fn test_array_from_vec_conversions_preserve_element_types() {
+        assert!(matches!(
+            SqlValue::from(vec![1_i64, 2]),
+            SqlValue::Array(values)
+                if matches!(values.as_slice(), [SqlValue::Int(1), SqlValue::Int(2)])
+        ));
+        assert!(matches!(
+            SqlValue::from(vec!["a".to_string(), "b".to_string()]),
+            SqlValue::Array(values)
+                if matches!(&values[0], SqlValue::String(value) if value == "a")
+                    && matches!(&values[1], SqlValue::String(value) if value == "b")
+        ));
+        assert!(matches!(
+            SqlValue::from(vec![1.5_f64, 2.5]),
+            SqlValue::Array(values)
+                if matches!(&values[0], SqlValue::Float(value) if *value == 1.5)
+                    && matches!(&values[1], SqlValue::Float(value) if *value == 2.5)
+        ));
+        assert!(matches!(
+            SqlValue::from(vec![true, false]),
+            SqlValue::Array(values)
+                if matches!(values.as_slice(), [SqlValue::Bool(true), SqlValue::Bool(false)])
+        ));
+        // 空数组是合法值（ANY 恒 false / ALL 恒 true 由 SQL 语义决定）。
+        assert!(matches!(
+            SqlValue::from(Vec::<i64>::new()),
+            SqlValue::Array(values) if values.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_array_value_renders_as_one_param() {
+        let mut params = Vec::new();
+        let condition = Condition::Eq(
+            "tags".to_string(),
+            SqlValue::from(vec!["a".to_string(), "b".to_string()]),
+        );
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "\"tags\" = $1");
+        assert_eq!(params.len(), 1, "数组必须作为单个绑定参数渲染");
+        assert!(matches!(&params[0], SqlValue::Array(values) if values.len() == 2));
+    }
+
+    #[test]
+    fn test_any_all_render_array_binding_and_numbering() {
+        let mut params = vec![SqlValue::Int(99)];
+        let condition = Condition::Any("tags".to_string(), SqlValue::from(vec!["a".to_string()]));
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "\"tags\" = ANY($2)");
+        assert_eq!(params.len(), 2);
+
+        let mut params = Vec::new();
+        let condition = Condition::All("nums".to_string(), SqlValue::from(vec![1_i64, 2]));
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "\"nums\" = ALL($1)");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(&params[0], SqlValue::Array(values) if values.len() == 2));
+    }
+
+    #[test]
+    fn test_any_rejects_non_array_value_fail_closed() {
+        let mut params = Vec::new();
+        let error = condition_to_sql_owned_checked(
+            Condition::Any("tags".to_string(), SqlValue::String("a".to_string())),
+            &mut params,
+        )
+        .expect_err("ANY 只接受 SqlValue::Array");
+        assert!(matches!(error, DbError::InvalidArgument(_)));
+        assert!(params.is_empty(), "失败时不得污染调用方参数");
+
+        let mut params = Vec::new();
+        let error = condition_to_sql_owned_checked(
+            Condition::All("tags".to_string(), SqlValue::Null),
+            &mut params,
+        )
+        .expect_err("ALL 只接受 SqlValue::Array");
+        assert!(matches!(error, DbError::InvalidArgument(_)));
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_json_predicates_render_operators_and_bind_values() {
+        let payload = SqlValue::Json(serde_json::json!({"role": "admin"}));
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonContains("data".to_string(), payload),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "(\"data\")::jsonb @> $1");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(&params[0], SqlValue::Json(_)));
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonContainedBy(
+                "data".to_string(),
+                SqlValue::Json(serde_json::json!({"role": "admin"})),
+            ),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "(\"data\")::jsonb <@ $1");
+        assert_eq!(params.len(), 1);
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonHasKey("data".to_string(), "weird'key".to_string()),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(
+            sql, "(\"data\")::jsonb ? $1",
+            "键名必须参数化，不得拼接进 SQL 文本"
+        );
+        assert!(!sql.contains("weird'key"));
+        assert!(matches!(&params[0], SqlValue::String(key) if key == "weird'key"));
+    }
+
+    #[test]
+    fn test_json_predicate_null_renders_sql_null_without_param() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonContains("data".to_string(), SqlValue::Null),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "NULL");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_json_predicate_rejects_non_json_value() {
+        let mut params = Vec::new();
+        let error = condition_to_sql_owned_checked(
+            Condition::JsonContainedBy("data".to_string(), SqlValue::Int(1)),
+            &mut params,
+        )
+        .expect_err("JSON 谓词只接受 SqlValue::Json");
+        assert!(matches!(error, DbError::InvalidArgument(_)));
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_json_predicates_compose_and_number_sequentially() {
+        let mut params = Vec::new();
+        let condition = Condition::And(vec![
+            Condition::JsonContains(
+                "data".to_string(),
+                SqlValue::Json(serde_json::json!({"role": "admin"})),
+            ),
+            Condition::JsonHasKey("data".to_string(), "active".to_string()),
+        ]);
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(sql, "((\"data\")::jsonb @> $1 AND (\"data\")::jsonb ? $2)");
+        assert_eq!(params.len(), 2);
+        assert!(matches!(&params[1], SqlValue::String(key) if key == "active"));
+    }
+
+    #[test]
+    fn test_range_predicates_render_operators_and_explicit_casts() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::RangeContains("span".to_string(), SqlValue::Range("[1,10)".to_string())),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "\"span\" @> $1::int4range");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(&params[0], SqlValue::Range(text) if text == "[1,10)"));
+
+        let mut params = vec![SqlValue::Int(99)];
+        let sql = condition_to_sql_owned_checked(
+            Condition::RangeOverlaps(
+                "spans".to_string(),
+                SqlValue::Multirange("{[1,10),[20,30)}".to_string()),
+            ),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "\"spans\" && $2::int4multirange");
+        assert_eq!(params.len(), 2, "范围值必须作为单个绑定参数");
+    }
+
+    #[test]
+    fn test_range_predicates_reject_non_range_values_and_null_fails_closed() {
+        let mut params = Vec::new();
+        let error = condition_to_sql_owned_checked(
+            Condition::RangeContains("span".to_string(), SqlValue::String("[1,10)".to_string())),
+            &mut params,
+        )
+        .expect_err("范围谓词只接受 Range/Multirange");
+        assert!(matches!(error, DbError::InvalidArgument(_)));
+        assert!(params.is_empty());
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::RangeOverlaps("span".to_string(), SqlValue::Null),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "NULL");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_json_path_predicates_bind_path_and_vars() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonPathExists("data".to_string(), "$.role".to_string()),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(sql, "jsonb_path_exists((\"data\")::jsonb, $1::jsonpath)");
+        assert!(!sql.contains("$.role"), "路径必须参数化，不得拼进 SQL");
+        assert!(matches!(&params[0], SqlValue::String(path) if path == "$.role"));
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::JsonPathMatch(
+                "data".to_string(),
+                "$.age > $min".to_string(),
+                SqlValue::Json(serde_json::json!({"min": 18})),
+            ),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "jsonb_path_match((\"data\")::jsonb, $1::jsonpath, $2::jsonb)"
+        );
+        assert_eq!(params.len(), 2);
+        assert!(!sql.contains("min"));
+    }
+
+    #[test]
+    fn test_full_text_predicates_use_simple_config_and_bind_query() {
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::FullText("body".to_string(), "hello world".to_string()),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "to_tsvector('simple', \"body\") @@ plainto_tsquery('simple', $1)"
+        );
+        assert!(!sql.contains("hello world"));
+        assert!(matches!(&params[0], SqlValue::String(query) if query == "hello world"));
+
+        let mut params = Vec::new();
+        let sql = condition_to_sql_owned_checked(
+            Condition::FullTextQuery("body".to_string(), "hello & world".to_string()),
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "to_tsvector('simple', \"body\") @@ to_tsquery('simple', $1)"
+        );
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn test_phase_c_conditions_number_sequentially_inside_and() {
+        let mut params = Vec::new();
+        let condition = Condition::And(vec![
+            Condition::FullText("body".to_string(), "rust".to_string()),
+            Condition::JsonPathExists("meta".to_string(), "$.ok".to_string()),
+            Condition::RangeContains("span".to_string(), SqlValue::Range("[1,5)".to_string())),
+        ]);
+        let sql = condition_to_sql_owned_checked(condition, &mut params).unwrap();
+        assert_eq!(params.len(), 3);
+        assert!(sql.contains("$1"));
+        assert!(sql.contains("$2::jsonpath"));
+        assert!(sql.contains("$3::int4range"));
     }
 }

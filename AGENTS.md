@@ -34,7 +34,7 @@ lib_yang/
 
 ```bash
 python scripts/run_ci.py quick        # fmt --check + 分 crate test + clippy -D warnings + doctest
-python scripts/run_ci.py full         # quick + cargo-deny + MSRV 1.80 check + 22 组 feature 矩阵
+python scripts/run_ci.py full         # quick + cargo-deny + MSRV 1.80 check + 28 组 feature 矩阵
 python scripts/run_ci.py integration  # 需 MySQL 8.0 / PostgreSQL 16 / Redis 7（带 --ignored 集成测试）
 
 # 与 CI 对齐的分 crate 手拼命令（三组跑法不同，别漏 auxiliary）
@@ -60,7 +60,7 @@ cargo run --example <name> -p <crate> --locked
 ```
 
 ## CI（.github/workflows/ci.yml）
-`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（22 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
+`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-redis`（redis:7）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
 
 ## WHERE TO LOOK
 | Task | Location | Notes |

@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used)]
+#![cfg(feature = "token")]
 
 //! 邮箱验证码引擎 `verify_only`（只验不消费）的 Redis 集成测试。
 //!

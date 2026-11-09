@@ -55,6 +55,18 @@ pub enum BackendCapability {
     Returning,
     /// PostgreSQL 显式冲突列 `ON CONFLICT (...)`。
     ExplicitConflictTarget,
+    /// 事务保存点（`SAVEPOINT` / `ROLLBACK TO SAVEPOINT`）。
+    Savepoint,
+    /// 行锁跳过已锁定行（`FOR UPDATE SKIP LOCKED`）。
+    SkipLocked,
+    /// 批量 COPY 导入（PostgreSQL `COPY ... FROM STDIN`）。
+    Copy,
+    /// LISTEN / NOTIFY 通知通道。
+    ListenNotify,
+    /// WITH / WITH RECURSIVE 公共表表达式。
+    Cte,
+    /// 窗口函数（`OVER (...)`）。
+    Window,
     /// SQL 事务内的 insert/update/delete 构建器。
     TransactionCrud,
     /// Redis Pipeline。
@@ -125,6 +137,17 @@ const MYSQL_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::BatchUpsert,
 ];
 
+// PostgreSQL Phase C 已实现、但**未**新增枚举变体的能力（枚举保持 non_exhaustive
+// 演进成本最低，按需再逐项落枚举）：
+// - 范围/多范围：`FieldType::Range` / `FieldType::Multirange`，`@>` / `&&` 谓词；
+// - jsonpath：`jsonb_path_exists` / `jsonb_path_match`（路径与变量均绑定参数）；
+// - 全文检索：`plainto_tsquery` / `to_tsquery`（配置固定 `simple`）；
+// - 计划诊断：`Database::explain`（FORMAT JSON）；
+// - 内省：`Database::active_queries` / `Database::lock_waits`；
+// - 会话上下文：`Transaction::set_local`（值绑定参数，键严格白名单校验）；
+// - 版本门控：`Database::server_version_num` / `Database::supports`（实例内缓存）；
+// - 两阶段提交：`prepare_transaction` / `commit_prepared` / `rollback_prepared`；
+// - 表级锁：`Transaction::lock_table`（受控 `TableLockMode`）。
 const POSTGRES_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::CheckedIdentifiers,
     BackendCapability::Select,
@@ -136,8 +159,14 @@ const POSTGRES_OPERATIONS: &[BackendCapability] = &[
     BackendCapability::BatchUpdate,
     BackendCapability::Delete,
     BackendCapability::Upsert,
+    BackendCapability::BatchUpsert,
     BackendCapability::Returning,
     BackendCapability::ExplicitConflictTarget,
+    BackendCapability::SkipLocked,
+    BackendCapability::Copy,
+    BackendCapability::ListenNotify,
+    BackendCapability::Cte,
+    BackendCapability::Window,
 ];
 
 const SQL_SAFETY: &[SafetyConstraint] = &[
@@ -166,6 +195,7 @@ pub const POSTGRES_CAPABILITIES: BackendCapabilities = BackendCapabilities {
     transaction: &[
         BackendCapability::TransactionCrud,
         BackendCapability::Returning,
+        BackendCapability::Savepoint,
     ],
     safety: SQL_SAFETY,
 };
@@ -255,11 +285,39 @@ mod tests {
     }
 
     #[test]
-    fn mysql_declares_batch_upsert_and_postgres_does_not() {
-        // 批量 upsert 是 MySQL 方言形状（ODKU）；PG 的对应物需显式冲突列 + EXCLUDED，
-        // 形状不同，本轮不声明——一旦有人把 BatchUpsert 加进 POSTGRES_OPERATIONS，这里会红。
+    fn both_backends_declare_batch_upsert() {
+        // 形状不同（MySQL ODKU / PG ON CONFLICT + EXCLUDED），但两家都已实现。
         assert!(MYSQL_CAPABILITIES.supports(BackendCapability::BatchUpsert));
-        assert!(!POSTGRES_CAPABILITIES.supports(BackendCapability::BatchUpsert));
+        assert!(POSTGRES_CAPABILITIES.supports(BackendCapability::BatchUpsert));
+    }
+
+    #[test]
+    fn postgres_capabilities_match_implemented_features() {
+        // 已实现的能力必须声明。
+        for capability in [
+            BackendCapability::Returning,
+            BackendCapability::ExplicitConflictTarget,
+            BackendCapability::SkipLocked,
+            BackendCapability::BatchUpsert,
+            BackendCapability::Savepoint,
+            BackendCapability::Cte,
+            BackendCapability::Window,
+            BackendCapability::Copy,
+            BackendCapability::ListenNotify,
+        ] {
+            assert!(
+                POSTGRES_CAPABILITIES.supports(capability),
+                "PostgreSQL 已实现 {capability:?}，必须声明"
+            );
+        }
+
+        // 仅 PostgreSQL 实现的差异能力不得被 MySQL 提前声明。
+        for capability in [BackendCapability::Copy, BackendCapability::ListenNotify] {
+            assert!(
+                !MYSQL_CAPABILITIES.supports(capability),
+                "MySQL 未实现 {capability:?}，不得声明"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! 基于运行时表定义与 [`crate::table::Record`] 的内置 CRUD Actions。
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 pub mod add;
 mod catalog_schema;

@@ -35,16 +35,18 @@
 
 mod build;
 mod filters;
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 mod plan;
-#[cfg(feature = "mysql")]
+#[cfg(feature = "postgres")]
+mod plan_pg;
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 mod read;
 #[cfg(all(test, feature = "mysql"))]
 mod sql_param;
 #[cfg(all(test, feature = "mysql"))]
 mod sql_render;
 mod validation;
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 mod write;
 
 // 保持 crate 内既有路径 `crate::table::table_query::SqlParam` 可用于测试
@@ -76,7 +78,7 @@ pub const MAX_TABLE_QUERY_PAGE_SIZE: usize = super::query_params::MAX_QUERY_PAGE
 /// - 内部表契约：由 [`super::TableDefinition`] 提供字段定义和权限配置
 /// - `user_roles`：用户角色列表，用于权限检查
 /// - `query_params`：查询参数，包含字段选择、WHERE 条件、排序规则和分页参数
-/// - `pool`：数据库连接池引用（预留，暂未使用）
+/// - `pool`：运行时数据库连接池句柄（MySQL / PostgreSQL 按后端分派）
 ///
 /// # 示例
 ///
@@ -131,12 +133,13 @@ pub struct TableQuery {
     /// 启动期定义并在请求期注入的租户范围；存在时所有读写均必须带该条件。
     tenant_scope: Option<(String, Value)>,
 
-    /// 数据库连接池引用（预留）
+    /// 数据库连接池句柄（按运行时后端分派）
     ///
-    /// 暂未使用，预留用于后续实现 CRUD 操作
-    #[cfg(feature = "mysql")]
-    #[allow(dead_code)]
-    pool: Option<Arc<sqlx::MySqlPool>>,
+    /// 由 [`TableHandle`](crate::table::TableHandle) 或
+    /// [`ActionContext`](crate::action::ActionContext) 注入；未注入时执行方法返回
+    /// [`BaseError::DatabaseNotInitialized`]。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pool: Option<crate::database::AnyPool>,
 
     /// 慢查询阈值（可观测性 C4）
     ///

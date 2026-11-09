@@ -24,7 +24,7 @@ impl TableQuery {
         Ok(())
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(super) fn default_read_fields(&self) -> Result<Vec<&str>, BaseError> {
         let mut fields: Vec<&str> = self
             .table_config
@@ -46,7 +46,7 @@ impl TableQuery {
         Ok(fields)
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub(crate) fn ensure_readable_projection(&self) -> Result<(), BaseError> {
         self.default_read_fields().map(|_| ())
     }

@@ -14,6 +14,7 @@
 //! |------|------|------|
 //! | `YANG_MYSQL_URL` | MySQL 连接串 | 无（缺失则 `mysql_url` 为 `None`） |
 //! | `YANG_DATABASE_URL` | MySQL 连接串（deprecated，请改用 `YANG_MYSQL_URL`） | 同上 |
+//! | `YANG_POSTGRES_URL` | PostgreSQL 连接串 | 无（缺失则 `postgres_url` 为 `None`） |
 //! | `YANG_REDIS_URL` | Redis 连接串 | 无 |
 //! | `YANG_DB_MAX_CONNECTIONS` | 最大连接数 | 由 `DatabaseConfig::default` 决定 |
 //! | `YANG_DB_MIN_CONNECTIONS` | 最小（保活）连接数 | 同上 |
@@ -32,15 +33,32 @@ use std::env;
 pub struct EngineConfig {
     /// MySQL 连接串（`YANG_MYSQL_URL`，兼容 deprecated `YANG_DATABASE_URL`，缺失为 `None`）。
     pub mysql_url: Option<String>,
+    /// PostgreSQL 连接串（`YANG_POSTGRES_URL`，缺失为 `None`）。
+    ///
+    /// 本阶段仅作为配置载体：`postgres` feature 只提供后端运行时抽象，
+    /// Record/TableQuery/schema_sync 的 PostgreSQL 执行层尚未实现。
+    pub postgres_url: Option<String>,
     /// Redis 连接串（`YANG_REDIS_URL`，缺失为 `None`）。
     pub redis_url: Option<String>,
     /// 数据库连接池配置（由 `YANG_DB_*` 覆盖 `DatabaseConfig::default`）。
+    ///
+    /// 同时启用 `mysql` 与 `postgres` 时沿用 MySQL 配置类型；仅启用 `postgres` 时
+    /// 使用 PostgreSQL 配置类型。
     #[cfg(feature = "mysql")]
     pub database: yang_db::DatabaseConfig,
+    /// 数据库连接池配置（由 `YANG_DB_*` 覆盖 `DatabaseConfig::default`）。
+    #[cfg(all(feature = "postgres", not(feature = "mysql")))]
+    pub database: yang_db::PgDatabaseConfig,
 }
 
-/// 读取一个环境变量并按 `T` 解析；缺失返回 `Ok(None)`，存在但解析失败返回 ConfigError。
+/// 当前编译所使用的数据库连接池配置类型。
 #[cfg(feature = "mysql")]
+type DatabaseConfigType = yang_db::DatabaseConfig;
+#[cfg(all(feature = "postgres", not(feature = "mysql")))]
+type DatabaseConfigType = yang_db::PgDatabaseConfig;
+
+/// 读取一个环境变量并按 `T` 解析；缺失返回 `Ok(None)`，存在但解析失败返回 ConfigError。
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 fn parse_env<T: std::str::FromStr>(key: &str) -> Result<Option<T>, BaseError>
 where
     T::Err: std::fmt::Display,
@@ -59,7 +77,7 @@ where
 }
 
 /// 解析布尔环境变量：接受 `true/false/1/0`（大小写不敏感），其余报 ConfigError。
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 fn parse_bool_env(key: &str) -> Result<Option<bool>, BaseError> {
     match env::var(key) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -74,6 +92,38 @@ fn parse_bool_env(key: &str) -> Result<Option<bool>, BaseError> {
             "环境变量 {key} 含非法 UTF-8"
         ))),
     }
+}
+
+/// 从 `YANG_DB_*` 读取连接池配置。
+///
+/// MySQL 与 PostgreSQL 的 `DatabaseConfig` 字段名一致，故共用同一读取逻辑；
+/// 具体类型由编译 feature 决定（见 [`DatabaseConfigType`]）。
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+fn load_database_config() -> Result<DatabaseConfigType, BaseError> {
+    let mut cfg = DatabaseConfigType::default();
+    if let Some(v) = parse_env::<u32>("YANG_DB_MAX_CONNECTIONS")? {
+        cfg.max_connections = v;
+    }
+    if let Some(v) = parse_env::<u32>("YANG_DB_MIN_CONNECTIONS")? {
+        cfg.min_connections = v;
+    }
+    if let Some(v) = parse_env::<u64>("YANG_DB_CONNECT_TIMEOUT")? {
+        cfg.connect_timeout = v;
+    }
+    if let Some(v) = parse_env::<u64>("YANG_DB_IDLE_TIMEOUT")? {
+        cfg.idle_timeout = v;
+    }
+    if let Some(v) = parse_env::<u64>("YANG_DB_MAX_LIFETIME")? {
+        // 0 视为不限制（与 None 同义），其余设具体秒数
+        cfg.max_lifetime = if v == 0 { None } else { Some(v) };
+    }
+    if let Some(v) = parse_bool_env("YANG_DB_TEST_BEFORE_ACQUIRE")? {
+        cfg.test_before_acquire = v;
+    }
+    if let Some(v) = parse_bool_env("YANG_DB_ENABLE_LOGGING")? {
+        cfg.enable_logging = v;
+    }
+    Ok(cfg)
 }
 
 impl EngineConfig {
@@ -104,6 +154,15 @@ impl EngineConfig {
                 ))
             }
         };
+        let postgres_url = match env::var("YANG_POSTGRES_URL") {
+            Ok(v) => Some(v),
+            Err(env::VarError::NotPresent) => None,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(BaseError::ConfigError(
+                    "环境变量 YANG_POSTGRES_URL 含非法 UTF-8".to_string(),
+                ))
+            }
+        };
         let redis_url = match env::var("YANG_REDIS_URL") {
             Ok(v) => Some(v),
             Err(env::VarError::NotPresent) => None,
@@ -114,46 +173,34 @@ impl EngineConfig {
             }
         };
 
-        #[cfg(feature = "mysql")]
-        let database = {
-            let mut cfg = yang_db::DatabaseConfig::default();
-            if let Some(v) = parse_env::<u32>("YANG_DB_MAX_CONNECTIONS")? {
-                cfg.max_connections = v;
-            }
-            if let Some(v) = parse_env::<u32>("YANG_DB_MIN_CONNECTIONS")? {
-                cfg.min_connections = v;
-            }
-            if let Some(v) = parse_env::<u64>("YANG_DB_CONNECT_TIMEOUT")? {
-                cfg.connect_timeout = v;
-            }
-            if let Some(v) = parse_env::<u64>("YANG_DB_IDLE_TIMEOUT")? {
-                cfg.idle_timeout = v;
-            }
-            if let Some(v) = parse_env::<u64>("YANG_DB_MAX_LIFETIME")? {
-                // 0 视为不限制（与 None 同义），其余设具体秒数
-                cfg.max_lifetime = if v == 0 { None } else { Some(v) };
-            }
-            if let Some(v) = parse_bool_env("YANG_DB_TEST_BEFORE_ACQUIRE")? {
-                cfg.test_before_acquire = v;
-            }
-            if let Some(v) = parse_bool_env("YANG_DB_ENABLE_LOGGING")? {
-                cfg.enable_logging = v;
-            }
-            cfg
-        };
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        let database = load_database_config()?;
 
         Ok(Self {
             mysql_url,
+            postgres_url,
             redis_url,
-            #[cfg(feature = "mysql")]
+            #[cfg(any(feature = "mysql", feature = "postgres"))]
             database,
         })
     }
 }
 
-#[cfg(all(test, feature = "mysql"))]
+#[cfg(all(test, any(feature = "mysql", feature = "postgres")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_env_reads_postgres_url() {
+        std::env::set_var("YANG_POSTGRES_URL", "postgres://u:p@127.0.0.1:55432/test");
+        let config = EngineConfig::from_env().expect("合法 PostgreSQL URL 应解析成功");
+        std::env::remove_var("YANG_POSTGRES_URL");
+
+        assert_eq!(
+            config.postgres_url.as_deref(),
+            Some("postgres://u:p@127.0.0.1:55432/test")
+        );
+    }
 
     #[test]
     fn parse_bool_env_accepts_forms() {

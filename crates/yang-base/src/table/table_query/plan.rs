@@ -1,69 +1,107 @@
 //! 查询计划编译：将受保护的查询参数翻译为 `yang_db` 谓词与 `QueryBuilder`。
+//!
+//! 字段引用解析是后端无关的共享部分；MySQL 专属的谓词编译
+//! （`compile_predicate`）与 `compile_db_query` / `apply_read_plan` /
+//! `apply_write_plan` 仅在 `mysql` feature 下编译；PostgreSQL 对应实现见
+//! `plan_pg.rs`（条件值需按原生类型绑定，因此构造 `PgCondition` 而非 `Predicate`）。
 
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use super::TableQuery;
 use crate::error::BaseError;
-use crate::table::{SortOrder, WhereCondition};
+#[cfg(feature = "mysql")]
+use crate::table::SortOrder;
+#[cfg(feature = "mysql")]
+use crate::table::WhereCondition;
+#[cfg(feature = "mysql")]
 use serde_json::Value;
 
 impl TableQuery {
+    /// 返回本次查询绑定的运行时后端；未注入连接池时返回
+    /// [`BaseError::DatabaseNotInitialized`]。
+    pub(super) fn backend(&self) -> Result<yang_db::BackendKind, BaseError> {
+        self.pool
+            .as_ref()
+            .map(crate::database::AnyPool::backend)
+            .ok_or(BaseError::DatabaseNotInitialized)
+    }
+
+    /// 解析字段引用；字段名来自构建期校验过的表定义或请求期校验过的条件。
+    pub(super) fn field_ref(&self, name: &str) -> Result<&yang_db::FieldRef, BaseError> {
+        // MySQL 构建沿用 `TableConfig::get_field_ref` 既有入口；仅 PostgreSQL 时
+        // 直接读取字段引用表，避免依赖 mysql feature 门控的方法。
+        #[cfg(feature = "mysql")]
+        let field = self.table_config.get_field_ref(name);
+        #[cfg(not(feature = "mysql"))]
+        let field = self.table_config.field_refs.get(name);
+        field.ok_or_else(|| {
+            BaseError::FieldNotFound(self.table_config.table_name.clone(), name.to_string())
+        })
+    }
+
+    /// 把受保护的 WHERE 条件翻译为 `yang_db` 谓词（MySQL 路径）。
     #[cfg(feature = "mysql")]
-    fn compile_predicate(
+    pub(super) fn compile_predicate(
         &self,
         condition: &WhereCondition,
     ) -> Result<yang_db::Predicate, BaseError> {
-        let field = |name: &str| {
-            self.table_config
-                .get_field_ref(name)
-                .cloned()
-                .ok_or_else(|| {
-                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.to_string())
-                })
-        };
         Ok(match condition {
-            WhereCondition::Eq { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Eq, value.clone())
-            }
-            WhereCondition::Ne { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Ne, value.clone())
-            }
-            WhereCondition::Gt { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Gt, value.clone())
-            }
-            WhereCondition::Gte { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Gte, value.clone())
-            }
-            WhereCondition::Lt { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Lt, value.clone())
-            }
-            WhereCondition::Lte { field: name, value } => {
-                yang_db::Predicate::Compare(field(name)?, yang_db::CompareOp::Lte, value.clone())
-            }
+            WhereCondition::Eq { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Eq,
+                value.clone(),
+            ),
+            WhereCondition::Ne { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Ne,
+                value.clone(),
+            ),
+            WhereCondition::Gt { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Gt,
+                value.clone(),
+            ),
+            WhereCondition::Gte { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Gte,
+                value.clone(),
+            ),
+            WhereCondition::Lt { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Lt,
+                value.clone(),
+            ),
+            WhereCondition::Lte { field: name, value } => yang_db::Predicate::Compare(
+                self.field_ref(name)?.clone(),
+                yang_db::CompareOp::Lte,
+                value.clone(),
+            ),
             WhereCondition::Like {
                 field: name,
                 pattern,
             } => yang_db::Predicate::Compare(
-                field(name)?,
+                self.field_ref(name)?.clone(),
                 yang_db::CompareOp::Like,
                 Value::String(pattern.clone()),
             ),
             WhereCondition::In {
                 field: name,
                 values,
-            } => yang_db::Predicate::In(field(name)?, values.clone()),
+            } => yang_db::Predicate::In(self.field_ref(name)?.clone(), values.clone()),
             WhereCondition::NotIn {
                 field: name,
                 values,
-            } => yang_db::Predicate::NotIn(field(name)?, values.clone()),
+            } => yang_db::Predicate::NotIn(self.field_ref(name)?.clone(), values.clone()),
             WhereCondition::Between {
                 field: name,
                 lo,
                 hi,
-            } => yang_db::Predicate::Between(field(name)?, lo.clone(), hi.clone()),
-            WhereCondition::IsNull { field: name } => yang_db::Predicate::IsNull(field(name)?),
+            } => yang_db::Predicate::Between(self.field_ref(name)?.clone(), lo.clone(), hi.clone()),
+            WhereCondition::IsNull { field: name } => {
+                yang_db::Predicate::IsNull(self.field_ref(name)?.clone())
+            }
             WhereCondition::IsNotNull { field: name } => {
-                yang_db::Predicate::IsNotNull(field(name)?)
+                yang_db::Predicate::IsNotNull(self.field_ref(name)?.clone())
             }
             WhereCondition::And { conditions } => yang_db::Predicate::And(
                 conditions
@@ -85,7 +123,8 @@ impl TableQuery {
     pub(super) fn compile_db_query(&self) -> Result<yang_db::QueryBuilder<'_>, BaseError> {
         let pool = self
             .pool
-            .as_deref()
+            .as_ref()
+            .and_then(|pool| pool.as_mysql())
             .ok_or(BaseError::DatabaseNotInitialized)?;
         self.apply_read_plan(yang_db::QueryBuilder::from_pool(
             pool,
@@ -102,7 +141,8 @@ impl TableQuery {
     pub(super) fn compile_db_write_query(&self) -> Result<yang_db::QueryBuilder<'_>, BaseError> {
         let pool = self
             .pool
-            .as_deref()
+            .as_ref()
+            .and_then(|pool| pool.as_mysql())
             .ok_or(BaseError::DatabaseNotInitialized)?;
         self.apply_write_plan(yang_db::QueryBuilder::from_pool(
             pool,
@@ -124,9 +164,7 @@ impl TableQuery {
             |values| Ok(values.clone()),
         )?;
         for name in selected {
-            let field = self.table_config.get_field_ref(&name).ok_or_else(|| {
-                BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
-            })?;
+            let field = self.field_ref(&name)?;
             query = query.field(field);
         }
         query = self.apply_where_guards(query)?;
@@ -136,9 +174,7 @@ impl TableQuery {
             &self.query_params.order_by
         };
         for (name, order) in orders {
-            let field = self.table_config.get_field_ref(name).ok_or_else(|| {
-                BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
-            })?;
+            let field = self.field_ref(name)?;
             let order = match order {
                 SortOrder::Asc => yang_db::SortOrder::Asc,
                 SortOrder::Desc => yang_db::SortOrder::Desc,
@@ -180,9 +216,7 @@ impl TableQuery {
         }
         if !self.include_trashed {
             if let Some(name) = &self.table_config.soft_delete_field {
-                let field = self.table_config.get_field_ref(name).ok_or_else(|| {
-                    BaseError::FieldNotFound(self.table_config.table_name.clone(), name.clone())
-                })?;
+                let field = self.field_ref(name)?;
                 query = query.where_null(field);
             }
         }

@@ -1,6 +1,6 @@
 //! BR 心智连续的 Tables 深模块。
 
-#[cfg(feature = "mysql")]
+#[cfg(any(feature = "mysql", feature = "postgres"))]
 use super::RelationBatchExecutor;
 use super::{
     PaginatedResult, QueryParams, Record, RelationData, RelationLoader, SortOrder, TableQuery,
@@ -26,7 +26,7 @@ pub const DEFAULT_TREE_MAX_NODES: usize = 10_000;
 pub const DEFAULT_TREE_MAX_DEPTH: usize = 1_024;
 
 /// 校验树查询节点数未超过上限；超限返回 `ParamInvalid`，提示调用方先收窄筛选。
-#[cfg(any(feature = "mysql", test))]
+#[cfg(any(feature = "mysql", feature = "postgres", test))]
 fn ensure_tree_node_cap(count: usize, max_nodes: usize) -> Result<(), BaseError> {
     if count > max_nodes {
         return Err(BaseError::ParamInvalid(
@@ -147,7 +147,7 @@ impl Tables {
     }
 
     /// 执行标准分页列表。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn table_list(self) -> Result<PaginatedResult<Record>, BaseError> {
         self.query.paginate_records().await
     }
@@ -156,7 +156,7 @@ impl Tables {
     ///
     /// 底层 `all()` 一次性读取全部匹配行，**不受** TableQuery 最大分页限制保护；
     /// 调用方必须先通过 where/search 条件把结果规模约束在内存可承载范围内。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn table_select(self) -> Result<Vec<Record>, BaseError> {
         self.query.all().await
     }
@@ -165,7 +165,7 @@ impl Tables {
     ///
     /// 节点数受 [`DEFAULT_TREE_MAX_NODES`] 限制，超出即报错；需要自定义上限的
     /// 树 View 应使用 [`Tables::table_tree_view`] 并在 `TreeViewSpec` 中配置。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn table_tree(self) -> Result<Vec<TableTreeNode>, BaseError> {
         let read_limit = DEFAULT_TREE_MAX_NODES
             .checked_add(1)
@@ -179,7 +179,7 @@ impl Tables {
     ///
     /// 节点数上限取 `TreeViewSpec::max_nodes`（缺省 [`DEFAULT_TREE_MAX_NODES`]），
     /// 超出即报错，避免全表无界读入内存。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn table_tree_view(
         self,
         view: &CompiledTableView,
@@ -296,7 +296,7 @@ impl Tables {
     }
 
     /// 执行分页列表并按关系种类批量加载展示数据。
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn table_list_with_relations<E>(
         self,
         executor: &E,

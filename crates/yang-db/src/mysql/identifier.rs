@@ -76,7 +76,12 @@ mod tests {
     fn test_quote_qualified() {
         assert_eq!(quote_qualified("name").unwrap(), "`name`");
         assert_eq!(quote_qualified("users.name").unwrap(), "`users`.`name`");
-        assert!(quote_qualified("a.b.c").is_err());
+        // 与共享 FieldRef 一致：最多三段（schema.table.column）。
+        assert_eq!(
+            quote_qualified("db.users.name").unwrap(),
+            "`db`.`users`.`name`"
+        );
+        assert!(quote_qualified("a.b.c.d").is_err());
         assert!(quote_qualified("users.COUNT(*)").is_err());
     }
 }

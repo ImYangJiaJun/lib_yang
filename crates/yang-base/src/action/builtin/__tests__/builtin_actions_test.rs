@@ -2,10 +2,10 @@
 //!
 //! 这里验证无泛型 builtin 的静态元信息，以及 `DynAction::dispatch` 对动态 DTO
 //! 和当前上下文 `TableDefinition` 的运行期契约。真实数据库执行路径由集成测试覆盖。
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::builtin::{
-    AddAction, DelAction, GetAction, PutAction, SelectAction, TableAction,
+    AddAction, DelAction, GetAction, InsertResult, PutAction, SelectAction, TableAction,
 };
 use crate::action::{ActionContext, DynAction, Request, TypedAction, User};
 use crate::error::BaseError;
@@ -83,6 +83,29 @@ fn test_builtin_input_schema_non_empty() {
     assert!(
         schema.pointer("/properties/order_by").is_some(),
         "SelectQuery schema 应暴露字符串排序字段"
+    );
+}
+
+/// `InsertResult.id` 是跨后端统一的自增主键契约：MySQL 与 PostgreSQL 的整型主键
+/// 都经 `TableQuery::insert` 收敛为 `u64`，因此这里锁定序列化与 schema 均不损失范围。
+#[test]
+fn test_insert_result_id_stays_u64_contract() {
+    let result = InsertResult {
+        affected: 1,
+        id: u64::MAX,
+    };
+    let value = serde_json::to_value(&result).expect("InsertResult 应可序列化");
+    assert_eq!(
+        value["id"],
+        json!(u64::MAX),
+        "InsertResult.id 必须保持 u64 无损编码"
+    );
+
+    let schema = serde_json::to_value(schemars::schema_for!(InsertResult))
+        .expect("InsertResult schema 应可序列化");
+    assert_eq!(
+        schema["properties"]["id"]["type"], "integer",
+        "InsertResult.id 的 schema 必须是 integer"
     );
 }
 

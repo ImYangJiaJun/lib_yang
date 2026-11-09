@@ -9,6 +9,10 @@ pub enum RowLock {
     ForUpdate,
     /// 共享行锁：`FOR SHARE`。
     ForShare,
+    /// 排他行锁并跳过已锁定行：`FOR UPDATE SKIP LOCKED`。
+    ForUpdateSkipLocked,
+    /// 共享行锁并跳过已锁定行：`FOR SHARE SKIP LOCKED`。
+    ForShareSkipLocked,
 }
 
 impl RowLock {
@@ -17,6 +21,27 @@ impl RowLock {
         match self {
             Self::ForUpdate => "FOR UPDATE",
             Self::ForShare => "FOR SHARE",
+            Self::ForUpdateSkipLocked => "FOR UPDATE SKIP LOCKED",
+            Self::ForShareSkipLocked => "FOR SHARE SKIP LOCKED",
         }
+    }
+}
+
+#[cfg(all(test, any(feature = "mysql", feature = "postgres")))]
+mod tests {
+    use super::RowLock;
+
+    #[test]
+    fn skip_locked_modes_render_expected_sql() {
+        assert_eq!(
+            RowLock::ForUpdateSkipLocked.as_sql(),
+            "FOR UPDATE SKIP LOCKED"
+        );
+        assert_eq!(
+            RowLock::ForShareSkipLocked.as_sql(),
+            "FOR SHARE SKIP LOCKED"
+        );
+        assert_eq!(RowLock::ForUpdate.as_sql(), "FOR UPDATE");
+        assert_eq!(RowLock::ForShare.as_sql(), "FOR SHARE");
     }
 }

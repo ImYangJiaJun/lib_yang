@@ -1,5 +1,5 @@
 //! 把类型化 where 条件桥接到 TableQuery
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::error::BaseError;
 use crate::table::TableQuery;

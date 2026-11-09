@@ -1,24 +1,37 @@
-//! 基于模块 [`TableDefinition`] 的 MySQL 启动期保数据 schema 演进。
+//! 基于模块 [`TableDefinition`] 的启动期保数据 schema 演进。
 //!
 //! 同步器创建缺失结构，并支持显式列改名、受控列修改、唯一索引、CHECK 与外键；
 //! 永不自动删除未知列、索引或约束。任何可能被旧数据阻止的变更都会先只读扫描，
-//! 返回表、对象和主键后拒绝全部 DDL。多实例启动使用同一 MySQL 会话持有 advisory
-//! lock，DDL 中断后可按 information_schema 重新规划并幂等续作。
+//! 返回表、对象和主键后拒绝全部 DDL。
+//!
+//! 方言差异集中在 [`dialect::SchemaDialect`]，数据库访问由 [`driver::SchemaDriver`]
+//! 分派：MySQL 使用早前行为（`GET_LOCK`、DDL 隐式提交）；PostgreSQL 使用
+//! `pg_advisory_lock(bigint)` 串行化多实例启动，并把全部 DDL 放入单事务，失败整体回滚。
 
+mod dialect;
+mod driver;
+#[cfg(feature = "mysql")]
 mod inspect;
 mod model;
+#[cfg(feature = "postgres")]
+mod pg;
 mod plan;
 mod preflight;
+#[cfg(feature = "mysql")]
 mod render;
 mod sync;
 
 #[cfg(test)]
 mod __tests__;
 
+#[cfg(all(test, feature = "mysql"))]
+pub(super) use model::SchemaPreflightCheck;
 #[cfg(test)]
-pub(super) use model::{ExistingIndex, ExistingTableSchema, SchemaPreflightCheck};
-#[cfg(test)]
+pub(super) use model::{ExistingIndex, ExistingTableSchema};
+#[cfg(all(test, feature = "mysql"))]
 pub(super) use plan::plan_table_sync;
+#[cfg(all(test, feature = "postgres"))]
+pub(super) use plan::plan_table_sync_with;
 
 /// schema 同步变更类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

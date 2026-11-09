@@ -47,7 +47,7 @@ pub use capability::{
     BackendCapabilities, BackendCapability, BackendKind, PlaceholderStyle, SafetyConstraint,
     MYSQL_CAPABILITIES, POSTGRES_CAPABILITIES, REDIS_CAPABILITIES,
 };
-pub use error::{DbError, DbErrorCategory};
+pub use error::{DbError, DbErrorCategory, SqlErrorInfo, SqlErrorKind};
 
 // 重新导出事务隔离级别
 pub use isolation::IsolationLevel;
@@ -94,7 +94,8 @@ pub use postgres::{
     condition_to_sql_owned as pg_condition_to_sql_owned,
     condition_to_sql_owned_checked as pg_condition_to_sql_owned_checked, Condition as PgCondition,
     Database as PgDatabase, DatabaseConfig as PgDatabaseConfig, FieldType as PgFieldType,
-    QueryBuilder as PgQueryBuilder, SqlValue as PgSqlValue, Transaction as PgTransaction,
+    Notification as PgNotification, PgNotificationListener, QueryBuilder as PgQueryBuilder,
+    SqlValue as PgSqlValue, Transaction as PgTransaction,
 };
 
 // 重新导出 Redis 核心类型

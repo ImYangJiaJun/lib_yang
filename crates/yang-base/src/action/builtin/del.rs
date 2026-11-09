@@ -1,5 +1,5 @@
 //! DelAction - 按主键删除记录
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use crate::action::builtin::{add::AffectedResult, get::GetByPk};
 use crate::action::{ActionContext, TypedHandler};

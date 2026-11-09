@@ -239,7 +239,7 @@ impl FieldPermissions {
     ///
     /// 如果用户有写入权限返回 true，否则返回 false
     ///
-    #[cfg(any(feature = "mysql", test))]
+    #[cfg(any(feature = "mysql", feature = "postgres", test))]
     pub(crate) fn can_write(&self, user_roles: &HashSet<String>) -> bool {
         self.writable.allows(user_roles)
     }

@@ -1,36 +1,17 @@
-//! 读取执行（`mysql` feature）：select/all/optional/one/count/paginate 及事务内变体。
+//! 读取执行：select/all/optional/one/count/paginate 及事务内变体。
+//!
+//! 公共入口按连接池后端运行时分派：MySQL 分支保持原有 `yang_db::QueryBuilder`
+//! 行为，PostgreSQL 分支由 `read_pg.rs` 提供（`postgres` feature）。
 
-#![cfg(feature = "mysql")]
+#![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use super::TableQuery;
+use crate::database::AnyTransaction;
 use crate::error::BaseError;
-use serde::Serialize;
 
-/// 数据库执行方法（需要启用 `mysql` feature）
+/// 数据库执行方法（需要启用 `mysql` 或 `postgres` feature）
 impl TableQuery {
-    /// 执行分页查询操作
-    ///
-    /// 执行分页查询，包括以下步骤：
-    /// 1. 执行 COUNT(*) 查询获取总记录数
-    /// 2. 计算 LIMIT 和 OFFSET
-    /// 3. 执行数据查询
-    /// 4. 计算总页数
-    /// 5. 构建并返回 PaginatedResult
-    ///
-    /// # 类型参数
-    ///
-    /// - `T`：结果类型，必须实现 `sqlx::FromRow` 和 `Serialize` trait
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(PaginatedResult<T>)`：查询成功，返回分页结果
-    /// - `Err(BaseError)`：查询失败，返回错误
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    ///
+    /// 为分页查询补齐默认页码/每页大小并写回查询参数。
     pub(crate) fn with_effective_pagination(self) -> Result<(Self, usize, usize), BaseError> {
         let page = self.query_params.page.unwrap_or(1);
         let page_size = self
@@ -42,16 +23,37 @@ impl TableQuery {
         Ok((query, page, page_size))
     }
 
-    /// 执行分页查询。
+    /// 执行分页查询并返回 schema-first [`Record`](crate::table::Record)。
     ///
     /// 未显式设置分页时会使用默认页码和默认每页大小，并确保数据查询带有 `LIMIT/OFFSET`。
-    pub(crate) async fn paginate<T>(self) -> Result<crate::table::PaginatedResult<T>, BaseError>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin + Serialize,
-    {
+    pub async fn paginate_records(
+        self,
+    ) -> Result<crate::table::PaginatedResult<crate::table::Record>, BaseError> {
+        self.paginate().await
+    }
+
+    /// 执行分页查询（内部方法，供 [`TableQuery::paginate_records`] 使用）。
+    pub(crate) async fn paginate(
+        self,
+    ) -> Result<crate::table::PaginatedResult<crate::table::Record>, BaseError> {
+        match self.backend()? {
+            #[cfg(feature = "mysql")]
+            yang_db::BackendKind::MySql => self.paginate_mysql().await,
+            #[cfg(feature = "postgres")]
+            yang_db::BackendKind::PostgreSql => self.paginate_pg().await,
+            other => Err(BaseError::ConfigError(format!(
+                "TableQuery 不支持当前数据库后端: {other:?}"
+            ))),
+        }
+    }
+
+    /// MySQL 分页实现：COUNT → LIMIT/OFFSET 数据查询。
+    #[cfg(feature = "mysql")]
+    async fn paginate_mysql(
+        self,
+    ) -> Result<crate::table::PaginatedResult<crate::table::Record>, BaseError> {
         // 1. 检查数据库连接池是否存在
-        let _pool = self
-            .pool
+        self.pool
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)?;
 
@@ -67,7 +69,7 @@ impl TableQuery {
         }
 
         // 5. 执行数据查询
-        let data = query.select().await?;
+        let data = query.select_mysql().await?;
 
         // 6. 构建并返回 PaginatedResult
         Ok(crate::table::PaginatedResult::new(
@@ -75,37 +77,55 @@ impl TableQuery {
         ))
     }
 
-    /// 执行分页查询并返回 schema-first [`Record`](crate::table::Record)。
-    pub async fn paginate_records(
+    /// PostgreSQL 分页实现：与 MySQL 相同的 COUNT + LIMIT/OFFSET 语义。
+    #[cfg(feature = "postgres")]
+    async fn paginate_pg(
         self,
     ) -> Result<crate::table::PaginatedResult<crate::table::Record>, BaseError> {
-        self.paginate::<crate::table::Record>().await
+        self.pool
+            .as_ref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
+
+        let (query, page, page_size) = self.with_effective_pagination()?;
+
+        let total = query.count_internal().await?;
+
+        if total == 0 {
+            return Ok(crate::table::PaginatedResult::empty(page, page_size));
+        }
+
+        let data = query.select_pg().await?;
+
+        Ok(crate::table::PaginatedResult::new(
+            data, total, page, page_size,
+        ))
     }
 
     /// 执行 COUNT 查询获取总记录数（内部方法，供 paginate 使用）
     ///
-    /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
-    /// 返回 `usize` 以与 `PaginatedResult::new` 的 `total: usize` 参数直接匹配；
-    /// 公开接口 `count()` 通过 `as u64` 适配。
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(usize)`：查询成功，返回总记录数
-    /// - `Err(BaseError)`：查询失败，返回错误
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
+    /// COUNT 会泄露表基数，因此与 SELECT 使用相同的可读权限守卫；分页只约束当前页
+    /// 数据，不改变总记录数，因此先清除分页参数再计数。
     async fn count_internal(&self) -> Result<usize, BaseError> {
-        // COUNT 会泄露表基数，因此与 SELECT 使用相同的可读权限守卫。
         self.ensure_readable_projection()?;
-        // 分页只约束当前页数据，不应改变总记录数。尤其是 OFFSET > 0 时，
-        // MySQL 会把 COUNT(*) 的唯一结果行跳过，进而把非空结果误判为 0。
         let mut count_query = self.clone();
         count_query.query_params.page = None;
         count_query.query_params.page_size = None;
-        let count = count_query
+
+        match count_query.backend()? {
+            #[cfg(feature = "mysql")]
+            yang_db::BackendKind::MySql => count_query.count_mysql().await,
+            #[cfg(feature = "postgres")]
+            yang_db::BackendKind::PostgreSql => count_query.count_pg().await,
+            other => Err(BaseError::ConfigError(format!(
+                "TableQuery 不支持当前数据库后端: {other:?}"
+            ))),
+        }
+    }
+
+    /// MySQL COUNT 实现。
+    #[cfg(feature = "mysql")]
+    async fn count_mysql(&self) -> Result<usize, BaseError> {
+        let count = self
             .compile_db_query()?
             .count()
             .await
@@ -117,157 +137,144 @@ impl TableQuery {
         })
     }
 
-    /// 执行 COUNT 查询获取总记录数
+    /// PostgreSQL COUNT 实现。
     ///
-    /// 构建 COUNT(*) SQL 语句，应用已配置的 WHERE 条件，执行查询并返回总记录数。
+    /// 只应用 WHERE/软删守卫：PostgreSQL 的 `SELECT COUNT(*) ... ORDER BY 非分组列`
+    /// 会被拒绝，且计数本身不需要投影、排序与分页。
+    #[cfg(feature = "postgres")]
+    async fn count_pg(&self) -> Result<usize, BaseError> {
+        let database = self.pg_database()?;
+        let count = self
+            .apply_pg_where_guards(database.table(&self.table_config.table_ref))?
+            .count()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)?;
+        usize::try_from(count).map_err(|_| {
+            BaseError::DatabaseQueryFailed(yang_db::DbError::QueryError(
+                "COUNT 结果为负数，超出 usize 范围".to_string(),
+            ))
+        })
+    }
+
+    /// 执行 COUNT 查询获取总记录数
     ///
     /// # 返回值
     ///
     /// - `Ok(u64)`：查询成功，返回总记录数
     /// - `Err(BaseError)`：查询失败，返回错误
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// let total = query
-    ///     .where_eq("status", serde_json::json!("active"))?
-    ///     .count()
-    ///     .await?;
-    ///
-    /// println!("总记录数: {}", total);
-    /// ```
     pub async fn count(self) -> Result<u64, BaseError> {
         self.count_internal().await.map(|n| n as u64)
     }
 
-    /// 执行 SELECT 查询操作
-    ///
-    /// 使用 sqlx 构建 SELECT 语句，应用已配置的字段选择、WHERE 条件和排序规则，
-    /// 执行查询并将结果反序列化为指定的泛型类型 T。
-    ///
-    /// # 类型参数
-    ///
-    /// - `T`：结果类型，必须实现 `sqlx::FromRow` trait
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(Vec<T>)`：查询成功，返回结果列表
-    /// - `Err(BaseError)`：查询失败，返回错误
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    ///
-    pub(crate) async fn select<T>(self) -> Result<Vec<T>, BaseError>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
-    {
+    /// 执行 SELECT 查询操作（内部方法）
+    async fn select(self) -> Result<Vec<crate::table::Record>, BaseError> {
+        match self.backend()? {
+            #[cfg(feature = "mysql")]
+            yang_db::BackendKind::MySql => self.select_mysql().await,
+            #[cfg(feature = "postgres")]
+            yang_db::BackendKind::PostgreSql => self.select_pg().await,
+            other => Err(BaseError::ConfigError(format!(
+                "TableQuery 不支持当前数据库后端: {other:?}"
+            ))),
+        }
+    }
+
+    /// MySQL SELECT 实现。
+    #[cfg(feature = "mysql")]
+    async fn select_mysql(self) -> Result<Vec<crate::table::Record>, BaseError> {
         self.compile_db_query()?
-            .select::<T>()
+            .select::<crate::table::Record>()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
+    }
+
+    /// PostgreSQL SELECT 实现（`Record` 实现 `PgRow` 解码）。
+    #[cfg(feature = "postgres")]
+    async fn select_pg(self) -> Result<Vec<crate::table::Record>, BaseError> {
+        let database = self.pg_database()?;
+        self.apply_pg_read_plan(database.table(&self.table_config.table_ref))?
+            .select::<crate::table::Record>()
             .await
             .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 查询全部匹配记录。
     pub async fn all(self) -> Result<Vec<crate::table::Record>, BaseError> {
-        self.select::<crate::table::Record>().await
+        self.select().await
     }
 
     /// 在事务中执行 SELECT 查询并返回多条记录
     ///
-    /// 与 [`TableQuery::select`] 完全一致的建句与权限/软删逻辑，但在调用方提供的
-    /// `yang_db::Transaction` 内执行，使「读-改-写」场景的读取与后续写入处于同一
+    /// 与 [`TableQuery::all`] 完全一致的建句与权限/软删逻辑，但在调用方提供的
+    /// [`AnyTransaction`] 内执行，使「读-改-写」场景的读取与后续写入处于同一
     /// 事务、看到一致快照。
-    ///
-    /// # 参数
-    ///
-    /// - `tx`：由 [`ActionContext::begin_transaction`](crate::action::ActionContext::begin_transaction)
-    ///   或 [`Tools`](crate::tools::Tools) 所有数据库实例创建的活动事务
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseTransactionFailed`：事务已提交/回滚，连接不可用
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    pub(crate) async fn select_in_tx<T>(
+    pub(crate) async fn select_in_tx(
         self,
-        tx: &mut yang_db::Transaction,
-    ) -> Result<Vec<T>, BaseError>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
-    {
-        let query = tx.table(&self.table_config.table_ref);
-        self.apply_read_plan(query)?
-            .select::<T>()
-            .await
-            .map_err(BaseError::DatabaseQueryFailed)
+        tx: &mut AnyTransaction,
+    ) -> Result<Vec<crate::table::Record>, BaseError> {
+        match tx {
+            #[cfg(feature = "mysql")]
+            AnyTransaction::MySql(tx) => {
+                let query = tx.table(&self.table_config.table_ref);
+                self.apply_read_plan(query)?
+                    .select::<crate::table::Record>()
+                    .await
+                    .map_err(BaseError::DatabaseQueryFailed)
+            }
+            #[cfg(feature = "postgres")]
+            AnyTransaction::Postgres(tx) => {
+                let query = tx.table(&self.table_config.table_ref);
+                self.apply_pg_read_plan(query)?
+                    .select::<crate::table::Record>()
+                    .await
+                    .map_err(BaseError::DatabaseQueryFailed)
+            }
+        }
     }
 
     /// 在事务中查询全部匹配记录。
     pub async fn all_in_tx(
         self,
-        tx: &mut yang_db::Transaction,
+        tx: &mut AnyTransaction,
     ) -> Result<Vec<crate::table::Record>, BaseError> {
-        self.select_in_tx::<crate::table::Record>(tx).await
+        self.select_in_tx(tx).await
     }
 
-    /// 执行查询并返回可选的单条记录
-    ///
-    /// 执行 SELECT 查询，返回第一条匹配记录，如果没有匹配记录则返回 None。
-    /// 通常与 `where_eq` 等条件方法配合使用，用于按主键查询单条记录。
-    ///
-    /// # 类型参数
-    ///
-    /// - `T`：结果类型，必须实现 `sqlx::FromRow` trait
-    ///
-    /// # 返回值
-    ///
-    /// - `Ok(Some(T))`：找到匹配记录
-    /// - `Ok(None)`：没有匹配记录
-    /// - `Err(BaseError)`：查询失败
-    ///
-    /// # 错误
-    ///
-    /// - `BaseError::DatabaseNotInitialized`：数据库未初始化
-    /// - `BaseError::DatabaseQueryFailed`：查询执行失败
-    ///
-    /// # 示例
-    ///
-    /// ```rust,ignore
-    /// use yang_base::table::Record;
-    ///
-    /// # async fn example() -> Result<(), yang_base::error::BaseError> {
-    /// // 按主键查询单条记录
-    /// let row: Option<Record> = query
-    ///     .where_eq("id", serde_json::json!(1))?
-    ///     .fetch_optional()
-    ///     .await?;
-    ///
-    /// match row {
-    ///     Some(r) => println!("找到记录: {:?}", r.columns),
-    ///     None => println!("记录不存在"),
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub(crate) async fn fetch_optional<T>(self) -> Result<Option<T>, BaseError>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
-    {
+    /// 执行查询并返回可选的单条记录（内部方法）
+    async fn fetch_optional(self) -> Result<Option<crate::table::Record>, BaseError> {
+        match self.backend()? {
+            #[cfg(feature = "mysql")]
+            yang_db::BackendKind::MySql => self.fetch_optional_mysql().await,
+            #[cfg(feature = "postgres")]
+            yang_db::BackendKind::PostgreSql => self.fetch_optional_pg().await,
+            other => Err(BaseError::ConfigError(format!(
+                "TableQuery 不支持当前数据库后端: {other:?}"
+            ))),
+        }
+    }
+
+    /// MySQL 单条查询实现。
+    #[cfg(feature = "mysql")]
+    async fn fetch_optional_mysql(self) -> Result<Option<crate::table::Record>, BaseError> {
         self.compile_db_query()?
-            .find::<T>()
+            .find::<crate::table::Record>()
+            .await
+            .map_err(BaseError::DatabaseQueryFailed)
+    }
+
+    /// PostgreSQL 单条查询实现。
+    #[cfg(feature = "postgres")]
+    async fn fetch_optional_pg(self) -> Result<Option<crate::table::Record>, BaseError> {
+        let database = self.pg_database()?;
+        self.apply_pg_read_plan(database.table(&self.table_config.table_ref))?
+            .find::<crate::table::Record>()
             .await
             .map_err(BaseError::DatabaseQueryFailed)
     }
 
     /// 查询可选单条记录。
     pub async fn optional(self) -> Result<Option<crate::table::Record>, BaseError> {
-        self.fetch_optional::<crate::table::Record>().await
+        self.fetch_optional().await
     }
 
     /// 查询单条记录；没有匹配记录时返回 [`BaseError::RecordNotFound`]。
