@@ -357,8 +357,12 @@ fn validate_action_media(
     }
     let mut content_types = BTreeSet::new();
     for content_type in &multipart.allowed_content_types {
-        if !is_exact_mime_type(content_type) {
-            return Err(invalid("allowed_content_types 必须是小写精确 MIME 类型"));
+        // "*/*" 是唯一允许的通配写法：传输层据此跳过文件 part 的客户端 MIME 校验
+        // （对齐 TS 导入端点只按扩展名判断）；其余仍必须是精确 MIME 类型。
+        if content_type != "*/*" && !is_exact_mime_type(content_type) {
+            return Err(invalid(
+                "allowed_content_types 必须是小写精确 MIME 类型或 \"*/*\"",
+            ));
         }
         if !content_types.insert(content_type) {
             return Err(invalid("allowed_content_types 不能重复"));

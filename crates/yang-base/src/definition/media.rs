@@ -46,7 +46,8 @@ pub enum UploadLifecycle {
 /// `multipart/form-data` 的资源与类型限制。
 ///
 /// `allowed_content_types` 只校验客户端声明的媒体类型，不能替代 Handler 对文件魔数、
-/// 内容和业务格式的验证。
+/// 内容和业务格式的验证；其中唯一允许的通配写法 `"*/*"` 表示跳过该校验（对齐 TS
+/// 导入端点只按扩展名判断文件类型的行为）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MultipartSpec {
     /// 非文件表单字段数量上限。
@@ -59,7 +60,8 @@ pub struct MultipartSpec {
     pub max_text_field_bytes: u64,
     /// 整个 multipart body 的字节上限。
     pub max_total_bytes: u64,
-    /// 允许的精确 MIME 类型；不允许空集合或通配符。
+    /// 允许的精确 MIME 类型；`"*/*"` 表示不校验文件 part 的客户端类型；
+    /// 不允许空集合。
     pub allowed_content_types: Vec<String>,
     /// 临时文件生命周期。
     pub lifecycle: UploadLifecycle,

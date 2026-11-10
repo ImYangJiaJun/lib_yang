@@ -557,9 +557,9 @@ async fn dispatch_request(
         .copied()
         .unwrap_or_default();
     let query = match uri.query() {
-        Some(raw) => match serde_urlencoded::from_str::<HashMap<String, String>>(raw) {
+        Some(raw) => match parse_query_pairs(raw) {
             Ok(query) => query,
-            Err(_) => {
+            Err(()) => {
                 return with_request_id_header(
                     error_response(
                         StatusCode::BAD_REQUEST,
@@ -633,6 +633,21 @@ async fn dispatch_request(
         }
     };
     with_request_id_header(response, request_id)
+}
+
+/// 把 query 字符串解析为 `HashMap`，同名参数按 TS `URLSearchParams.get` 语义取第一个值。
+///
+/// `serde_urlencoded` 直接解码到 `HashMap` 时重复键由后者覆盖（last-wins），与原型相反；
+/// 因此先解码为有序键值对，再逐对插入且不覆盖已有键。解析仍走同一个
+/// `serde_urlencoded` 解析器，错误语义与空值 / 无值参数行为不变。
+fn parse_query_pairs(raw: &str) -> Result<HashMap<String, String>, ()> {
+    let pairs = serde_urlencoded::from_str::<Vec<(String, String)>>(raw).map_err(|_| ())?;
+    let mut query = HashMap::with_capacity(pairs.len());
+    for (key, value) in pairs {
+        // first-wins：同名参数只保留首次出现的值。
+        query.entry(key).or_insert(value);
+    }
+    Ok(query)
 }
 
 fn append_action_response_headers(
@@ -733,10 +748,12 @@ async fn decode_multipart(
         .unwrap_or_default();
     let media_type = content_type.split(';').next().unwrap_or_default().trim();
     if !media_type.eq_ignore_ascii_case("multipart/form-data") {
+        // TS 原型 req.formData() 失败一律 400 INVALID_FORM，而不是 415；
+        // 文案与原型逐字一致。
         return Err(multipart_error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            StatusCode::BAD_REQUEST,
             "body",
-            "请求 Content-Type 必须是 multipart/form-data",
+            "请使用 multipart/form-data 上传文件",
         ));
     }
     if request
@@ -809,6 +826,9 @@ async fn decode_multipart(
                     "文件数量超过上限",
                 ));
             }
+            // 浏览器/脚本客户端可能不给文件 part 带 Content-Type，而 TS 原型从不校验
+            // 文件 part 的 MIME（导入端点只按扩展名判断）；缺头时回退
+            // application/octet-stream，白名单声明通配符 "*/*" 时直接放行。
             let content_type = field
                 .content_type()
                 .map(|value| {
@@ -819,17 +839,12 @@ async fn decode_multipart(
                         .trim()
                         .to_ascii_lowercase()
                 })
-                .ok_or_else(|| {
-                    multipart_error(
-                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                        &name,
-                        "上传文件缺少 Content-Type",
-                    )
-                })?;
-            if !spec
-                .allowed_content_types
-                .iter()
-                .any(|allowed| allowed == &content_type)
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            if !allows_any_content_type(spec)
+                && !spec
+                    .allowed_content_types
+                    .iter()
+                    .any(|allowed| allowed == &content_type)
             {
                 return Err(multipart_error(
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -1111,6 +1126,14 @@ fn multipart_error(status: StatusCode, field: &str, message: &str) -> (StatusCod
         status,
         BaseError::ParamInvalid(field.to_string(), message.to_string()),
     )
+}
+
+/// Action 白名单是否声明通配符 `"*/*"`；声明后不校验文件 part 的客户端 MIME
+/// （对齐 TS 导入端点只按扩展名校验的行为）。
+fn allows_any_content_type(spec: &MultipartSpec) -> bool {
+    spec.allowed_content_types
+        .iter()
+        .any(|allowed| allowed == "*/*")
 }
 
 /// 把附件响应映射为真实 HTTP 响应。
@@ -1434,6 +1457,34 @@ mod tests {
             status_for_error(&BaseError::AuthorizationCheckUnavailable),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[test]
+    fn duplicate_query_parameters_take_first_value() {
+        // Q1：TS URLSearchParams.get 取第一个同名参数；后出现的值不得覆盖它。
+        let query = parse_query_pairs("a=1&a=2&b=3").expect("合法 query 必须解析成功");
+        assert_eq!(query.get("a").map(String::as_str), Some("1"));
+        assert_eq!(query.get("b").map(String::as_str), Some("3"));
+    }
+
+    #[test]
+    fn query_parsing_keeps_empty_and_valueless_parameters() {
+        // 空值（a=）与无值（b）参数与 serde_urlencoded 原行为一致：都得到空字符串。
+        let query = parse_query_pairs("a=&b&a=x").expect("合法 query 必须解析成功");
+        assert_eq!(query.get("a").map(String::as_str), Some(""));
+        assert_eq!(query.get("b").map(String::as_str), Some(""));
+        assert!(parse_query_pairs("")
+            .expect("空 query 必须解析成功")
+            .is_empty());
+    }
+
+    #[test]
+    fn wildcard_content_type_bypasses_upload_whitelist() {
+        // Z5：TS 导入端点只按扩展名校验；"*/*" 表示跳过文件 part 的 MIME 白名单。
+        assert!(allows_any_content_type(&MultipartSpec::new(["*/*"])));
+        assert!(!allows_any_content_type(&MultipartSpec::new([
+            "application/pdf"
+        ])));
     }
 
     #[test]

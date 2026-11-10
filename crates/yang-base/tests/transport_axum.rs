@@ -2239,6 +2239,49 @@ async fn multipart_rejects_wrong_media_oversized_and_excess_parts_before_dispatc
 }
 
 #[tokio::test]
+async fn multipart_wildcard_content_type_accepts_arbitrary_file_mime() {
+    // Z5：导入端点声明 "*/*" 后不校验文件 part 的客户端 Content-Type（TS 只按扩展名）。
+    let module = ModuleSpec::new(ModuleName::new("upload.wildcard").expect("模块名"))
+        .action_fn(
+            yang_base::action_name!("receive"),
+            |_, input: UploadInput| async move {
+                Ok::<_, BaseError>(ApiResponse::success_value(
+                    serde_json::json!({"title": input.title}),
+                    "已接收",
+                ))
+            },
+        )
+        .route(HttpMethod::Post, "/api/upload/wildcard")
+        .public()
+        .multipart(
+            MultipartSpec::new(["*/*"])
+                .max_files(1)
+                .max_file_bytes(131072)
+                .max_total_bytes(131072),
+        )
+        .register();
+    let app = Arc::new(
+        AppBuilder::new()
+            .addon(AddonSpec::new(AddonName::new("upload").expect("Addon名")).module(module))
+            .build(Arc::new(ToolsBuilder::new().build().expect("Tools")))
+            .expect("App"),
+    );
+    let router = router(app, AxumTransportConfig::default()).expect("Router");
+    let boundary = "wildcard";
+    let body = multipart_payload(
+        boundary,
+        &[("title", "document")],
+        &[("file", "report.bin", "application/x-whatever", b"hello")],
+    );
+    let response = oneshot(
+        router,
+        multipart_request_to("/api/upload/wildcard", boundary, body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn multipart_rejects_json_malformed_and_mixed_same_name_parts() {
     let (app, _) = build_upload_app();
     let upload_router =
@@ -2248,7 +2291,8 @@ async fn multipart_rejects_json_malformed_and_mixed_same_name_parts() {
         json_request("POST", "/api/upload/file", r#"{"title":"x"}"#),
     )
     .await;
-    assert_eq!(json.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    // Z5：非 multipart 请求对齐 TS 的 400 INVALID_FORM，不再是 415。
+    assert_eq!(json.status(), StatusCode::BAD_REQUEST);
 
     let (app, _) = build_upload_app();
     let upload_router =
