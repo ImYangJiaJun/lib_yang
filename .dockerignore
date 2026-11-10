@@ -48,3 +48,15 @@ project/yang-system/.tmp-fs
 project/yang-system/.tmp-*
 project/yang-system/*.manifest.json
 **/*.ndjson
+
+# receivables-system 的部署产物：后端构建上下文是整个 lib_yang 根，
+# 这些文件含生产凭据或大体积镜像包，绝不能送进 docker daemon。
+project/receivables-system/config.toml
+project/receivables-system/deploy/config.cloud*.toml
+project/receivables-system/deploy/config.cloud*.toml.*
+project/receivables-system/deploy/*.tar
+project/receivables-system/deploy/*.tar.gz
+project/receivables-system/deploy/.build
+project/receivables-system/deploy/.releases
+project/receivables-system/deploy/.ssh-password*
+project/receivables-system/deploy/.deploy-lock
