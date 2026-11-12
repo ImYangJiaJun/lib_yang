@@ -60,3 +60,11 @@ project/receivables-system/deploy/.build
 project/receivables-system/deploy/.releases
 project/receivables-system/deploy/.ssh-password*
 project/receivables-system/deploy/.deploy-lock
+
+# inventory-system：本地运行配置、6GB 测试数据、对拍产物与 xlsx fixtures
+# 都不参与 Rust 镜像构建；生产凭据只经 DATABASE_URL 环境变量注入。
+project/inventory-system/config.toml
+project/inventory-system/data
+project/inventory-system/parity_runs
+project/inventory-system/tests/fixtures
+project/inventory-system/frontend/node_modules
