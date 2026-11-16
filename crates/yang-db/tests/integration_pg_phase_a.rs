@@ -352,6 +352,79 @@ async fn phase_a_non_integer_primary_key() {
         .expect("清理 schema 应成功");
 }
 
+/// 负值 RETURNING 主键：insert() 必须在提交前拒绝；Pool 路径回滚后表中不得留行。
+#[tokio::test]
+#[ignore = "需要真实 PostgreSQL 实例"]
+async fn phase_a_negative_primary_key_rejected_before_commit() {
+    let db = connect(&test_db_url()).await;
+    db.execute_with_params("CREATE SCHEMA IF NOT EXISTS phase_a_it", vec![])
+        .await
+        .expect("创建 schema 应成功");
+    db.execute_with_params("DROP TABLE IF EXISTS phase_a_it.negative_pk", vec![])
+        .await
+        .expect("删除旧表应成功");
+    db.execute_with_params(
+        "CREATE TABLE phase_a_it.negative_pk (id INTEGER PRIMARY KEY, name TEXT)",
+        vec![],
+    )
+    .await
+    .expect("创建负值主键测试表应成功");
+
+    let error = db
+        .table(table!("phase_a_it.negative_pk"))
+        .text(field!("name"))
+        .insert(&json!({"id": -5, "name": "负值"}))
+        .await
+        .expect_err("负值 RETURNING 主键的 insert() 必须失败");
+    match error {
+        yang_db::DbError::InvalidArgument(message) => {
+            assert!(
+                message.contains("负数"),
+                "错误信息应指出负数主键: {message}"
+            );
+            assert!(
+                !message.contains("仅支持整型主键"),
+                "负值不应被误报为非整型主键: {message}"
+            );
+        }
+        other => panic!("期望 InvalidArgument，实得 {other:?}"),
+    }
+
+    // 修复前负值在 insert_returning 提交后才被拒绝，行会残留；修复后解码阶段
+    // 报错并走 Pool 分支的 rollback，表中不得出现该行。
+    let remaining: Vec<(i64,)> = db
+        .query_with_params(
+            "SELECT COUNT(*)::BIGINT FROM phase_a_it.negative_pk WHERE id = -5",
+            vec![],
+        )
+        .await
+        .expect("复核计数应成功");
+    assert_eq!(
+        remaining[0].0, 0,
+        "负值 RETURNING 主键必须在提交前回滚，表中不得留行"
+    );
+
+    // 零与正数主键路径不受影响。
+    let zero_id = db
+        .table(table!("phase_a_it.negative_pk"))
+        .text(field!("name"))
+        .insert(&json!({"id": 0, "name": "零"}))
+        .await
+        .expect("零值主键的 insert() 应成功");
+    assert_eq!(zero_id, 0);
+    let positive_id = db
+        .table(table!("phase_a_it.negative_pk"))
+        .text(field!("name"))
+        .insert(&json!({"id": 7, "name": "正数"}))
+        .await
+        .expect("正数主键的 insert() 应成功");
+    assert_eq!(positive_id, 7);
+
+    db.execute_with_params("DROP SCHEMA phase_a_it CASCADE", vec![])
+        .await
+        .expect("清理 schema 应成功");
+}
+
 #[tokio::test]
 #[ignore = "需要真实 PostgreSQL 实例"]
 async fn phase_a_search_path_and_table_exists() {

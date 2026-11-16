@@ -2827,6 +2827,26 @@ fn qualify_merge_field(
 /// sqlx 的 `Type::compatible` 默认要求 SQL 类型严格相等，这里显式放宽到三种整型。
 struct IntegerPk(i64);
 
+/// 解码阶段拒绝负值主键时使用的错误前缀。
+///
+/// 解码错误经 sqlx `ColumnDecode` 与 `DbError::from` 后只剩文本（见
+/// `error.rs` 的映射），因此用固定前缀让 `insert()` 能把负值从「非整型主键」
+/// 中区分出来，给出针对性的错误文案。
+const NEGATIVE_PK_DECODE_PREFIX: &str = "insert() 返回的主键为负数";
+
+/// 把整型 RETURNING 值收敛为 `IntegerPk`。
+///
+/// `insert()` 的返回类型是 `u64`，负值主键不可能成功。这里在解码阶段就拒绝负值：
+/// 此时 Pool 分支的 INSERT 仍在事务中，错误会走既有 rollback 分支，避免出现
+/// 「返回 Err 但行已提交」的半提交状态。零与正数（含 INT2/INT4/INT8 全宽度）
+/// 保持原有行为。
+fn integer_pk_from_i64(raw: i64) -> Result<IntegerPk, sqlx::error::BoxDynError> {
+    if raw < 0 {
+        return Err(format!("{NEGATIVE_PK_DECODE_PREFIX}: {raw}").into());
+    }
+    Ok(IntegerPk(raw))
+}
+
 impl sqlx::Type<sqlx::Postgres> for IntegerPk {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         sqlx::postgres::PgTypeInfo::with_name("INT8")
@@ -2839,17 +2859,18 @@ impl sqlx::Type<sqlx::Postgres> for IntegerPk {
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for IntegerPk {
     fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
-        match value.type_info().name() {
-            "INT2" => <i16 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)
-                .map(|value| Self(i64::from(value))),
-            "INT4" => <i32 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)
-                .map(|value| Self(i64::from(value))),
-            "INT8" => <i64 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value).map(Self),
-            other => Err(format!(
-                "insert() 主键类型 {other} 不是整型；请使用 insert_returning::<T, R>() 按真实类型取回"
-            )
-            .into()),
-        }
+        let raw = match value.type_info().name() {
+            "INT2" => i64::from(<i16 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)?),
+            "INT4" => i64::from(<i32 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)?),
+            "INT8" => <i64 as sqlx::Decode<'r, sqlx::Postgres>>::decode(value)?,
+            other => {
+                return Err(format!(
+                    "insert() 主键类型 {other} 不是整型；请使用 insert_returning::<T, R>() 按真实类型取回"
+                )
+                .into())
+            }
+        };
+        integer_pk_from_i64(raw)
     }
 }
 
@@ -2857,6 +2878,24 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for IntegerPk {
     fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
         sqlx::Row::try_get(row, 0)
     }
+}
+
+/// 把 `insert_returning` 的 RETURNING 解码错误映射为 `insert()` 的 `InvalidArgument`。
+///
+/// 非整型主键保持原有「仅支持整型主键」指引；负值主键使用独立文案，避免把
+/// 「主键为负数」误报成「仅支持整型主键」。两条路径的错误变体都是
+/// [`DbError::InvalidArgument`](crate::DbError::InvalidArgument)。
+fn map_insert_pk_decode_error(detail: String) -> crate::error::DbError {
+    if let Some((_, value)) = detail.split_once(NEGATIVE_PK_DECODE_PREFIX) {
+        return crate::error::DbError::InvalidArgument(format!(
+            "{NEGATIVE_PK_DECODE_PREFIX}{value}；insert() 的返回类型为 u64，不支持负数主键。\
+             需要取回负值请使用 insert_returning::<T, R>() 按真实类型解码"
+        ));
+    }
+    crate::error::DbError::InvalidArgument(format!(
+        "insert() 仅支持整型主键：{detail}。非整型主键请使用 \
+         insert_returning::<T, R>() 按列的真实类型取回"
+    ))
 }
 
 /// 校验 `ON CONFLICT (cols) WHERE (<predicate>)` 的受信谓词。
@@ -4446,6 +4485,9 @@ impl<'a> QueryBuilder<'a> {
     /// # 返回
     /// - Ok(u64): 插入成功，返回 `RETURNING` 列的值（自增主键）
     /// - Err(DbError): 插入失败
+    ///
+    /// `RETURNING` 值为负数时返回 [`DbError::InvalidArgument`]；Pool 路径会在
+    /// 提交前回滚，不会留下已写入的行（事务内调用由调用方负责回滚）。
     #[tracing::instrument(
         name = "db.query",
         skip_all,
@@ -4463,20 +4505,20 @@ impl<'a> QueryBuilder<'a> {
             ));
         }
         // 委托给 insert_returning，再用可接受 INT2/INT4/INT8 的解码包装统一成 u64。
+        // 负值主键在 IntegerPk 解码阶段即被拒绝：Pool 分支此时尚未提交，错误会
+        // 走既有 rollback 分支，不会留下「报 Err 但行已提交」的半提交状态。
         let id: IntegerPk = self
             .insert_returning(data)
             .await
             .map_err(|error| match error {
                 crate::error::DbError::TypeConversionError(detail) => {
-                    crate::error::DbError::InvalidArgument(format!(
-                        "insert() 仅支持整型主键：{detail}。非整型主键请使用 \
-                     insert_returning::<T, R>() 按列的真实类型取回"
-                    ))
+                    map_insert_pk_decode_error(detail)
                 }
                 other => other,
             })?;
+        // IntegerPk 已拒绝负值，这里仅作防御性兜底。
         u64::try_from(id.0).map_err(|_| {
-            crate::error::DbError::InvalidArgument("insert() 返回的主键为负数".to_string())
+            crate::error::DbError::InvalidArgument(NEGATIVE_PK_DECODE_PREFIX.to_string())
         })
     }
 
@@ -8278,5 +8320,48 @@ mod phase_b_tests {
             builder.try_to_sql_with_lock(crate::RowLock::ForUpdateSkipLocked, &[], true, false),
             Err(crate::error::DbError::InvalidArgument(_))
         ));
+    }
+
+    /// RED: 修复前负值主键在 insert_returning 提交后才由 insert() 拒绝，
+    /// 行会持久化；修复后 IntegerPk 在解码阶段就拒绝负值，Pool 路径走回滚分支。
+    #[test]
+    fn insert_pk_decode_rejects_negative_but_keeps_zero_and_positive() {
+        assert_eq!(integer_pk_from_i64(0).expect("零值主键应可解码").0, 0);
+        assert_eq!(integer_pk_from_i64(42).expect("正数主键应可解码").0, 42);
+        let error = match integer_pk_from_i64(-5) {
+            Err(error) => error,
+            Ok(_) => panic!("负值主键必须被拒绝"),
+        };
+        assert!(
+            error.to_string().contains(NEGATIVE_PK_DECODE_PREFIX),
+            "负值错误应携带专属前缀: {error}"
+        );
+        assert!(error.to_string().contains("-5"), "错误应保留负值: {error}");
+    }
+
+    /// 负值主键的错误文案不得被误报成「仅支持整型主键」；非整型主键文案保持不变。
+    #[test]
+    fn insert_maps_negative_pk_to_distinct_invalid_argument() {
+        let negative_detail = format!("列 0 解码失败: {NEGATIVE_PK_DECODE_PREFIX}: -5");
+        match map_insert_pk_decode_error(negative_detail) {
+            crate::error::DbError::InvalidArgument(message) => {
+                assert!(message.contains("负数"), "文案应指出负数主键: {message}");
+                assert!(message.contains("-5"), "文案应保留负值: {message}");
+                assert!(
+                    !message.contains("仅支持整型主键"),
+                    "负值不得被误报为非整型主键: {message}"
+                );
+            }
+            other => panic!("期望 InvalidArgument，实得 {other:?}"),
+        }
+
+        let type_detail = "列 0 解码失败: UUID 不是整型".to_string();
+        match map_insert_pk_decode_error(type_detail) {
+            crate::error::DbError::InvalidArgument(message) => {
+                assert!(message.contains("仅支持整型主键"));
+                assert!(message.contains("insert_returning"));
+            }
+            other => panic!("期望 InvalidArgument，实得 {other:?}"),
+        }
     }
 }

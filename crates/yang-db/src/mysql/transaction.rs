@@ -208,7 +208,7 @@ impl Transaction {
     {
         let (sql, params) = query.render_for_transaction(lock)?;
         if self.enable_logging {
-            log::debug!("事务中执行 SELECT: {}, 参数: {:?}", sql, params);
+            log::debug!("事务中执行 SELECT: {}, 参数数量: {}", sql, params.len());
         }
         let tx = self
             .tx

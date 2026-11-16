@@ -119,7 +119,7 @@ pub use ::redis as redis_crate;
 pub use redis::{
     GetExOption, JsonCodec, KeyNamespace, RedisClient, RedisCodec, RedisConfig, RedisHealth,
     RedisLock, RedisLockGuard, RedisMessage, RedisPipeline, RedisPubSub, RedisTopology,
-    RedisTransaction, RedisValue, SetOptions, XReadGroupOptions, ZAddOptions,
+    RedisTransaction, RedisValue, SetOptions, SetOutcome, XReadGroupOptions, ZAddOptions,
 };
 
 // 类型别名

@@ -23,6 +23,20 @@ pub struct SetOptions {
     pub keepttl: bool,
 }
 
+/// SET 条件写的执行结果。
+///
+/// 由 [`RedisClient::set_with_options_outcome`] 返回，用于区分「写入已生效」
+/// 与「因 `NX`/`XX` 条件不满足而未写入」：`SET` 的条件写回复只有 `+OK` 与
+/// `nil` 两种，[`RedisClient::set_with_options`] 在 `get=false` 时把两者折叠成
+/// `Ok(None)`，调用方无法感知写入是否被跳过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOutcome {
+    /// 写入已生效。
+    Applied,
+    /// 因 `NX`/`XX` 条件不满足而未写入。
+    NotApplied,
+}
+
 /// ZADD 选项。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ZAddOptions {
@@ -83,6 +97,13 @@ impl RedisClient {
     }
 
     /// SET 带选项；`get=true` 时返回旧值。
+    ///
+    /// # 返回语义
+    /// - `get=true`: 返回 key 的旧值（key 不存在时为 `None`）。
+    /// - `get=false`: **始终返回 `Ok(None)`**。此时 `SET` 的回复只有 `+OK`
+    ///   与 `nil` 两种，`NX`/`XX` 条件是否真正生效无法从返回值区分；需要
+    ///   判断条件写结果时请改用
+    ///   [`set_with_options_outcome`](Self::set_with_options_outcome)。
     pub async fn set_with_options(
         &self,
         key: impl Into<String>,
@@ -127,6 +148,63 @@ impl RedisClient {
         } else {
             Ok(None)
         }
+    }
+
+    /// SET 带选项，并报告 `NX`/`XX` 条件写是否真正生效。
+    ///
+    /// 与 [`set_with_options`](Self::set_with_options) 相比，本方法不返回旧值，
+    /// 而是明确区分 [`SetOutcome::Applied`] 与 [`SetOutcome::NotApplied`]：
+    ///
+    /// - `get=false`: `+OK` 映射为 `Applied`；`nil` 映射为 `NotApplied`
+    ///   （只有 `NX`/`XX` 条件不满足时才会出现）。
+    /// - `get=true`: Redis 返回旧值（key 不存在时为 `nil`），本方法按
+    ///   `NX`/`XX` 语义反推是否生效；旧值本身请用
+    ///   [`set_with_options`](Self::set_with_options) 获取。
+    ///
+    /// 选项合法性校验、命令构造与 [`set_with_options`](Self::set_with_options)
+    /// 一致，非法组合返回同样的 [`DbError::InvalidArgument`]。
+    pub async fn set_with_options_outcome(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+        options: SetOptions,
+    ) -> Result<SetOutcome> {
+        // 有意复制 set_with_options 的校验与命令构造：旧方法的签名、方法体
+        // 与 get=false 恒返回 Ok(None) 的契约必须原样保留，不能为复用而改动。
+        if options.nx && options.xx {
+            return Err(DbError::InvalidArgument(
+                "SET 选项 NX 与 XX 不能同时使用".to_string(),
+            ));
+        }
+        if options.ex_seconds.is_some() && options.px_millis.is_some() {
+            return Err(DbError::InvalidArgument(
+                "SET 选项 EX 与 PX 不能同时使用".to_string(),
+            ));
+        }
+        if options.keepttl && (options.ex_seconds.is_some() || options.px_millis.is_some()) {
+            return Err(DbError::InvalidArgument(
+                "SET 选项 KEEPTTL 不能与 EX/PX 同时使用".to_string(),
+            ));
+        }
+        let mut cmd = redis::cmd("SET");
+        cmd.arg(key.into()).arg(value.into());
+        if options.nx {
+            cmd.arg("NX");
+        } else if options.xx {
+            cmd.arg("XX");
+        }
+        if options.get {
+            cmd.arg("GET");
+        }
+        if let Some(seconds) = options.ex_seconds {
+            cmd.arg("EX").arg(seconds);
+        } else if let Some(millis) = options.px_millis {
+            cmd.arg("PX").arg(millis);
+        } else if options.keepttl {
+            cmd.arg("KEEPTTL");
+        }
+        let result = self.execute(&cmd).await?;
+        Ok(classify_set_outcome(&result, &options))
     }
 
     /// MSETNX：仅当所有 key 都不存在时批量设置。
@@ -695,6 +773,30 @@ impl RedisClient {
     }
 }
 
+/// 根据 SET 回复与选项判断条件写是否生效。
+///
+/// 未开启 `GET` 时：`+OK`（非 `nil`）表示写入，`nil` 表示 `NX`/`XX`
+/// 条件不满足。开启 `GET` 时 Redis 一律返回旧值（key 不存在则 `nil`），
+/// 需要按条件语义反推：`NX` 下 `nil` 表示旧 key 不存在（写入成功），
+/// `XX` 下 `nil` 表示旧 key 不存在（未写入）；未指定条件时 `SET` 总会写入。
+fn classify_set_outcome(result: &crate::RedisValue, options: &SetOptions) -> SetOutcome {
+    let applied = if options.get {
+        let old_exists = !result.is_nil();
+        match (options.nx, options.xx) {
+            (true, false) => !old_exists,
+            (false, true) => old_exists,
+            _ => true,
+        }
+    } else {
+        !result.is_nil()
+    };
+    if applied {
+        SetOutcome::Applied
+    } else {
+        SetOutcome::NotApplied
+    }
+}
+
 fn parse_pop_reply(value: &crate::RedisValue) -> Result<Option<(String, Vec<String>)>> {
     let Some(items) = value.as_array() else {
         return Ok(None);
@@ -707,4 +809,80 @@ fn parse_pop_reply(value: &crate::RedisValue) -> Result<Option<(String, Vec<Stri
     })?;
     let values = collect_string_array(&items[1])?;
     Ok(Some((key, values)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RedisValue;
+
+    fn options(nx: bool, xx: bool, get: bool) -> SetOptions {
+        SetOptions {
+            nx,
+            xx,
+            get,
+            ..SetOptions::default()
+        }
+    }
+
+    #[test]
+    fn set_outcome_without_get_uses_nil_to_detect_not_applied() {
+        // RED 场景：SET NX 命中已存在的 key 时 Redis 只返回 nil，
+        // 旧接口把 +OK 与 nil 都折叠成 Ok(None)，调用方无法得知
+        // 本次写入被跳过。这里锁定 get=false 的判读规则：非 nil 即生效。
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Bool(true), &options(true, false, false)),
+            SetOutcome::Applied
+        );
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Nil, &options(true, false, false)),
+            SetOutcome::NotApplied
+        );
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Bool(true), &options(false, true, false)),
+            SetOutcome::Applied
+        );
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Nil, &options(false, true, false)),
+            SetOutcome::NotApplied
+        );
+    }
+
+    #[test]
+    fn set_outcome_with_get_distinguishes_nx_and_xx() {
+        // RED 场景：开启 GET 后 nil 不再等价于「未写入」——NX 下 nil
+        // 表示旧 key 不存在（写入成功），XX 下 nil 表示旧 key 缺失
+        // （未写入）。旧接口把两种情况都折叠成 Ok(None)。
+        let old = RedisValue::String("old".to_string());
+
+        // NX + GET：nil 才是写入成功，返回旧值说明 key 已存在、未写入。
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Nil, &options(true, false, true)),
+            SetOutcome::Applied
+        );
+        assert_eq!(
+            classify_set_outcome(&old, &options(true, false, true)),
+            SetOutcome::NotApplied
+        );
+
+        // XX + GET：返回旧值说明 key 存在、写入成功；nil 说明 key 缺失、未写入。
+        assert_eq!(
+            classify_set_outcome(&old, &options(false, true, true)),
+            SetOutcome::Applied
+        );
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Nil, &options(false, true, true)),
+            SetOutcome::NotApplied
+        );
+
+        // 无 NX/XX 时 SET 总会写入，GET 只是顺带返回旧值。
+        assert_eq!(
+            classify_set_outcome(&RedisValue::Nil, &options(false, false, true)),
+            SetOutcome::Applied
+        );
+        assert_eq!(
+            classify_set_outcome(&old, &options(false, false, true)),
+            SetOutcome::Applied
+        );
+    }
 }

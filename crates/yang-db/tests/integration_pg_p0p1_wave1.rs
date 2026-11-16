@@ -315,6 +315,45 @@ async fn wave1_runtime_config_application_name_reset_and_waiting() {
     assert_eq!(db.pool_status().waiting, 0, "池归还后等待计数应归零");
 }
 
+// ---- 真库：reset_on_release 与 sqlx 语句缓存一致性 ----
+
+/// RED: 修复前 `DISCARD ALL`（含 `DEALLOCATE ALL`）只清服务端语句，sqlx 的
+/// 客户端语句缓存仍持有失效的 StatementId；下一次借出的 `before_acquire`
+/// 重放相同 SET 时命中缓存收到 SQLSTATE 26000，连接被 hard-close 后重建。
+/// 修复后 `after_release` 在 DISCARD ALL 成功后同步清理缓存，同一条物理连接
+/// 可被复用（backend PID 稳定），参数化查询也不报错。
+#[tokio::test]
+#[ignore = "需要真实 PostgreSQL 实例"]
+async fn wave1_reset_on_release_clears_sqlx_statement_cache() {
+    let mut config = DatabaseConfig::default().with_reset_on_release(true);
+    // 只留一条连接，确保前后两次查询必然落在同一物理连接（修复后）。
+    config.max_connections = 1;
+    let db = Database::connect_with_config(&test_db_url(), config)
+        .await
+        .expect("开启 reset_on_release 的连接应成功");
+
+    let first: Vec<(i32,)> = db
+        .query_with_params("SELECT pg_backend_pid()", vec![])
+        .await
+        .expect("首次查询应成功");
+
+    // 参数化查询会写入 sqlx 语句缓存（默认容量 100），归还时经历 DISCARD ALL。
+    let values: Vec<(i32,)> = db
+        .query_with_params("SELECT $1::int AS value", vec![json!(7)])
+        .await
+        .expect("DISCARD ALL 后复用连接应成功");
+    assert_eq!(values[0].0, 7);
+
+    let second: Vec<(i32,)> = db
+        .query_with_params("SELECT pg_backend_pid()", vec![])
+        .await
+        .expect("再次借出连接应成功");
+    assert_eq!(
+        first[0].0, second[0].0,
+        "after_release 应同步清理 sqlx 语句缓存，连接应被复用（backend PID 稳定）"
+    );
+}
+
 // ---- 真库：TLS 配置失败路径 ----
 
 #[tokio::test]

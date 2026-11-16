@@ -19,11 +19,17 @@ async fn integration_test_string_operations() {
         .expect("连接失败");
 
     // 场景：管理用户会话数据
+    //
+    // 存在性与过期性拆成两个键：100ms 的 TTL 窗口对“PSETEX 应答 → 池借出/回收 →
+    // GET 处理”两次 Redis 往返过紧，是既有的时序假失败来源。这里参照
+    // tests/test_redis_string_ops.rs 的稳健写法：长 TTL 键只验证存在，独立短 TTL
+    // 键验证过期后读取为 nil。
     let session_key = "session:user:1001";
+    let expiring_session_key = "session:user:1002";
 
-    // 1. 设置会话数据，100 毫秒后过期
+    // 1. 设置会话数据（2 秒 TTL，保证存在性断言有充足窗口）
     client
-        .psetex(session_key, 100, "user_session_data")
+        .psetex(session_key, 2_000, "user_session_data")
         .await
         .expect("PSETEX 失败");
 
@@ -35,10 +41,15 @@ async fn integration_test_string_operations() {
         .expect("会话应存在");
     assert_eq!(session_data, "user_session_data");
 
-    // 3. 等待会话过期
+    // 3. 独立短 TTL 键验证过期语义
+    client
+        .psetex(expiring_session_key, 100, "expiring_session_data")
+        .await
+        .expect("PSETEX 失败");
+
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-    let session_data = client.get(session_key).await.expect("GET 失败");
+    let session_data = client.get(expiring_session_key).await.expect("GET 失败");
     assert_eq!(session_data, None, "会话应已过期");
 
     // 场景：处理文本内容
@@ -94,6 +105,7 @@ async fn integration_test_string_operations() {
     client
         .del(&[
             session_key.to_string(),
+            expiring_session_key.to_string(),
             content_key.to_string(),
             price_key.to_string(),
         ])

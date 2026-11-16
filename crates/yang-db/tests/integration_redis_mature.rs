@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use yang_db::{KeyNamespace, RedisClient, RedisConfig, RedisValue};
+use yang_db::{KeyNamespace, RedisClient, RedisConfig, RedisValue, SetOptions, SetOutcome};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -358,6 +358,97 @@ async fn execute_escape_hatch_still_works() {
         Some("raw".to_string())
     );
     assert_eq!(client.del(&[cache_key]).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn set_with_options_outcome_reports_nx_not_applied() {
+    // RED 场景：SET NX 命中已存在的 key 时 Redis 只返回 nil，
+    // set_with_options(get=false) 恒返回 Ok(None)，调用方无法得知
+    // 写入被跳过。新 API 必须返回 NotApplied 且不覆盖旧值；
+    // 删除 key 后 NX 写入必须回到 Applied。
+    let client = client().await;
+    let cache_key = key("set-outcome-nx");
+    client.set(&cache_key, "old").await.unwrap();
+
+    let outcome = client
+        .set_with_options_outcome(
+            &cache_key,
+            "new",
+            SetOptions {
+                nx: true,
+                ..SetOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, SetOutcome::NotApplied);
+    assert_eq!(
+        client.get(&cache_key).await.unwrap(),
+        Some("old".to_string())
+    );
+
+    client.del(std::slice::from_ref(&cache_key)).await.unwrap();
+    let outcome = client
+        .set_with_options_outcome(
+            &cache_key,
+            "new",
+            SetOptions {
+                nx: true,
+                ..SetOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, SetOutcome::Applied);
+    assert_eq!(
+        client.get(&cache_key).await.unwrap(),
+        Some("new".to_string())
+    );
+
+    client.del(&[cache_key]).await.unwrap();
+}
+
+#[tokio::test]
+async fn set_with_options_outcome_reports_xx_not_applied() {
+    // RED 场景：SET XX 作用于缺失的 key 时 Redis 返回 nil 且不创建 key；
+    // 旧接口同样把结果折叠成 Ok(None)。新 API 必须返回 NotApplied 且
+    // key 保持不存在；补上 key 后 XX 写入必须回到 Applied。
+    let client = client().await;
+    let cache_key = key("set-outcome-xx");
+
+    let outcome = client
+        .set_with_options_outcome(
+            &cache_key,
+            "new",
+            SetOptions {
+                xx: true,
+                ..SetOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, SetOutcome::NotApplied);
+    assert_eq!(client.get(&cache_key).await.unwrap(), None);
+
+    client.set(&cache_key, "old").await.unwrap();
+    let outcome = client
+        .set_with_options_outcome(
+            &cache_key,
+            "new",
+            SetOptions {
+                xx: true,
+                ..SetOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, SetOutcome::Applied);
+    assert_eq!(
+        client.get(&cache_key).await.unwrap(),
+        Some("new".to_string())
+    );
+
+    client.del(&[cache_key]).await.unwrap();
 }
 
 #[tokio::test]

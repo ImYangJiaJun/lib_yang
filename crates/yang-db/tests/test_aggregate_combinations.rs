@@ -1,15 +1,30 @@
+#![cfg(feature = "mysql")]
 #![allow(deprecated)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 #![allow(unused_results)]
 /// 测试聚合函数与其他子句的组合使用
 ///
-/// 本测试文件验证 AVG、MIN、MAX 聚合函数与 WHERE、GROUP BY 子句的组合使用
-#[allow(dead_code)]
+/// 本测试文件验证 AVG、MIN、MAX 聚合函数与 WHERE、GROUP BY 子句的组合使用。
+///
+/// 运行约定：
+/// - 全部用例 `#[ignore]`：默认 `cargo test -p yang-db` 不依赖 Docker，也不会假通过；
+/// - `-- --ignored` 时为 fail-closed：容器启动失败、端口获取失败、MySQL 未就绪都会
+///   让测试显式失败，而不是 eprintln 后 return 静默跳过；
+/// - 6 个用例共享同一个 MySQL 容器（OnceCell），并用互斥锁串行执行，
+///   每个用例开始前重建数据表，避免 6 次冷启动以及并行互删数据。
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
+use tokio::sync::{Mutex, OnceCell};
 use yang_db::Database;
+
+/// 共享 MySQL 容器 URL。容器对象本身在初始化时泄漏（进程退出由 testcontainers
+/// watchdog 清理），保证所有用例执行期间容器始终存活。
+static MYSQL_URL: OnceCell<String> = OnceCell::const_new();
+
+/// 共享容器 + 固定表名：用例必须串行，避免并行时互相 DROP/CREATE 同一张表。
+static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// 测试用户结构
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -42,30 +57,38 @@ struct UserOrderStats {
     order_count: i64,
 }
 
-/// 启动 MySQL 容器并返回连接 URL
-async fn setup_mysql_container() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
-    let mysql_image = GenericImage::new("mysql", "8.0")
-        .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
-        .with_env_var("MYSQL_DATABASE", "test_db");
+/// 启动（或复用）MySQL 容器并返回连接 URL。
+///
+/// fail-closed：任何启动/端口/就绪失败都直接 panic；只在 `#[ignore]` 用例路径执行。
+async fn shared_mysql_url() -> &'static str {
+    MYSQL_URL
+        .get_or_init(|| async {
+            let mysql_image = GenericImage::new("mysql", "8.0")
+                .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
+                .with_env_var("MYSQL_DATABASE", "test_db");
 
-    match mysql_image.start().await {
-        Ok(container) => {
-            let port = container.get_host_port_ipv4(3306).await.ok()?;
+            let container = mysql_image
+                .start()
+                .await
+                .expect("无法启动 MySQL 容器（--ignored 集成测试必须显式失败）");
+            let port = container
+                .get_host_port_ipv4(3306)
+                .await
+                .expect("无法获取 MySQL 容器的 3306 端口映射");
             let url = format!("mysql://root:test_password@127.0.0.1:{}/test_db", port);
 
-            // 等待 MySQL 完全启动并可以接受连接
-            if !wait_for_mysql(&url, 15).await {
-                eprintln!("MySQL 容器启动超时");
-                return None;
-            }
+            // MySQL 8.0 冷启动在 CI 上可能超过旧实现的 15×2 秒；放宽到 60×2 秒。
+            assert!(
+                wait_for_mysql(&url, 60).await,
+                "MySQL 容器在 120 秒内未就绪: {url}"
+            );
 
-            Some((container, url))
-        }
-        Err(e) => {
-            eprintln!("无法启动 MySQL 容器: {}. 跳过集成测试。", e);
-            None
-        }
-    }
+            // 容器需活到测试进程结束；静态 OnceCell 不执行析构，显式泄漏，
+            // 由 testcontainers watchdog 在进程退出时清理。
+            std::mem::forget(container);
+            url
+        })
+        .await
 }
 
 /// 等待 MySQL 完全启动并可以接受连接
@@ -93,8 +116,12 @@ async fn wait_for_mysql(db_url: &str, max_retries: u32) -> bool {
     false
 }
 
-/// 创建测试数据库和表
+/// 创建测试数据库和表（每次重建，保证共享容器下用例数据互不污染）
 async fn setup_test_db(db: &Database) -> Result<(), yang_db::DbError> {
+    // 先删旧表，避免上一个用例的数据影响聚合断言
+    db.execute("DROP TABLE IF EXISTS orders").await?;
+    db.execute("DROP TABLE IF EXISTS users").await?;
+
     // 创建 users 表
     db.execute(
         r#"
@@ -159,14 +186,14 @@ async fn setup_test_db(db: &Database) -> Result<(), yang_db::DbError> {
 
 /// 测试 AVG 与 WHERE 子句组合
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_avg_with_where() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：计算 status=1 的用户平均年龄
     let avg_age = db
@@ -191,14 +218,14 @@ async fn test_avg_with_where() {
 
 /// 测试 MIN 与 WHERE 子句组合
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_min_with_where() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：查询已完成订单的最小金额
     #[derive(Debug, sqlx::FromRow)]
@@ -238,14 +265,14 @@ async fn test_min_with_where() {
 
 /// 测试 MAX 与 WHERE 子句组合
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_max_with_where() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：查询已完成订单的最大金额
     #[derive(Debug, sqlx::FromRow)]
@@ -285,21 +312,21 @@ async fn test_max_with_where() {
 
 /// 测试聚合函数与 GROUP BY 组合（使用原始 SQL）
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_aggregates_with_group_by() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：按用户分组统计订单
     // 注意：由于 QueryBuilder 的聚合函数会清空 fields，我们需要使用原始 SQL 查询
     let stats = db
         .query::<UserOrderStats>(
             r#"
-        SELECT 
+        SELECT
             user_id,
             CAST(SUM(amount) AS DOUBLE) as total_amount,
             CAST(AVG(amount) AS DOUBLE) as avg_amount,
@@ -335,14 +362,14 @@ async fn test_aggregates_with_group_by() {
 
 /// 测试多个聚合函数组合（使用 field() 方法）
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_multiple_aggregates() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：使用 field() 方法添加多个聚合函数
     #[derive(Debug, sqlx::FromRow)]
@@ -393,14 +420,14 @@ async fn test_multiple_aggregates() {
 
 /// 测试 SQL 生成顺序正确性
 #[tokio::test]
+#[ignore = "需要 Docker 启动 MySQL 8.0 容器"]
 async fn test_sql_order_with_aggregates() {
-    let Some((_container, url)) = setup_mysql_container().await else {
-        eprintln!("跳过测试：无法启动 MySQL 容器");
-        return;
-    };
-
-    let db = Database::connect(&url).await.unwrap();
-    setup_test_db(&db).await.unwrap();
+    let _guard = TEST_LOCK.lock().await;
+    let url = shared_mysql_url().await;
+    let db = Database::connect(url)
+        .await
+        .expect("连接共享 MySQL 容器失败");
+    setup_test_db(&db).await.expect("初始化聚合测试数据失败");
 
     // 测试：验证 WHERE 在聚合函数之前
     let avg_age = db

@@ -75,15 +75,45 @@ impl Notification {
     }
 }
 
+/// 返回可安全写入日志的连接目标（去掉 userinfo 与查询参数/片段）。
+///
+/// `postgres://user:password@host:5432/db?sslmode=require` →
+/// `postgres://host:5432/db`。与 `RedisConfig::redacted_target` 的约定一致：
+/// 查询参数（如 `?password=...`）与片段同样可能携带凭据，必须一并去掉。
+fn redacted_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<invalid-url>".to_string();
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let (authority, tail) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    format!("{scheme}://{authority}{tail}")
+}
+
 /// 常驻 LISTEN 连接。
 ///
 /// 该类型持有自己的连接，不从 [`Database`] 的连接池借出；监听期间不会占用
 /// 业务查询的连接配额。
-#[derive(Debug)]
 pub struct PgNotificationListener {
     url: String,
     listener: PgListener,
     channels: Vec<String>,
+}
+
+/// 手写 `Debug`：连接串中的 userinfo（用户名/密码）与查询参数必须脱敏，
+/// 不能像派生实现那样把 `postgres://user:password@host/db` 原样写进日志。
+/// sqlx 的 `PgListener` 自身 `Debug` 为空实现，保留该字段不会额外泄漏凭据。
+impl core::fmt::Debug for PgNotificationListener {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PgNotificationListener")
+            .field("url", &redacted_url(&self.url))
+            .field("listener", &self.listener)
+            .field("channels", &self.channels)
+            .finish()
+    }
 }
 
 impl PgNotificationListener {
@@ -217,5 +247,37 @@ mod tests {
             validate_payload(&"x".repeat(MAX_PAYLOAD_BYTES)),
             Err(DbError::InvalidArgument(_))
         ));
+    }
+
+    /// 脱敏必须覆盖 userinfo 与 ?/# 后的查询参数/片段；纯字符串单测，不触库。
+    #[test]
+    fn redacted_url_removes_credentials_and_query_parameters() {
+        assert_eq!(
+            redacted_url(
+                "postgres://user:secret@db.example.com:5432/app?sslmode=require&password=leak"
+            ),
+            "postgres://db.example.com:5432/app"
+        );
+        assert_eq!(
+            redacted_url("postgresql://user@host/app#fragment"),
+            "postgresql://host/app"
+        );
+        assert_eq!(
+            redacted_url("postgres://host:5432/app"),
+            "postgres://host:5432/app"
+        );
+        // Unix socket 连接串没有 authority，仍需保留数据库名并去掉查询参数。
+        assert_eq!(
+            redacted_url("postgresql:///app?host=/var/run/postgresql"),
+            "postgresql:///app"
+        );
+        assert_eq!(redacted_url("not-a-url"), "<invalid-url>");
+
+        let redacted = redacted_url("postgres://alice:s3cret@db/app?password=s3cret");
+        assert!(
+            !redacted.contains("alice"),
+            "用户名不得进入日志: {redacted}"
+        );
+        assert!(!redacted.contains("s3cret"), "密码不得进入日志: {redacted}");
     }
 }

@@ -547,6 +547,12 @@ impl Database {
             options = options.after_release(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query(DISCARD_ALL_SQL).execute(&mut *conn).await?;
+                    // DISCARD ALL 内含 DEALLOCATE ALL，服务端已清空 prepared statement；
+                    // 必须同步清理 sqlx 的客户端语句缓存，否则 before_acquire 重放相同
+                    // SET 语句时会命中已失效的缓存（SQLSTATE 26000），连接被
+                    // hard-close 后重建，池退化为每次借出都新建连接。
+                    // 对服务端已不存在的语句发 Close 按 PG 协议是 no-op，只回 CloseComplete。
+                    sqlx::Connection::clear_cached_statements(&mut *conn).await?;
                     Ok(true)
                 })
             });
@@ -1292,9 +1298,13 @@ impl Database {
     /// 清空会话级 GUC、临时表、游标、prepared statement、LISTEN 与 advisory lock。
     /// 注意：`DISCARD ALL` 不能在事务块内执行。`Database::from_pool` 的调用方可用
     /// 它在借出/归还前后手工清理。
+    ///
+    /// `DISCARD ALL` 内含 `DEALLOCATE ALL`，因此服务端清理后还会同步清空 sqlx 的
+    /// 客户端语句缓存，避免后续复用该连接时命中已失效的缓存条目。
     pub async fn reset_connection(&self) -> Result<(), DbError> {
         let mut conn = self.acquire().await?;
         sqlx::query(DISCARD_ALL_SQL).execute(&mut *conn).await?;
+        sqlx::Connection::clear_cached_statements(&mut *conn).await?;
         Ok(())
     }
 }

@@ -19,7 +19,7 @@ pub mod value;
 pub use crate::PoolStatus;
 pub use client::{RedisClient, RedisHealth, RedisTopology};
 pub use codec::{JsonCodec, RedisCodec};
-pub use commands::{GetExOption, SetOptions, ZAddOptions};
+pub use commands::{GetExOption, SetOptions, SetOutcome, ZAddOptions};
 pub use config::RedisConfig;
 pub use lock::{RedisLock, RedisLockGuard};
 pub use namespace::KeyNamespace;
