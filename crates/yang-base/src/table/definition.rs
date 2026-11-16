@@ -1323,6 +1323,181 @@ fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
 }
 
+/// CHECK 表达式的跨方言括号平衡校验。
+///
+/// CHECK 与生成列一样原样拼接进 `CONSTRAINT ... CHECK ({expr})`。表达式必须
+/// 能作为单条括号平衡的布尔表达式嵌入外层括号；仅当 PostgreSQL 与 MySQL
+/// 两种词法都判定越界（顶层右括号使深度变负，或结束时深度非 0 / 引号未闭合）
+/// 时才拒绝，避免误伤任一方言独有的合法字面量。
+fn has_balanced_check_expression(expression: &str) -> bool {
+    // 两种词法各自完整扫描后取并集：MySQL 合法而 PostgreSQL 不认识的词法
+    //（反引号、`#` 注释、反斜杠转义字符串）由 MySQL 扫描保住，反之
+    //（E 字符串、U& 转义、美元引号）由 PostgreSQL 扫描保住。
+    has_balanced_pg_check_expression(expression) || has_balanced_mysql_check_expression(expression)
+}
+
+/// PostgreSQL 词法下的括号平衡扫描。
+///
+/// 识别 `''` 双写、`E'...'` / `U&'...'` 反斜杠转义、`U&"..."` 与 `""` 双写、
+/// 双引号标识符以及 `$tag$...$tag$` 美元引号；未闭合的引号视为越界。
+pub(crate) fn has_balanced_pg_check_expression(expression: &str) -> bool {
+    let bytes = expression.as_bytes();
+    let mut depth: i32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' => {
+                let backslash_escapes =
+                    is_escape_string_prefix(bytes, index) || is_unicode_escape_prefix(bytes, index);
+                if !skip_quoted(bytes, &mut index, b'\'', backslash_escapes) {
+                    return false;
+                }
+            }
+            b'"' => {
+                let backslash_escapes = is_unicode_escape_prefix(bytes, index);
+                if !skip_quoted(bytes, &mut index, b'"', backslash_escapes) {
+                    return false;
+                }
+            }
+            b'$' => {
+                let Some(tag_end) = dollar_quote_tag_end(bytes, index) else {
+                    index += 1;
+                    continue;
+                };
+                let tag = &bytes[index..tag_end];
+                let mut cursor = tag_end;
+                loop {
+                    if cursor + tag.len() > bytes.len() {
+                        // 未闭合的美元引号无法嵌入单条表达式。
+                        return false;
+                    }
+                    if &bytes[cursor..cursor + tag.len()] == tag {
+                        index = cursor + tag.len();
+                        break;
+                    }
+                    cursor += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    depth == 0
+}
+
+/// MySQL 词法下的括号平衡扫描。
+///
+/// 识别单/双引号字符串的反斜杠转义与引号双写、反引号标识符双写以及 `#`
+/// 行注释；`--` 与 `/* */` 已由上层黑名单统一拒绝。未闭合的引号视为越界。
+pub(crate) fn has_balanced_mysql_check_expression(expression: &str) -> bool {
+    let bytes = expression.as_bytes();
+    let mut depth: i32 = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' => {
+                if !skip_quoted(bytes, &mut index, b'\'', true) {
+                    return false;
+                }
+            }
+            b'"' => {
+                if !skip_quoted(bytes, &mut index, b'"', true) {
+                    return false;
+                }
+            }
+            b'`' => {
+                if !skip_quoted(bytes, &mut index, b'`', false) {
+                    return false;
+                }
+            }
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    depth == 0
+}
+
+/// 跳过一段由 `delimiter` 包围的字符串或标识符，成功时把 `index` 移到闭合
+/// 引号之后；`backslash_escapes` 为真时识别反斜杠转义。两种方言都支持把
+/// 引号写成双写来转义。未闭合返回 false。
+fn skip_quoted(bytes: &[u8], index: &mut usize, delimiter: u8, backslash_escapes: bool) -> bool {
+    *index += 1;
+    while *index < bytes.len() {
+        if backslash_escapes && bytes[*index] == b'\\' {
+            *index = (*index + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[*index] == delimiter {
+            if bytes.get(*index + 1) == Some(&delimiter) {
+                *index += 2;
+                continue;
+            }
+            *index += 1;
+            return true;
+        }
+        *index += 1;
+    }
+    false
+}
+
+/// 判断引号（位于 `quote_index`）是否属于 PostgreSQL `U&'...'` / `U&"..."` 前缀。
+fn is_unicode_escape_prefix(bytes: &[u8], quote_index: usize) -> bool {
+    if quote_index < 2
+        || bytes[quote_index - 1] != b'&'
+        || !matches!(bytes[quote_index - 2], b'U' | b'u')
+    {
+        return false;
+    }
+    quote_index < 3 || !is_identifier_byte(bytes[quote_index - 3])
+}
+
+/// 识别 PostgreSQL 美元引号起始 `$tag$`，返回 tag（含首尾 `$`）的结束下标。
+fn dollar_quote_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut index = start + 1;
+    let first = bytes.get(index)?;
+    if *first == b'$' {
+        // `$$...$$`：空 tag。
+        return Some(index + 1);
+    }
+    if !(*first == b'_' || first.is_ascii_alphabetic() || *first >= 0x80) {
+        return None;
+    }
+    index += 1;
+    while let Some(byte) = bytes.get(index) {
+        if byte.is_ascii_alphanumeric() || *byte == b'_' || *byte >= 0x80 {
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    (bytes.get(index) == Some(&b'$')).then_some(index + 1)
+}
+
 fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Result<(), BaseError> {
     match &field.config.field_type {
         FieldType::String { max_length } if !(1..=MAX_VARCHAR_LENGTH).contains(max_length) => {
@@ -1690,9 +1865,10 @@ fn validate_check_expression(table: &str, name: &str, expression: &str) -> Resul
         || [";", "--", "/*", "*/"]
             .iter()
             .any(|marker| expression.contains(marker))
+        || !has_balanced_check_expression(expression)
     {
         return Err(BaseError::ConfigError(format!(
-            "表 {table} 的 CHECK {name} 必须是单条、非空且长度受限的受信表达式"
+            "表 {table} 的 CHECK {name} 必须是单条、非空、长度受限且括号平衡的受信表达式"
         )));
     }
     Ok(())
@@ -1968,6 +2144,54 @@ mod generated_expression_tests {
             .expect_err("闭合外层括号的注入表达式必须拒绝");
         assert!(
             matches!(error, BaseError::ConfigError(ref message) if message.contains("生成列")),
+            "实得错误: {error:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod check_expression_tests {
+    use super::*;
+
+    fn check_table(expression: &str) -> Result<TableDefinition, BaseError> {
+        Table::new("check_balance")
+            .fields([
+                Field::id("id"),
+                Field::integer("price").required(),
+                Field::string("status", 32),
+                Field::string("note", 64),
+            ])
+            .check_named("chk_balance", expression)
+            .build()
+    }
+
+    #[test]
+    fn legal_check_expressions_pass() {
+        check_table("price > 0").expect("简单表达式应通过");
+        check_table("price > 0 AND status <> 'banned'").expect("字符串字面量应通过");
+        check_table("(price > 0)").expect("成对分组括号应通过");
+        check_table("`parent_id` > 0").expect("反引号标识符应通过");
+        // MySQL 反斜杠转义字符串：右括号属于字符串，不是语法括号。
+        check_table(r"note <> 'it\'s)'").expect("MySQL 反斜杠转义字符串应通过");
+        // MySQL 反引号标识符内的括号不参与计数。
+        check_table("`amount)` > 0").expect("反引号内的括号应通过");
+        // MySQL # 注释内不成对括号不参与计数（PG 扫描侧会因缺右括号失败）。
+        check_table("price > 0 # note (policy 2024\nAND status <> 'cancelled'")
+            .expect("MySQL # 注释应通过");
+        // PostgreSQL 美元引号内的括号不参与计数。
+        check_table("$q$a)b$q$").expect("PostgreSQL 美元引号应通过");
+        // PostgreSQL E 字符串的反斜杠转义不破坏扫描。
+        check_table(r"note <> E'\')'").expect("PostgreSQL E 字符串应通过");
+    }
+
+    #[test]
+    fn check_expression_injection_is_rejected() {
+        // RED: 现状仅黑名单 `; -- /* */`，该载荷可通过校验并在渲染时闭合
+        // 外层 `CHECK (`，追加额外 DDL 子句。
+        let error = check_table("price > 0), evil INT, CHECK (1=1")
+            .expect_err("闭合外层括号的注入表达式必须拒绝");
+        assert!(
+            matches!(error, BaseError::ConfigError(ref message) if message.contains("CHECK")),
             "实得错误: {error:?}"
         );
     }

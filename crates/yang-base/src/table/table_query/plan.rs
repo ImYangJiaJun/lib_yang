@@ -216,6 +216,11 @@ impl TableQuery {
         }
         if !self.include_trashed {
             if let Some(name) = &self.table_config.soft_delete_field {
+                // 注意：软删守卫会写入同一个 conditions 列表，使 yang-db 的
+                // `conditions.is_empty()` 全表写保护失效。零 WHERE 的
+                // update/delete 必须由 write.rs 的执行入口
+                // `ensure_soft_delete_write_has_where` 拒绝；不能把该判定放进
+                // 本函数或 `apply_write_plan`——它们与读查询/INSERT 共享。
                 let field = self.field_ref(name)?;
                 query = query.where_null(field);
             }

@@ -54,6 +54,15 @@ crate::params! {
     }
 }
 
+crate::params! {
+    #[deny_unknown_fields]
+    MixedOptionalInput {
+        title: Str::new(),
+        #[param(source = query)]
+        page: Int::new(),
+    }
+}
+
 /// 含二进制文件字段的上传输入；`format: binary` 是构建期媒体类型校验的判据。
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -438,6 +447,83 @@ fn params_macro_decodes_body_query_path_and_header_from_one_definition() {
     assert_eq!(params.as_slice()[1].source, ParamSource::Query);
     assert_eq!(params.as_slice()[2].source, ParamSource::Path);
     assert_eq!(params.as_slice()[3].source, ParamSource::Header);
+}
+
+#[test]
+fn params_macro_rejects_body_supplied_external_fields() {
+    // RED: 修复前 body 会静默兜底 query/path/header 字段，伪造值被接受。
+    // 修复后已声明的非 Body 字段先从 body 底稿删除，外部来源缺失必须报缺参。
+    let mut request = crate::action::Request::new(serde_json::json!({
+        "title": "hello",
+        "page": 3,
+        "user_id": 42,
+        "x_trace_id": "spoofed",
+    }));
+
+    assert!(matches!(
+        <MultiSourceInput as ParamInput>::decode(&mut request),
+        Err(BaseError::ParamInvalid(_, _))
+    ));
+}
+
+#[test]
+fn params_macro_external_sources_override_redundant_body_fields() {
+    // body 冗余携带非 Body 字段时，外部来源存在则以外部值为准（先 remove 再 insert）。
+    let mut request = crate::action::Request::new(serde_json::json!({
+        "title": "hello",
+        "page": 99,
+        "user_id": 7,
+        "x_trace_id": "spoofed",
+    }))
+    .query("page", "3")
+    .path_param("user_id", "42")
+    .header("X-Trace-Id", "trace-1");
+
+    let input = <MultiSourceInput as ParamInput>::decode(&mut request)
+        .expect("外部来源应覆盖 body 中同名字段");
+    assert_eq!(input.page, 3);
+    assert_eq!(input.user_id, 42);
+    assert_eq!(input.x_trace_id, "trace-1");
+}
+
+#[test]
+fn params_macro_body_cleanup_keeps_unknown_field_rejection() {
+    // 只删除已声明的非 Body 字段名；未知键仍交给 deny_unknown_fields 拒绝。
+    let mut request = crate::action::Request::new(serde_json::json!({
+        "title": "hello",
+        "page": 3,
+        "user_id": 42,
+        "x_trace_id": "trace-1",
+        "extra": true,
+    }))
+    .query("page", "3")
+    .path_param("user_id", "42")
+    .header("X-Trace-Id", "trace-1");
+
+    assert!(matches!(
+        <MultiSourceInput as ParamInput>::decode(&mut request),
+        Err(BaseError::ParamInvalid(_, _))
+    ));
+}
+
+#[test]
+fn params_macro_body_does_not_fill_optional_external_fields() {
+    // RED: 修复前 body 的 page 会被当成 query 值；修复后外部来源缺失应为 None。
+    let mut request = crate::action::Request::new(serde_json::json!({
+        "title": "hello",
+        "page": 7,
+    }));
+    let input =
+        <MixedOptionalInput as ParamInput>::decode(&mut request).expect("可选参数缺失不应报错");
+    assert_eq!(input.title.as_deref(), Some("hello"));
+    assert_eq!(input.page, None);
+
+    // 外部来源存在时正常解码为声明类型的值。
+    let mut request = crate::action::Request::new(serde_json::json!({})).query("page", "5");
+    let input =
+        <MixedOptionalInput as ParamInput>::decode(&mut request).expect("外部来源应正常解码");
+    assert_eq!(input.title, None);
+    assert_eq!(input.page, Some(5));
 }
 
 #[test]
@@ -1793,4 +1879,166 @@ fn validation_min_max_reject_incompatible_field_and_reversed_bounds() {
         reversed_range.table_definition(),
         Err(BaseError::ConfigError(message)) if message.contains("数值下限不能大于上限")
     ));
+}
+
+/// F018：服务端托管列（自增主键、自动创建/更新时间、软删标记）不得被 DSL
+/// 默认 Everyone 重新打开写权限。显式 writable_by 的系统角色写入必须保留，
+/// Value 模式时间戳仍是业务显式可写。
+#[test]
+fn server_managed_columns_keep_write_protection_under_default_access() {
+    let definition = TableSpec::new(table("managed_columns"))
+        .fields(crate::fields! {
+            id => Key::new(),
+            created_at => Timestamp::new().created_at(),
+            updated_at => Timestamp::new().updated_at(),
+            deleted_at => Timestamp::new().soft_delete(),
+        })
+        .table_definition()
+        .expect("托管列定义应构建成功");
+    let config = definition.shared_config();
+    let anonymous = std::collections::HashSet::new();
+    let system = std::collections::HashSet::from(["system".to_string()]);
+    let can_write = |name: &str, roles: &std::collections::HashSet<String>| {
+        config
+            .get_field(name)
+            .unwrap_or_else(|| panic!("字段 {name} 应存在"))
+            .permissions
+            .can_write(roles)
+    };
+
+    for name in ["id", "created_at", "updated_at", "deleted_at"] {
+        assert!(
+            !can_write(name, &anonymous),
+            "{name} 不得对普通调用方开放写入"
+        );
+        assert!(!can_write(name, &system), "{name} 不得对任何角色开放写入");
+    }
+
+    // 显式 writable_by 保留：系统角色仍可写业务自动时间戳；Value 模式
+    // 时间戳属于业务显式写入，不受托管列收敛影响。
+    let role_definition = TableSpec::new(table("managed_role_columns"))
+        .fields(crate::fields! {
+            id => Key::new(),
+            occurred_at => Timestamp::new().created_at().writable_by(["system"]),
+            received_at => Timestamp::new(),
+        })
+        .table_definition()
+        .expect("系统角色时间戳定义应构建成功");
+    let role_config = role_definition.shared_config();
+    let can_write = |name: &str, roles: &std::collections::HashSet<String>| {
+        role_config
+            .get_field(name)
+            .unwrap_or_else(|| panic!("字段 {name} 应存在"))
+            .permissions
+            .can_write(roles)
+    };
+    assert!(!can_write("occurred_at", &anonymous));
+    assert!(can_write("occurred_at", &system));
+    assert!(can_write("received_at", &anonymous));
+
+    // Key 与 SoftDelete 在显式 writable_by 下同样保留 Roles 分支，只有默认
+    // Everyone 才会被托管列语义收敛。
+    let explicit_role_definition = TableSpec::new(table("managed_explicit_roles"))
+        .fields(crate::fields! {
+            id => Key::new().writable_by(["admin"]),
+            deleted_at => Timestamp::new().soft_delete().writable_by(["system"]),
+        })
+        .table_definition()
+        .expect("显式角色托管列定义应构建成功");
+    let explicit_role_config = explicit_role_definition.shared_config();
+    let admin = std::collections::HashSet::from(["admin".to_string()]);
+    let can_write = |name: &str, roles: &std::collections::HashSet<String>| {
+        explicit_role_config
+            .get_field(name)
+            .unwrap_or_else(|| panic!("字段 {name} 应存在"))
+            .permissions
+            .can_write(roles)
+    };
+    assert!(can_write("id", &admin), "Key 的显式 admin 角色必须保留");
+    assert!(!can_write("id", &anonymous));
+    assert!(
+        can_write("deleted_at", &system),
+        "SoftDelete 的显式 system 角色必须保留"
+    );
+    assert!(!can_write("deleted_at", &anonymous));
+}
+
+/// F074：View 字段必须属于本 Module 主表。跨表字段在构建期以
+/// InvalidReference 拒绝，而不是被编译成本表列后在请求期静默读到同名主表列。
+#[test]
+fn view_fields_must_belong_to_the_module_table() {
+    let build = |view_field: FieldRef| {
+        let user_module = ModuleSpec::new(module("org.user"))
+            .table(
+                TableSpec::new(table("org_user"))
+                    .field(FieldSpec::new(field("id"), FieldKind::Key))
+                    .field(FieldSpec::new(field("username"), FieldKind::Str)),
+            )
+            .view(
+                ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                    .field(view_field),
+            );
+        let org_module = ModuleSpec::new(module("org.org")).table(
+            TableSpec::new(table("org_org"))
+                .field(FieldSpec::new(field("id"), FieldKind::Key))
+                .field(FieldSpec::new(field("name"), FieldKind::Str)),
+        );
+        AppBuilder::new()
+            .addon(
+                AddonSpec::new(addon("org"))
+                    .module(user_module)
+                    .module(org_module),
+            )
+            .build(test_tools())
+    };
+
+    build(FieldRef::new(table("org_user"), field("username"))).expect("同表 View 字段应构建成功");
+
+    let rejected = build(FieldRef::new(table("org_org"), field("name")));
+    assert!(
+        matches!(
+            rejected,
+            Err(BuildError::InvalidReference {
+                kind: "View Field",
+                ..
+            })
+        ),
+        "跨表 View 字段必须构建期拒绝: {:?}",
+        rejected.err()
+    );
+}
+
+/// F074 condition (1)：无主表 Module 的 views 维持既有「静默跳过」语义，
+/// 不因本次同表校验而变成构建失败，也不会被编译成 TableView。
+#[test]
+fn view_on_module_without_table_is_still_skipped() {
+    let app = AppBuilder::new()
+        .addon(
+            AddonSpec::new(addon("virtual"))
+                .module(
+                    ModuleSpec::new(module("virtual.real")).table(
+                        TableSpec::new(table("real_table"))
+                            .field(FieldSpec::new(field("id"), FieldKind::Key)),
+                    ),
+                )
+                .module(
+                    ModuleSpec::new(module("virtual.module")).view(
+                        ViewSpec::new(ViewName::new("main").expect("测试 View 名称应有效"))
+                            .field(FieldRef::new(table("real_table"), field("id"))),
+                    ),
+                ),
+        )
+        .build(test_tools())
+        .expect("无主表 Module 的 View 应保持跳过而不是构建失败");
+    assert_eq!(
+        app.compiled_views().len(),
+        1,
+        "只有有主表 Module 的默认 View 会被编译"
+    );
+    assert!(
+        app.compiled_views()
+            .iter()
+            .all(|view| view.module().as_str() != "virtual.module"),
+        "无主表 Module 的 View 不应进入编译视图列表"
+    );
 }

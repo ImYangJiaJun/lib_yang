@@ -816,9 +816,9 @@ impl TableQuery {
 
     /// PostgreSQL 批量 upsert 的准备：逐行复用插入校验，返回 `Ok(None)` 表示空批。
     ///
-    /// 与 MySQL 的 [`TableQuery::plan_upsert_batch`] 保持同一失败面（where / 软删
-    /// 守卫无法表达），差别只在冲突列：`ON CONFLICT` 的冲突列必须由调用方显式
-    /// 给出，且每行待写数据都必须包含这些列。
+    /// 与 MySQL 的 [`TableQuery::plan_upsert_batch`] 保持同一失败面（where /
+    /// where_any / 软删守卫无法表达），差别只在冲突列：`ON CONFLICT` 的冲突列
+    /// 必须由调用方显式给出，且每行待写数据都必须包含这些列。
     #[cfg(feature = "postgres")]
     fn prepare_pg_upsert_rows(
         &self,
@@ -831,10 +831,13 @@ impl TableQuery {
         }
 
         // ON CONFLICT 没有 WHERE：带条件的调用会被静默忽略（写错行远比报错危险）。
-        if !self.query_params.where_conditions.is_empty() {
+        // `where_any` 在 PG 池上登记为 any_conditions，同样是对行集的条件过滤，
+        // 而所有 PG upsert 执行器都不消费它——只检查 where_conditions 会让该过滤
+        // 条件被静默丢弃，必须一并拒绝。
+        if !self.query_params.where_conditions.is_empty() || !self.any_conditions.is_empty() {
             return Err(BaseError::ParamInvalid(
                 "where".to_string(),
-                "批量 upsert 不支持 where 条件：ON CONFLICT 没有 WHERE，条件会被静默忽略"
+                "批量 upsert 不支持 where / where_any 条件：ON CONFLICT 没有 WHERE，条件会被静默忽略"
                     .to_string(),
             ));
         }
@@ -1386,6 +1389,35 @@ impl TableQuery {
         Ok(prepared)
     }
 
+    /// 软删表零 WHERE 写的全表写保护。
+    ///
+    /// 未 `with_trashed()` 时，`apply_where_guards` / `apply_pg_where_guards` 会把
+    /// 软删字段 `IS NULL` 注入 yang-db 的 conditions 列表，使 yang-db 的
+    /// `conditions.is_empty()` 全表写保护失效——零 WHERE 的 update/delete 会静默
+    /// 改写/软删整表存活行。框架契约（`error/mod.rs` 的 `MissingWhereClause`：
+    /// 无 WHERE 的更新/删除始终被拒绝）要求在这里显式判定。
+    ///
+    /// 调用位置仅限 update/update_in_tx/delete/delete_in_tx：不能放进
+    /// `apply_write_plan` / `apply_pg_write_plan`（INSERT 共用，WHERE 天然为空），
+    /// 也不能放进读写共享的 `apply_*_where_guards`（无过滤读查询合法）。
+    ///
+    /// 判空同时计入 `where_conditions` 与 `any_conditions`（PG `where_any` 只在
+    /// PG 池时登记到后者，否则降级为 `where_in` 写入前者）。租户 `scope_tenant`
+    /// 与主键定位等框架注入的条件本就写入 `where_conditions`，因此合法的租户
+    /// 范围批量写不受影响。
+    ///
+    /// 只覆盖 `!include_trashed && soft_delete_field.is_some()`：非软删表与
+    /// `with_trashed()` 的零 WHERE 写保持 yang-db 既有的错误行为，不迁移错误码。
+    fn ensure_soft_delete_write_has_where(&self, op: &str) -> Result<(), BaseError> {
+        if self.include_trashed || self.table_config.soft_delete_field.is_none() {
+            return Ok(());
+        }
+        if self.query_params.where_conditions.is_empty() && self.any_conditions.is_empty() {
+            return Err(BaseError::MissingWhereClause(op.to_string()));
+        }
+        Ok(())
+    }
+
     /// 执行 UPDATE 操作
     ///
     /// 更新表中的数据，包括以下步骤：
@@ -1396,6 +1428,9 @@ impl TableQuery {
     /// 5. 执行更新操作
     pub async fn update(self, data: crate::table::Record) -> Result<u64, BaseError> {
         let data = self.prepare_update_data(record_into_columns(data))?;
+        // 数据校验/字段权限之后、触库之前：软删守卫会填满 conditions，必须在此
+        // 按契约拒绝零 WHERE 的整表更新。
+        self.ensure_soft_delete_write_has_where("UPDATE")?;
         match self.backend()? {
             #[cfg(feature = "mysql")]
             yang_db::BackendKind::MySql => self
@@ -1431,6 +1466,7 @@ impl TableQuery {
         data: crate::table::Record,
     ) -> Result<u64, BaseError> {
         let data = self.prepare_update_data(record_into_columns(data))?;
+        self.ensure_soft_delete_write_has_where("UPDATE")?;
         match tx {
             #[cfg(feature = "mysql")]
             AnyTransaction::MySql(tx) => {
@@ -1608,6 +1644,9 @@ impl TableQuery {
                 soft_delete_field,
                 Value::Number(chrono::Utc::now().timestamp().into()),
             )]))?;
+            // 软删走 UPDATE 标记：守卫注入的 `deleted_at IS NULL` 会让 yang-db 误判
+            // 「已有 WHERE」，零 WHERE 的 delete 会静默软删整表存活行。
+            self.ensure_soft_delete_write_has_where("DELETE")?;
             return self.execute_soft_delete(data).await;
         }
         self.execute_physical_delete().await
@@ -1683,6 +1722,8 @@ impl TableQuery {
                 )]))
             })
             .transpose()?;
+        // 与 delete() 同一守卫：软删标记在事务内同样是 UPDATE，零 WHERE 必须拒绝。
+        self.ensure_soft_delete_write_has_where("DELETE")?;
         match tx {
             #[cfg(feature = "mysql")]
             AnyTransaction::MySql(tx) => {
@@ -1732,6 +1773,36 @@ mod pg_tests {
             Arc::from(Vec::<String>::new()),
             None,
         )
+    }
+
+    /// `where_any` 在 PG 池上登记到 `any_conditions`；批量 upsert 的 ON CONFLICT
+    /// 无法表达行过滤，必须与 `where_conditions` 一样被拒绝，不能静默丢弃。
+    /// （RED：修复前只检查 `where_conditions`，该过滤条件会被丢弃并写成功。）
+    #[test]
+    fn pg_upsert_rejects_where_any_conditions() {
+        let mut query = lazy_query(Table::new("pg_upsert_where_any").fields([
+            Field::id("id"),
+            Field::string("option_key", 64).required(),
+            Field::string("label", 64).required(),
+        ]));
+        query
+            .any_conditions
+            .push(("option_key".to_string(), vec![serde_json::json!("opt_a")]));
+        let rows = vec![Record::new().set("option_key", "opt_a").set("label", "x")];
+
+        let error = query
+            .prepare_pg_upsert_rows(rows, &["option_key"])
+            .expect_err("where_any 条件不得在批量 upsert 中被静默忽略");
+        match error {
+            BaseError::ParamInvalid(field, message) => {
+                assert_eq!(field, "where");
+                assert!(
+                    message.contains("where_any"),
+                    "错误信息应点名 where_any: {message}"
+                );
+            }
+            other => panic!("应返回 ParamInvalid，实际: {other:?}"),
+        }
     }
 
     /// PostgreSQL 的 insert_returning_id 依赖 RETURNING 整型主键；字符串主键必须
@@ -1905,7 +1976,7 @@ mod batch_returning_mysql_tests {
 #[cfg(test)]
 mod delete_permission_tests {
     use super::*;
-    use crate::table::{Field, Table};
+    use crate::table::{Field, Record, Table};
     use std::sync::Arc;
 
     fn query_for(table: Table, roles: &[&str]) -> TableQuery {
@@ -1948,14 +2019,17 @@ mod delete_permission_tests {
     }
 
     /// 默认 `Field::soft_delete`（写权限 Nobody，仅框架可写）是框架托管列：
-    /// 守卫应放行并继续执行，而不是被自己的删除标记挡住（无连接池时停在初始化错误）。
+    /// 守卫应放行并继续执行，而不是被自己的删除标记挡住。补上 WHERE 越过零
+    /// WHERE 全表写保护后，无连接池应停在初始化错误。
     #[tokio::test]
     async fn framework_managed_soft_delete_passes_field_permission_guard() {
         let query = query_for(
             Table::new("tq_soft_delete_framework")
                 .fields([Field::id("id"), Field::soft_delete("deleted_at")]),
             &["user"],
-        );
+        )
+        .where_eq("id", serde_json::json!(1))
+        .expect("主键条件应有效");
 
         let error = query
             .delete()
@@ -1965,5 +2039,108 @@ mod delete_permission_tests {
             matches!(error, BaseError::DatabaseNotInitialized),
             "默认软删列不应触发字段权限错误，实际: {error:?}"
         );
+    }
+
+    /// 软删表零 WHERE 的 update 必须被拒绝。
+    ///
+    /// RED：修复前软删守卫会把 `deleted_at IS NULL` 注入 conditions，yang-db 的
+    /// `conditions.is_empty()` 全表写保护被绕过——有池时会静默更新整表存活行，
+    /// 无池时只能观察到 `DatabaseNotInitialized`。修复后应在触库前返回契约规定的
+    /// `MissingWhereClause`。
+    #[tokio::test]
+    async fn soft_delete_update_without_where_is_rejected() {
+        let query = query_for(
+            Table::new("tq_soft_delete_zero_where_update").fields([
+                Field::id("id"),
+                Field::string("name", 32),
+                Field::soft_delete("deleted_at"),
+            ]),
+            &["admin"],
+        );
+
+        let error = query
+            .update(Record::new().set("name", "x"))
+            .await
+            .expect_err("软删表零 WHERE 更新必须被拒绝");
+        assert!(
+            matches!(error, BaseError::MissingWhereClause(ref op) if op == "UPDATE"),
+            "应返回 UPDATE 的 MissingWhereClause，实际: {error:?}"
+        );
+    }
+
+    /// 软删表零 WHERE 的 delete 必须被拒绝（RED 同 update：修复前会静默软删整表）。
+    #[tokio::test]
+    async fn soft_delete_delete_without_where_is_rejected() {
+        let query = query_for(
+            Table::new("tq_soft_delete_zero_where_delete").fields([
+                Field::id("id"),
+                Field::string("name", 32),
+                Field::soft_delete("deleted_at"),
+            ]),
+            &["user"],
+        );
+
+        let error = query
+            .delete()
+            .await
+            .expect_err("软删表零 WHERE 删除必须被拒绝");
+        assert!(
+            matches!(error, BaseError::MissingWhereClause(ref op) if op == "DELETE"),
+            "应返回 DELETE 的 MissingWhereClause，实际: {error:?}"
+        );
+    }
+
+    /// 守卫范围必须精确：只拦「软删表 + 未 with_trashed + 完全零 WHERE」。
+    /// 非软删表、with_trashed、where_any（any_conditions）与租户注入都必须放行，
+    /// 保持既有成功路径与错误面不变。
+    #[test]
+    fn soft_delete_zero_where_guard_scope() {
+        // 非软删表：不拦截，保持 yang-db 既有错误行为。
+        let query = query_for(
+            Table::new("tq_zero_where_plain").fields([Field::id("id")]),
+            &["user"],
+        );
+        query
+            .ensure_soft_delete_write_has_where("UPDATE")
+            .expect("非软删表不应触发守卫");
+
+        // with_trashed：不拦截。
+        let query = query_for(
+            Table::new("tq_zero_where_trashed")
+                .fields([Field::id("id"), Field::soft_delete("deleted_at")]),
+            &["user"],
+        )
+        .with_trashed();
+        query
+            .ensure_soft_delete_write_has_where("UPDATE")
+            .expect("with_trashed 不应触发守卫");
+
+        // where_any-only（PG any_conditions）：不拦截。
+        let mut query = query_for(
+            Table::new("tq_zero_where_any")
+                .fields([Field::id("id"), Field::soft_delete("deleted_at")]),
+            &["user"],
+        );
+        query
+            .any_conditions
+            .push(("id".to_string(), vec![serde_json::json!(1)]));
+        query
+            .ensure_soft_delete_write_has_where("DELETE")
+            .expect("where_any 条件应被视为已有 WHERE");
+
+        // scope_tenant 注入租户条件：合法的租户范围批量写不拦截。
+        let query = query_for(
+            Table::new("tq_zero_where_tenant").fields([
+                Field::id("id"),
+                Field::bigint("tenant_id").tenant_key(),
+                Field::soft_delete("deleted_at"),
+            ]),
+            &["user"],
+        )
+        .scope_tenant("tenant_id", serde_json::json!(7))
+        .expect("租户条件注入应成功");
+        query
+            .ensure_soft_delete_write_has_where("UPDATE")
+            .expect("租户注入条件应被视为已有 WHERE");
     }
 }

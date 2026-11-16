@@ -70,6 +70,12 @@ impl Parse for ParamField {
     }
 }
 
+/// 展开 `params!`：结构体同时生成强类型 Input 与唯一的原生 `Params` 定义。
+///
+/// 混合来源时 body 仅作为 Body 字段的反序列化底稿：decode 先移除与已声明
+/// 非 Body 字段同名的键，再由 query/path/header 外部来源覆盖。因此 body
+/// 不再兜底 query/path/header 参数；`has_body=false` 与全 Body 结构的生成
+/// 代码与修复前一致。
 pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let ParamsInput {
         attrs,
@@ -98,6 +104,7 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
     let mut params = Vec::new();
     let mut validations = Vec::new();
     let mut external_fields = Vec::new();
+    let mut body_field_removals = Vec::new();
     let mut has_body = false;
     for field in fields {
         for attribute in &field.attrs {
@@ -158,6 +165,12 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
                 quote!(stringify!(#field_name).to_string())
             };
             let value = external_value(&builder_name, quote!(raw), &value_type);
+            // body 只作为 Body 字段的反序列化底稿：先删除与已声明非 Body 字段
+            // 同名的键，再由外部来源覆盖，避免 body 静默伪造 query/path/header。
+            // 只删除已声明的字段名，未知键仍原样交给 serde（deny_unknown_fields）。
+            body_field_removals.push(quote! {
+                object.remove(stringify!(#field_name));
+            });
             external_fields.push(quote! {
                 if let ::core::option::Option::Some(raw) = #map.get(&#lookup) {
                     let value = #value.map_err(|message| {
@@ -171,6 +184,14 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
             });
         }
     }
+
+    // 全 query/path/header 与全 Body 结构不需要清理：前者没有 body 底稿，
+    // 后者没有被声明为非 Body 的字段，生成的 decode 与修复前一致。
+    let body_cleanup = if has_body {
+        quote!(#(#body_field_removals)*)
+    } else {
+        quote!()
+    };
 
     let serde_unknown = deny_unknown.then(|| quote!(#[serde(deny_unknown_fields)]));
     Ok(quote! {
@@ -207,6 +228,7 @@ pub(crate) fn expand(input: ParamsInput) -> Result<TokenStream> {
                 } else {
                     ::yang_base::__private::serde_json::Map::new()
                 };
+                #body_cleanup
                 #(#external_fields)*
                 ::yang_base::__private::serde_json::from_value(::yang_base::__private::serde_json::Value::Object(object)).map_err(|error| {
                     ::yang_base::error::BaseError::ParamInvalid("input".to_string(), error.to_string())

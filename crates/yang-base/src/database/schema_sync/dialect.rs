@@ -690,7 +690,24 @@ impl SchemaDialect {
     }
 
     /// 渲染 CHECK 约束。
+    ///
+    /// 构建期按「两种方言任一平衡即接受」的宽松规则放行，以便同一份定义
+    /// 能跨方言复用；真正渲染时必须用**目标方言**的词法再校验一次，否则
+    /// 形如 `note <> 'a\')' , evil INT, CHECK (1=1` 的载荷会在 PG 词法下
+    /// 闭合外层括号并追加 DDL，而 MySQL 词法却判定平衡。
     pub(super) fn render_check(self, check: &CheckConfig) -> Result<String, BaseError> {
+        let balanced = match self {
+            #[cfg(feature = "mysql")]
+            Self::MySql => crate::table::has_balanced_mysql_check_expression(&check.expression),
+            #[cfg(feature = "postgres")]
+            Self::PostgreSql => crate::table::has_balanced_pg_check_expression(&check.expression),
+        };
+        if !balanced {
+            return Err(BaseError::ConfigError(format!(
+                "CHECK {} 在目标方言下不是单条括号平衡表达式",
+                check.name
+            )));
+        }
         match self {
             #[cfg(feature = "mysql")]
             Self::MySql => mysql_render::render_check(check),
@@ -1953,6 +1970,44 @@ mod tests {
     use super::*;
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     use crate::table::{Field, Table};
+
+    /// F064 残余绕过：构建期宽松 OR 规则会放行「MySQL 词法平衡、PG 词法
+    /// 越界」的注入载荷；目标方言渲染时必须拒绝，合法表达式不受影响。
+    #[cfg(all(feature = "mysql", feature = "postgres"))]
+    #[test]
+    fn check_render_rejects_expression_unbalanced_for_target_dialect() {
+        let payload = CheckConfig {
+            name: "chk_residual".to_string(),
+            expression: r"note <> 'a\')' , evil INT, CHECK (1=1)".to_string(),
+        };
+        assert!(
+            crate::table::has_balanced_mysql_check_expression(&payload.expression),
+            "MySQL 词法应判定该载荷平衡"
+        );
+        assert!(
+            !crate::table::has_balanced_pg_check_expression(&payload.expression),
+            "PG 词法应判定该载荷越界"
+        );
+        assert!(
+            SchemaDialect::PostgreSql.render_check(&payload).is_err(),
+            "PG 目标方言必须拒绝闭合外层括号的载荷"
+        );
+        assert!(
+            SchemaDialect::MySql.render_check(&payload).is_ok(),
+            "MySQL 词法下该表达式括号平衡，应仍按原串渲染"
+        );
+
+        let legal_pg = CheckConfig {
+            name: "chk_legal_pg".to_string(),
+            expression: "$q$a)b$q$".to_string(),
+        };
+        assert!(SchemaDialect::PostgreSql.render_check(&legal_pg).is_ok());
+        let legal_mysql = CheckConfig {
+            name: "chk_legal_mysql".to_string(),
+            expression: r"note <> 'it\'s)'".to_string(),
+        };
+        assert!(SchemaDialect::MySql.render_check(&legal_mysql).is_ok());
+    }
 
     #[cfg(feature = "postgres")]
     #[test]

@@ -552,6 +552,20 @@ pub(super) fn validate_references(
             }
             for field in &view.fields {
                 validate_field_ref(field, fields)?;
+                // View 是同一主表的多场景投影：数据源固定为 module.table。
+                // 跨表字段会被编译成“本表列”，请求期要么静默读到主表同名列，
+                // 要么报 FieldNotFound；在构建期明确拒绝这种非法定义。
+                // 无主表 Module 的 views 仍由 compile 阶段整体跳过，保持既有语义。
+                if module
+                    .table
+                    .as_ref()
+                    .is_some_and(|table| field.table() != &table.name)
+                {
+                    return Err(BuildError::InvalidReference {
+                        kind: "View Field",
+                        reference: format!("{view_ref}: {field}"),
+                    });
+                }
             }
             if let Some(tree) = &view.tree {
                 let table = module

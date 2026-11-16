@@ -301,7 +301,18 @@ impl FieldSpec {
             field = field.secret();
         }
         field = apply_read_rule(field, self.access.readable);
+        // 服务端托管列（自增主键、自动创建/更新时间、软删标记）的 table 层
+        // 构造器已声明 `not_writable`；DSL 的默认 Everyone 只代表“未显式
+        // 声明”，不能把托管列重新打开为客户端可写。显式 writable_by（Roles）
+        // 必须保留：yang-system 依赖系统角色写入 occurred_at 等业务时间戳。
+        let managed_write_default = self.access.writable == AccessRule::Everyone
+            && (self.kind == FieldKind::Key
+                || (self.kind == FieldKind::Timestamp
+                    && self.timestamp_mode != TimestampMode::Value));
         field = apply_write_rule(field, self.access.writable);
+        if managed_write_default {
+            field = field.not_writable();
+        }
         if self.access.searchable {
             field = field.searchable();
         }
