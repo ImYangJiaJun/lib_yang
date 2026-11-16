@@ -627,7 +627,7 @@ async fn dispatch_request(
         Err(error) => {
             let status = status_for_error(&error);
             if status.is_server_error() {
-                tracing::error!(error = %error, code = error.code(), "请求处理失败");
+                log_dispatch_server_error(&error);
             }
             error_response(status, error)
         }
@@ -1387,6 +1387,24 @@ fn status_for_error(error: &BaseError) -> StatusCode {
     }
 }
 
+/// 记录 5xx 派发失败的 ERROR 日志。
+///
+/// [`BaseError::HttpRequestFailed`] 的 `Display` 内嵌 `reqwest::Error`：reqwest 在
+/// 超时等路径会把完整出站 URL（含 query 中的 token / userinfo）拼进错误消息。
+/// 该变体只记录稳定错误码与脱敏摘要；原始错误串由 `yang_base::http` 的出站日志
+/// （URL 已脱敏）承担，避免出站凭证经入站错误日志二次落盘。
+fn log_dispatch_server_error(error: &BaseError) {
+    if matches!(error, BaseError::HttpRequestFailed(_)) {
+        tracing::error!(
+            error = "HTTP 请求失败（详情已脱敏，见 yang_base::http 出站日志）",
+            code = error.code(),
+            "请求处理失败"
+        );
+    } else {
+        tracing::error!(error = %error, code = error.code(), "请求处理失败");
+    }
+}
+
 fn with_request_id_header(mut response: Response, request_id: RequestId) -> Response {
     // RequestId::Display 固定输出 32 位 ASCII hex；仍通过 HeaderValue 校验守住
     // HTTP 边界，避免未来展示格式演进时把非法字节写入响应头。
@@ -1457,6 +1475,76 @@ mod tests {
             status_for_error(&BaseError::AuthorizationCheckUnavailable),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    /// 捕获 `run` 期间 ERROR 级别日志输出（scoped subscriber，不污染全局）。
+    fn capture_error_logs(run: impl FnOnce()) -> String {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use tracing::subscriber::with_default;
+
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let mut guard = self.0.lock().expect("日志锁");
+                std::io::Write::write(&mut *guard, bytes)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let writer_buffer = Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::ERROR)
+            .with_writer(move || Writer(Arc::clone(&writer_buffer)))
+            .finish();
+        with_default(subscriber, run);
+        let captured = buffer.lock().expect("日志锁").clone();
+        String::from_utf8(captured).expect("日志 UTF8")
+    }
+
+    /// F020 RED 场景：旧实现 `error = %error` 会把 HttpRequestFailed 的完整
+    /// Display（内嵌 reqwest 错误，可能含出站 URL 的 query token/userinfo）
+    /// 写入 ERROR 日志。这里用确定的 builder 错误验证日志走脱敏摘要。
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_request_failed_server_log_uses_redacted_summary() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("HTTP 客户端应构建成功");
+        let failure = client
+            .request(reqwest::Method::GET, "http://[::1")
+            .build()
+            .expect_err("非法 URL 必须返回 builder 错误");
+        assert!(failure.is_builder(), "应得到 builder 错误: {failure:?}");
+        let error = BaseError::HttpRequestFailed(failure);
+        assert!(status_for_error(&error).is_server_error());
+        assert_eq!(error.code(), 300002);
+
+        let logs = capture_error_logs(|| log_dispatch_server_error(&error));
+        assert!(logs.contains("请求处理失败"), "缺少事件消息: {logs}");
+        assert!(logs.contains("300002"), "缺少错误码: {logs}");
+        assert!(logs.contains("详情已脱敏"), "应输出脱敏摘要: {logs}");
+        assert!(
+            !logs.contains("HTTP 请求失败:"),
+            "不得渲染 BaseError 的 Display: {logs}"
+        );
+    }
+
+    /// 非 HTTP 请求错误继续输出 Display，保留排障信息。
+    #[test]
+    fn other_server_errors_keep_display_in_log() {
+        let error = BaseError::DatabaseInitFailed("db init failed".to_string());
+        assert!(status_for_error(&error).is_server_error());
+
+        let logs = capture_error_logs(|| log_dispatch_server_error(&error));
+        assert!(logs.contains("请求处理失败"), "{logs}");
+        assert!(logs.contains("db init failed"), "{logs}");
     }
 
     #[test]

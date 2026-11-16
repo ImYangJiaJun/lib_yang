@@ -34,7 +34,7 @@ mod request;
 mod response;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-pub use client::{HttpClient, HttpClientConfig};
+pub use client::{HttpClient, HttpClientConfig, HttpRedirectPolicy};
 pub use request::{RequestBuilder, RetryConfig};
 pub use response::Response;
 

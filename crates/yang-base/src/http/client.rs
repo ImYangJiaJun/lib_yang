@@ -13,6 +13,44 @@ use std::time::Duration;
 /// 出站响应体默认上限（10 MiB，与出站场景对齐；服务端侧为 DEFAULT_MAX_BODY_BYTES = 2 MiB）
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
+/// HTTP 重定向跟随策略。
+///
+/// 通过 [`HttpClientConfig::redirect`] 配置。默认
+/// `HttpRedirectPolicy::Limited(10)`，与 reqwest 0.12 的默认策略
+/// `reqwest::redirect::Policy::limited(10)` 等价：最多跟随 10 次重定向。
+///
+/// 该策略只控制 client 级重定向跟随行为，**不逐跳校验目标 host，也不会额外
+/// 剥离自定义凭证头**。需要 SSRF 白名单的调用方应显式设为
+/// [`HttpRedirectPolicy::None`]，自行检查 3xx 响应的 `Location` 后再发起受控请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HttpRedirectPolicy {
+    /// 不跟随任何重定向：3xx 原样返回，`Location` 响应头保留给调用方判断。
+    None,
+    /// 最多跟随 `n` 次重定向；超过上限时 reqwest 返回 `TooManyRedirects` 请求错误。
+    ///
+    /// `Limited(0)` 与 [`HttpRedirectPolicy::None`] 的区别：前者在遇到第一个 3xx 时
+    /// 返回错误，后者把 3xx 响应原样返回。
+    Limited(usize),
+}
+
+impl Default for HttpRedirectPolicy {
+    fn default() -> Self {
+        // 显式对齐 reqwest 0.12.16 的默认策略，而非依赖 reqwest 未来的默认值。
+        Self::Limited(10)
+    }
+}
+
+impl HttpRedirectPolicy {
+    /// 映射为 reqwest 的 client 级重定向策略。
+    fn to_reqwest(self) -> reqwest::redirect::Policy {
+        match self {
+            Self::None => reqwest::redirect::Policy::none(),
+            Self::Limited(max) => reqwest::redirect::Policy::limited(max),
+        }
+    }
+}
+
 /// HTTP 客户端配置
 ///
 /// 用于通过 `HttpClient::with_config` 创建自定义配置的客户端
@@ -60,6 +98,14 @@ pub struct HttpClientConfig {
     /// 读取响应体（`bytes`/`json`/`text`）时先查 Content-Length 做快速失败，
     /// 再流式累计校验运行中上限，超限返回 `BaseError::HttpResponseTooLarge`。
     pub max_response_bytes: usize,
+
+    /// 重定向跟随策略，默认 `HttpRedirectPolicy::Limited(10)`（reqwest 默认：
+    /// 最多跟随 10 跳）。
+    ///
+    /// 默认策略不逐跳校验目标 host，也不会额外剥离自定义凭证头；需要 SSRF
+    /// 白名单或严格同源校验的调用方应显式设为 [`HttpRedirectPolicy::None`]，
+    /// 自行校验 3xx 的 `Location`。
+    pub redirect: HttpRedirectPolicy,
 }
 
 impl Default for HttpClientConfig {
@@ -73,6 +119,7 @@ impl Default for HttpClientConfig {
             proxy_url: None,
             circuit_breaker: None,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            redirect: HttpRedirectPolicy::default(),
         }
     }
 }
@@ -178,6 +225,164 @@ mod config_tests {
             BaseError::ParamInvalid(field, _) if field == "http.circuit_breaker.failure_threshold"
         ));
     }
+
+    #[test]
+    fn test_default_redirect_policy_stays_backward_compatible_and_validates() {
+        // 条件：新增 redirect 配置的 Default 必须等价于 reqwest 0.12.16 的默认
+        // `Policy::limited(10)`，且 validate() 不得新增会拒绝既有合法配置的校验。
+        assert_eq!(
+            HttpClientConfig::default().redirect,
+            HttpRedirectPolicy::Limited(10)
+        );
+        assert_eq!(
+            HttpRedirectPolicy::default(),
+            HttpRedirectPolicy::Limited(10)
+        );
+        assert!(HttpClientConfig::default().validate().is_ok());
+        assert!(HttpClientConfig {
+            redirect: HttpRedirectPolicy::None,
+            ..HttpClientConfig::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(HttpClientConfig {
+            redirect: HttpRedirectPolicy::Limited(0),
+            ..HttpClientConfig::default()
+        }
+        .validate()
+        .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod redirect_policy_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// 启动一次性 HTTP 服务：读走一个请求后返回固定响应字节。
+    async fn serve_once(response: Vec<u8>) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("本地监听端口应可绑定");
+        let addr = listener.local_addr().expect("应能取得监听地址");
+
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            // 读走请求，避免客户端写请求时收到 EPIPE
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+        });
+
+        addr
+    }
+
+    fn found_response(location: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn ok_response(body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// 回归护栏：默认配置必须保持 reqwest 默认的 `limited(10)`，合法 302 链路
+    /// （同一 127.0.0.1、仅端口不同）仍应自动跟随，行为与修复前一致。
+    #[tokio::test]
+    async fn test_default_redirect_policy_follows_302_as_before() {
+        let target = serve_once(ok_response("ok")).await;
+        let target_url = format!("http://{target}/final");
+        let origin = serve_once(found_response(&target_url)).await;
+
+        let client = HttpClient::new(5).expect("默认客户端应可创建");
+        let response = client
+            .get(&format!("http://{origin}/start"))
+            .send()
+            .await
+            .expect("默认策略下请求应成功");
+
+        assert_eq!(response.status(), 200, "默认策略应跟随 302");
+        assert_eq!(
+            response.url(),
+            target_url,
+            "Response::url() 应返回跟随重定向后的最终 URL"
+        );
+        assert_eq!(
+            response.text().await.expect("应读到最终响应体"),
+            "ok",
+            "默认策略应落到重定向目标"
+        );
+    }
+
+    /// RED（修复前）：`HttpClientConfig` 没有 redirect 配置，调用方无法关闭自动
+    /// 跟随，只能被动落到重定向目标，拿不到原始 302 与 Location。
+    #[tokio::test]
+    async fn test_redirect_policy_none_returns_3xx_without_following() {
+        let target = serve_once(ok_response("must-not-be-read")).await;
+        let target_url = format!("http://{target}/final");
+        let origin = serve_once(found_response(&target_url)).await;
+
+        let client = HttpClient::with_config(HttpClientConfig {
+            redirect: HttpRedirectPolicy::None,
+            ..HttpClientConfig::default()
+        })
+        .expect("合法配置应创建客户端");
+
+        let response = client
+            .get(&format!("http://{origin}/start"))
+            .send()
+            .await
+            .expect("None 策略下 3xx 应作为成功响应返回");
+
+        assert_eq!(response.status(), 302, "None 应原样返回 3xx");
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            location.as_deref(),
+            Some(target_url.as_str()),
+            "Location 必须保留给调用方做逐跳校验"
+        );
+    }
+
+    /// `Limited(n)` 必须真正生效：配置 1 跳时，默认的 10 跳策略会跟随的第二跳
+    /// 应触发 reqwest 的 TooManyRedirects 错误。
+    #[tokio::test]
+    async fn test_redirect_policy_limited_stops_after_configured_hops() {
+        let final_server = serve_once(ok_response("too-far")).await;
+        let second_url = format!("http://{final_server}/second");
+        let second = serve_once(found_response(&second_url)).await;
+        let first_url = format!("http://{second}/first");
+        let origin = serve_once(found_response(&first_url)).await;
+
+        let client = HttpClient::with_config(HttpClientConfig {
+            redirect: HttpRedirectPolicy::Limited(1),
+            ..HttpClientConfig::default()
+        })
+        .expect("合法配置应创建客户端");
+
+        // `Response` 未实现 Debug，不能对 `Result<Response, _>` 用 expect_err。
+        let err = match client.get(&format!("http://{origin}/start")).send().await {
+            Ok(_) => panic!("超过跳数上限应返回请求错误"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(&err, BaseError::HttpRequestFailed(_)),
+            "跳数超限应映射为 HttpRequestFailed，实际: {err:?}"
+        );
+    }
 }
 
 /// HTTP 客户端
@@ -266,6 +471,10 @@ impl HttpClient {
             .pool_max_idle_per_host(cfg.pool_max_idle_per_host)
             .pool_idle_timeout(Duration::from_secs(cfg.pool_idle_timeout_secs))
             .danger_accept_invalid_certs(cfg.accept_invalid_certs);
+
+        // 设置重定向策略：默认显式落到 reqwest 默认的 limited(10)，未配置新策略的
+        // 调用方与修复前行为完全一致；重定向仍由 reqwest client 级策略处理。
+        builder = builder.redirect(cfg.redirect.to_reqwest());
 
         // 设置自定义 User-Agent
         if let Some(ua) = cfg.user_agent {

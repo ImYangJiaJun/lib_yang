@@ -101,6 +101,26 @@ impl Response {
         self.response.headers()
     }
 
+    /// 获取本次响应最终落地的 URL。
+    ///
+    /// 跟随重定向时返回最后一跳的 URL，便于调用方在 opt-in 场景下复核目标
+    /// host。该访问器只读；日志仍由请求侧统一脱敏（移除 query 与 userinfo），
+    /// 请勿把未脱敏的 URL 直接写入日志。
+    ///
+    /// # 返回
+    ///
+    /// - 最终 URL 字符串
+    ///
+    /// # 示例
+    ///
+    /// ```rust,ignore
+    /// let final_url = response.url();
+    /// println!("最终地址: {}", final_url);
+    /// ```
+    pub fn url(&self) -> &str {
+        self.response.url().as_str()
+    }
+
     /// 获取响应体为文本
     ///
     /// # 返回

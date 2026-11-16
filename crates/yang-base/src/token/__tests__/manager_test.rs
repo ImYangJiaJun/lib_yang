@@ -1,6 +1,7 @@
 //! TokenManager 单元测试
 
 use crate::error::BaseError;
+use crate::token::manager::REVOCATION_WATERMARK_MIN_TTL_SECONDS;
 use crate::token::TokenManager;
 use jsonwebtoken::Algorithm;
 use serde_json::json;
@@ -755,6 +756,9 @@ fn test_new_symmetric_rejects_non_hmac_algorithm() {
 fn test_revocation_watermark_ttl_covers_longest_token_lifetime() {
     // M2：水位线 TTL 必须覆盖 Access/Refresh 的较大者，否则 access>refresh 时
     // 撤销前签发的 access token 会在 key 过期后「复活」。
+    // F055 RED：配置缩短（或跨服务共享签名密钥/issuer/audience/Redis）时，
+    // 按历史更长有效期签发的存量 Token 仍可能存续；水位线 TTL 必须至少保留
+    // 固定下限（90 天），否则 key 先过期会让这些本应撤销的 Token 复活。
     let normal = TokenManager::new_symmetric(
         &"x".repeat(32),
         Algorithm::HS256,
@@ -764,7 +768,11 @@ fn test_revocation_watermark_ttl_covers_longest_token_lifetime() {
         86400,
     )
     .expect("正常配置应构建成功");
-    assert_eq!(normal.revocation_watermark_ttl(), 86400);
+    assert_eq!(
+        normal.revocation_watermark_ttl(),
+        REVOCATION_WATERMARK_MIN_TTL_SECONDS,
+        "短配置也必须保留固定下限，覆盖配置缩短前的存量 Token"
+    );
 
     let access_longer = TokenManager::new_symmetric(
         &"x".repeat(32),
@@ -775,7 +783,28 @@ fn test_revocation_watermark_ttl_covers_longest_token_lifetime() {
         3600,
     )
     .expect("access>refresh 仍应构建成功");
-    assert_eq!(access_longer.revocation_watermark_ttl(), 86400);
+    assert_eq!(
+        access_longer.revocation_watermark_ttl(),
+        REVOCATION_WATERMARK_MIN_TTL_SECONDS,
+        "access>refresh 时同样不得低于固定下限"
+    );
+
+    // 只放大、不缩短：消费者配置的 Token 寿命超过固定下限时，水位线必须按其
+    // 配置保留完整寿命，绝不能因固定下限而提前消失（回归场景）。
+    let longer_than_floor = TokenManager::new_symmetric(
+        &"x".repeat(32),
+        Algorithm::HS256,
+        "issuer".to_string(),
+        "audience".to_string(),
+        3600,
+        REVOCATION_WATERMARK_MIN_TTL_SECONDS + 1,
+    )
+    .expect("超过固定下限的 Refresh 有效期仍应构建成功");
+    assert_eq!(
+        longer_than_floor.revocation_watermark_ttl(),
+        REVOCATION_WATERMARK_MIN_TTL_SECONDS + 1,
+        "消费者配置更长时必须取配置值，不能被固定下限缩短"
+    );
 }
 
 /// 过期边界：旧 Refresh Token 在验证通过后才过期的，轮换必须返回 TokenExpired，

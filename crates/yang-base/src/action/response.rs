@@ -10,8 +10,26 @@ use std::path::PathBuf;
 /// [`ResponseBody::Raw`] 唯一允许的响应内容类型。
 ///
 /// 该逃生口存在的理由是「外部系统的响应契约与框架 JSON 包络不兼容」，不是通用响应通道；
-/// 限死为 JSON 可防止它被用来返回 `text/html`，从而绕过前端 JSON 契约的保护。
+/// [`ResponseBody::raw`] 构造器与派发边界 [`wrap_dispatch_output`] 都按本白名单校验，
+/// 防止该变体被用来返回 `text/html`，从而绕过前端 JSON 契约的保护。
+///
+/// 注意该保证只覆盖 [`ResponseBody::Raw`]：下游直接构造的
+/// [`ResponseAttachment::Raw`]（如在用的 receivables-system `text/csv` 模板下载）与
+/// 按扩展名可能返回 `text/html`/`image/svg+xml` 的 [`ResponseBody::Preview`] 是另外的
+/// 非 JSON 通道，不在本白名单范围内。
 const RAW_ALLOWED_CONTENT_TYPE: &str = "application/json";
+
+/// 校验 Raw 响应内容类型。
+///
+/// 构造器与派发边界共用，确保「直接构造变体」不能绕过 [`ResponseBody::raw`] 的白名单。
+fn validate_raw_content_type(content_type: &str) -> Result<(), BaseError> {
+    if content_type != RAW_ALLOWED_CONTENT_TYPE {
+        return Err(BaseError::ConfigError(format!(
+            "Raw 响应 content-type 只允许 {RAW_ALLOWED_CONTENT_TYPE}，收到 {content_type}"
+        )));
+    }
+    Ok(())
+}
 
 /// API 响应
 ///
@@ -412,7 +430,8 @@ pub enum ResponseBody {
     /// 供外部系统要求固定响应形状（顶层键名、层级与框架包络不一致）时使用。
     /// `content_type` 只允许 `application/json`；`body` 必须是该类型下的完整响应文本。
     ///
-    /// 请优先用 [`ResponseBody::raw`] 构造，它会校验 `content_type`。
+    /// 请优先用 [`ResponseBody::raw`] 构造，它会校验 `content_type`；派发边界
+    /// `wrap_dispatch_output` 会对直接构造的本变体再执行同一白名单校验。
     Raw {
         /// 完整响应体文本（UTF-8）。
         body: String,
@@ -444,6 +463,8 @@ impl ResponseBody {
     ///
     /// 这是给「外部系统契约与框架包络不兼容」用的逃生口，不是通用响应通道——
     /// `content_type` 被限死为 `application/json`，防止它被用来返回 `text/html`。
+    /// 该白名单与派发边界 `wrap_dispatch_output` 的运行期再校验完全一致；
+    /// 直接构造 [`ResponseBody::Raw`] 的非法 `content_type` 会在派发时被拒绝。
     ///
     /// # 错误
     ///
@@ -466,11 +487,7 @@ impl ResponseBody {
         content_type: impl Into<String>,
     ) -> Result<Self, BaseError> {
         let content_type = content_type.into();
-        if content_type != RAW_ALLOWED_CONTENT_TYPE {
-            return Err(BaseError::ConfigError(format!(
-                "Raw 响应 content-type 只允许 {RAW_ALLOWED_CONTENT_TYPE}，收到 {content_type}"
-            )));
-        }
+        validate_raw_content_type(&content_type)?;
         Ok(Self::Raw {
             body: body.into(),
             content_type,
@@ -537,6 +554,12 @@ where
         return Ok(response.clone());
     }
     if let Some(body) = erased.downcast_ref::<ResponseBody>() {
+        // 运行期再校验：`ResponseBody::Raw` 是对外可构造的变体，枚举上的
+        // `#[non_exhaustive]` 只限制下游穷尽 match，不能阻止直接构造变体绕过
+        // `raw()` 的白名单。此处复用同一校验函数，合法 `application/json` 零变化。
+        if let ResponseBody::Raw { content_type, .. } = body {
+            validate_raw_content_type(content_type)?;
+        }
         return Ok(ApiResponse::attachment(body.clone().into(), message));
     }
     ApiResponse::success(output, message)
@@ -814,6 +837,92 @@ mod tests {
         assert!(
             failed.to_string().contains("application/json"),
             "错误信息应说明允许的 content-type，实际: {failed}"
+        );
+    }
+
+    #[test]
+    fn directly_constructed_raw_is_revalidated_at_dispatch_boundary() {
+        // RED（修复前）：枚举上的 #[non_exhaustive] 不阻止下游直接构造 Raw，
+        // text/html 会原样进入传输层，绕过 raw() 的 content-type 白名单。
+        let body = ResponseBody::Raw {
+            body: "<html><script>alert(1)</script></html>".to_string(),
+            content_type: "text/html".to_string(),
+        };
+
+        let err =
+            wrap_dispatch_output(body, "成功").expect_err("派发边界必须拒绝直接构造的非 JSON Raw");
+        assert!(
+            matches!(&err, BaseError::ConfigError(_)),
+            "应与 raw() 使用同一错误类型，实际: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("application/json"),
+            "错误信息应说明允许的 content-type，实际: {err}"
+        );
+    }
+
+    #[test]
+    fn directly_constructed_json_raw_still_maps_to_attachment() {
+        // 合法直接构造（application/json）零变化：仍映射为 Raw 附件且不进入 data
+        let body = ResponseBody::Raw {
+            body: r#"{"code":0,"msg":"ok"}"#.to_string(),
+            content_type: "application/json".to_string(),
+        };
+
+        let response = wrap_dispatch_output(body, "成功").expect("合法 Raw 应通过派发边界");
+        assert_eq!(response.code, 0);
+        assert!(response.data.is_none(), "Raw 不得进入 data");
+        assert_eq!(
+            response.attachment,
+            Some(ResponseAttachment::Raw {
+                body: r#"{"code":0,"msg":"ok"}"#.to_string(),
+                content_type: "application/json".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn dispatch_validation_uses_same_exact_match_as_constructor() {
+        // 与 raw() 完全一致：精确匹配 application/json；带参数的同类值同样被拒绝。
+        assert!(ResponseBody::raw("{}", "application/json; charset=utf-8").is_err());
+
+        let body = ResponseBody::Raw {
+            body: "{}".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+        };
+        assert!(
+            wrap_dispatch_output(body, "成功").is_err(),
+            "派发边界的白名单必须与 raw() 的精确匹配语义一致"
+        );
+    }
+
+    #[test]
+    fn attachment_raw_content_type_is_not_tightened() {
+        // 契约边界：校验只覆盖 ResponseBody::Raw，不得扩大到 ResponseAttachment::Raw /
+        // ApiResponse::attachment——receivables-system 的 text/csv 模板下载依赖此通道。
+        let response = ApiResponse::attachment(
+            ResponseAttachment::Raw {
+                body: "a,b\r\n1,2".to_string(),
+                content_type: "text/csv; charset=utf-8".to_string(),
+            },
+            "成功",
+        );
+        assert_eq!(
+            response.attachment,
+            Some(ResponseAttachment::Raw {
+                body: "a,b\r\n1,2".to_string(),
+                content_type: "text/csv; charset=utf-8".to_string(),
+            })
+        );
+
+        // 已携带非 JSON 附件的 ApiResponse 走 wrap_dispatch_output 的第一分支原样透传。
+        let passed = wrap_dispatch_output(response, "成功").expect("ApiResponse 应原样透传");
+        assert_eq!(
+            passed.attachment,
+            Some(ResponseAttachment::Raw {
+                body: "a,b\r\n1,2".to_string(),
+                content_type: "text/csv; charset=utf-8".to_string(),
+            })
         );
     }
 

@@ -15,6 +15,18 @@ const MAX_SYMMETRIC_KEYRING_KEYS: usize = 8;
 const MAX_KEY_ID_BYTES: usize = 64;
 const MIN_HMAC_SECRET_BYTES: usize = 32;
 
+/// subject 撤销水位线的最小保留期（秒）：90 天（F055）。
+///
+/// 水位线 TTL 若只取当前配置的 `max(access, refresh)`，在配置缩短后，按旧配置
+/// 签发的长寿命 Token 仍可能存续，而水位线 key 会先过期，导致这些本应被撤销的
+/// Token「复活」；共享签名密钥 / issuer / audience / Redis 的其他服务按更长
+/// 有效期签发的 Token 同理。
+///
+/// 固定下限与 yang-system 允许的最大 Refresh 有效期（`MAX_REFRESH_TTL_SECONDS`，
+/// 90 天）对齐，并与当前配置取 `max`：对任何消费者都只放大、不缩短，消费者
+/// 配置的 Token 寿命超过该下限时仍按其配置保留完整寿命。
+pub(crate) const REVOCATION_WATERMARK_MIN_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
+
 /// 获取当前 Unix 时间戳（秒）
 ///
 /// # 返回
@@ -571,11 +583,23 @@ impl TokenManager {
 
     /// 返回 subject 撤销水位线应使用的 TTL（秒）。
     ///
-    /// 取 Access / Refresh 有效期的较大值：水位线必须至少覆盖「撤销前签发的
-    /// 任一 Token 的最长剩余寿命」，否则 key 过期后已撤销的 Token 会重新通过
-    /// [`TokenManager::verify_token_checked`]（复活）。
+    /// 水位线必须至少覆盖「撤销前签发的任一 Token 的最长剩余寿命」，否则 key
+    /// 过期后已撤销的 Token 会重新通过 [`TokenManager::verify_token_checked`]
+    /// （复活）。
+    ///
+    /// 因此取以下三者的最大值（F055）：
+    /// - 当前配置的 Access 有效期；
+    /// - 当前配置的 Refresh 有效期；
+    /// - 固定下限 `REVOCATION_WATERMARK_MIN_TTL_SECONDS`（90 天）。
+    ///
+    /// 固定下限用于覆盖配置缩短前已签发的存量 Token，以及共享签名密钥 /
+    /// issuer / audience / Redis 的其他服务按更长有效期签发的 Token。
+    /// 与当前配置取 `max` 保证只放大、不缩短：消费者配置的 Token 寿命超过
+    /// 固定下限时，水位线仍保留其完整寿命，不会提前消失。
     pub(crate) fn revocation_watermark_ttl(&self) -> u64 {
-        self.refresh_token_expiry.max(self.access_token_expiry)
+        self.refresh_token_expiry
+            .max(self.access_token_expiry)
+            .max(REVOCATION_WATERMARK_MIN_TTL_SECONDS)
     }
 
     /// 验证 Token

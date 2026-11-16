@@ -54,9 +54,14 @@
 
 use crate::error::BaseError;
 use std::env;
+use std::fmt;
 
 /// 引擎级聚合配置，从环境变量加载（I4）。
-#[derive(Debug, Clone, Default)]
+///
+/// 手写 [`fmt::Debug`]（而非 derive）：`mysql_url` / `postgres_url` / `redis_url`
+/// 可能包含 userinfo 密码与查询串 token，Debug 输出只保留脱敏后的
+/// scheme + host[:port][/path]，绝不输出凭据。字段本身始终保存原始连接串。
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct EngineConfig {
     /// MySQL 连接串（`YANG_MYSQL_URL`，兼容 deprecated `YANG_DATABASE_URL`，缺失为 `None`）。
@@ -89,6 +94,78 @@ pub struct EngineConfig {
     /// Redis 连接池配置（由 `YANG_REDIS_*` 覆盖 `RedisConfig::default`）。
     #[cfg(feature = "redis")]
     pub redis: yang_db::RedisConfig,
+}
+
+impl fmt::Debug for EngineConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("EngineConfig");
+        debug.field("mysql_url", &self.mysql_url.as_deref().map(RedactedUrl));
+        debug.field(
+            "postgres_url",
+            &self.postgres_url.as_deref().map(RedactedUrl),
+        );
+        debug.field("redis_url", &self.redis_url.as_deref().map(RedactedUrl));
+        #[cfg(feature = "mysql")]
+        debug.field("database", &self.database);
+        #[cfg(all(feature = "postgres", not(feature = "mysql")))]
+        debug.field("database", &self.database);
+        #[cfg(feature = "postgres")]
+        debug.field("postgres_database", &self.postgres_database);
+        #[cfg(feature = "redis")]
+        debug.field("redis", &self.redis);
+        debug.finish()
+    }
+}
+
+/// 仅用于 Debug/日志展示的脱敏连接串。
+struct RedactedUrl<'a>(&'a str);
+
+impl fmt::Debug for RedactedUrl<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}", redact_connection_url(self.0))
+    }
+}
+
+/// 对连接串做展示层脱敏：仅保留 scheme 与 `host[:port][/path]`，剥离 userinfo
+/// （含密码）与 `?` / `#` 查询串与片段；无法识别 scheme 或缺 scheme 的输入
+/// 回退为固定占位文本，不 panic。
+///
+/// 该函数只用于 Debug 格式化，绝不修改 [`EngineConfig`] 中存储的原始连接串。
+fn redact_connection_url(raw: &str) -> String {
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return "[REDACTED]".to_string();
+    };
+    if !matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "mysql" | "postgres" | "postgresql" | "redis" | "rediss"
+    ) {
+        return "[REDACTED]".to_string();
+    }
+    // 先剥离 fragment/query（其中可能含 token），再剥离 authority 中的 userinfo
+    // （其中含密码）；path 中原生的 '@' 不参与 userinfo 判定。
+    let rest = rest.split(['#', '?']).next().unwrap_or(rest);
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, Some(path)),
+        None => (rest, None),
+    };
+    // 未编码的 `/` 出现在密码里会让 authority 在 `@` 之前被截断，
+    // 此时剩下的 `@host` 落在 path 中；这类输入本身不是合法 URL，
+    // 但 Debug 输出绝不能把密码片段原样带出，整体回退为占位文本。
+    let ambiguous_userinfo = !authority.contains('@')
+        && (path.is_some_and(|path| path.contains('@'))
+            || authority.rsplit_once(':').is_some_and(|(_, tail)| {
+                !tail.is_empty() && !tail.chars().all(|c| c.is_ascii_digit())
+            }));
+    if ambiguous_userinfo {
+        return format!("{scheme}://[REDACTED]");
+    }
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    match path {
+        Some(path) => format!("{scheme}://{authority}/{path}"),
+        None => format!("{scheme}://{authority}"),
+    }
 }
 
 /// 当前编译所使用的数据库连接池配置类型。
@@ -436,5 +513,78 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("YANG_PG_SSL_MODE"), "实得: {message}");
         assert!(message.contains("sometimes"), "实得: {message}");
+    }
+
+    /// F058 RED 场景：derive(Debug) 会把连接串里的 userinfo 密码与查询串原样输出。
+    #[test]
+    fn engine_config_debug_redacts_connection_credentials() {
+        let config = EngineConfig {
+            mysql_url: Some(
+                "mysql://mysql-user:mysql-pass@mysql.example.test:3306/app?ssl-mode=required"
+                    .to_string(),
+            ),
+            postgres_url: Some(
+                "postgres://pg-user:pg-pass@pg.example.test:5432/app#fragment".to_string(),
+            ),
+            redis_url: Some("rediss://redis-user:redis-pass@redis.example.test:6379/0".to_string()),
+            ..EngineConfig::default()
+        };
+
+        let debug = format!("{config:?}");
+        for secret in [
+            "mysql-user",
+            "mysql-pass",
+            "pg-user",
+            "pg-pass",
+            "redis-user",
+            "redis-pass",
+            "ssl-mode=required",
+            "fragment",
+        ] {
+            assert!(
+                !debug.contains(secret),
+                "EngineConfig Debug 泄露 {secret}: {debug}"
+            );
+        }
+        // 展示层仍保留主机与库名，便于排障。
+        assert!(debug.contains("mysql.example.test:3306/app"), "{debug}");
+        assert!(debug.contains("pg.example.test:5432/app"), "{debug}");
+        assert!(
+            debug.contains("rediss://redis.example.test:6379/0"),
+            "{debug}"
+        );
+        // 存储值必须保持原始连接串（脱敏只作用于 Debug 文本）。
+        assert_eq!(
+            config.mysql_url.as_deref(),
+            Some("mysql://mysql-user:mysql-pass@mysql.example.test:3306/app?ssl-mode=required")
+        );
+    }
+
+    #[test]
+    fn redact_connection_url_handles_schemes_and_invalid_input() {
+        assert_eq!(
+            redact_connection_url("mysql://u:p@host:3306/db?x=1#frag"),
+            "mysql://host:3306/db"
+        );
+        assert_eq!(
+            redact_connection_url("postgresql://u:p@host/db"),
+            "postgresql://host/db"
+        );
+        assert_eq!(
+            redact_connection_url("redis://:p@host:6379/0"),
+            "redis://host:6379/0"
+        );
+        assert_eq!(redact_connection_url("rediss://host/0"), "rediss://host/0");
+        assert_eq!(redact_connection_url("not a url"), "[REDACTED]");
+        assert_eq!(redact_connection_url("ftp://u:p@host/db"), "[REDACTED]");
+        // 密码含未编码 `/`：authority 被截断，输出不得包含密码片段。
+        assert_eq!(
+            redact_connection_url("mysql://user:pa/ss@host/db"),
+            "mysql://[REDACTED]"
+        );
+        assert_eq!(
+            redact_connection_url("mysql://user:pa?ss@host/db"),
+            "mysql://[REDACTED]"
+        );
     }
 }

@@ -92,8 +92,11 @@ unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新
 `content_type` 直接返回 `body`，**不套 `ApiResponse` 包络**。
 
 - 构造请用 `ResponseBody::raw(body, content_type) -> Result<Self, BaseError>`：它校验
-  `content_type` 必须为 `application/json`（防止该通道被用来返回 `text/html`，从而绕过
-  前端 JSON 契约的保护）。
+  `content_type` 必须为 `application/json`；派发边界 `wrap_dispatch_output` 会对直接
+  构造的 `ResponseBody::Raw` 再执行同一白名单校验，防止该通道被用来返回 `text/html`，
+  从而绕过前端 JSON 契约的保护。该保证只覆盖 `ResponseBody::Raw`：
+  `ResponseAttachment::Raw`（下游直接构造，`text/csv` 模板下载依赖它）与按扩展名
+  返回 `text/html`/`image/svg+xml` 的 `Preview` 仍是另外的非 JSON 通道，不在此范围内。
 - HTTP 状态固定 `200`；`max_attachment_bytes` 由该变体自行比对（`file_response` 的限额
   不覆盖它）。
 - **迁移**：对 `ResponseBody` 或 `ResponseAttachment` 做穷尽 `match` 的下游代码必须补

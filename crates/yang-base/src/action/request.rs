@@ -467,11 +467,46 @@ impl fmt::Debug for RedactedMap<'_> {
     }
 }
 
+/// `body` 的 Debug 安全摘要：只输出顶层类型 / 键名集合 / 长度，不输出任何值。
+///
+/// 纵深防御：登录密码、Refresh Token、验证码等凭据常以 JSON body 承载，
+/// `tracing::debug!(?ctx)` 等日志不应把它们写进日志。该摘要只保护 `Debug`
+/// 输出；显式读取 [`Request::body`] 的调用方（如审计快照）仍需自行脱敏。
+struct RedactedBody<'a>(&'a serde_json::Value);
+
+/// 不暴露值内容的类型/尺寸描述。
+fn body_shape_summary(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(_) => "bool".to_string(),
+        serde_json::Value::Number(_) => "number".to_string(),
+        serde_json::Value::String(value) => format!("string(len={})", value.len()),
+        serde_json::Value::Array(values) => format!("array(len={})", values.len()),
+        serde_json::Value::Object(map) => format!("object(keys={})", map.len()),
+    }
+}
+
+impl fmt::Debug for RedactedBody<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            serde_json::Value::Object(map) => {
+                let mut summary = formatter.debug_map();
+                for (key, value) in map {
+                    let shape = body_shape_summary(value);
+                    summary.entry(key, &format!("[REDACTED:{shape}]"));
+                }
+                summary.finish()
+            }
+            value => write!(formatter, "[REDACTED:{}]", body_shape_summary(value)),
+        }
+    }
+}
+
 impl fmt::Debug for Request {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Request")
-            .field("body", &self.body)
+            .field("body", &RedactedBody(&self.body))
             .field("headers", &RedactedMap(&self.headers))
             .field("query", &RedactedMap(&self.query))
             .field("path_params", &RedactedMap(&self.path_params))
@@ -691,5 +726,43 @@ mod tests {
         assert_eq!(request.get_path_param("id"), Some("42"));
         assert_eq!(request.get_path_param(""), None);
         assert_eq!(request.get_path_param("   "), None);
+    }
+
+    #[test]
+    fn debug_redacts_request_body_values() {
+        // F030 RED 场景：旧 Debug 直接输出 `body`，登录密码、Refresh Token 等
+        // 凭据会经 `format!("{request:?}")` / `tracing::debug!(?ctx)` 进入日志。
+        let request = Request::new(json!({
+            "username": "alice",
+            "password": "body-password-secret",
+            "refresh_token": "body-refresh-secret",
+            "nested": { "code": "body-code-secret" },
+            "items": ["body-list-secret"],
+        }))
+        .header("Authorization", "Bearer header-secret")
+        .query("access_token", "query-secret")
+        .path_param("session", "path-secret");
+
+        let debug = format!("{request:?}");
+        for secret in [
+            "alice",
+            "body-password-secret",
+            "body-refresh-secret",
+            "body-code-secret",
+            "body-list-secret",
+            "header-secret",
+            "query-secret",
+            "path-secret",
+        ] {
+            assert!(
+                !debug.contains(secret),
+                "Request Debug 泄露 {secret}: {debug}"
+            );
+        }
+        // 键名与类型/长度摘要保留，维持排障可用性。
+        assert!(debug.contains("password"), "应保留 body 键名: {debug}");
+        assert!(debug.contains("string(len="), "应保留长度摘要: {debug}");
+        assert!(debug.contains("object(keys=1)"), "应保留类型摘要: {debug}");
+        assert!(debug.contains("[REDACTED]"), "{debug}");
     }
 }
