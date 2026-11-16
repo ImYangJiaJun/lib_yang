@@ -25,7 +25,21 @@
 
 #[cfg(feature = "redis-cluster")]
 use yang_db::DbError;
-use yang_db::{RedisClient, RedisConfig, RedisTopology};
+#[cfg(any(
+    feature = "redis-tls-insecure-test",
+    feature = "redis-tls",
+    feature = "redis-cluster",
+    feature = "redis-sentinel"
+))]
+use yang_db::RedisClient;
+#[cfg(any(
+    feature = "redis-tls",
+    feature = "redis-cluster",
+    feature = "redis-sentinel"
+))]
+use yang_db::RedisConfig;
+#[cfg(any(feature = "redis-cluster", feature = "redis-sentinel"))]
+use yang_db::RedisTopology;
 
 fn env_required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("必须设置环境变量 {name}"))
