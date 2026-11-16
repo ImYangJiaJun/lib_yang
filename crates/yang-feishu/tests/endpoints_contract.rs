@@ -41,23 +41,35 @@ impl Sleeper for NoSleep {
 async fn client() -> (OpenApiClient, Arc<FakeTransport>) {
     let transport = Arc::new(FakeTransport::default());
     let cache = Arc::new(MemoryTokenCache::default());
-    cache
-        .put("demo:app:cli_test:tenant_token", "t-fake", 600)
-        .await
-        .unwrap();
     let client = OpenApiClient::builder(
         OpenApiConfig::static_credentials("cli_test", "secret").cache_namespace("demo"),
     )
     .transport(transport.clone())
     .sleeper(Arc::new(NoSleep))
-    .token_cache(cache)
+    .token_cache(cache.clone())
     .build()
     .unwrap();
+    // 用客户端自己的键格式预置 tenant token（对齐 approval_contract.rs），
+    // 避免硬编码键与 TokenProvider::token_key 的实现漂移导致误走 token 端点。
+    cache
+        .put(&client.tokens().token_key(), "t-fake", 600)
+        .await
+        .unwrap();
     (client, transport)
 }
 
 fn last_request(transport: &FakeTransport) -> Request {
-    transport.requests.lock().unwrap().last().cloned().unwrap()
+    let request = transport.requests.lock().unwrap().last().cloned().unwrap();
+    // 本文件的 9 个长尾端点全部走 send_tenant（call_json → send_tenant，或
+    // multipart 端点直接 send_tenant），预置缓存后业务请求必须携带该 token。
+    // RED：旧测试从不检查 bearer_token，typed 客户端退化成 send_raw 时仍会全绿。
+    assert_eq!(
+        request.bearer_token.as_deref(),
+        Some("t-fake"),
+        "{} 必须携带预置的 tenant token",
+        request.url
+    );
+    request
 }
 
 #[tokio::test]

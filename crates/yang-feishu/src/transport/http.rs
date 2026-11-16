@@ -133,7 +133,7 @@ impl Transport for ReqwestTransport {
             builder = builder.timeout(Duration::from_secs(timeout_secs));
         }
 
-        let response = builder.send().await.map_err(transport_error)?;
+        let mut response = builder.send().await.map_err(transport_error)?;
         let status = response.status().as_u16();
         let headers: BTreeMap<String, String> = response
             .headers()
@@ -151,19 +151,40 @@ impl Transport for ReqwestTransport {
                 .get("content-type")
                 .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
 
-        let (body, bytes) = if request.binary_limit.is_some() && status == 200 && !json_response {
-            let bytes = response.bytes().await.map_err(transport_error)?;
-            if let Some(limit) = request.binary_limit {
-                if bytes.len() > limit {
+        // 二进制分支：binary_limit 且 200 且非 JSON 响应。
+        let binary_limit = request
+            .binary_limit
+            .filter(|_| status == 200 && !json_response);
+        let (body, bytes) = if let Some(limit) = binary_limit {
+            // Content-Length 预检只做快速失败：工作区 reqwest 未启用自动解压，
+            // `content_length()` 是原始 body 的精确长度；chunked 时为 None，
+            // 回退到下面的逐块累计。上游可能省略或谎报长度，因此头部值不能
+            // 作为唯一判据。
+            if let Some(length) = response.content_length() {
+                if length > limit as u64 {
                     return Err(Error::new(
                         FailureKind::Fatal {
                             code: super::codes::CODE_TOO_LARGE_RESPONSE,
                         },
-                        format!("响应体 {} 字节超过上限 {limit}", bytes.len()),
+                        format!("响应体 {length} 字节超过上限 {limit}"),
                     ));
                 }
             }
-            (String::new(), Some(bytes.to_vec()))
+            // 硬上限：逐块累计、先判后拷，超限立即中止，不把整个响应体读进内存。
+            let mut collected: Vec<u8> = Vec::with_capacity(limit.min(64 * 1024));
+            while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+                if collected.len().saturating_add(chunk.len()) > limit {
+                    return Err(Error::new(
+                        FailureKind::Fatal {
+                            code: super::codes::CODE_TOO_LARGE_RESPONSE,
+                        },
+                        // 中止时拿不到实际总长度，省略字节总数（非契约差异）。
+                        format!("响应体超过上限 {limit} 字节"),
+                    ));
+                }
+                collected.extend_from_slice(&chunk);
+            }
+            (String::new(), Some(collected))
         } else {
             let body = response.text().await.map_err(transport_error)?;
             if let Some(limit) = request.binary_limit {
@@ -185,5 +206,166 @@ impl Transport for ReqwestTransport {
             bytes,
             headers,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 二进制响应上限的本地 TCP 覆盖。
+    //!
+    //! 修复前（RED）：二进制分支用 `response.bytes()` 全量收集后才比较上限。
+    //! - Content-Length 已超限但 body 未发完时，旧实现会一直等待整个 body；
+    //! - chunked 超限响应永远等不到结束块，旧实现会挂到测试超时。
+    //!
+    //! 修复后：Content-Length 只做快速失败，`chunk()` 累计先判后拷、超限提前中止。
+
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::transport::codes::CODE_TOO_LARGE_RESPONSE;
+
+    /// 一次性本地服务：读到请求头后写出 `response`。
+    ///
+    /// `close_after_write = false` 时保持连接不关，用来验证客户端在 body 未结束时
+    /// 就应中止；`true` 时 shutdown 写端，构造无 Content-Length 的 close 定界响应。
+    async fn serve_once(response: Vec<u8>, close_after_write: bool) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定本地端口");
+        let address = listener.local_addr().expect("读取本地地址");
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buffer = [0u8; 1024];
+            let mut received = Vec::new();
+            loop {
+                match socket.read(&mut buffer).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => {
+                        received.extend_from_slice(&buffer[..read]);
+                        if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            if socket.write_all(&response).await.is_err() {
+                return;
+            }
+            if socket.flush().await.is_err() {
+                return;
+            }
+            if close_after_write && socket.shutdown().await.is_err() {
+                return;
+            }
+            // 保持连接：提前中止类测试要求服务端“还没写完”。
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        format!("http://{address}")
+    }
+
+    fn binary_request(base: &str, limit: usize) -> Request {
+        Request {
+            method: Method::Get,
+            url: format!("{base}/file"),
+            query: Vec::new(),
+            bearer_token: None,
+            json_body: None,
+            raw_body: None,
+            binary_limit: Some(limit),
+            timeout_secs: None,
+            idempotent: true,
+        }
+    }
+
+    fn transport() -> ReqwestTransport {
+        ReqwestTransport::new().expect("构造 ReqwestTransport")
+    }
+
+    fn assert_too_large(error: Error) {
+        assert_eq!(
+            error.kind,
+            FailureKind::Fatal {
+                code: CODE_TOO_LARGE_RESPONSE
+            },
+            "超限必须是 Fatal TOO_LARGE（不重试），实际: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn binary_response_over_limit_from_content_length_fails_fast() {
+        // RED：旧实现先 `bytes().await`，服务端不发送声明的 body 时会一直等待。
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1048576\r\n\r\n".to_vec();
+        let base = serve_once(response, false).await;
+        let transport = transport();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send(binary_request(&base, 1024)),
+        )
+        .await
+        .expect("Content-Length 超限必须快速失败，不能等待 body 读完")
+        .expect_err("超限响应必须被拒绝");
+        assert_too_large(error);
+    }
+
+    #[tokio::test]
+    async fn binary_response_exactly_at_limit_succeeds() {
+        // 上限判断保持 `>`：恰好等于 limit 必须成功，且字节逐一相同。
+        let payload: Vec<u8> = (0..8).collect();
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            payload.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&payload);
+        let base = serve_once(response, false).await;
+        let transport = transport();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send(binary_request(&base, payload.len())),
+        )
+        .await
+        .expect("恰好等于上限必须成功")
+        .expect("恰好等于上限必须成功");
+        assert_eq!(result.status, 200);
+        assert_eq!(result.body, "");
+        assert_eq!(result.bytes.as_deref(), Some(payload.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn binary_response_chunked_over_limit_aborts_before_end() {
+        // RED：旧实现要等 chunked 结束块才比较上限；这里永远不发送 0 长度结束块。
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n".to_vec();
+        let base = serve_once(response, false).await;
+        let transport = transport();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send(binary_request(&base, 4)),
+        )
+        .await
+        .expect("chunked 超限必须在累计超限时立即中止")
+        .expect_err("chunked 超限响应必须被拒绝");
+        assert_too_large(error);
+    }
+
+    #[tokio::test]
+    async fn binary_response_without_content_length_is_still_bounded() {
+        // close 定界（无 Content-Length、非 chunked）：硬上限由 chunk() 累计保证。
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n".to_vec();
+        response.extend_from_slice(&[9u8; 16]);
+        let base = serve_once(response, true).await;
+        let transport = transport();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send(binary_request(&base, 4)),
+        )
+        .await
+        .expect("无 Content-Length 的超限响应也必须中止")
+        .expect_err("超限响应必须被拒绝");
+        assert_too_large(error);
     }
 }

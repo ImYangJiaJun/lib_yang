@@ -24,6 +24,13 @@
 - 文档修正：`bitable/dto.rs` 不再声称全部 `#[non_exhaustive]`（实际不标，保证结构体
   字面量 drop-in）；补用户 OAuth 配方；`AGENTS.md` 的方法名与 `has_more`/加密示例
   改为可直接编译的写法。
+- `bitable::search_all_records` 与 `list_*` 的分页契约对齐：同一分页会话内返回
+  重复的非空 `page_token` 立即 `Fatal`，不再把重复页当作成功结果返回；合法翻页的
+  记录集、顺序与请求次数不变。
+- 文档作用域澄清：`bitable::encode_cell_value` 仅适用 bitable v1 写接口（v1 数字
+  字段类型码），Base v3 写接口的单元格方言不同；签名与编码行为不变。
+  `v3_record_upsert` 实际只做 PATCH 更新（`record_id` 必填），文档不再声称可创建，
+  新建记录指向 `v3_record_batch_create` / v1 `create_record`。
 
 ## 0.2.0
 

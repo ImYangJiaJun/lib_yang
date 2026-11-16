@@ -1,6 +1,7 @@
 //! 事件入站公开 API 的契约测试：challenge 应答、明文/密文闸门、回调信封与失败语义。
 //!
-//! 全部离线：密文用 crate 自身的 `derive_key` + `encrypt_bytes` 现场生成，不依赖真实租户。
+//! 全部离线：密文以 crate 自身的 `derive_key` + `encrypt_bytes` 现场生成，并辅以
+//! 固定的 OpenSSL AES-256-CBC 已知答案向量交叉验证；均不依赖真实租户。
 
 use yang_feishu::crypto::{decrypt_bytes, derive_key, encrypt_bytes};
 use yang_feishu::event::{EventConfig, EventError, EventVerifier, Inbound};
@@ -280,4 +281,36 @@ fn require_signature为true时构造失败() {
         ),
         other => panic!("require_signature=true 应为 EventError::Config，实际 {other:?}"),
     }
+}
+
+/// F104：独立实现（OpenSSL，非本 crate 的 `encrypt_bytes`）离线生成的已知答案向量，
+/// 钉住「SHA-256(配置原文) + IV 前置 + AES-256-CBC + PKCS#7 + base64 STANDARD」协议。
+///
+/// - 密钥原文：`MixedCaseKey`（合成值，非真实租户/生产 key）
+/// - SHA-256(key)：2b01295f8d7f981f88cbe503b4565ef056058e0c2657c4c5f4fb13203a9d7629
+/// - IV（前置）：000102030405060708090a0b0c0d0e0f
+/// - 明文：`feishu-kat-vector-2026`（22 字节；PKCS#7 追加 10 字节，密文 32 字节）
+/// - 密文 base64 同时含 `+` 与 `/`，因此也钉住标准字母表（不做 hex/URL-safe 归一化）。
+#[test]
+fn 固定已知答案向量_与独立实现一致() {
+    const KAT_BASE64: &str = "AAECAwQFBgcICQoLDA0OD8SxQgY24L+NEH2W4wumgcZoKJb7tNf+RaZB+D384b/b";
+    let key = derive_key("MixedCaseKey");
+
+    // 独立摘要断言：证明 derive_key 取配置原文的 SHA-256，而非 hex/base64 猜测。
+    let expected_key: [u8; 32] = [
+        0x2b, 0x01, 0x29, 0x5f, 0x8d, 0x7f, 0x98, 0x1f, 0x88, 0xcb, 0xe5, 0x03, 0xb4, 0x56, 0x5e,
+        0xf0, 0x56, 0x05, 0x8e, 0x0c, 0x26, 0x57, 0xc4, 0xc5, 0xf4, 0xfb, 0x13, 0x20, 0x3a, 0x9d,
+        0x76, 0x29,
+    ];
+    assert_eq!(key, expected_key);
+
+    assert!(
+        KAT_BASE64.contains('+') && KAT_BASE64.contains('/'),
+        "KAT 必须同时覆盖 STANDARD base64 的 '+' 与 '/'"
+    );
+
+    assert_eq!(
+        decrypt_bytes(KAT_BASE64, &key).unwrap_or_else(|error| panic!("KAT 解密失败: {error}")),
+        b"feishu-kat-vector-2026"
+    );
 }

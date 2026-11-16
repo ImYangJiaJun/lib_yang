@@ -71,7 +71,11 @@ impl OpenApiConfig {
         }
     }
 
-    /// 由自定义凭证来源构造（配置热更新、密钥托管）。
+    /// 由自定义凭证来源构造。
+    ///
+    /// 凭证在 `OpenApiClientBuilder::build` 时读取一次并克隆冻结，运行期不再
+    /// 回查 provider；轮换 `app_secret` 或切换 `app_id` 需用新凭证重建 client。
+    /// provider 适用于密钥托管等自定义读取来源，不提供配置热更新语义。
     pub fn with_provider(provider: Arc<dyn CredentialsProvider>) -> Self {
         Self {
             credentials: provider,

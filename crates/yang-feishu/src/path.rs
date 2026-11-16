@@ -4,9 +4,10 @@
 //!
 //! - [`validate_path_segment`]：严格白名单，只放 ASCII 字母数字与 `-` `_`。
 //!   用于多维表格的 `app_token` / `table_id` / `view_id` / `record_id`。
-//! - [`validate_opaque_path_segment`]：宽松黑名单，只拒绝 `/ ? # 空格 \`。
-//!   用于审批 `instance_code` / `approval_code` / `department_id`——这些值历史上
-//!   允许 `.` `:` `@` 等字符，收紧会改变既有入参行为。
+//! - [`validate_opaque_path_segment`]：宽松黑名单，拒绝 `/ ? # 空格 \`、点段
+//!   （`.`/`..`/编码变体）以及 C0/C1/DEL 控制字符。用于审批 `instance_code` /
+//!   `approval_code` / `department_id`——这些值历史上允许 `.` `:` `@` 等字符，
+//!   收紧会改变既有入参行为。
 //!
 //! 不要为了「共用一份」把多维表格的路径穿越防护降级。
 
@@ -64,8 +65,10 @@ pub fn validate_path_segment(name: &str, value: &str) -> std::result::Result<(),
 
 /// 宽松校验一个要拼进 URL 路径段的值（审批/通讯录用）。
 ///
-/// 只拒绝 `/ ? # 空格 \` 与可被 URL 规范化成路径分隔/回退的 `.`、`..`、
-/// `%2e`、`%2f`、`%5c`；保留审批侧历史上允许的 `.` `:` `@` 等字符。
+/// 拒绝 `/ ? # 空格 \`、控制字符（C0/C1 与 DEL），以及可被 URL 规范化成
+/// 路径分隔/回退的 `.`、`..`、`%2e`、`%2f`、`%5c`；保留审批侧历史上允许的
+/// `.` `:` `@` 等字符。控制字符必须在本地拒绝：url 解析器会先剥离
+/// C0 控制字符再做点段归一化，`"..\t"` 会在 URL 层变成 `..`。
 pub fn validate_opaque_path_segment(name: &str, value: &str) -> std::result::Result<(), PathError> {
     if value.is_empty() {
         return Err(PathError::new(name, "不能为空"));
@@ -78,6 +81,9 @@ pub fn validate_opaque_path_segment(name: &str, value: &str) -> std::result::Res
     }
     if value.contains(['/', '?', '#', ' ', '\\']) {
         return Err(PathError::new(name, format!("含非法字符：{value}")));
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err(PathError::new(name, format!("含控制字符：{value:?}")));
     }
     let lower = value.to_ascii_lowercase();
     if value == "."
@@ -132,6 +138,28 @@ mod tests {
             assert!(
                 validate_opaque_path_segment("id", value).is_err(),
                 "应拒绝路径回退片段 {value:?}"
+            );
+        }
+    }
+
+    // RED 场景：`"..\t"` / `"..\n"` / `"..\r"` 此前能通过宽松校验，随后
+    // reqwest/url 解析器会先剥离 C0 控制字符、再把 `..` 归一化成路径回退，
+    // 使写请求被重定向到相邻端点（例如删表而非删记录）。必须在本地拒绝。
+    #[test]
+    fn opaque_segment_rejects_control_characters() {
+        for value in [
+            "..\t", "..\n", "..\r", ".\t.", "..\u{0}", "a\u{0}b", "\u{7f}", "recABC\n",
+        ] {
+            assert!(
+                validate_opaque_path_segment("id", value).is_err(),
+                "应拒绝含控制字符的值 {value:?}"
+            );
+        }
+        // 合法标识（含 `.` `:` `@` 与非 ASCII）不受影响。
+        for value in ["4202AD96-9EC1.2026", "user:123", "a@b", "部门-1"] {
+            assert!(
+                validate_opaque_path_segment("id", value).is_ok(),
+                "应继续接受 {value:?}"
             );
         }
     }

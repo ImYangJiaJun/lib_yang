@@ -58,7 +58,9 @@ let client = OpenApiClient::builder(
 - 建单：`derive_idempotency_key` → `build_form` → `approval().create_instance`
 - 通知：`im().send_post(recipient, &content, &uuid)`
 - 附件：`drive().download_media` → `drive().upload_approval_file`
-- 事件：`EventVerifier::decode_challenge` / `decode_callback`
+- 事件：`EventVerifier::decode_challenge` / `decode_callback`；`verification_token`
+  只证明来源、不证明新鲜度，crate 不校验 `ts`/`create_time`，宿主必须按
+  `event_id` 唯一约束/幂等（覆盖 15s/5min/1h/6h 重推链）
 - 外部选项：`options::build_result_body(&rows, locale, next_page_token)`（`has_more`
   由游标派生）+ `crypto::encrypt_json`
 - 关联列签名：`relation_record_ids` → `build_signature`（内部排序去重）

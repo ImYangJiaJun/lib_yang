@@ -22,9 +22,10 @@ binary、路径参数、分页与错误码语义。生成侧由
 - 最新 SDK 提取（`resource.go` + `ext/api.go`）1644 条，全部存在于仓库目录，0 缺失。
 - 仓库目录修正后 1713 条（SDK 1644 条 + 手工/legacy 去重补充）。
 - 文档侧 1153 条经修正后，除第 4 节两条排除项外 **0 缺失**。
-- 文档侧身份解析：610 条 Tenant、463 条 Tenant+User、72 条 User、8 条无身份；
-  **文档提到但目录缺失的身份变体为 0**；目录相对文档多出的变体 19 条（SDK 支持的
-  更宽身份），属于“目录更宽松”而非缺能力。
+- 文档侧身份解析：610 条 Tenant、463 条 Tenant+User、73 条 User、7 条无身份；
+  **文档提到但目录缺失的身份变体为 0**；目录相对文档多出的变体 18 条（SDK 支持的
+  更宽身份），属于“目录更宽松”而非缺能力。（`POST /open-apis/wiki/v2/nodes/search`
+  原快照误记为无身份，官方文档要求 `user_access_token`，已按 User 更正。）
 - 仓库目录相对 SDK 多出的 70 条中，51 条能在文档侧找到同 path/method 记录；
   其余为 slides_ai / corehr / drive explorer 等 llms 索引未覆盖的条目，已用
   `lark-cli` 或官方 SDK 逐条核验，见第 5 节。
@@ -111,7 +112,7 @@ event+options+crypto / auth+transport+client / manual+legacy 目录），每条�
 | approval | `create_instance` 缺 `node_approver_open_id_list` / `node_cc_open_id_list`；写接口 `idempotent=false` | 扩展参数；评估重试策略 |
 | approval | 1390007 同时表示“已订阅”与“已取消订阅” | 按官方语义区分 |
 | bitable v3 | `v3_record_upsert` 必填 `record_id` 且只 PATCH，无法创建 | 改名或增加 create 分支 |
-| bitable | `search_all_records` 未检测重复 `page_token` | 与 list_* 路径一致硬失败 |
+| bitable | `search_all_records` 未检测重复 `page_token`（**已修**：单次调用内局部判重，重复非空游标立即 `Fatal`，不套 `PaginationState`） | 与 list_* 路径一致硬失败 |
 | im | `upload_image` 硬编码 PNG；`upload_file` 未发送 `duration` | 按实际类型推断；补可选参数 |
 | transport | `MESSAGE_RETRY.max_retry_after_ms=1s` 截断服务端 reset；token 锁等待与最坏 19s 不匹配 | 调整重试上限与锁等待 |
 | transport | `CredentialsProvider` 只在 build 时取一次；token 刷新失败统一 `Fatal{code:0}` | 按调用取凭证；区分可重试刷新失败 |

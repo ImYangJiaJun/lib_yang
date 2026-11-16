@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// 外部选项接口的请求体。
 ///
 /// **刻意不设 `deny_unknown_fields`**：飞书新增字段不应打挂调用方。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct FeishuOptionsRequest {
     /// 内部 ID（v1 不消费）。
     #[serde(default)]
@@ -32,6 +32,21 @@ pub struct FeishuOptionsRequest {
     /// 语言环境（v1 不消费）。
     #[serde(default)]
     pub locale: Option<String>,
+}
+
+impl std::fmt::Debug for FeishuOptionsRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FeishuOptionsRequest")
+            .field("user_id", &self.user_id)
+            .field("employee_id", &self.employee_id)
+            .field("token", &"<已隐藏>")
+            .field("linkage_params", &self.linkage_params)
+            .field("page_token", &self.page_token)
+            .field("query", &self.query)
+            .field("locale", &self.locale)
+            .finish()
+    }
 }
 
 /// 未配置 Key 时 `data.result` 的内容。
@@ -150,6 +165,26 @@ impl FeishuEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn options_request_debug_hides_token() {
+        let request = FeishuOptionsRequest {
+            user_id: None,
+            employee_id: None,
+            token: "secret-token-value".into(),
+            linkage_params: None,
+            page_token: None,
+            query: Some("keyword".into()),
+            locale: None,
+        };
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains("secret-token-value"),
+            "Debug 不得泄漏 token: {debug}"
+        );
+        assert!(debug.contains("<已隐藏>"));
+        assert!(debug.contains("keyword"), "非秘密字段应保留");
+    }
 
     #[test]
     fn envelope_uses_msg_and_nested_result() {

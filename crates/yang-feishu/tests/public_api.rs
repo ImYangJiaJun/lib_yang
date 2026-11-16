@@ -139,8 +139,13 @@ fn crypto_derives_sha256_keys_and_round_trips_bytes() {
     let decoded = decrypt_bytes(&cipher, &key).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(decoded, plaintext);
 
-    // 换钥匙必须 fail-closed，而不是返回垃圾明文。
-    assert!(decrypt_bytes(&cipher, &derive_key("other-secret")).is_err());
+    // 换钥匙必须 fail-closed，而不是返回垃圾明文。AES-CBC 无认证：错误密钥下随机
+    // 密文约有 1/255 概率恰好通过 PKCS#7 填充校验（RED：旧断言硬要求 is_err()，
+    // CI 上会因此偶发失败）。故与 crypto.rs 的用例保持一致，断言「绝不还原出原文」，
+    // 而不是对一次随机输出硬要求 Err。
+    if let Ok(bytes) = decrypt_bytes(&cipher, &derive_key("other-secret")) {
+        assert_ne!(bytes.as_slice(), plaintext, "错误密钥绝不能还原出原文");
+    }
     assert!(decrypt_bytes("not-base64!!", &key).is_err());
 }
 

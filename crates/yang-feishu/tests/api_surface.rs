@@ -161,12 +161,17 @@ async fn generated_api_surface_sends_expected_requests() {
     );
     assert_eq!(requests[5].method, Method::Get);
     assert!(requests[5].binary_limit.is_some());
+    // RED：旧测试未断言 bearer_token；im_files_get 走 send_tenant，
+    // 若退化成 send_raw 不注入 tenant token，这里会立即失败。
+    assert_eq!(requests[5].bearer_token.as_deref(), Some("tenant-token"));
 
     assert_eq!(
         requests[6].url,
         "https://open.feishu.cn/open-apis/im/v1/files"
     );
     assert_eq!(requests[6].method, Method::Post);
+    // RED：im_files_create 走 call_raw_json → send_tenant，同样必须携带 tenant token。
+    assert_eq!(requests[6].bearer_token.as_deref(), Some("tenant-token"));
     let (content_type, raw_body) = requests[6]
         .raw_body
         .as_ref()

@@ -112,6 +112,9 @@ python -I scripts/verify_openapi_coverage.py
 ## 已知缺口
 
 - `X-Lark-Signature` 未实现；`EventConfig::require_signature=true` 会显式失败。
+- 事件不校验时间戳/新鲜度、不做 `event_id` 去重：`verification_token` 只证明来源、
+  不证明新鲜度，任何被观察到的合法回调都可被无限期重放。宿主必须对 `event_id`
+  做唯一约束/幂等处理（覆盖飞书 15s / 5min / 1h / 6h 的重推链）；防重放同样未实现。
 - Lark 国际版 `upload` 域未用真实租户验证。
 - 关联审批的 AppLink 解析需要调用方提供 `FormInput.approval_app_id`；传 `None` 时
   只接受 36 位实例 Code。附件搬运编排、`bitablePerm` extra 与 200ms pacing

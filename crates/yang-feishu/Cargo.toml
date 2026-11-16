@@ -250,7 +250,8 @@ cbc.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 # 显式收紧 tokio：不走 workspace 的 full，避免独立使用者被拖入完整运行时。
-tokio = { version = "1.52.1", default-features = false, features = ["time"] }
+# rt 仅用于 token 刷新锁的取消守卫（Handle::try_current + spawn 一次补偿释放）。
+tokio = { version = "1.52.1", default-features = false, features = ["rt", "time"] }
 
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
@@ -258,7 +259,14 @@ redis = { workspace = true, optional = true, features = ["aio", "tokio-comp", "s
 metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "time"] }
+# net/io-util 仅供 transport::http 的本地 TcpListener 测试，不影响发布依赖。
+tokio = { version = "1.52.1", features = [
+    "macros",
+    "rt-multi-thread",
+    "time",
+    "net",
+    "io-util",
+] }
 
 [[example]]
 name = "bitable_pull"
@@ -278,7 +286,7 @@ required-features = ["bitable"]
 
 [[test]]
 name = "endpoints_contract"
-required-features = ["im"]
+required-features = ["bitable", "approval", "contact", "im", "drive"]
 
 [[test]]
 name = "public_api"

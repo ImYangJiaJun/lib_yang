@@ -454,7 +454,7 @@
 | 64 | `batch_update_records` | fn | src/addon/feishu/domain/bitable.rs:1421 | **move-as-is** | 全有全无：任一记录触发字段转换错误，整批非 0 code 且没有 per-record 失败列表。函数本身不做拆批（拆分在编排层，因为只有那里知道哪些记录同批）。宿主 approval_dispatch.rs:418/450 在用。 |
 | 65 | `SearchRecordsData` | type | src/addon/feishu/domain/bitable.rs:1465 | **move-as-is** | 与 ListRecordsData 同形但字段顺序不同；page_token 同样必须是 Option（has_more=false 时不出现）。 |
 | 66 | `search_records` | fn | src/addon/feishu/domain/bitable.rs:1482 | **move-as-is** | page_token/page_size 是查询参数而不是请求体字段（:1497-1498）；请求体只该有 filter/sort/field_names/automatic_fields。只发一页、不做收敛断言。 |
-| 67 | `search_all_records` | fn | src/addon/feishu/domain/bitable.rs:1523 | **move-as-is** | 与 list_all_records 的差别要原样保留：不套 PaginationState、不校验 total、不看重复游标；只做「缺 page_token 即失败」(:1547-1557) + 「到 max_pages 仍未收敛即失败」(:1559-1562)。max_pages 是防失控（筛选条件写错会一页页拉全表拖死单线程 worker），不是分页参数。 |
+| 67 | `search_all_records` | fn | src/addon/feishu/domain/bitable.rs:1523 | **move-as-is** | 与 list_all_records 的差别要原样保留：不套 PaginationState、不校验 total；只在单次调用内对重复的非空 `page_token` 局部判重并立即 Fatal（与 list_* 同属服务端违约硬失败），另做「缺 page_token 即失败」(:1547-1557) + 「到 max_pages 仍未收敛即失败」(:1559-1562)。max_pages 是防失控（筛选条件写错会一页页拉全表拖死单线程 worker），不是分页参数。 |
 | 68 | `pending_records_filter` | fn | src/addon/feishu/domain/bitable.rs:1573 | **move-with-refactor** | 重构：改名 pending_backfill_filter，其余逐字搬。它是 bitable filter DSL 的组装（isEmpty 的 value 必须是空数组否则吃 1254018；复选框 value 是字符串布尔 "true"、operator 只能 is；两条件用 and），没有宿主表/配置依赖。宿主 worker feishu_approval_worker.rs 在使用。若将来出现非「回填」语义的 pending 定义，应由宿主自己拼 filter，不要在这里加开关。 |
 | 69 | `describe_unfetched` | fn | src/addon/feishu/domain/bitable.rs:1604 | **move-as-is** | forbidden（找管理员开高级权限）与 absent（记录已删）文案必须分开，合并会把用户引向错误方向。 |
 | 70 | `get_records_by_ids` | fn | src/addon/feishu/domain/bitable.rs:1626 | **move-as-is** | 走 records/batch_get，不用 search+filter（record_id 是响应系统字段、不是可过滤字段）。请求体只发 record_ids/user_id_type=open_id/automatic_fields=true，不投影 field_names（该接口参数表没有它）。forbidden/absent 必须显式报错而不是返回空集。宿主 dispatch.rs、approval_dispatch.rs、worker 都在用。 |
@@ -571,7 +571,7 @@
 - HttpClientTransport（outbound.rs:176-294）混着传输实现、yang_db::RedisClient 与审批创建限流（:211-223）。不要顺手搬进 crate：它把审批产品语义塞进传输层，且会让 yang-feishu 依赖 yang-db。
 - validate_path_segment 有两版不等价实现（bitable.rs:66 白名单 vs approval.rs:86 黑名单）。合并会收紧 approval 的入参校验，可能把线上含 `.` `:` `@` 的 approval_code 判为非法——合并前必须先查存量数据，否则保留两版。
 - PaginationState 的三条硬失败是生产事故的防线，搬动时不可「优化」：重复游标（:677-681）与 has_more 缺 page_token（:671-674）如果退化为 break，会让拉取在半份快照上「成功」，随后补集停用把有效选项整列停掉。测试 2733-2825 必须逐条随迁并通过。
-- search_all_records（:1523）刻意没有套 PaginationState：它不校验 total、不查重复游标，只靠 max_pages 兜底。别在搬迁时「统一」成 PaginationState——那会改变审批派发 pending 扫描的失败语义。
+- search_all_records（:1523）刻意没有套 PaginationState：它不校验 total、只靠 max_pages 兜底；重复的非空 page_token 只在单次调用内局部判重并立即 Fatal。别在搬迁时「统一」成 PaginationState——那会改变审批派发 pending 扫描的失败语义。
 - record_row_numbers（:1172）与其它 list 函数的失败语义相反：缺 page_token / 到上限 / 翻页结束都返回已找到的部分而不报错。统一成「硬失败」会让消息渲染在长表上直接失败。
 - 四个上限常量不可合并：PAGE_SIZE=500（列出记录）、PAGE_SIZE_FIELDS=100（字段/表/视图）、SEARCH_PAGE_SIZE=500（查询记录）、BATCH_UPDATE_CHUNK=100（写）。同值不等于同源，文件头 :21-27 与 :1376-1379 已写明两个 500 出处不同。
 - 后台允许的 page_size 上限与服务端实际表现可能漂移：官方对 1254030 TooLargeResponse 的建议是降低 page_size，本模块刻意不做自适应回退，而是把 1254030 归为不可重试。搬迁时不要给 send_with_retry 加自动降页逻辑，否则失败分类会变。

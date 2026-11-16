@@ -479,6 +479,10 @@ impl BitableClient {
     }
 
     /// 翻页取**全部**命中的记录。`max_pages` 是防失控上限，不是分页参数。
+    ///
+    /// 同一分页会话内返回重复的非空 `page_token` 视为服务端违约，立即
+    /// `Fatal`（与 `list_*` 的 [`PaginationState`] 契约一致）。判重只在本次
+    /// 调用内生效：不套 `PaginationState`、不校验 `total`、不按 record_id 去重。
     pub async fn search_all_records(
         &self,
         app_token: &str,
@@ -488,15 +492,28 @@ impl BitableClient {
     ) -> Result<Vec<RecordItem>> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
-        for _ in 0..max_pages {
+        let mut seen_tokens: HashSet<String> = HashSet::new();
+        for page_index in 0..max_pages {
             let page = self
                 .search_records(app_token, table_id, body.clone(), cursor.as_deref())
                 .await?;
             items.extend(page.items);
+            let token = page.page_token.filter(|token| !token.is_empty());
+            // 先判重再判终点：重复页恰好是最后一页时也不能当作成功收敛。
+            // 只对非空返回游标判重，`has_more=false` 且缺游标/游标未见过仍是正常结束。
+            let duplicate_token = token
+                .as_ref()
+                .is_some_and(|token| !seen_tokens.insert(token.clone()));
+            if duplicate_token {
+                return Err(Error::fatal(format!(
+                    "查询记录返回了重复的 page_token，分页不会收敛（已翻 {} 页）",
+                    page_index + 1
+                )));
+            }
             if !page.has_more {
                 return Ok(items);
             }
-            match page.page_token.filter(|token| !token.is_empty()) {
+            match token {
                 Some(token) => cursor = Some(token),
                 None => return Err(Error::fatal("查询记录返回 has_more=true 却没有 page_token")),
             }

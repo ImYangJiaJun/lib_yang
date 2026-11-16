@@ -35,12 +35,20 @@ pub const LOCK_TTL_SECONDS: i64 = 30;
 /// 缓存 TTL 相对 `expire` 留出的余量（秒）。
 const CACHE_TTL_MARGIN_SECONDS: i64 = 300;
 
+/// 缓存 TTL 的宽松上界（秒）。
+///
+/// 官方 `expire` 固定为 7200（模块文档：最大有效期 2 小时），正常响应算出的
+/// `expire - 300 = 6900` 远低于本上界。只有非契约/异常的服务端响应（`expire`
+/// 超过 `MAX_CACHE_TTL_SECONDS + CACHE_TTL_MARGIN_SECONDS`）才会被限幅：既避免
+/// 把近乎永久的 TTL 写进缓存，也保证 `Instant` 过期点计算不会溢出。
+const MAX_CACHE_TTL_SECONDS: i64 = 86_400;
+
 /// 未持锁时的等待轮次与间隔。
 const LOCK_WAIT_ATTEMPTS: u8 = 3;
 const LOCK_WAIT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 换取 token 的响应体（扁平信封，刻意不套 `data`）。
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TenantTokenResponse {
     code: i32,
     #[serde(default)]
@@ -51,13 +59,35 @@ struct TenantTokenResponse {
     expire: Option<i64>,
 }
 
+impl std::fmt::Debug for TenantTokenResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TenantTokenResponse")
+            .field("code", &self.code)
+            .field("msg", &self.msg)
+            .field("tenant_access_token", &"<已隐藏>")
+            .field("expire", &self.expire)
+            .finish()
+    }
+}
+
 /// 一次成功的换取结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TenantTokenGrant {
     /// 换到的 token。
     pub tenant_access_token: String,
     /// 官方给出的有效期（秒）。
     pub expire: i64,
+}
+
+impl std::fmt::Debug for TenantTokenGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TenantTokenGrant")
+            .field("tenant_access_token", &"<已隐藏>")
+            .field("expire", &self.expire)
+            .finish()
+    }
 }
 
 /// 把响应体折成 [`TenantTokenGrant`]。
@@ -96,17 +126,18 @@ pub fn parse_token_grant(body: &str) -> Result<TenantTokenGrant> {
     })
 }
 
-/// 缓存 TTL = `expire - 300`（秒）。
+/// 缓存 TTL = `expire - 300`（秒），并以 `MAX_CACHE_TTL_SECONDS` 限幅。
 ///
 /// 下界必须自己守：负的 TTL 会让缓存写入变成运行期错误，症状是「锁拿到了、token
-/// 也换到了，却永远写不进缓存」。
+/// 也换到了，却永远写不进缓存」。上界同样自守，但只作用于远超官方 2 小时有效期的
+/// 非契约响应；官方 7200 与合规私有化部署的正常取值不受影响。
 pub fn cache_ttl_seconds(expire: i64) -> Result<i64> {
     if expire <= CACHE_TTL_MARGIN_SECONDS {
         return Err(Error::fatal(format!(
             "tenant_access_token 的 expire 必须大于 {CACHE_TTL_MARGIN_SECONDS} 秒，收到 {expire}"
         )));
     }
-    Ok(expire - CACHE_TTL_MARGIN_SECONDS)
+    Ok((expire - CACHE_TTL_MARGIN_SECONDS).min(MAX_CACHE_TTL_SECONDS))
 }
 
 /// token 缓存与锁。
@@ -127,14 +158,39 @@ pub trait TokenCache: Send + Sync {
 }
 
 /// 进程内缓存（独立使用者与测试用；多实例部署请用 Redis 实现）。
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemoryTokenCache {
     values: Mutex<HashMap<String, (String, Instant)>>,
     locks: Mutex<HashMap<String, (String, Instant)>>,
 }
 
+impl std::fmt::Debug for MemoryTokenCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // token 与锁 owner 都可能是凭证/秘密，Debug 不输出任何缓存内容。
+        formatter
+            .debug_struct("MemoryTokenCache")
+            .field("values", &"<已隐藏>")
+            .field("locks", &"<已隐藏>")
+            .finish()
+    }
+}
+
 fn poisoned<T>(error: std::sync::PoisonError<T>) -> T {
     error.into_inner()
+}
+
+/// 计算 `Instant` 过期点；溢出返回 [`Error::fatal`]，绝不 panic。
+///
+/// `Instant + Duration` 在 Unix 上以 `i64` 秒表示，极端大的 TTL（例如异常响应
+/// 直接透传的 `i64::MAX`）会溢出 panic。调用方已先把 TTL 压到正常量级，这里是
+/// 公开 trait 被直接调用时的最后一道防线。
+fn expiry_after(now: Instant, ttl_seconds: i64) -> Result<Instant> {
+    now.checked_add(Duration::from_secs(ttl_seconds as u64))
+        .ok_or_else(|| {
+            Error::fatal(format!(
+                "tenant_access_token 的 TTL 过大，无法计算过期时间: {ttl_seconds} 秒"
+            ))
+        })
 }
 
 #[async_trait]
@@ -156,7 +212,7 @@ impl TokenCache for MemoryTokenCache {
         if ttl_seconds <= 0 {
             return Err(Error::fatal("tenant_access_token 缓存 TTL 必须为正数"));
         }
-        let expires_at = Instant::now() + Duration::from_secs(ttl_seconds as u64);
+        let expires_at = expiry_after(Instant::now(), ttl_seconds)?;
         self.values
             .lock()
             .unwrap_or_else(poisoned)
@@ -174,7 +230,7 @@ impl TokenCache for MemoryTokenCache {
             return Err(Error::fatal("tenant_access_token 锁 TTL 必须为正数"));
         }
         let now = Instant::now();
-        let expires_at = now + Duration::from_secs(ttl_seconds as u64);
+        let expires_at = expiry_after(now, ttl_seconds)?;
         let mut locks = self.locks.lock().unwrap_or_else(poisoned);
         match locks.get(key) {
             Some((_, held_until)) if *held_until > now => Ok(false),
@@ -194,6 +250,56 @@ impl TokenCache for MemoryTokenCache {
             locks.remove(key);
         }
         Ok(())
+    }
+}
+
+/// 刷新锁的取消守卫。
+///
+/// 正常路径在 [`TokenProvider::tenant_access_token`] 里显式释放并 `disarm`；只有
+/// future 在持锁期间被丢弃（`tokio::time::timeout`、`select!`、worker 优雅关闭）时，
+/// `Drop` 才补一次 best-effort 异步释放。两套缓存实现的 `release_lock` 都带 owner
+/// 比较，因此迟到或重复释放不会误删后继持有者的锁。没有 tokio 运行时（无法 spawn）
+/// 时静默回退锁的 30s TTL，行为与修复前一致。
+struct LockGuard {
+    cache: Arc<dyn TokenCache>,
+    lock_key: String,
+    owner: String,
+    armed: bool,
+}
+
+impl LockGuard {
+    fn new(cache: Arc<dyn TokenCache>, lock_key: String, owner: String) -> Self {
+        Self {
+            cache,
+            lock_key,
+            owner,
+            armed: true,
+        }
+    }
+
+    /// 正常路径已经显式释放，撤销 `Drop` 里的补偿释放。
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::debug!("没有 tokio 运行时，token 刷新锁交由 TTL 兜底释放");
+            return;
+        };
+        let cache = Arc::clone(&self.cache);
+        let lock_key = std::mem::take(&mut self.lock_key);
+        let owner = std::mem::take(&mut self.owner);
+        drop(handle.spawn(async move {
+            if let Err(error) = cache.release_lock(&lock_key, &owner).await {
+                tracing::warn!(error = %error, "取消守卫释放 token 刷新锁失败（锁有 TTL 兜底）");
+            }
+        }));
     }
 }
 
@@ -282,11 +388,13 @@ impl TokenProvider {
             return self.issue_and_cache(false).await;
         }
 
+        let lock_guard = LockGuard::new(Arc::clone(&self.cache), lock_key, owner.clone());
         let outcome = match self.read_cached().await? {
             Some(token) => Ok(token),
             None => self.issue_and_cache(true).await,
         };
         self.release_lock(&owner).await;
+        lock_guard.disarm();
         outcome
     }
 
@@ -415,6 +523,26 @@ mod tests {
 
     fn grant_body(token: &str, expire: i64) -> String {
         format!(r#"{{"code":0,"msg":"ok","tenant_access_token":"{token}","expire":{expire}}}"#)
+    }
+
+    #[test]
+    fn token_types_debug_hide_secrets() {
+        let grant = TenantTokenGrant {
+            tenant_access_token: "secret-token-value".into(),
+            expire: 7200,
+        };
+        assert!(!format!("{grant:?}").contains("secret-token-value"));
+        assert!(format!("{grant:?}").contains("<已隐藏>"));
+        assert!(format!("{grant:?}").contains("7200"));
+
+        let response: TenantTokenResponse =
+            serde_json::from_str(&grant_body("secret-token-value", 7200)).expect("响应体应可解析");
+        assert!(!format!("{response:?}").contains("secret-token-value"));
+
+        let cache = MemoryTokenCache::default();
+        let debug = format!("{cache:?}");
+        assert!(!debug.contains("secret-token-value"));
+        assert!(debug.contains("<已隐藏>"));
     }
 
     #[test]
@@ -592,5 +720,83 @@ mod tests {
                 .as_deref(),
             Some("new")
         );
+    }
+
+    #[test]
+    fn cache_ttl_clamps_only_abnormal_expire_values() {
+        // 官方 7200 与常见合法范围完全不受上界影响。
+        assert_eq!(cache_ttl_seconds(7200).unwrap_or(-1), 6900);
+        assert_eq!(cache_ttl_seconds(301).unwrap_or(-1), 1);
+        assert_eq!(cache_ttl_seconds(86_400).unwrap_or(-1), 86_100);
+        // 非契约/异常服务端响应（expire 远超 2 小时）被限幅到宽松上界，
+        // 而不是把近乎永久的 TTL 写进缓存或让 Instant 计算溢出。
+        assert_eq!(cache_ttl_seconds(100_000).unwrap_or(-1), 86_400);
+        assert_eq!(cache_ttl_seconds(i64::MAX).unwrap_or(-1), 86_400);
+    }
+
+    #[tokio::test]
+    async fn memory_cache_never_panics_on_overflowing_ttl() {
+        let cache = MemoryTokenCache::default();
+        // RED（Unix）：修复前 `Instant::now() + Duration::from_secs(i64::MAX as u64)`
+        // 会在 Timespec 的 i64 秒上溢出 panic；修复后 checked_add 返回 Error::fatal。
+        let put_result = cache.put("k", "v", i64::MAX).await;
+        let lock_result = cache.acquire_lock("lock", "owner", i64::MAX).await;
+        #[cfg(unix)]
+        {
+            assert!(put_result.is_err(), "put 的 checked_add 溢出必须返回 Error");
+            assert!(
+                lock_result.is_err(),
+                "acquire_lock 的 checked_add 溢出必须返回 Error"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows 的 Instant 以 u64 秒表示，同样输入不溢出；只验证不 panic。
+            let _ = (put_result, lock_result);
+        }
+    }
+
+    /// 永不返回的传输：模拟换取 token 期间 future 被挂起。
+    struct PendingTransport;
+
+    #[async_trait]
+    impl Transport for PendingTransport {
+        async fn send(&self, _request: Request) -> Result<Response> {
+            std::future::pending::<Result<Response>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_releases_the_lock_via_guard() {
+        let cache = Arc::new(MemoryTokenCache::default());
+        let provider = TokenProvider::new(
+            cache.clone(),
+            Arc::new(PendingTransport),
+            Arc::new(NoSleep),
+            test_credentials("cli_a", "secret"),
+            "demo",
+            "https://open.feishu.cn",
+        );
+        let lock_key = provider.lock_key();
+
+        // RED：修复前 future 在 issue_and_cache 期间被取消，锁会一直占到 30s TTL，
+        // 其他并发调用方只能反复等锁超时后降级直连换取。
+        let outcome =
+            tokio::time::timeout(Duration::from_millis(50), provider.tenant_access_token()).await;
+        assert!(outcome.is_err(), "挂起的换取应被超时取消");
+
+        let mut released = false;
+        for _ in 0..50 {
+            if cache
+                .acquire_lock(&lock_key, "probe", LOCK_TTL_SECONDS)
+                .await
+                .unwrap_or(false)
+            {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(released, "取消后守卫应异步释放刷新锁，而不是等 30s TTL");
     }
 }

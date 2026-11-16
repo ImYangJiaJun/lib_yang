@@ -49,7 +49,7 @@ let client = OpenApiClient::builder(
 |---|---|---|
 | 任意官方 REST 端点 | `client.api()` | `docx_*` / `sheets_*` / `calendar_*` / `task_*` / `mail_*` / `corehr_*` 等 2372 个方法 |
 | 多维表格读 | `client.bitable()` | `list_all_records` / `list_all_fields` / `list_all_tables` / `list_all_views` / `search_records` / `get_records_by_ids` / `record_row_numbers` |
-| 多维表格写 | `client.bitable()` | `batch_update_records`；v1 `create_record` / `batch_create_records` / `delete_record`，v3 `v3_record_batch_create` / `v3_record_delete` |
+| 多维表格写 | `client.bitable()` | `batch_update_records`；v1 `create_record` / `batch_create_records` / `delete_record`，v3 `v3_record_batch_create` / `v3_record_delete`（v1 与 v3 的单元格方言不同） |
 | 审批建单/查单 | `client.approval()` | `create_instance` / `get_instance` / `get_approval_definition` / `subscribe_approval` |
 | 审批任务/撤回/抄送 | `client.approval()` | 生成的长尾方法 `cancel_instance` / `cc_instance` / `approve_task` / `reject_task` / `transfer_task` 等 |
 | 部门名/姓名→open_id | `client.contact()` | `resolve_department_name` / `resolve_applicant` |
@@ -57,7 +57,7 @@ let client = OpenApiClient::builder(
 | 附件下载/上传 | `client.drive()` | `download_media` / `upload_approval_file` |
 | 关联列取 record_id | `yang_feishu::approval` | `relation_record_ids`（`{"link_record_ids":[…]}` / `[{"id":"rec…"}]` / `["rec…"]`） |
 | 单格 AppLink / 实例 Code 解析 | `yang_feishu::approval` | `connection_codes`（传 `None` 时只接受 36 位实例 Code） |
-| 写方向单元格编码 | `yang_feishu::bitable` | `encode_cell_value`（`None` = 该值不该写，`Err` = 类型/形态错误） |
+| 写方向单元格编码 | `yang_feishu::bitable` | `encode_cell_value`（**仅 bitable v1 写接口**，`field_type` 是 v1 数字字段类型码；`None` = 该值不该写，`Err` = 类型/形态错误。Base v3 写接口的单元格方言不同，v3 读到的值不要直接复用） |
 | multipart 构造 | `yang_feishu::multipart` | `Multipart::new` / `text` / `file`（返回 `Result`，校验 CRLF）/ `finish`（返回 `(String, Vec<u8>)`） |
 | 事件入站 | `yang_feishu::event` | `EventVerifier::decode_challenge` / `decode_callback` |
 | 外部选项 | `yang_feishu::options` | `build_result_body` / `encode_cursor` / `decode_cursor` |
@@ -140,7 +140,16 @@ match verifier.decode_challenge(&raw_body)? {
 ```
 
 错误映射：明文但配置了 Encrypt Key → `Unauthorized`(401)；challenge token 错 →
-`Forbidden`(403)；解密/配置故障 → 5xx（让飞书重推）。
+`Forbidden`(403)；**解密阶段的所有失败**（base64/长度/PKCS#7 填充、解密后非 UTF-8/
+非 JSON）统一为同一个 `EventError::Decrypt`（5xx，让飞书重推），对外不可区分；
+宿主**不得**依赖 `InvalidBody { field: "decrypted_body" }`；其余配置故障 → 5xx。
+
+重放与新鲜度：`verification_token` 只证明来源、**不证明新鲜度**；crate 不校验
+v1 顶层 `ts` / v2 `header.create_time`，也不保存 nonce 或对 `event_id` 去重。
+任何一次被观察到的合法回调都可被无限期重放。宿主必须对
+`CallbackEnvelope::event_id` 建立唯一约束/幂等处理（重复回调返回成功但不再产生
+副作用），并自行覆盖飞书 15s / 5min / 1h / 6h 的合法重推链。防重放与
+`X-Lark-Signature` 均未实现。
 
 ### 5. 外部选项响应
 
@@ -234,6 +243,8 @@ pub enum FailureKind {
 4. **Base v3 薄封装**（`src/bitable/v3.rs`，107 个方法）：对齐本地 `lark-cli base`
    使用的 `/open-apis/base/v3/...` 路径；这部分官方 llms 索引未完整收录，升级
    lark-cli 后应重新生成。方法名统一 `v3_` 前缀，避免与 bitable v1 冲突。
+   v3 的单元格方言与 v1 不同：`encode_cell_value` 只适用于 v1 写接口，v3 写接口
+   的单元格值按 v3 文档原样传，不要用 v1 编码器转换。
 
 全量端点的方法签名约定：
 

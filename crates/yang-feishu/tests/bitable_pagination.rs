@@ -444,6 +444,73 @@ async fn 查询全量缺游标必须报错() {
     assert_eq!(transport.requests().len(), 1, "缺游标应立即失败，不能重发");
 }
 
+#[tokio::test]
+async fn 查询全量重复游标必须报错() {
+    // RED：旧实现不记录已见游标，重复页会被当作成功结果返回（重复记录）。
+    // 第二页刻意是 has_more=false：覆盖「重复页恰好是最后一页」，
+    // 此时旧实现直接 Ok，新实现必须在返回前判重。
+    let transport = Arc::new(FakeTransport::new(vec![
+        data_response(json!({
+            "items": [{ "record_id": "recS1", "fields": {} }],
+            "has_more": true,
+            "page_token": "dup",
+            "total": 2,
+        })),
+        data_response(json!({
+            "items": [{ "record_id": "recS2", "fields": {} }],
+            "has_more": false,
+            "page_token": "dup",
+            "total": 2,
+        })),
+    ]));
+    let client = client_with(transport.clone()).await;
+
+    let error = client
+        .bitable()
+        .search_all_records(APP, TABLE, json!({}), 5)
+        .await
+        .expect_err("重复 page_token 必须硬失败，不能把重复页当成功结果");
+    assert!(
+        error.to_string().contains("重复"),
+        "报错要说明游标重复，实际: {error}"
+    );
+    assert_eq!(
+        transport.requests().len(),
+        2,
+        "第二次见到同一游标应立即失败，不能继续重发同一页"
+    );
+}
+
+#[tokio::test]
+async fn 查询全量合法两页仍按序返回() {
+    let transport = Arc::new(FakeTransport::new(vec![
+        data_response(json!({
+            "items": [{ "record_id": "recS1", "fields": {} }],
+            "has_more": true,
+            "page_token": "s2",
+            "total": 2,
+        })),
+        // has_more=false 且带一个没见过的游标：契约内响应，仍应成功。
+        data_response(json!({
+            "items": [{ "record_id": "recS2", "fields": {} }],
+            "has_more": false,
+            "page_token": "s3",
+            "total": 2,
+        })),
+    ]));
+    let client = client_with(transport.clone()).await;
+
+    let items = client
+        .bitable()
+        .search_all_records(APP, TABLE, json!({}), 5)
+        .await
+        .unwrap_or_else(|error| panic!("合法两页应成功: {error}"));
+    assert_eq!(items.len(), 2, "两页各一条，必须全部返回");
+    assert_eq!(items[0].record_id, "recS1", "记录顺序必须保持");
+    assert_eq!(items[1].record_id, "recS2");
+    assert_eq!(transport.requests().len(), 2, "两页应产生两次查询请求");
+}
+
 // ---- 6. 批量回写请求体形状 ----
 
 #[tokio::test]

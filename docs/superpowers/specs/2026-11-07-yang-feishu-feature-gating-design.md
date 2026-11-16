@@ -158,7 +158,7 @@ default = []
    - `api_surface` → `required-features = ["api-docx", "api-contact", "api-im", "api-auth"]`
    - `approval_contract` → `["approval"]`
    - `bitable_pagination` → `["bitable"]`
-   - `endpoints_contract` → `["im"]`
+   - `endpoints_contract` → `["bitable", "approval", "contact", "im", "drive"]`
    - `public_api` → `["drive", "im"]`
    - `event_verify` / `transport_retry` 保持默认。
 6. `examples/bitable_pull.rs`：`required-features = ["http", "bitable"]`。

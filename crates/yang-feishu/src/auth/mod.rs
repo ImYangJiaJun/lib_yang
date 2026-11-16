@@ -57,7 +57,11 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
-/// 凭证来源。宿主可注入动态读取（配置热更新、密钥托管）。
+/// 凭证来源。宿主可注入自定义读取来源（如密钥托管）。
+///
+/// 客户端只在 build 时调用一次 `credentials()` 并克隆返回的凭证，运行期不会
+/// 再次读取；因此轮换凭证需要用新凭证重建客户端。
+/// 该 trait 不提供配置热更新语义。
 pub trait CredentialsProvider: Send + Sync {
     /// 返回当前凭证。
     fn credentials(&self) -> &Credentials;

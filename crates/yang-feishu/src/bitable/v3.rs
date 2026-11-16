@@ -1363,7 +1363,11 @@ impl BitableClient {
             .await
     }
 
-    /// Create or update a record
+    /// Update a record
+    ///
+    /// 固定 `PATCH /records/{record_id}`：`record_id` 必填，没有创建分支。
+    /// 新建记录请用 `v3_record_batch_create`（Base v3，可一次创建多条）或
+    /// bitable v1 的 `create_record`。
     ///
     /// 来源: `lark-cli base +record-upsert`（Base v3）。
     pub async fn v3_record_upsert(
