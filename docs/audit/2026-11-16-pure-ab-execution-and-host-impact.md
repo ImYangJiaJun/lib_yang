@@ -132,3 +132,27 @@ uncertain 0**；去重后 **23 条**发现在至少一个宿主中真实使用�
 | F009 | yang-system | 并发 logout/refresh 时合法 refresh 变 `TokenRevoked`，前端需按终态处理 |
 | F053 | yang-system | refresh 的 verify/rotate 原子性会改变并发语义与 Redis RTT 基线 |
 | F007 | yang-system | Redis 非幂等命令重试的降级语义，需要可区分 unknown-outcome 错误的设计 |
+
+## 6. 合并与宿主编译验证（2026-11-16）
+
+已快进合并到 `master`，未推送远端；基线 `5f99242` 起共 11 个 A/B 代码与报告提交，
+最新代码提交 `d79dd3c`。四个宿主的 `cargo check --all-targets --locked`
+（`CARGO_BUILD_JOBS=2`、`CARGO_INCREMENTAL=0`）：
+
+| 项目 | 结果 | 耗时 | 诊断 |
+| --- | --- | --- | --- |
+| yang-system | 通过 | 32s | 0 error / 0 warning |
+| inventory-system | 通过 | 6m15s | 0 error / 0 warning |
+| yang-system-feishu-form-sync | 通过 | 33s | 0 error / 0 warning |
+| receivables-system | 无法验证 | — | 依赖解析失败：外部 path 依赖 `D:\code\fin_receivables_rs\crates\{receivables-core,app,io}` 在本机不存在，与本次改动无关 |
+
+首次 yang-system 检查发现：仅启用 `mysql` 的 feature 组合下，`table/mod.rs` 的
+PG CHECK 辅助函数 re-export 触发 `unused_imports`，宿主 CI 以 `-D warnings` 跑
+clippy 会失败。已在 `85eb87a` 按 feature 拆分 re-export（`d79dd3c` 为 rustfmt
+排序），并用宿主同款 feature 组合复验 `cargo check -p yang-base` 通过
+（3m52s，无 warning）。`--locked` 对三个通过的宿主均未报锁文件不一致。
+
+`yang-system-feishu-form-sync` 是 yang-system 的同源副本，同样通过；其独有的
+飞书 addon 不依赖 `yang-feishu`。receivables-system 的 yang-base/yang-db 调用面
+仍只有 §4 的静态审计结论，真实编译验证需在具备 `fin_receivables_rs` 签出的环境
+补跑。
