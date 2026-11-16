@@ -9,7 +9,6 @@ use crate::model::terrain::{ConnectivitySummary, Grid2D, Terrain, TileKind};
 use crate::rng::StableRng;
 
 use super::carve::{extract_room_bounds, init_room_grid};
-use super::grid::to_local;
 use super::strategy::TerrainStrategy;
 
 /// 有机式地形策略
@@ -47,14 +46,6 @@ impl TerrainStrategy for OrganicStrategy {
     ) -> PcgResult<Terrain> {
         let (bounds, width, height) = extract_room_bounds(room)?;
 
-        // 标记门口位置
-        let room_anchors: Vec<&DoorAnchor> =
-            anchors.iter().filter(|a| a.room_id == room.id).collect();
-        let doorway_locals: Vec<GridPoint> = room_anchors
-            .iter()
-            .map(|a| to_local(bounds.min, a.grid_pos))
-            .collect();
-
         // 步骤 1：随机初始化网格
         let mut grid_a = initialize_random_grid(width, height, config.obstacle_density, rng)?;
         // grid_b 仅用于双缓冲写入目标，首次 apply_ca_step_into 会全覆盖，无需 clone
@@ -77,8 +68,10 @@ impl TerrainStrategy for OrganicStrategy {
         }
 
         // 步骤 4：标记门口瓦片并确保门口周围可通行
+        // 复用 carve::mark_doorways：与房间边界不自洽的越界锚点会被过滤，
+        // 避免 ensure_organic_connectivity 用越界局部坐标索引平坦位图而 panic。
+        let doorway_locals = super::carve::mark_doorways(&mut tiles, anchors, &room.id, bounds.min);
         for pos in &doorway_locals {
-            tiles.set(pos.x, pos.y, TileKind::Doorway);
             // 确保门口周围至少有一格地板
             for (dx, dy) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let nx = pos.x + dx;

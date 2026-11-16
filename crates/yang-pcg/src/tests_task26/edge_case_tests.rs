@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::generator::MapGenerator;
 use crate::layout;
+use crate::model::geometry::GridPoint;
 use crate::model::request::{GenerationRequest, RuntimeContext};
 use crate::rng::StableRng;
 use crate::spawn;
@@ -266,7 +267,20 @@ fn test_spawn_empty_rooms() {
     assert!(output.enemy_spawns.is_empty(), "空房间不应有敌人");
 }
 
+/// 计算两点的整数平方欧氏距离（间距契约比较，避免浮点容差）。
+fn squared_distance(a: GridPoint, b: GridPoint) -> i64 {
+    let dx = i64::from(a.x) - i64::from(b.x);
+    let dy = i64::from(a.y) - i64::from(b.y);
+    dx * dx + dy * dy
+}
+
 /// 点位生成应尊重最小间距配置
+///
+/// RED 场景（回归背景）：旧断言只检查同房间 item 点位、enemy 点位完全未检查，
+/// 且用 `dist >= 2.5` 的浮点容差放行，恰好漏掉 `(dx,dy)=(±2,±2)`（平方距离 8 < 9）
+/// 的对角违例。生产采样契约是整数平方距离 >= spacing²，故这里按 room_id 分组，
+/// 对 item-item / enemy-enemy / item-enemy 三类同房间点对使用 i64 平方距离比较，
+/// 阈值全部由归一化配置推导（不硬编码）。
 #[test]
 fn test_spawn_respects_min_spacing() {
     let config = GenerationConfig {
@@ -300,24 +314,79 @@ fn test_spawn_respects_min_spacing() {
     let spawn_output = spawn::generate_spawns(&output.rooms, &terrains, &normalized, &spawn_rng)
         .expect("点位生成应成功");
 
-    // 验证交互物点位间距
+    // 阈值从归一化配置推导（本测试配置下三者均为 3，平方阈值 9）。
+    let item_spacing_sq = i64::from(normalized.config.item_spawns.min_spacing).pow(2);
+    let enemy_spacing_sq = i64::from(normalized.config.enemy_spawns.min_spacing).pow(2);
+    let cross_spacing_sq = i64::from(spawn::min_cross_type_spacing(&normalized.config)).pow(2);
+
+    // 防止测试空转：默认 10..20 房配置下两类点位都应非空
+    assert!(!spawn_output.item_spawns.is_empty(), "应生成交互物点位");
+    assert!(!spawn_output.enemy_spawns.is_empty(), "应生成敌人点位");
+
+    let mut compared_pairs = 0usize;
+
+    // 同房间交互物点对
     for i in 0..spawn_output.item_spawns.len() {
         for j in (i + 1)..spawn_output.item_spawns.len() {
             let a = &spawn_output.item_spawns[i];
             let b = &spawn_output.item_spawns[j];
-            // 仅检查同一房间内的点位
-            if a.room_id == b.room_id {
-                let dx = (a.grid_pos.x - b.grid_pos.x) as f64;
-                let dy = (a.grid_pos.y - b.grid_pos.y) as f64;
-                let dist = (dx * dx + dy * dy).sqrt();
-                assert!(
-                    dist >= 2.5, // 允许少量浮点误差
-                    "同房间交互物点位间距不足: {:.2} < 3.0",
-                    dist
-                );
+            if a.room_id != b.room_id {
+                continue;
             }
+            compared_pairs += 1;
+            let dist_sq = squared_distance(a.grid_pos, b.grid_pos);
+            assert!(
+                dist_sq >= item_spacing_sq,
+                "同房间交互物点位间距不足: 平方距离 {} < {}（房间 {}）",
+                dist_sq,
+                item_spacing_sq,
+                a.room_id
+            );
         }
     }
+
+    // 同房间敌人点对（Boss 房仅 1 个 boss 点位，天然无点对）
+    for i in 0..spawn_output.enemy_spawns.len() {
+        for j in (i + 1)..spawn_output.enemy_spawns.len() {
+            let a = &spawn_output.enemy_spawns[i];
+            let b = &spawn_output.enemy_spawns[j];
+            if a.room_id != b.room_id {
+                continue;
+            }
+            compared_pairs += 1;
+            let dist_sq = squared_distance(a.grid_pos, b.grid_pos);
+            assert!(
+                dist_sq >= enemy_spacing_sq,
+                "同房间敌人点位间距不足: 平方距离 {} < {}（房间 {}）",
+                dist_sq,
+                enemy_spacing_sq,
+                a.room_id
+            );
+        }
+    }
+
+    // 同房间交互物↔敌人跨类型点对；同房间平移不改变距离，可直接用世界坐标比较
+    for item in &spawn_output.item_spawns {
+        for enemy in &spawn_output.enemy_spawns {
+            if item.room_id != enemy.room_id {
+                continue;
+            }
+            compared_pairs += 1;
+            let dist_sq = squared_distance(item.grid_pos, enemy.grid_pos);
+            assert!(
+                dist_sq >= cross_spacing_sq,
+                "同房间交互物与敌人点位间距不足: 平方距离 {} < {}（房间 {}）",
+                dist_sq,
+                cross_spacing_sq,
+                item.room_id
+            );
+        }
+    }
+
+    assert!(
+        compared_pairs > 0,
+        "至少应比较到一对同房间点对，否则间距契约测试空转"
+    );
 }
 
 /// 完整流水线在最小配置下应成功
