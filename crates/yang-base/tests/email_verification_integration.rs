@@ -9,7 +9,9 @@
 //!   不存在不计次的暴力枚举旁路；
 //! - 所有失败统一为 `ParamInvalid(email_code)`（防枚举形状）。
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use testcontainers::{runners::AsyncRunner, GenericImage};
 use yang_base::action::auth::{
@@ -21,8 +23,27 @@ use yang_base::error::BaseError;
 use yang_base::tools::ToolsBuilder;
 use yang_db::RedisClient;
 
-const KEY_PREFIX: &str = "yang-base:test:email-verify";
+const KEY_PREFIX_BASE: &str = "yang-base:test:email-verify";
 const MAX_ATTEMPTS: u32 = 3;
+
+/// 每次测试调用生成唯一的 Redis key 前缀：进程 id + 单调计数 + 纳秒时间戳。
+///
+/// RED 场景（修复前）：固定前缀 + 固定邮箱复用外部 `REDIS_TEST_URL` 时，
+/// 第二次运行会命中生产侧 60 秒重发冷却，`issue_code` 直接 panic；
+/// `live_code_keys` 还会把其他运行/其他用例的 key 一并计数。
+/// 唯一前缀保证并行与重复运行互不污染，且清理只扫描本次运行自有的 key 域。
+fn unique_key_prefix() -> String {
+    static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let sequence = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{KEY_PREFIX_BASE}:{}-{sequence}-{nanos}",
+        std::process::id()
+    )
+}
 
 #[derive(Clone, Default)]
 struct CapturingSender {
@@ -89,9 +110,9 @@ async fn fixture() -> Fixture {
     }
 }
 
-fn test_config() -> EmailVerificationConfig {
+fn test_config(redis_key_prefix: &str) -> EmailVerificationConfig {
     EmailVerificationConfig {
-        redis_key_prefix: KEY_PREFIX.to_string(),
+        redis_key_prefix: redis_key_prefix.to_string(),
         secret: "email-verification-integration-secret-32b".to_string(),
         ttl_seconds: 600,
         resend_cooldown_seconds: 60,
@@ -140,18 +161,35 @@ async fn assert_invalid_code(result: Result<(), BaseError>) {
     );
 }
 
-async fn live_code_keys(cache: &RedisClient) -> Vec<String> {
+/// 枚举本次运行前缀下的验证码 key；唯一前缀保证不会看到其他运行/用例的 key。
+async fn live_code_keys(cache: &RedisClient, key_prefix: &str) -> Vec<String> {
     cache
-        .keys(&format!("{KEY_PREFIX}:code:*"))
+        .keys(&format!("{key_prefix}:code:*"))
         .await
-        .expect("应能枚举验证码 key")
+        .expect("应能枚举本次运行的验证码 key")
+}
+
+/// 只删除本次运行唯一前缀下的自有 key；绝不触碰共享 Redis 的其他键。
+async fn clear_run_keys(cache: &RedisClient, key_prefix: &str) -> yang_db::Result<()> {
+    let keys = cache.keys(&format!("{key_prefix}:*")).await?;
+    cache.del(&keys).await?;
+    Ok(())
+}
+
+#[test]
+fn unique_key_prefix_is_isolated_per_run() {
+    let first = unique_key_prefix();
+    let second = unique_key_prefix();
+    assert!(first.starts_with(KEY_PREFIX_BASE));
+    assert_ne!(first, second, "同进程内不同运行必须获得不同前缀");
 }
 
 #[tokio::test]
 #[ignore = "需要 Docker 启动 Redis 7"]
 async fn verify_only_peeks_without_consuming_and_consume_stays_atomic() {
     let fixture = fixture().await;
-    let config = test_config();
+    let key_prefix = unique_key_prefix();
+    let config = test_config(&key_prefix);
     let email = "peek@example.com";
     let code = issue_code(&fixture, &config, email).await;
 
@@ -164,14 +202,14 @@ async fn verify_only_peeks_without_consuming_and_consume_stays_atomic() {
         .verify_only(&fixture.ctx, email, &code)
         .await
         .expect("peek 不得消费验证码，第二次仍应通过");
-    assert_eq!(live_code_keys(&fixture.cache).await.len(), 1);
+    assert_eq!(live_code_keys(&fixture.cache, &key_prefix).await.len(), 1);
 
     // peek 之后 consume 仍是原子单次消费。
     engine(&config)
         .consume(&fixture.ctx, email, &code)
         .await
         .expect("peek 后 consume 应通过");
-    assert_eq!(live_code_keys(&fixture.cache).await.len(), 0);
+    assert_eq!(live_code_keys(&fixture.cache, &key_prefix).await.len(), 0);
     assert_invalid_code(engine(&config).consume(&fixture.ctx, email, &code).await).await;
     assert_invalid_code(
         engine(&config)
@@ -179,13 +217,18 @@ async fn verify_only_peeks_without_consuming_and_consume_stays_atomic() {
             .await,
     )
     .await;
+
+    if let Err(error) = clear_run_keys(&fixture.cache, &key_prefix).await {
+        eprintln!("清理本次运行测试 key 失败（TTL 会自动过期）: {error}");
+    }
 }
 
 #[tokio::test]
 #[ignore = "需要 Docker 启动 Redis 7"]
 async fn verify_only_shares_attempt_counting_and_limit_destruction() {
     let fixture = fixture().await;
-    let config = test_config();
+    let key_prefix = unique_key_prefix();
+    let config = test_config(&key_prefix);
     let email = "attempts@example.com";
     let code = issue_code(&fixture, &config, email).await;
     let wrong = wrong_code(&code);
@@ -215,7 +258,7 @@ async fn verify_only_shares_attempt_counting_and_limit_destruction() {
             .await,
     )
     .await;
-    assert_eq!(live_code_keys(&fixture.cache).await.len(), 0);
+    assert_eq!(live_code_keys(&fixture.cache, &key_prefix).await.len(), 0);
     assert_invalid_code(
         engine(&config)
             .verify_only(&fixture.ctx, email, &code)
@@ -223,4 +266,8 @@ async fn verify_only_shares_attempt_counting_and_limit_destruction() {
     )
     .await;
     assert_invalid_code(engine(&config).consume(&fixture.ctx, email, &code).await).await;
+
+    if let Err(error) = clear_run_keys(&fixture.cache, &key_prefix).await {
+        eprintln!("清理本次运行测试 key 失败（TTL 会自动过期）: {error}");
+    }
 }

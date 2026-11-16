@@ -8,6 +8,40 @@ use yang_base::error::BaseError;
 use yang_base::table::{Field, Table, TableDefinition};
 use yang_db::Database;
 
+/// 显式要求 Docker 的环境开关（CI 设置；未设置时不影响本地开发）。
+const REQUIRE_DOCKER_ENV: &str = "REQUIRE_DOCKER_TESTS";
+
+/// 是否需要 fail-closed：显式 REQUIRE_DOCKER_TESTS=1 或 CI=true。
+fn require_docker_tests() -> bool {
+    let flag = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|raw| {
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    };
+    flag(REQUIRE_DOCKER_ENV) || flag("CI")
+}
+
+/// 环境不满足时：CI/显式要求模式直接 panic；本地模式打印可辨识原因后跳过。
+///
+/// RED 场景（修复前）：容器启动失败、端口读取失败或 30 秒超时都静默 return，
+/// libtest 将测试记为通过，docker-mysql job 可以在零断言下变绿。
+fn skip_or_fail(
+    require_docker: bool,
+    reason: String,
+) -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+    if require_docker {
+        panic!("schema sync 集成测试要求可用的 Docker/MySQL（fail-closed）：{reason}");
+    }
+    eprintln!("本地跳过 schema sync 集成测试（未检测到 CI 强制要求）：{reason}");
+    None
+}
+
 fn account_table(username_length: usize, with_display_name: bool) -> TableDefinition {
     let mut fields = vec![
         Field::id("id"),
@@ -25,26 +59,36 @@ fn account_table(username_length: usize, with_display_name: bool) -> TableDefini
 }
 
 async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+    let require_docker = require_docker_tests();
     let image = GenericImage::new("mysql", "8.0")
         .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
         .with_env_var("MYSQL_DATABASE", "test_db");
     let container = match image.start().await {
         Ok(container) => container,
         Err(error) => {
-            println!("跳过测试：无法启动 Docker 容器: {error}");
-            return None;
+            return skip_or_fail(
+                require_docker,
+                format!("无法启动 MySQL Docker 容器: {error}"),
+            );
         }
     };
-    let port = container.get_host_port_ipv4(3306).await.ok()?;
+    let port = match container.get_host_port_ipv4(3306).await {
+        Ok(port) => port,
+        Err(error) => {
+            return skip_or_fail(
+                require_docker,
+                format!("无法获取 MySQL 容器映射端口: {error}"),
+            );
+        }
+    };
     let url = format!("mysql://root:test_password@127.0.0.1:{port}/test_db");
-    for _ in 0..30 {
+    for _ in 0..60 {
         if Database::connect(&url).await.is_ok() {
             return Some((container, url));
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    println!("跳过测试：MySQL 容器启动超时");
-    None
+    skip_or_fail(require_docker, "MySQL 容器 60 秒内未就绪".to_string())
 }
 
 #[tokio::test]

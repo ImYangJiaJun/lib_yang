@@ -45,3 +45,13 @@ feature 调整都必须在提交前通过对应的本地门禁。
 
 修改 `.github/workflows/ci.yml` 时必须同步更新 `scripts/verify_ci_contract.py` 和
 `scripts/run_ci.py`。CI 会执行两个脚本的 self-test，防止本地规范与远端门禁静默漂移。
+
+`docker-mysql` job 设置 `REQUIRE_DOCKER_TESTS=1`：四个 testcontainers 套件在容器启动、
+端口映射或就绪等待失败时直接失败，不允许零断言绿灯。本地无 Docker 时仍按可辨识原因跳过
+（如需在 CI 中显式恢复旧行为，设置 `ALLOW_SKIP_TESTCONTAINERS=1`）。`stable` 的契约自检
+包含 `scripts/verify_openapi_coverage.py`，其命令字符串同时登记在
+`verify_ci_contract.py` 的 `REQUIRED_FRAGMENTS` 中。
+
+第三方 action 固定到 40 位 commit SHA，并在行尾注释记录对应版本（如 `# v4.4.0`）。
+升级时先确认上游 tag/分支当前指向的 commit，再同步替换 workflow 与
+`verify_ci_contract.py` 中的固定片段；不要改回可变 tag。

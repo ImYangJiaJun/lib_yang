@@ -64,7 +64,7 @@ cargo run --example <name> -p <crate> --locked
 ```
 
 ## CI（.github/workflows/ci.yml）
-`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`）→ `docker-mysql`（mysql:8.0+redis:7）→ `docker-postgres`（PG 16）→ `docker-postgres-17`（PG 17，含 proptest_pg_types）→ `docker-redis`（redis:7 service + `REDIS_TEST_URL`，覆盖全部 Redis 套件）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
+`supply-chain`（verify_dependency_policy + cargo-deny）→ `stable`（契约自检，含 `verify_openapi_coverage.py` 与 `verify_ci_contract.py` 自调用校验 → fmt → 分 crate test → clippy → doctest）→ `msrv`（1.80 check）→ `feature-matrix`（28 组合，check/test/doctest，`-Dwarnings`；name/package/args 与 `run_ci.FEATURE_CASES` 逐条对齐）→ `docker-mysql`（mysql:8.0+redis:7，设置 `REQUIRE_DOCKER_TESTS=1`，四个 testcontainers 套件在 CI 中 fail-closed；本地无 Docker 仍跳过，`ALLOW_SKIP_TESTCONTAINERS=1` 可显式恢复）→ `docker-postgres`（PG 16）→ `docker-postgres-17`（PG 17，含 proptest_pg_types）→ `docker-redis`（redis:7 service + `REDIS_TEST_URL`，覆盖全部 Redis 套件）。`performance-shadow` 非阻塞采集（continue-on-error）。**改 CI 必须同步 `verify_ci_contract.py` 与 `run_ci.py`。**
 
 ## WHERE TO LOOK
 | Task | Location | Notes |

@@ -10,7 +10,10 @@
 //!
 //! **验证需求**: 5.6, 5.7, 5.8, 5.9, 5.10, 5.17, 5.18, 5.19, 5.20, 5.21, 5.22
 //!
-//! **注意**: 这些测试需要 Docker 环境。如果没有 Docker，测试将被跳过。
+//! **注意**: 这些测试需要 Docker 环境。CI（GitHub Actions 的 `CI=true`）或显式
+//! `REQUIRE_DOCKER_TESTS=1` 下，容器启动/端口映射/就绪等待失败会直接失败（fail-closed），
+//! 不再产生零断言绿灯；仅本地非 CI 环境按可辨识原因跳过，CI 中如需恢复旧的跳过行为
+//! 必须显式设置 `ALLOW_SKIP_TESTCONTAINERS=1`。
 //! 运行测试：`cargo test --test table_query_crud_test -- --test-threads=1 --ignored`
 
 #![allow(deprecated)]
@@ -26,48 +29,162 @@ use yang_base::table::{
 };
 use yang_db::Database;
 
+/// 显式要求 Docker 的环境开关（CI 脚本可设置；未设置时不影响本地开发）。
+const REQUIRE_DOCKER_ENV: &str = "REQUIRE_DOCKER_TESTS";
+/// 兼容 CI 编排使用的另一别名开关。
+const YANG_REQUIRE_DOCKER_ENV: &str = "YANG_REQUIRE_DOCKER";
+/// 唯一允许在 CI 中恢复「无 Docker 即跳过」的显式 opt-out。
+const ALLOW_SKIP_ENV: &str = "ALLOW_SKIP_TESTCONTAINERS";
+
+/// 把环境变量值解释为布尔开关；`0/false/no/off` 明确为 false。
+fn env_flag_value(value: Option<String>) -> Option<bool> {
+    value.map(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// 是否需要 fail-closed（环境不满足时直接失败）。
+///
+/// 注入 `lookup` 便于单元测试，避免多个测试并发读写进程级环境变量。
+/// 优先级：显式 REQUIRE_* > 显式 ALLOW_SKIP_TESTCONTAINERS > CI 自动检测。
+fn require_docker_tests_with(lookup: impl Fn(&str) -> Option<String>) -> bool {
+    let flag = |name: &str| env_flag_value(lookup(name));
+    if flag(REQUIRE_DOCKER_ENV) == Some(true) || flag(YANG_REQUIRE_DOCKER_ENV) == Some(true) {
+        return true;
+    }
+    if flag(ALLOW_SKIP_ENV) == Some(true) {
+        return false;
+    }
+    flag("CI") == Some(true)
+}
+
+/// 当前进程是否需要 fail-closed。
+fn require_docker_tests() -> bool {
+    require_docker_tests_with(|name| std::env::var(name).ok())
+}
+
+/// 环境不满足时：CI/显式要求模式直接 panic；本地模式打印可辨识原因后跳过。
+///
+/// RED 场景（修复前）：容器启动失败、端口读取失败或 30 秒超时都静默 return，
+/// libtest 将测试记为通过，docker-mysql job 可以在零断言下变绿。
+fn skip_or_fail(
+    require_docker: bool,
+    reason: String,
+) -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+    if require_docker {
+        panic!("MySQL 集成测试要求可用的 Docker/MySQL（fail-closed）：{reason}");
+    }
+    eprintln!(
+        "本地跳过 MySQL 集成测试（未检测到 CI 强制要求；可设置 {ALLOW_SKIP_ENV}=1 显式保留此行为）：{reason}"
+    );
+    None
+}
+
 /// 创建 MySQL 测试容器并返回数据库 URL
 async fn setup_mysql() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
+    let require_docker = require_docker_tests();
     let mysql_image = GenericImage::new("mysql", "8.0")
         .with_env_var("MYSQL_ROOT_PASSWORD", "test_password")
         .with_env_var("MYSQL_DATABASE", "test_db");
 
     let container = match mysql_image.start().await {
         Ok(c) => c,
-        Err(e) => {
-            println!("跳过测试：无法启动 Docker 容器: {}", e);
-            return None;
+        Err(error) => {
+            return skip_or_fail(
+                require_docker,
+                format!("无法启动 MySQL Docker 容器: {error}"),
+            );
         }
     };
 
-    let port = container.get_host_port_ipv4(3306).await.ok()?;
-    let db_url = format!("mysql://root:test_password@127.0.0.1:{}/test_db", port);
+    let container_id = container.id().to_string();
+    let port = match container.get_host_port_ipv4(3306).await {
+        Ok(port) => port,
+        Err(error) => {
+            return skip_or_fail(
+                require_docker,
+                format!("无法获取 MySQL 容器 {container_id} 的映射端口: {error}"),
+            );
+        }
+    };
+    let db_url = format!("mysql://root:test_password@127.0.0.1:{port}/test_db");
 
-    if !wait_for_mysql(&db_url, 15).await {
-        println!("跳过测试：MySQL 容器启动超时");
-        return None;
+    if let Err(last_error) = wait_for_mysql(&db_url, 120).await {
+        return skip_or_fail(
+            require_docker,
+            format!(
+                "MySQL 容器 {container_id}（端口 {port}）在 60 秒内未就绪，最后错误: {last_error}"
+            ),
+        );
     }
 
     Some((container, db_url))
 }
 
-/// 等待 MySQL 完全启动
-async fn wait_for_mysql(db_url: &str, max_retries: u32) -> bool {
-    for i in 0..max_retries {
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+/// 等待 MySQL 完全启动；返回最后一次连接/SELECT 错误供失败诊断。
+async fn wait_for_mysql(db_url: &str, max_retries: u32) -> Result<(), String> {
+    let mut last_error = String::from("尚未尝试连接");
+    for attempt in 1..=max_retries {
+        // 500ms × 120 = 60 秒预算：比旧的 15×2s 更宽，同时更快发现已就绪实例。
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        if let Ok(db) = Database::connect(db_url).await {
-            if db.execute("SELECT 1").await.is_ok() {
-                println!("MySQL 已就绪");
-                return true;
-            }
+        match Database::connect(db_url).await {
+            Ok(db) => match db.execute("SELECT 1").await {
+                Ok(_) => {
+                    println!("MySQL 已就绪（尝试 {attempt}/{max_retries}）");
+                    return Ok(());
+                }
+                Err(error) => last_error = format!("SELECT 1 失败: {error}"),
+            },
+            Err(error) => last_error = format!("连接失败: {error}"),
         }
 
-        if i < max_retries - 1 {
-            println!("等待 MySQL 启动... (尝试 {}/{})", i + 1, max_retries);
+        if attempt % 10 == 0 || attempt == max_retries {
+            println!("等待 MySQL 启动... ({attempt}/{max_retries})，最后错误: {last_error}");
         }
     }
-    false
+    Err(last_error)
+}
+
+#[test]
+fn docker_requirement_env_gate_keeps_ci_fail_closed_and_local_skip_explicit() {
+    let lookup = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    };
+
+    // CI 默认 fail-closed：GitHub Actions 的 CI=true。
+    assert!(require_docker_tests_with(lookup(&[("CI", "true")])));
+    // 显式 REQUIRE_* 在非 CI 环境同样 fail-closed，兼容两种变量名。
+    assert!(require_docker_tests_with(lookup(&[(
+        REQUIRE_DOCKER_ENV,
+        "1"
+    )])));
+    assert!(require_docker_tests_with(lookup(&[(
+        YANG_REQUIRE_DOCKER_ENV,
+        "yes"
+    )])));
+    // 本地非 CI 且无显式要求：保留带原因的跳过。
+    assert!(!require_docker_tests_with(lookup(&[])));
+    // CI=false 不等于 CI。
+    assert!(!require_docker_tests_with(lookup(&[("CI", "false")])));
+    // 唯一允许在 CI 中放行跳过的显式 opt-out。
+    assert!(!require_docker_tests_with(lookup(&[
+        ("CI", "true"),
+        (ALLOW_SKIP_ENV, "1"),
+    ])));
+    // 显式 REQUIRE 优先于 opt-out，不能被绕过。
+    assert!(require_docker_tests_with(lookup(&[
+        (REQUIRE_DOCKER_ENV, "1"),
+        (ALLOW_SKIP_ENV, "1"),
+    ])));
 }
 
 /// 创建测试用户表

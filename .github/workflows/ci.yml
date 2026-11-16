@@ -17,8 +17,8 @@ jobs:
     name: Rust dependency policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
       - name: Verify dependency exception boundaries
@@ -34,17 +34,18 @@ jobs:
     name: Stable quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Verify CI contract
         run: |
           python scripts/verify_ci_contract.py --self-test
           python scripts/verify_ci_contract.py .github/workflows/ci.yml
           python scripts/verify_feature_isolation.py --self-test
+          python scripts/verify_openapi_coverage.py
           python scripts/run_performance_shadow.py --self-test
           python scripts/run_ci.py --self-test
       - name: Formatting
@@ -53,6 +54,16 @@ jobs:
         run: cargo test --lib -p yang-db --locked
       - name: yang-base library tests
         run: cargo test --lib -p yang-base --locked
+      - name: yang-base auxiliary test binaries
+        run: cargo test -p yang-base --test compatibility_contract --test error_test --test field_type_test --test observability_test --test plugin_test --test schema_snapshots --test database_test --locked
+      - name: yang-base release contract tests
+        run: cargo test -p yang-base --test release_candidate_contract --test release_docs_contract --locked
+      - name: yang-base admin metadata contract tests
+        run: cargo test -p yang-base --features admin-metadata --test admin_metadata_contract --locked
+      - name: yang-base transport-axum integration tests
+        run: cargo test -p yang-base --features transport-axum --test transport_axum --locked
+      - name: yang-base inbound observability tests
+        run: cargo test -p yang-base --features transport-axum,metrics --test transport_inbound_observability --locked
       - name: Auxiliary workspace all-target tests
         run: cargo test --all-targets -p yang-base-derive -p yang-pcg -p yang-runtime --locked
       - name: yang-feishu all-target tests
@@ -72,11 +83,11 @@ jobs:
     name: MSRV 1.80
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.80"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv-1.80
       - name: Check workspace on MSRV
@@ -88,11 +99,11 @@ jobs:
     continue-on-error: true
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Verify performance collector contract
         run: python scripts/run_performance_shadow.py --self-test
       - name: Collect repeated runtime measurements
@@ -101,7 +112,7 @@ jobs:
         run: python scripts/run_performance_shadow.py --output "${{ runner.temp }}/performance-shadow"
       - name: Upload raw performance evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-shadow-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/performance-shadow
@@ -203,11 +214,11 @@ jobs:
             package: yang-feishu
             args: --all-features
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Check feature combination
         run: cargo check -p ${{ matrix.package }} ${{ matrix.args }} --locked
       - name: Test feature combination
@@ -218,12 +229,30 @@ jobs:
   docker-mysql:
     name: MySQL 8.0 integration
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test_password
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ptest_password"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    env:
+      # CI 中 testcontainers 启动/就绪失败必须失败而非零断言变绿；本地未设置时仍可跳过。
+      REQUIRE_DOCKER_TESTS: "1"
+      # integration_database 直连本 job 的 MySQL service（其余套件仍用 testcontainers）。
+      MYSQL_TEST_URL: mysql://root:test_password@127.0.0.1:3306/test
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pin service images
         run: |
           docker pull mysql:8.0
@@ -236,6 +265,12 @@ jobs:
         run: cargo test -p yang-base --test table_query_paginate_test --locked -- --ignored --test-threads=1
       - name: TableQuery transaction integration
         run: cargo test -p yang-base --test table_query_transaction_test --locked -- --ignored --test-threads=1
+      - name: Schema sync integration
+        run: cargo test -p yang-base --test schema_sync_integration_test --locked -- --ignored --test-threads=1
+      - name: Yang-db Database integration
+        run: cargo test -p yang-db --test integration_database --locked -- --ignored --test-threads=1
+      - name: Aggregate combinations integration
+        run: cargo test -p yang-db --features mysql --test test_aggregate_combinations --locked -- --ignored --test-threads=1
 
   docker-postgres:
     name: PostgreSQL 16 integration
@@ -257,11 +292,11 @@ jobs:
     env:
       PG_TEST_URL: postgres://postgres:postgres@localhost:5432/test
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: PostgreSQL CRUD integration
         run: cargo test -p yang-db --test integration_pg_crud_simple --locked -- --ignored --test-threads=1
       - name: PostgreSQL transaction integration
@@ -316,6 +351,10 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 codec integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_codec --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL Wave 5 RETURNING integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave5_returning --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 5 expressions integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave5_expressions --locked -- --ignored --test-threads=1
       - name: PostgreSQL row lock queries integration
         run: cargo test -p yang-db --no-default-features --features mysql,postgres --test integration_advanced_queries --locked postgres -- --ignored --test-threads=1
 
@@ -340,11 +379,11 @@ jobs:
           done
           docker logs pg17
           exit 1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: PostgreSQL Phase A integration
         run: cargo test -p yang-db --test integration_pg_phase_a --locked -- --ignored --test-threads=1
       - name: PostgreSQL Phase B queries integration
@@ -395,6 +434,8 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 codec integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_codec --locked -- --ignored --test-threads=1
+      - name: PostgreSQL Wave 5 expressions integration
+        run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave5_expressions --locked -- --ignored --test-threads=1
       - name: PostgreSQL row lock queries integration
         run: cargo test -p yang-db --no-default-features --features mysql,postgres --test integration_advanced_queries --locked postgres -- --ignored --test-threads=1
 
@@ -414,11 +455,11 @@ jobs:
     env:
       REDIS_TEST_URL: redis://127.0.0.1:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ env.CI_RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pin Redis image
         run: docker pull redis:7-alpine
       - name: Redis pipeline integration
