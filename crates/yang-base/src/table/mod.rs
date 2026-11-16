@@ -63,10 +63,10 @@ mod __tests__;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 pub use definition::TableHandle;
 pub use definition::{col, ColumnName, Field, FieldMetadata, Order, Table, TableDefinition};
-#[cfg(any(feature = "mysql", feature = "postgres"))]
-pub(crate) use definition::{
-    has_balanced_mysql_check_expression, has_balanced_pg_check_expression,
-};
+#[cfg(feature = "mysql")]
+pub(crate) use definition::has_balanced_mysql_check_expression;
+#[cfg(feature = "postgres")]
+pub(crate) use definition::has_balanced_pg_check_expression;
 pub(crate) use field_config::FieldConfig;
 pub use field_config::RelationType;
 pub use field_type::{
