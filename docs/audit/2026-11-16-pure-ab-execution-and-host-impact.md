@@ -38,20 +38,27 @@
 | `cargo fmt --all` | 通过 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 通过 |
 | `cargo test --workspace --all-targets --locked` | 92 个 suite 全绿，2079 passed / 0 failed / 164 ignored |
+| `cargo test --workspace --all-targets --all-features --locked`（`CARGO_BUILD_JOBS=2`） | 98 个 suite 全绿，2364 passed / 0 failed |
 | `python scripts/verify_ci_contract.py --self-test` | 通过 |
 | `python scripts/verify_ci_contract.py .github/workflows/ci.yml` | 通过 |
 | `python scripts/run_ci.py --self-test` | 通过 |
 | `python scripts/verify_openapi_coverage.py` | generated 2372 / 67 files，mismatch 0 |
 
-`cargo test --all-features --all-targets` 在本机 Windows 上出现 `E0786 invalid metadata`
-（并行编译大量 test target 时的本机产物问题）；单包/单 target 的 all-features 测试、
-以及上表全量 clippy（all-features、all-targets）均通过。该组合不是仓库 CI 的既存门禁。
+本机默认并行度运行 `cargo test --all-features --all-targets` 时曾出现
+`os error 1455（页面文件太小）` 导致的 `E0786 invalid metadata`；清理
+`yang-base`/`yang-db`/`yang-base-derive` 产物并用 `CARGO_BUILD_JOBS=2` 串行复验后
+全绿（98 suites / 2364 passed）。这是 Windows 本机页面文件限制，不是代码失败；
+Linux 上的 CI feature-matrix 仍是权威门禁。
 
 ## 4. C/D 宿主使用形态矩阵
 
 方法：3 个宿主 × 7 个主题 = 21 次只读审计；检查 Rust 源码、Cargo 依赖、配置、
 前端 TS/TSX、迁移与文档。共 234 个 finding×宿主检查：**yes 25 / no 209 /
 uncertain 0**；去重后 **23 条**发现在至少一个宿主中真实使用。
+
+边界：三个宿主仓库的 **tracked 文件零改动**；`yang-system` 与 `receivables-system`
+各有 2 个与本审计无关的未跟踪文件（设计文档/探针脚本/数据重置 SQL），本次未创建、
+未修改、未纳入任何提交。
 
 | 发现 | 宿主 | 使用形态与修改后影响 |
 | --- | --- | --- |
@@ -99,3 +106,29 @@ uncertain 0**；去重后 **23 条**发现在至少一个宿主中真实使用�
   `TokenRevoked`；需要宿主前端按终态处理并在发布说明标注。
 - **F007（C/D）**：Redis 重试语义影响 yang-system 的授权缓存、飞书锁与限流降级路径，
   需要按命令幂等性与可区分 unknown-outcome 错误单独设计。
+- **F012 覆盖边界**：零 WHERE 守卫只作用于 `update`/`update_in_tx`/`delete`/
+  `delete_in_tx`；upsert 由冲突键定位且已拒绝 `where`/`where_any`，不存在同一绕过面。
+  软删表 upsert 是否应排除已删除行属于既有语义，本次未改变。
+
+### 5.1 非零代价（不改变业务逻辑，但需发布说明）
+
+- `crates/yang-feishu/Cargo.toml` 为 F122 在正常依赖的 tokio 上启用 `rt` feature
+  （`Handle::try_current`），会扩大所有下游的依赖编译面；dev-dependency 另加
+  `net`/`io-util` 仅供 loopback 测试。
+- F118 让公开类型 `FeishuOptionsRequest`/`TenantTokenGrant` 的 `{:?}` 文本变为
+  `<已隐藏>`。Debug 不是稳定 API，但宿主若解析 Debug 文本会观察到变化。
+- F137 的 `.dockerignore` 新增排除项会改变 Docker 构建上下文；已核对保留
+  `Cargo.toml`/`Cargo.lock`/`crates/`/`project/yang-system` 构建输入。
+- F114 的 action 固定 SHA 需要人工跟随上游升级（本仓库未配置 Renovate）。
+
+### 5.2 需宿主侧拍板的 7 条
+
+| 发现 | 宿主 | 需要决定的事 |
+| --- | --- | --- |
+| F011 | inventory-system | 上传信任边界：是否允许保留 transport 注入的 `temp_root`/`original_filename` 契约 |
+| F076 | 三个宿主 | drain 截止是否只做默认 `None` 的新增 opt-in，避免截断长请求 |
+| F066 | yang-system | 存量表新增可空唯一列：保留「旧行全 NULL」例外，还是接受启动 fail-closed |
+| F072 | yang-system | OpenAPI `$ref` 改写需要同步重生成快照并调整前端 AJV 子 schema 编译 |
+| F009 | yang-system | 并发 logout/refresh 时合法 refresh 变 `TokenRevoked`，前端需按终态处理 |
+| F053 | yang-system | refresh 的 verify/rotate 原子性会改变并发语义与 Redis RTT 基线 |
+| F007 | yang-system | Redis 非幂等命令重试的降级语义，需要可区分 unknown-outcome 错误的设计 |
