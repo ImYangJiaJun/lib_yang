@@ -12,9 +12,9 @@
 //! # 后端支持范围
 //!
 //! `mysql` 与 `postgres` feature 均可单独启用并编译 Schema 同步。PostgreSQL 的
-//! DDL 在单事务内执行、使用 `pg_advisory_lock(bigint)` 串行化多实例启动；枚举
-//! 字段暂未支持（fail-closed，见驱动实现）。Record 解码与受保护 TableQuery /
-//! 内置 CRUD 的 PostgreSQL 执行层均已接入。
+//! DDL 在单事务内执行、使用 `pg_advisory_lock(bigint)` 串行化多实例启动；原生
+//! 枚举、部分/表达式索引与 opaque 存量列按声明式规则演进。Record 解码与受保护
+//! TableQuery / 内置 CRUD 的 PostgreSQL 执行层均已接入。
 //!
 //! # 示例
 //!
@@ -29,19 +29,34 @@
 
 #[cfg(test)]
 mod __tests__;
+#[cfg(feature = "postgres")]
+mod adoption;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 mod backend;
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+mod datasource;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 mod initializer;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 mod schema_sync;
 
+#[cfg(feature = "postgres")]
+pub use adoption::{
+    describe_postgres_schema, PgAdoptionColumn, PgAdoptionIndex, PgAdoptionReport, PgAdoptionTable,
+};
 #[cfg(any(feature = "mysql", feature = "postgres"))]
-pub use backend::{AnyDatabase, AnyPool, AnyTransaction};
+pub(crate) use backend::AnyTransactionKind;
 #[cfg(any(feature = "mysql", feature = "postgres"))]
-pub use initializer::DatabaseInitializer;
+pub use backend::{AnyDatabase, AnyPool, AnyTransaction, PoolHandle};
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+pub use datasource::{Datasource, DatasourceHealth, DatasourcePoolStatus, DatasourceRegistry};
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+pub use initializer::{
+    preflight_table_definitions_grouped, preflight_table_definitions_grouped_outcomes,
+    sync_table_definitions_grouped, sync_table_definitions_grouped_outcomes, DatabaseInitializer,
+};
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 pub use schema_sync::{
-    SchemaDataViolation, SchemaPreflightReport, SchemaSyncChange, SchemaSyncChangeKind,
-    SchemaSyncReport,
+    SchemaBindingChange, SchemaBindingMode, SchemaDataViolation, SchemaPreflightReport,
+    SchemaSyncChange, SchemaSyncChangeKind, SchemaSyncReport,
 };

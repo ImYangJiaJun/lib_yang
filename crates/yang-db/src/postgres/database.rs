@@ -439,6 +439,17 @@ pub struct Database {
     waiting: Arc<AtomicUsize>,
 }
 
+impl Clone for Database {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            config: self.config.clone(),
+            server_version: OnceCell::new(),
+            waiting: Arc::clone(&self.waiting),
+        }
+    }
+}
+
 impl Database {
     /// 返回 PostgreSQL 后端的静态能力契约。
     pub const fn capabilities() -> &'static BackendCapabilities {

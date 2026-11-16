@@ -104,6 +104,8 @@ pub(crate) struct ExistingTableSchema {
     pub(super) generated_columns: BTreeMap<String, String>,
     /// PostgreSQL 列级 collation（`pg_attribute.attcollation`），仅在显式指定时记录。
     pub(super) collations: BTreeMap<String, String>,
+    /// 表定义引用的 PostgreSQL 原生枚举类型及其标签（按 `enumsortorder`）。
+    pub(super) enum_types: BTreeMap<String, Vec<String>>,
 }
 
 impl ExistingTableSchema {
@@ -120,6 +122,7 @@ impl ExistingTableSchema {
             identity_columns: BTreeSet::new(),
             generated_columns: BTreeMap::new(),
             collations: BTreeMap::new(),
+            enum_types: BTreeMap::new(),
         }
     }
 
@@ -140,6 +143,7 @@ impl ExistingTableSchema {
             identity_columns: BTreeSet::new(),
             generated_columns: BTreeMap::new(),
             collations: BTreeMap::new(),
+            enum_types: BTreeMap::new(),
         }
     }
 
@@ -182,6 +186,13 @@ impl ExistingTableSchema {
     #[cfg(feature = "postgres")]
     pub(super) fn with_collations(mut self, collations: BTreeMap<String, String>) -> Self {
         self.collations = collations;
+        self
+    }
+
+    /// 记录 PostgreSQL 原生枚举类型及其标签。
+    #[cfg(feature = "postgres")]
+    pub(super) fn with_enum_types(mut self, enum_types: BTreeMap<String, Vec<String>>) -> Self {
+        self.enum_types = enum_types;
         self
     }
 
@@ -277,6 +288,10 @@ pub(super) struct DesiredIndex {
     pub(super) name: String,
     pub(super) unique: bool,
     pub(super) columns: Vec<String>,
+    /// 表达式键（受信 SQL），按声明顺序追加在列键之后。
+    pub(super) expressions: Vec<String>,
+    /// PostgreSQL 部分索引谓词。
+    pub(super) predicate: Option<String>,
     /// PostgreSQL 15+ 唯一索引的 `NULLS NOT DISTINCT` 语义。
     pub(super) nulls_not_distinct: bool,
 }

@@ -323,6 +323,42 @@ fn varchar_radio_rejects_empty_duplicate_and_oversized_candidates() {
     assert!(oversized.table_definition().is_err());
 }
 
+#[test]
+fn native_enum_radio_reaches_schema_field_and_conflicts_with_varchar() {
+    let definition = TableSpec::new(table("native_enum_radio"))
+        .fields(crate::fields! {
+            id => Key::new(),
+            status => Radio::<String>::new()
+                .require(true)
+                .native_enum("order_status")
+                .options([("pending", "待处理"), ("paid", "已支付")]),
+        })
+        .table_definition()
+        .unwrap_or_else(|error| panic!("原生枚举 Radio 表定义应有效: {error}"));
+    let config = definition.shared_config();
+    let field = config
+        .fields
+        .get("status")
+        .unwrap_or_else(|| panic!("status 字段应存在"));
+    assert_eq!(field.native_enum.as_deref(), Some("order_status"));
+    assert!(matches!(
+        field.field_type,
+        crate::table::FieldType::Enum { .. }
+    ));
+
+    let conflict = TableSpec::new(table("native_enum_conflict")).fields(crate::fields! {
+        id => Key::new(),
+        status => Radio::<String>::new()
+            .native_enum("order_status")
+            .varchar(8)
+            .options([("pending", "待处理")]),
+    });
+    assert!(
+        conflict.table_definition().is_err(),
+        "native_enum 与 varchar 不能同时声明"
+    );
+}
+
 fn table(value: &str) -> TableName {
     TableName::new(value).expect("测试 Table 名称应有效")
 }
@@ -1768,6 +1804,19 @@ fn validation_min_max_map_to_server_enforced_bounds_on_decimal_write() {
 
 /// 数值边界声明不合法时必须在构建期 fail-closed：非数值字段声明 min/max 报 ConfigError，
 /// min > max 报"数值下限不能大于上限"。
+#[test]
+fn composite_primary_key_order_survives_field_sorting() {
+    let mut spec = TableSpec::new(table("composite_order"))
+        .field(FieldSpec::new(field("tenant_id"), FieldKind::Key).required(true))
+        .field(FieldSpec::new(field("item_id"), FieldKind::Key).required(true))
+        .field(FieldSpec::new(field("name"), FieldKind::Str));
+    // 构建期会按字段名排序；主键列序必须保持声明顺序。
+    spec.fields
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    let definition = spec.table_definition().expect("复合主键表定义应有效");
+    assert_eq!(definition.primary_keys(), ["tenant_id", "item_id"]);
+}
+
 #[test]
 fn validation_min_max_reject_incompatible_field_and_reversed_bounds() {
     let mut name = FieldSpec::new(field("name"), FieldKind::Str);

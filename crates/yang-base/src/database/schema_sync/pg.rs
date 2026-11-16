@@ -19,6 +19,10 @@ pub(super) async fn load_existing_schema(
     let table = config.as_ref();
     let (schema, table_name) = split_table_name(&table.table_name);
 
+    // 原生枚举类型可能先于表存在（共享类型/部分迁移），也必须参与表缺失时的计划。
+    let desired_enum_types = desired_enum_type_names(table);
+    let enum_types = load_enum_labels(connection, schema, &desired_enum_types).await?;
+
     let oid: Option<i64> = sqlx::query_scalar(
         "SELECT c.oid::bigint FROM pg_class c \
          JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -31,7 +35,7 @@ pub(super) async fn load_existing_schema(
     .await
     .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
     if oid.is_none() {
-        return Ok(ExistingTableSchema::missing());
+        return Ok(ExistingTableSchema::missing().with_enum_types(enum_types));
     }
 
     // PG18 起 `pg_attribute.attgenerated` 新增 `'v'`（virtual generated column）；
@@ -45,6 +49,7 @@ pub(super) async fn load_existing_schema(
     struct ColumnRow {
         column_name: String,
         type_name: String,
+        type_kind: String,
         formatted_type: String,
         not_null: bool,
         default_expr: Option<String>,
@@ -61,6 +66,7 @@ pub(super) async fn load_existing_schema(
     let column_rows: Vec<ColumnRow> = sqlx::query_as(
         "SELECT a.attname::text AS column_name, \
                 t.typname::text AS type_name, \
+                t.typtype::text AS type_kind, \
                 format_type(a.atttypid, a.atttypmod) AS formatted_type, \
                 a.attnotnull AS not_null, \
                 pg_get_expr(d.adbin, d.adrelid) AS default_expr, \
@@ -99,8 +105,12 @@ pub(super) async fn load_existing_schema(
                 .as_deref()
                 .is_some_and(|expression| expression.starts_with("nextval("));
         let generated = is_generated_column(version, &row.generated_kind);
-        let (data_type, column_type) =
-            normalize_pg_type(&row.type_name, &row.formatted_type, row.max_length);
+        let (data_type, column_type) = if row.type_kind == "e" {
+            // 原生枚举：data_type 归一为 enum，column_type 保留类型名供声明比较。
+            ("enum".to_string(), row.type_name.clone())
+        } else {
+            normalize_pg_type(&row.type_name, &row.formatted_type, row.max_length)
+        };
         if identity {
             identity_columns.insert(row.column_name.clone());
         }
@@ -349,7 +359,58 @@ pub(super) async fn load_existing_schema(
         .with_comments(comments)
         .with_column_kinds(identity_columns, generated_columns)
         .with_collations(collations)
+        .with_enum_types(enum_types)
         .with_rows(has_rows.is_some()))
+}
+
+/// 收集表定义中声明的原生枚举类型名。
+fn desired_enum_type_names(table: &crate::table::TableConfig) -> Vec<String> {
+    let mut names = table
+        .fields
+        .values()
+        .filter_map(|field| field.native_enum.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// 读取声明涉及的原生枚举类型的标签，按 `enumsortorder` 排列。
+///
+/// 类型不存在时不出现在结果中（由 plan 生成 `CREATE TYPE`）；同 schema 内的
+/// 同名非枚举类型同样不出现，执行期 `CREATE TYPE` 会明确失败而不是静默绕过。
+async fn load_enum_labels(
+    connection: &mut PgConnection,
+    schema: Option<&str>,
+    type_names: &[String],
+) -> Result<BTreeMap<String, Vec<String>>, BaseError> {
+    let mut enum_types = BTreeMap::<String, Vec<String>>::new();
+    if type_names.is_empty() {
+        return Ok(enum_types);
+    }
+    #[derive(FromRow)]
+    struct EnumRow {
+        type_name: String,
+        label: String,
+    }
+    let names = type_names.to_vec();
+    let rows: Vec<EnumRow> = sqlx::query_as(
+        "SELECT t.typname::text AS type_name, e.enumlabel::text AS label \
+         FROM pg_type t \
+         JOIN pg_namespace n ON n.oid = t.typnamespace \
+         JOIN pg_enum e ON e.enumtypid = t.oid \
+         WHERE t.typname = ANY($1) AND n.nspname = COALESCE($2, current_schema()) \
+         ORDER BY t.typname, e.enumsortorder",
+    )
+    .bind(&names)
+    .bind(schema)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| BaseError::DatabaseQueryFailed(error.into()))?;
+    for row in rows {
+        enum_types.entry(row.type_name).or_default().push(row.label);
+    }
+    Ok(enum_types)
 }
 
 /// 拆分 `schema.table`；未限定 schema 时返回 `None`，由 `current_schema()` 解析。
@@ -365,6 +426,9 @@ const PG18_VERSION_NUM: u32 = 180_000;
 
 /// PostgreSQL 15 的 `server_version_num` 下界（`NULLS NOT DISTINCT`、`indnullsnotdistinct`）。
 pub(super) const PG15_VERSION_NUM: u32 = 150_000;
+
+/// PostgreSQL 12 的 `server_version_num` 下界（事务块内 `ALTER TYPE ADD VALUE`）。
+pub(super) const PG12_VERSION_NUM: u32 = 120_000;
 
 /// 读取当前连接的 `server_version_num`。
 ///

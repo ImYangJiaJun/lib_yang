@@ -10,6 +10,7 @@
 //! 再预检（预检 SQL 因此能看到新列），违规则整体回滚；并发索引与
 //! `VALIDATE CONSTRAINT` 在提交后以 autocommit 执行。
 
+mod binding;
 mod dialect;
 mod driver;
 #[cfg(feature = "mysql")]
@@ -26,6 +27,7 @@ mod sync;
 #[cfg(test)]
 mod __tests__;
 
+pub use binding::SchemaBindingMode;
 #[cfg(all(test, feature = "mysql"))]
 pub(super) use model::SchemaPreflightCheck;
 #[cfg(test)]
@@ -51,6 +53,10 @@ pub enum SchemaSyncChangeKind {
     AddedPrimaryKey,
     /// 增加普通或唯一索引。
     AddedIndex,
+    /// 创建 PostgreSQL 原生枚举类型。
+    CreatedEnumType,
+    /// 向 PostgreSQL 原生枚举类型追加取值。
+    AddedEnumValue,
     /// 增加 CHECK 约束。
     AddedCheck,
     /// 仅验证（`VALIDATE CONSTRAINT`）一个既有但尚未验证的 CHECK 约束。
@@ -75,6 +81,20 @@ pub struct SchemaSyncChange {
     pub kind: SchemaSyncChangeKind,
 }
 
+/// 一次同步后写入的所有权绑定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SchemaBindingChange {
+    /// 逻辑数据源；多源合并报告时必须与表名一起定位。
+    pub datasource: crate::datasource::DatasourceId,
+    /// 表名。
+    pub table: String,
+    /// 当前所有权模式。
+    pub mode: SchemaBindingMode,
+    /// 本次同步是否首次登记该表（存量表接管）。
+    pub newly_bound: bool,
+}
+
 /// 启动期 schema 同步报告。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -87,6 +107,8 @@ pub struct SchemaSyncReport {
     pub statements: Vec<String>,
     /// 事务提交后执行的 deferred DDL 文本（`VALIDATE CONSTRAINT`、并发索引等）。
     pub deferred_statements: Vec<String>,
+    /// 本次同步新增/更新的 `_yang_schema_binding` 记录。
+    pub bindings: Vec<SchemaBindingChange>,
 }
 
 /// 一项阻止 Schema 更新的旧数据问题。

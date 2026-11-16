@@ -6,6 +6,7 @@ use super::{
 };
 use crate::action::DynAction;
 use crate::action::PermissionMode;
+use crate::datasource::DatasourceId;
 use crate::router::Middleware;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -504,6 +505,8 @@ pub struct ModuleSpec {
     pub views: Vec<ViewSpec>,
     /// 可选的前端 Module 页面展示声明。
     pub presentation: Option<super::ModulePresentationSpec>,
+    /// 模块所属逻辑数据源；`None` 表示使用 Addon/默认数据源。
+    pub datasource: Option<DatasourceId>,
 }
 
 impl ModuleSpec {
@@ -519,14 +522,44 @@ impl ModuleSpec {
             default_permission_mode: PermissionMode::All,
             views: Vec::new(),
             presentation: None,
+            datasource: None,
         }
+    }
+
+    /// 设置 Module 所属逻辑数据源；已声明主表会同步继承。
+    #[must_use]
+    pub fn datasource(mut self, id: DatasourceId) -> Self {
+        if let Some(table) = &mut self.table {
+            if table.datasource.is_none() {
+                table.datasource = Some(id.clone());
+            }
+        }
+        self.datasource = Some(id);
+        self
     }
 
     /// 设置 Module 主表。
     #[must_use]
-    pub fn table(mut self, table: TableSpec) -> Self {
+    pub fn table(mut self, mut table: TableSpec) -> Self {
+        if table.datasource.is_none() {
+            table.datasource = self.datasource.clone();
+        }
         self.table = Some(table);
         self
+    }
+
+    /// 按模块数据源解析主表定义；表未显式声明源时继承模块源。
+    pub(crate) fn resolved_table_definition(
+        &self,
+    ) -> Result<Option<crate::table::TableDefinition>, crate::error::BaseError> {
+        let Some(table) = &self.table else {
+            return Ok(None);
+        };
+        let mut table = table.clone();
+        if table.datasource.is_none() {
+            table.datasource = self.datasource.clone();
+        }
+        table.table_definition().map(Some)
     }
 
     /// 设置前端 Module 页面展示声明。
@@ -589,10 +622,16 @@ impl ModuleSpec {
         }
 
         let table = self
-            .table
-            .as_ref()
-            .ok_or(crate::error::BaseError::TableDefinitionNotSet)?
-            .table_definition()?;
+            .resolved_table_definition()?
+            .ok_or(crate::error::BaseError::TableDefinitionNotSet)?;
+        if table.primary_keys().len() != 1 {
+            return Err(crate::error::BaseError::ConfigError(format!(
+                "内置 CRUD 仅支持单主键表；模块 {} 的主表 {} 主键为 {:?}",
+                self.name,
+                table.name(),
+                table.primary_keys()
+            )));
+        }
         let mut contracts: std::collections::BTreeMap<_, _> =
             crud_contracts(&table, self.name.as_str())?
                 .into_iter()
@@ -799,6 +838,8 @@ pub struct AddonSpec {
     pub dependencies: Vec<AddonName>,
     /// Module 集合。
     pub modules: Vec<ModuleSpec>,
+    /// Addon 默认逻辑数据源；模块未显式声明时继承。
+    pub datasource: Option<DatasourceId>,
 }
 
 impl AddonSpec {
@@ -808,7 +849,25 @@ impl AddonSpec {
             name,
             dependencies: Vec::new(),
             modules: Vec::new(),
+            datasource: None,
         }
+    }
+
+    /// 设置 Addon 默认逻辑数据源；已加入的模块与其主表同步继承。
+    #[must_use]
+    pub fn datasource(mut self, id: DatasourceId) -> Self {
+        for module in &mut self.modules {
+            if module.datasource.is_none() {
+                module.datasource = Some(id.clone());
+            }
+            if let Some(table) = &mut module.table {
+                if table.datasource.is_none() {
+                    table.datasource = Some(id.clone());
+                }
+            }
+        }
+        self.datasource = Some(id);
+        self
     }
 
     /// 声明 Addon 依赖。
@@ -820,7 +879,15 @@ impl AddonSpec {
 
     /// 增加一个 Module。
     #[must_use]
-    pub fn module(mut self, module: ModuleSpec) -> Self {
+    pub fn module(mut self, mut module: ModuleSpec) -> Self {
+        if module.datasource.is_none() {
+            module.datasource = self.datasource.clone();
+        }
+        if let Some(table) = &mut module.table {
+            if table.datasource.is_none() {
+                table.datasource = module.datasource.clone();
+            }
+        }
         self.modules.push(module);
         self
     }

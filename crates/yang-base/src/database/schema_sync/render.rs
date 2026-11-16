@@ -20,10 +20,17 @@ pub(super) fn render_create_table(
         .into_iter()
         .map(render_column)
         .collect::<Result<Vec<_>, _>>()?;
-    definitions.push(format!(
-        "PRIMARY KEY ({})",
-        quote_identifier(&table.primary_key)?
-    ));
+    if !table.primary_keys.is_empty() {
+        definitions.push(format!(
+            "PRIMARY KEY ({})",
+            table
+                .primary_keys
+                .iter()
+                .map(|name| quote_identifier(name))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        ));
+    }
     for index in desired_indexes(table)? {
         let columns = index
             .columns
@@ -151,6 +158,12 @@ pub(super) fn normalize_check_expression(expression: &str) -> String {
 }
 
 pub(super) fn render_column(field: &FieldConfig) -> Result<String, BaseError> {
+    if let Some(type_name) = &field.native_enum {
+        return Err(BaseError::ConfigError(format!(
+            "字段 {} 声明了 PostgreSQL 原生枚举类型 {type_name}，MySQL 方言不支持",
+            field.name
+        )));
+    }
     let sql_type = match &field.field_type {
         // 防御性断言：构建期 validate_field_shape 已强制同一上界，
         // 此处不应再可达；保留 Err 以免绕过构建期的配置静默渲染出非法 DDL。
@@ -271,6 +284,12 @@ pub(super) fn desired_indexes(table: &TableConfig) -> Result<Vec<DesiredIndex>, 
                     table.table_name
                 )));
             }
+            if !index.expressions.is_empty() || index.predicate.is_some() {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的索引声明了 PostgreSQL 专属的表达式键/部分索引谓词，MySQL 不支持",
+                    table.table_name
+                )));
+            }
             if index.fields.is_empty() {
                 return Err(BaseError::ConfigError(format!(
                     "表 {} 包含空索引",
@@ -299,6 +318,8 @@ pub(super) fn desired_indexes(table: &TableConfig) -> Result<Vec<DesiredIndex>, 
                 name,
                 unique,
                 columns: index.fields.clone(),
+                expressions: Vec::new(),
+                predicate: None,
                 nulls_not_distinct: false,
             });
         }

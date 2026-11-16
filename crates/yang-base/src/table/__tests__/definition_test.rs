@@ -125,12 +125,12 @@ fn build_rejects_duplicate_fields() {
 }
 
 #[test]
-fn build_rejects_missing_primary_key() {
-    let result = Table::new("users")
+fn build_allows_missing_primary_key_for_read_only_tables() {
+    let definition = Table::new("users")
         .fields([Field::string("username", 64).required()])
-        .build();
-
-    assert!(result.is_err());
+        .build()
+        .expect("无主键表定义应有效");
+    assert!(definition.primary_keys().is_empty());
 }
 
 #[test]

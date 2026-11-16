@@ -12,7 +12,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::Mutex;
 
 #[cfg(any(feature = "mysql", feature = "postgres"))]
-use crate::database::AnyDatabase;
+use crate::database::{
+    AnyDatabase, Datasource, DatasourceHealth, DatasourcePoolStatus, DatasourceRegistry,
+};
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+use crate::datasource::DatasourceId;
 #[cfg(feature = "http")]
 use crate::http::HttpClient;
 #[cfg(feature = "token")]
@@ -90,7 +94,7 @@ impl ToolsHealth {
 /// 构建完成后冻结的应用资源。
 pub struct Tools {
     #[cfg(any(feature = "mysql", feature = "postgres"))]
-    database: Option<AnyDatabase>,
+    databases: Option<DatasourceRegistry>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -133,34 +137,76 @@ impl Tools {
         }
     }
 
-    /// 获取运行时数据库后端；未配置或生命周期已结束时失败。
+    /// 获取默认数据源；未配置或生命周期已结束时失败。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn database(&self) -> Result<&AnyDatabase, BaseError> {
         self.ensure_running()?;
-        self.database
+        self.databases
+            .as_ref()
+            .map(|databases| databases.default_datasource().database())
+            .ok_or(BaseError::DatabaseNotInitialized)
+    }
+
+    /// 按逻辑名获取数据源；未配置、未注册或生命周期已结束时失败。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn datasource(&self, id: &DatasourceId) -> Result<&crate::database::Datasource, BaseError> {
+        self.ensure_running()?;
+        let databases = self
+            .databases
+            .as_ref()
+            .ok_or(BaseError::DatabaseNotInitialized)?;
+        databases.resolve_id(id)
+    }
+
+    /// 按逻辑名获取数据库容器。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database_named(&self, id: &DatasourceId) -> Result<&AnyDatabase, BaseError> {
+        self.datasource(id).map(|datasource| datasource.database())
+    }
+
+    /// 返回全部具名数据源。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn datasources(&self) -> Result<&DatasourceRegistry, BaseError> {
+        self.ensure_running()?;
+        self.databases
             .as_ref()
             .ok_or(BaseError::DatabaseNotInitialized)
     }
 
-    /// 获取 MySQL 连接池；未配置 MySQL 后端或生命周期已结束时失败。
-    ///
-    /// 当运行期配置的是 PostgreSQL 后端时同样返回 [`BaseError::DatabaseNotInitialized`]，
-    /// 避免把 PG 连接池误当作 MySQL 使用。
+    /// 获取默认数据源的 MySQL 连接池；默认源不是 MySQL 时返回
+    /// [`BaseError::DatabaseNotInitialized`]。
     #[cfg(feature = "mysql")]
     pub fn mysql(&self) -> Result<&yang_db::mysql::Database, BaseError> {
-        self.ensure_running()?;
-        self.database
-            .as_ref()
-            .and_then(AnyDatabase::as_mysql)
-            .ok_or(BaseError::DatabaseNotInitialized)
+        self.database()
+            .and_then(|database| database.as_mysql().ok_or(BaseError::DatabaseNotInitialized))
     }
 
-    /// 返回当前数据库连接池状态快照；未配置数据库时为 `None`。
+    /// 返回默认数据源的连接池状态快照；未配置数据库时为 `None`。
     ///
     /// 不检查生命周期状态，便于关闭后继续观察连接池回收情况。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn pool_status(&self) -> Option<yang_db::PoolStatus> {
-        self.database.as_ref().map(AnyDatabase::pool_status)
+        self.databases
+            .as_ref()
+            .map(|databases| databases.default_datasource().pool_status())
+    }
+
+    /// 返回全部数据源的连接池状态快照。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn pool_statuses(&self) -> Vec<DatasourcePoolStatus> {
+        self.databases
+            .as_ref()
+            .map(DatasourceRegistry::pool_statuses)
+            .unwrap_or_default()
+    }
+
+    /// 返回全部数据源的健康快照。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub async fn datasource_health(&self) -> Vec<DatasourceHealth> {
+        match &self.databases {
+            Some(databases) if self.state() == ToolsState::Running => databases.health().await,
+            _ => Vec::new(),
+        }
     }
 
     /// 获取 Redis 客户端；未配置或生命周期已结束时失败。
@@ -240,24 +286,8 @@ impl Tools {
         #[cfg(not(any(feature = "mysql", feature = "postgres", feature = "redis")))]
         let resources = Vec::new();
         #[cfg(any(feature = "mysql", feature = "postgres"))]
-        if let Some(database) = &self.database {
-            let resource = match database.backend() {
-                yang_db::BackendKind::MySql => "mysql",
-                yang_db::BackendKind::PostgreSql => "postgres",
-                _ => "database",
-            };
-            resources.push(match database.health_check().await {
-                Ok(healthy) => ResourceHealth {
-                    resource,
-                    healthy,
-                    detail: None,
-                },
-                Err(error) => ResourceHealth {
-                    resource,
-                    healthy: false,
-                    detail: Some(error.to_string()),
-                },
-            });
+        if let Some(databases) = &self.databases {
+            resources.extend(databases.health_check().await);
         }
         #[cfg(feature = "redis")]
         if let Some(cache) = &self.cache {
@@ -293,8 +323,8 @@ impl Tools {
             cache.close().await;
         }
         #[cfg(any(feature = "mysql", feature = "postgres"))]
-        if let Some(database) = &self.database {
-            database.close().await;
+        if let Some(databases) = &self.databases {
+            databases.close().await;
         }
 
         self.state.store(CLOSED, Ordering::Release);
@@ -306,7 +336,9 @@ impl Tools {
 #[must_use = "ToolsBuilder 必须调用 build() 才会冻结并交给应用"]
 pub struct ToolsBuilder {
     #[cfg(any(feature = "mysql", feature = "postgres"))]
-    database: Option<AnyDatabase>,
+    databases: Vec<Datasource>,
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    default_datasource: Option<DatasourceId>,
     #[cfg(feature = "redis")]
     cache: Option<RedisClient>,
     #[cfg(feature = "token")]
@@ -336,25 +368,60 @@ impl ToolsBuilder {
         Self::default()
     }
 
-    /// 设置唯一 MySQL 资源（兼容入口，内部包装为 [`AnyDatabase`]）。
+    /// 设置默认数据源的 MySQL 资源（兼容入口）。
     #[cfg(feature = "mysql")]
-    pub fn mysql(mut self, mysql: yang_db::mysql::Database) -> Self {
-        self.set_database(AnyDatabase::mysql(mysql), "MySQL");
-        self
+    pub fn mysql(self, mysql: yang_db::mysql::Database) -> Self {
+        self.database_named(DatasourceId::default_source(), AnyDatabase::mysql(mysql))
     }
 
-    /// 设置唯一运行时数据库后端（MySQL 或 PostgreSQL）。
+    /// 设置默认数据源的运行时数据库后端（MySQL 或 PostgreSQL，兼容入口）。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
-    pub fn database(mut self, database: AnyDatabase) -> Self {
-        self.set_database(database, "Database");
-        self
+    pub fn database(self, database: AnyDatabase) -> Self {
+        self.database_named(DatasourceId::default_source(), database)
     }
 
+    /// 用逻辑名注册一个数据源。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
-    fn set_database(&mut self, database: AnyDatabase, resource: &str) {
-        if self.database.replace(database).is_some() {
-            self.record_duplicate(resource);
+    pub fn database_named(mut self, id: DatasourceId, database: AnyDatabase) -> Self {
+        if id.is_default() && self.default_datasource.is_none() {
+            self.default_datasource = Some(id.clone());
         }
+        self.databases.push(Datasource::new(id, database, true));
+        self
+    }
+
+    /// 用逻辑名注册一个数据源，并指定它是否参与 readiness。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database_named_with_policy(
+        mut self,
+        id: DatasourceId,
+        database: AnyDatabase,
+        required: bool,
+    ) -> Self {
+        if id.is_default() && self.default_datasource.is_none() {
+            self.default_datasource = Some(id.clone());
+        }
+        self.databases.push(Datasource::new(id, database, required));
+        self
+    }
+
+    /// 用逻辑名注册一个 MySQL 数据源。
+    #[cfg(feature = "mysql")]
+    pub fn mysql_named(self, id: DatasourceId, database: yang_db::mysql::Database) -> Self {
+        self.database_named(id, AnyDatabase::mysql(database))
+    }
+
+    /// 用逻辑名注册一个 PostgreSQL 数据源。
+    #[cfg(feature = "postgres")]
+    pub fn postgres_named(self, id: DatasourceId, database: yang_db::postgres::Database) -> Self {
+        self.database_named(id, AnyDatabase::postgres(database))
+    }
+
+    /// 显式指定默认数据源。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn default_datasource(mut self, id: DatasourceId) -> Self {
+        self.default_datasource = Some(id);
+        self
     }
 
     /// 设置唯一 Redis 客户端。
@@ -453,9 +520,23 @@ impl ToolsBuilder {
 
         // 启动期能力门禁：核心查询/CRUD 所需能力缺失时 fail-fast。
         #[cfg(any(feature = "mysql", feature = "postgres"))]
-        if let Some(database) = &self.database {
-            database.require_capabilities(REQUIRED_DATABASE_CAPABILITIES)?;
-        }
+        let databases = if self.databases.is_empty() {
+            if let Some(default) = &self.default_datasource {
+                return Err(BaseError::ConfigError(format!(
+                    "指定了默认数据源 {default}，但没有注册任何数据源"
+                )));
+            }
+            None
+        } else {
+            let registry =
+                DatasourceRegistry::new(self.default_datasource.clone(), self.databases)?;
+            for datasource in registry.iter() {
+                datasource
+                    .database()
+                    .require_capabilities(REQUIRED_DATABASE_CAPABILITIES)?;
+            }
+            Some(registry)
+        };
 
         #[cfg(feature = "token")]
         let token = {
@@ -468,7 +549,7 @@ impl ToolsBuilder {
 
         Ok(Tools {
             #[cfg(any(feature = "mysql", feature = "postgres"))]
-            database: self.database,
+            databases,
             #[cfg(feature = "redis")]
             cache: self.cache,
             #[cfg(feature = "token")]

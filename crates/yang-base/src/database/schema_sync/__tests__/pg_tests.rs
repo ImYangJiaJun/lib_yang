@@ -2,7 +2,9 @@
 
 use super::super::dialect::{collations_equal, SchemaDialect};
 use super::super::model::{ExistingCheck, ExistingForeignKey, SchemaPreflightCheck};
-use super::super::plan::expression_references_column;
+use super::super::plan::{
+    dedupe_native_enum_steps, expression_references_column, validate_shared_native_enums,
+};
 use super::super::plan_table_sync_with;
 use super::super::{ExistingIndex, ExistingTableSchema, SchemaSyncChangeKind};
 use crate::error::BaseError;
@@ -60,6 +62,47 @@ fn plain_existing() -> ExistingTableSchema {
         "nickname".to_string(),
         "昵称".to_string(),
     )]))
+}
+
+#[test]
+fn create_table_without_primary_key_omits_pk_clause() {
+    let table = Table::new("pg_no_pk")
+        .fields([Field::string("name", 32).required()])
+        .build()
+        .expect("无主键表定义应有效");
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("无主键表应生成建表计划");
+    assert!(
+        !plan.statements[0].contains("PRIMARY KEY"),
+        "无主键表不得渲染 PRIMARY KEY: {}",
+        plan.statements[0]
+    );
+}
+
+#[test]
+fn create_table_renders_composite_primary_key() {
+    let table = Table::new("pg_composite")
+        .fields([
+            Field::bigint("tenant_id").required().primary_key(),
+            Field::bigint("item_id").required().primary_key(),
+        ])
+        .build()
+        .expect("复合主键表定义应有效");
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &table,
+        &ExistingTableSchema::missing(),
+    )
+    .expect("复合主键应生成建表计划");
+    let create = &plan.statements[0];
+    assert!(
+        create.contains("PRIMARY KEY (\"tenant_id\", \"item_id\")"),
+        "复合主键必须按声明顺序渲染: {create}"
+    );
 }
 
 #[test]
@@ -1162,4 +1205,425 @@ fn postgres_type_rendering_matches_expected_ddl() {
             expected
         );
     }
+}
+
+// ---- 原生枚举 ----
+
+fn native_enum_table(values: &[&str]) -> TableDefinition {
+    Table::new("pg_orders")
+        .fields([
+            Field::id("id"),
+            Field::enumeration("status", values.iter().copied())
+                .required()
+                .native_enum("order_status"),
+        ])
+        .build()
+        .expect("原生枚举表定义应有效")
+}
+
+#[test]
+fn native_enum_creates_type_before_table_and_omits_implicit_check() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &native_enum_table(&["pending", "paid"]),
+        &ExistingTableSchema::missing(),
+    )
+    .expect("原生枚举建表计划应成功");
+    assert_eq!(
+        plan.statements[0],
+        "CREATE TYPE \"order_status\" AS ENUM ('pending', 'paid')"
+    );
+    assert!(
+        plan.statements[1].contains("\"status\" \"order_status\" NOT NULL"),
+        "列必须直接使用原生枚举类型: {}",
+        plan.statements[1]
+    );
+    assert!(
+        !plan.statements.iter().any(|sql| sql.contains("CHECK")),
+        "原生枚举不得再生成隐式 CHECK: {:?}",
+        plan.statements
+    );
+}
+
+#[test]
+fn native_enum_missing_values_are_appended_before_other_changes() {
+    let existing = ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("status", "enum", "order_status", false, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+    .with_enum_types(BTreeMap::from([(
+        "order_status".to_string(),
+        vec!["pending".to_string()],
+    )]));
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &native_enum_table(&["pending", "paid"]),
+        &existing,
+    )
+    .expect("补齐枚举取值应成功");
+    assert_eq!(
+        plan.statements[0],
+        "ALTER TYPE \"order_status\" ADD VALUE IF NOT EXISTS 'paid'"
+    );
+    assert!(
+        plan.changes
+            .iter()
+            .any(|change| change.kind == SchemaSyncChangeKind::AddedEnumValue),
+        "必须报告新增枚举取值: {:?}",
+        plan.changes
+    );
+    assert!(
+        !plan
+            .statements
+            .iter()
+            .any(|sql| sql.starts_with("ALTER TABLE")),
+        "列类型已匹配时不得再修改列: {:?}",
+        plan.statements
+    );
+}
+
+#[test]
+fn native_enum_created_before_added_column() {
+    let existing = ExistingTableSchema::existing(
+        vec![SchemaColumn::new(
+            "id", "bigint", "bigint", false, None, None,
+        )],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new());
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &native_enum_table(&["pending", "paid"]),
+        &existing,
+    )
+    .expect("既有表补列计划应成功");
+    assert_eq!(
+        plan.statements[0],
+        "CREATE TYPE \"order_status\" AS ENUM ('pending', 'paid')"
+    );
+    assert!(
+        plan.statements
+            .iter()
+            .any(|sql| sql.starts_with("ALTER TABLE") && sql.contains("\"order_status\"")),
+        "新增列必须引用原生枚举类型: {:?}",
+        plan.statements
+    );
+}
+
+#[cfg(feature = "mysql")]
+#[test]
+fn native_enum_is_rejected_on_mysql_render() {
+    let error = plan_table_sync_with(
+        SchemaDialect::MySql,
+        &native_enum_table(&["pending", "paid"]),
+        &ExistingTableSchema::missing(),
+    )
+    .expect_err("MySQL 必须拒绝原生枚举");
+    assert!(
+        error.to_string().contains("MySQL 方言不支持"),
+        "错误必须明确指出 MySQL 不支持: {error}"
+    );
+}
+
+// ---- 部分索引 / 表达式索引 ----
+
+fn index_table() -> TableDefinition {
+    Table::new("pg_users")
+        .fields([
+            Field::id("id"),
+            Field::string("email", 128).required(),
+            Field::bigint("deleted_at"),
+        ])
+        .index_spec(
+            Some("idx_pg_users_lower_email".to_string()),
+            [] as [&str; 0],
+            ["lower(email)"],
+            None,
+            false,
+            false,
+        )
+        .index_spec(
+            Some("idx_pg_users_deleted_at".to_string()),
+            ["deleted_at"],
+            [] as [&str; 0],
+            Some("deleted_at IS NULL".to_string()),
+            false,
+            false,
+        )
+        .build()
+        .expect("部分/表达式索引表定义应有效")
+}
+
+fn index_existing(extra: ExistingIndex) -> ExistingTableSchema {
+    ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new(
+                "email",
+                "varchar",
+                "varchar(128)",
+                false,
+                Some(128),
+                Some("'x'".into()),
+            ),
+            SchemaColumn::new("deleted_at", "bigint", "bigint", true, None, None),
+        ],
+        vec!["id".to_string()],
+        vec![extra],
+    )
+    .with_column_kinds(identity("id"), BTreeMap::new())
+}
+
+#[test]
+fn partial_and_expression_indexes_render_where_and_expression_keys() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &index_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect("部分/表达式索引建表计划应成功");
+    let sql = plan.statements.join("\n");
+    assert!(
+        sql.contains("CREATE INDEX \"idx_pg_users_lower_email\" ON \"pg_users\" (lower(email))"),
+        "表达式键必须原样渲染: {sql}"
+    );
+    assert!(
+        sql.contains(
+            "CREATE INDEX \"idx_pg_users_deleted_at\" ON \"pg_users\" (\"deleted_at\") WHERE deleted_at IS NULL"
+        ),
+        "部分索引谓词必须原样渲染: {sql}"
+    );
+}
+
+#[test]
+fn partial_index_normalized_predicate_is_idempotent() {
+    let existing = index_existing(
+        ExistingIndex::new(
+            "idx_pg_users_deleted_at",
+            false,
+            vec!["deleted_at".to_string()],
+        )
+        .with_predicate("(deleted_at IS NULL)".to_string()),
+    );
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &index_table(), &existing)
+        .expect("谓词仅外层括号不同应视为同一索引");
+    assert!(
+        !plan
+            .statements
+            .iter()
+            .any(|sql| sql.contains("idx_pg_users_deleted_at")),
+        "匹配的部分索引不得重建: {:?}",
+        plan.statements
+    );
+}
+
+#[test]
+fn expression_index_matching_reflection_is_idempotent() {
+    let existing = index_existing(
+        ExistingIndex::new("idx_pg_users_lower_email", false, Vec::new())
+            .with_expressions(vec!["lower(email)".to_string()]),
+    );
+    let plan = plan_table_sync_with(SchemaDialect::PostgreSql, &index_table(), &existing)
+        .expect("表达式索引应幂等");
+    assert!(
+        !plan
+            .statements
+            .iter()
+            .any(|sql| sql.contains("idx_pg_users_lower_email")),
+        "表达式索引不得重复创建: {:?}",
+        plan.statements
+    );
+}
+
+#[cfg(feature = "mysql")]
+#[test]
+fn partial_index_is_rejected_on_mysql_render() {
+    let error = plan_table_sync_with(
+        SchemaDialect::MySql,
+        &index_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect_err("MySQL 必须拒绝部分/表达式索引");
+    assert!(
+        error
+            .to_string()
+            .contains("PostgreSQL 专属的表达式键/部分索引谓词"),
+        "错误必须明确指出 MySQL 不支持: {error}"
+    );
+}
+
+// ---- 跨表共享原生枚举 ----
+
+fn shared_enum_table(table_name: &str, values: &[&str]) -> TableDefinition {
+    Table::new(table_name)
+        .fields([
+            Field::id("id"),
+            Field::enumeration("status", values.iter().copied())
+                .required()
+                .native_enum("shared_status"),
+        ])
+        .build()
+        .expect("共享枚举表定义应有效")
+}
+
+#[test]
+fn shared_native_enum_creates_type_only_once_across_plans() {
+    let first = shared_enum_table("shared_enum_a", &["pending", "paid"]);
+    let second = shared_enum_table("shared_enum_b", &["pending", "paid"]);
+    let mut plans = vec![
+        plan_table_sync_with(
+            SchemaDialect::PostgreSql,
+            &first,
+            &ExistingTableSchema::missing(),
+        )
+        .expect("第一张表计划应成功"),
+        plan_table_sync_with(
+            SchemaDialect::PostgreSql,
+            &second,
+            &ExistingTableSchema::missing(),
+        )
+        .expect("第二张表计划应成功"),
+    ];
+    dedupe_native_enum_steps(&mut plans);
+    let create_type_count = plans
+        .iter()
+        .flat_map(|plan| plan.statements.iter())
+        .filter(|sql| sql.starts_with("CREATE TYPE \"shared_status\""))
+        .count();
+    assert_eq!(create_type_count, 1, "共享枚举类型只能创建一次");
+    assert!(
+        plans.iter().any(|plan| plan
+            .statements
+            .iter()
+            .any(|sql| sql.starts_with("CREATE TABLE"))),
+        "去重不得误删建表语句"
+    );
+}
+
+#[test]
+fn shared_native_enum_with_conflicting_values_fails_closed() {
+    let first = shared_enum_table("shared_enum_a", &["pending", "paid"]);
+    let second = shared_enum_table("shared_enum_b", &["pending", "refunded"]);
+    let error =
+        validate_shared_native_enums(&[&first, &second]).expect_err("共享类型取值冲突必须失败");
+    assert!(
+        error.to_string().contains("声明了不同取值"),
+        "错误必须说明取值冲突: {error}"
+    );
+}
+
+#[test]
+fn binding_table_name_is_reserved_for_all_sync_paths() {
+    let table = Table::new("_yang_schema_binding")
+        .fields([Field::id("id")])
+        .build()
+        .expect("保留表名定义本身可构建");
+    let error = SchemaDialect::PostgreSql
+        .normalize_definitions(&[&table])
+        .expect_err("保留表名必须被拒绝");
+    assert!(
+        error.to_string().contains("框架保留的系统表"),
+        "错误必须说明保留表名: {error}"
+    );
+}
+
+#[cfg(feature = "mysql")]
+#[test]
+fn mysql_reserved_binding_name_is_case_insensitive() {
+    let table = Table::new("_Yang_Schema_Binding")
+        .fields([Field::id("id")])
+        .build()
+        .expect("大小写变体定义本身可构建");
+    let error = SchemaDialect::MySql
+        .normalize_definitions(&[&table])
+        .expect_err("MySQL 大小写变体也必须拒绝");
+    assert!(
+        error.to_string().contains("框架保留的系统表"),
+        "错误必须说明保留表名: {error}"
+    );
+}
+
+// ---- opaque 存量列 ----
+
+fn opaque_table() -> TableDefinition {
+    Table::new("pg_contacts")
+        .fields([Field::bigint("id").required().primary_key()])
+        .opaque_column("addr", "inet")
+        .build()
+        .expect("opaque 表定义应有效")
+}
+
+fn opaque_existing(addr_type: &str) -> ExistingTableSchema {
+    ExistingTableSchema::existing(
+        vec![
+            SchemaColumn::new("id", "bigint", "bigint", false, None, None),
+            SchemaColumn::new("addr", "inet", addr_type, true, None, None),
+        ],
+        vec!["id".to_string()],
+        Vec::new(),
+    )
+}
+
+#[test]
+fn opaque_column_matching_existing_type_is_noop() {
+    let plan = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &opaque_table(),
+        &opaque_existing("inet"),
+    )
+    .expect("opaque 列匹配时应可规划");
+    assert!(
+        plan.changes.is_empty(),
+        "不得对 opaque 列产生 DDL: {:?}",
+        plan.changes
+    );
+}
+
+#[test]
+fn opaque_column_type_mismatch_fails_closed() {
+    let error = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &opaque_table(),
+        &opaque_existing("cidr"),
+    )
+    .expect_err("opaque 列类型不匹配必须失败");
+    assert!(
+        error.to_string().contains("opaque 列 addr 类型不匹配"),
+        "错误必须指出列与类型: {error}"
+    );
+}
+
+#[test]
+fn opaque_column_requires_existing_table() {
+    let error = plan_table_sync_with(
+        SchemaDialect::PostgreSql,
+        &opaque_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect_err("表不存在时不能自动创建 opaque 列");
+    assert!(
+        error.to_string().contains("无法自动创建 opaque 列"),
+        "错误必须说明无法自动建列: {error}"
+    );
+}
+
+#[cfg(feature = "mysql")]
+#[test]
+fn opaque_column_is_rejected_on_mysql() {
+    let error = plan_table_sync_with(
+        SchemaDialect::MySql,
+        &opaque_table(),
+        &ExistingTableSchema::missing(),
+    )
+    .expect_err("MySQL 必须拒绝 opaque 列");
+    assert!(
+        error.to_string().contains("MySQL 不支持"),
+        "错误必须明确 MySQL 不支持: {error}"
+    );
 }

@@ -37,6 +37,8 @@ pub(super) struct RuntimeAction {
     pub(super) action: String,
     /// 与同表其它 Action 共享的表定义；`TableDefinition::clone` 只是 `Arc<TableConfig>` bump。
     pub(super) table_definition: Option<Arc<TableDefinition>>,
+    /// 本次 Action 所属模块的默认逻辑数据源。
+    pub(super) datasource: Option<crate::datasource::DatasourceId>,
     pub(super) ui_schema: crate::definition::ActionDemoSchema,
 }
 
@@ -45,6 +47,8 @@ pub(super) struct RuntimeTableView {
     pub(super) module: String,
     pub(super) view_id: String,
     pub(super) title: String,
+    /// 逻辑数据源；同名表可能同时存在于多个源，UI 必须能区分。
+    pub(super) datasource: crate::datasource::DatasourceId,
     pub(super) table: String,
     pub(super) columns: Arc<[RuntimeTableColumn]>,
     pub(super) data_action: Option<ActionHandle>,
@@ -195,6 +199,7 @@ impl Registry {
                 Some(crate::definition::TableViewSchema {
                     view_id: view.view_id.clone(),
                     title: view.title.clone(),
+                    datasource: view.datasource.to_string(),
                     table: view.table.clone(),
                     data_action: data_runtime.ui_schema.operation_id.clone(),
                     columns: view
@@ -316,6 +321,7 @@ impl Registry {
             .get(handle.slot())
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.slot())))?;
         context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
+        context = context.with_datasource(runtime.datasource.clone());
         if let Some(table) = &runtime.table_definition {
             context = context.with_table_definition((**table).clone());
         }
@@ -370,6 +376,7 @@ impl Registry {
             .ok_or_else(|| BaseError::ActionNotFound(format!("slot {}", handle.raw.slot())))?;
         authorize(&runtime.policy, &context)?;
         context = context.with_dispatch_target(runtime.module.clone(), runtime.action.clone());
+        context = context.with_datasource(runtime.datasource.clone());
         if let Some(table) = &runtime.table_definition {
             context = context.with_table_definition((**table).clone());
         }

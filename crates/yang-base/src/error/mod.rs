@@ -123,6 +123,17 @@ pub enum BaseError {
     #[error("当前后端不支持该能力: {0}")]
     UnsupportedCapability(String),
 
+    /// 表与事务不属于同一逻辑数据源。
+    #[error("事务与表数据源不一致 [{table}]: 期望 {expected}，实际 {actual}")]
+    DatasourceMismatch {
+        /// 表名。
+        table: String,
+        /// 表所属数据源。
+        expected: String,
+        /// 事务所属数据源（未标注时为 `unscoped`）。
+        actual: String,
+    },
+
     /// UPDATE/DELETE 缺少 WHERE 条件，拒绝全表操作
     ///
     /// 与 yang-db 的 `MissingWhereClause` 安全网对齐：无 WHERE 的更新/删除
@@ -673,6 +684,7 @@ impl BaseError {
             BaseError::DatabaseTransactionFailed(_) => 200009,
             BaseError::MissingWhereClause(_) => 200010,
             BaseError::UnsupportedCapability(_) => 200012,
+            BaseError::DatasourceMismatch { .. } => 200013,
 
             // ==================== Redis 错误 (21xxxx) ====================
             BaseError::RedisConnectionFailed(_) => 210001,
@@ -776,6 +788,7 @@ impl BaseError {
             BaseError::DatabaseTransactionFailed(_) => "200009",
             BaseError::MissingWhereClause(_) => "200010",
             BaseError::UnsupportedCapability(_) => "200012",
+            BaseError::DatasourceMismatch { .. } => "200013",
             // Redis 错误 (21xxxx)
             BaseError::RedisConnectionFailed(_) => "210001",
             BaseError::RedisAlreadyInitialized => "210002",
@@ -868,7 +881,8 @@ impl BaseError {
             BaseError::UnsupportedCapability(_) => C::Server,
             BaseError::DatabaseAlreadyInitialized
             | BaseError::DatabaseNotInitialized
-            | BaseError::DatabaseInitFailed(_) => C::Server,
+            | BaseError::DatabaseInitFailed(_)
+            | BaseError::DatasourceMismatch { .. } => C::Server,
             // 事务失败可能是死锁(可重试)或约束违反(不可重试)，保守归为 Server 避免无限重试
             BaseError::DatabaseQueryFailed(_)
             | BaseError::DatabaseExecuteFailed(_)

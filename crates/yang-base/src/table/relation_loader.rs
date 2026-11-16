@@ -102,6 +102,15 @@ impl<'a> DatabaseRelationExecutor<'a> {
         }
     }
 
+    /// 用具名数据源创建执行器；关系查询会带上该源的事务/池身份。
+    pub fn new_on<I, S>(datasource: &'a crate::database::Datasource, roles: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::new(datasource.database(), roles)
+    }
+
     /// 登记关联目标表定义；加载前必须登记，否则拒绝查询。
     pub fn target(mut self, definition: TableDefinition) -> Self {
         self.targets
@@ -166,8 +175,13 @@ impl<'a> DatabaseRelationExecutor<'a> {
             }
         }
 
-        let mut query =
-            TableQuery::new(table_config, self.roles.clone(), Some(self.database.pool()));
+        let source_pool = self.database.source_pool();
+        let mut query = TableQuery::new_sourced(
+            table_config,
+            self.roles.clone(),
+            Some(source_pool.pool().clone()),
+            source_pool.source().clone(),
+        );
         query = query.select_fields(&projection)?;
         if let Some(tenant_field) = definition.tenant_key_field() {
             match &self.tenant_value {

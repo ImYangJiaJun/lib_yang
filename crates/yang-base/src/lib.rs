@@ -63,6 +63,7 @@ pub mod admin;
 pub mod cache;
 pub mod config;
 pub mod database;
+pub mod datasource;
 pub mod definition;
 pub mod error;
 #[cfg(feature = "http")]

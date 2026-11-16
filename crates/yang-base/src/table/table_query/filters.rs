@@ -628,6 +628,12 @@ impl TableQuery {
     /// 值仍按主键字段类型校验（null 交由渲染器规范化为 IS NULL，匹配不到记录）。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn where_primary_key_eq(mut self, value: Value) -> Result<Self, BaseError> {
+        if self.table_config.primary_keys.len() != 1 {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 不是单主键，不能使用按单主键定位；请使用 where_primary_keys",
+                self.table_config.table_name
+            )));
+        }
         let field = self.table_config.primary_key.clone();
         let config = self.table_config.get_field(&field).ok_or_else(|| {
             BaseError::FieldNotFound(self.table_config.table_name.clone(), field.clone())
@@ -638,6 +644,33 @@ impl TableQuery {
         self.query_params
             .where_conditions
             .push(WhereCondition::Eq { field, value });
+        Ok(self)
+    }
+
+    /// 注入复合主键等值条件（按声明顺序逐列 AND）。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn where_primary_keys(mut self, keys: &crate::table::Record) -> Result<Self, BaseError> {
+        let primary_keys = self.table_config.primary_keys.clone();
+        if primary_keys.is_empty() {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 未声明主键，不能按主键定位",
+                self.table_config.table_name
+            )));
+        }
+        for field in primary_keys {
+            let value = keys.get(&field).cloned().ok_or_else(|| {
+                BaseError::ParamInvalid(field.clone(), "复合主键定位缺少列值".to_string())
+            })?;
+            let config = self.table_config.get_field(&field).ok_or_else(|| {
+                BaseError::FieldNotFound(self.table_config.table_name.clone(), field.clone())
+            })?;
+            if !value.is_null() {
+                config.field_type.validate(&field, &value)?;
+            }
+            self.query_params
+                .where_conditions
+                .push(WhereCondition::Eq { field, value });
+        }
         Ok(self)
     }
 

@@ -95,6 +95,7 @@ fn from_parts_hashes_three_projections_once_and_keeps_revision_stable() {
     let view = |view_id: &str| TableViewSchema {
         view_id: view_id.to_string(),
         title: view_id.to_string(),
+        datasource: "default".to_string(),
         table: "org_member".to_string(),
         data_action: "org.member.list".to_string(),
         columns: Vec::new(),

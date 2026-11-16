@@ -272,12 +272,29 @@ async fn readiness(State(state): State<ManagementState>) -> Response {
     });
     if let Some(health) = &evaluation.health {
         for resource in &health.resources {
+            if resource.resource != "cache" {
+                continue;
+            }
             metrics::gauge!(
                 state.metric_names.readiness_resource_healthy,
-                "resource" => resource.resource
+                "resource" => resource.resource,
+                "datasource" => "default"
             )
             .set(if resource.healthy { 1.0 } else { 0.0 });
         }
+    }
+    for datasource in state.tools.datasource_health().await {
+        let resource = match datasource.backend {
+            yang_db::BackendKind::MySql => "mysql",
+            yang_db::BackendKind::PostgreSql => "postgres",
+            _ => "database",
+        };
+        metrics::gauge!(
+            state.metric_names.readiness_resource_healthy,
+            "resource" => resource,
+            "datasource" => datasource.datasource.as_str().to_string()
+        )
+        .set(if datasource.healthy { 1.0 } else { 0.0 });
     }
 
     if evaluation.result.is_ready() {
@@ -381,19 +398,31 @@ impl ReadinessGate {
 }
 
 fn record_pool_metrics(tools: &Tools, metric_name: &'static str) {
-    if let Ok(database) = tools.mysql() {
-        let status = database.pool_status();
-        record_pool_status(metric_name, "mysql", status);
+    if let Ok(datasources) = tools.datasources() {
+        for datasource in datasources.iter() {
+            let backend = match datasource.database().backend() {
+                yang_db::BackendKind::MySql => "mysql",
+                yang_db::BackendKind::PostgreSql => "postgres",
+                _ => "database",
+            };
+            record_pool_status(
+                metric_name,
+                backend,
+                datasource.id().as_str(),
+                datasource.pool_status(),
+            );
+        }
     }
     if let Ok(cache) = tools.cache() {
         let status = cache.pool_status();
-        record_pool_status(metric_name, "redis", status);
+        record_pool_status(metric_name, "redis", "default", status);
     }
 }
 
 fn record_pool_status(
     metric_name: &'static str,
     resource: &'static str,
+    datasource: &str,
     status: yang_db::PoolStatus,
 ) {
     for (state, value) in [
@@ -405,6 +434,7 @@ fn record_pool_status(
         metrics::gauge!(
             metric_name,
             "resource" => resource,
+            "datasource" => datasource.to_string(),
             "state" => state
         )
         .set(value as f64);

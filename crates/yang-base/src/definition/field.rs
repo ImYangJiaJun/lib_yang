@@ -1,6 +1,7 @@
 //! BR 风格 Fields 定义及其原生 YANG 投影。
 
 use super::{ActionRef, FieldKind, FieldName, FieldRef, TableName, WidgetHint};
+use crate::datasource::DatasourceId;
 use crate::error::BaseError;
 use crate::table::{Field, RelationType, Table as SchemaTable, TableDefinition, Validator};
 use serde_json::Value;
@@ -27,6 +28,8 @@ pub struct StorageSpec {
     pub indexed: bool,
     /// 显式声明该字段由哪个旧列原位改名而来。
     pub renamed_from: Option<String>,
+    /// PostgreSQL 原生枚举类型名；仅 Radio 字段可声明。
+    pub native_enum: Option<String>,
 }
 
 /// 字段的输入验证语义。
@@ -226,6 +229,11 @@ impl FieldSpec {
                     .iter()
                     .map(|(value, _)| value.clone())
                     .collect::<Vec<_>>();
+                if self.storage.native_enum.is_some() && self.storage.max_length.is_some() {
+                    return Err(BaseError::ConfigError(format!(
+                        "Radio 字段 {name} 不能同时声明 native_enum 与 varchar 存储"
+                    )));
+                }
                 if let Some(max_length) = self.storage.max_length {
                     let unique = values.iter().collect::<BTreeSet<_>>();
                     let longest = values
@@ -255,7 +263,11 @@ impl FieldSpec {
                         },
                     )))
                 } else {
-                    Field::enumeration(name, values)
+                    let field = Field::enumeration(name, values);
+                    match self.storage.native_enum {
+                        Some(type_name) => field.native_enum(type_name),
+                        None => field,
+                    }
                 }
             }
             FieldKind::Table | FieldKind::Tree => Field::bigint(name),
@@ -797,6 +809,15 @@ impl<T> Radio<T> {
         self
     }
 
+    /// 复用 PostgreSQL 原生枚举类型（`CREATE TYPE ... AS ENUM`）。
+    ///
+    /// 与 [`Self::varchar`] 互斥；MySQL 方言在渲染 DDL 时明确拒绝。声明后
+    /// PostgreSQL 不再生成隐式 `VARCHAR + CHECK`，而是直接使用该枚举类型。
+    pub fn native_enum(mut self, type_name: impl Into<String>) -> Self {
+        self.inner.storage.native_enum = Some(type_name.into());
+        self
+    }
+
     /// 设置候选值和标题。
     pub fn options<I, V, S>(mut self, values: I) -> Self
     where
@@ -846,6 +867,10 @@ pub struct TableIndexSpec {
     pub name: Option<String>,
     /// 当前表中的受控字段引用。
     pub fields: Vec<FieldRef>,
+    /// 表达式键（已校验的受信 SQL）。
+    pub expressions: Vec<String>,
+    /// PostgreSQL 部分索引谓词（`WHERE ...`）。
+    pub predicate: Option<String>,
     /// 是否为唯一索引。
     pub unique: bool,
 }
@@ -870,6 +895,15 @@ pub struct TableForeignKeySpec {
     pub referenced_fields: Vec<FieldRef>,
 }
 
+/// 表级 opaque 列声明（仅 PostgreSQL）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableOpaqueColumnSpec {
+    /// 列名。
+    pub name: String,
+    /// 期望的 `format_type` 文本。
+    pub sql_type: String,
+}
+
 /// 表及其唯一字段定义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableSpec {
@@ -885,6 +919,12 @@ pub struct TableSpec {
     pub checks: Vec<TableCheckSpec>,
     /// 表级外键约束。
     pub foreign_keys: Vec<TableForeignKeySpec>,
+    /// 框架不建模的存量列（仅 PostgreSQL）。
+    pub opaque_columns: Vec<TableOpaqueColumnSpec>,
+    /// 表所属逻辑数据源；`None` 表示使用模块/默认数据源。
+    pub datasource: Option<DatasourceId>,
+    /// 主键列声明顺序（构建期用于抵消字段排序）。
+    pub(crate) primary_key_order: Vec<String>,
 }
 
 impl TableSpec {
@@ -897,6 +937,9 @@ impl TableSpec {
             indexes: Vec::new(),
             checks: Vec::new(),
             foreign_keys: Vec::new(),
+            opaque_columns: Vec::new(),
+            datasource: None,
+            primary_key_order: Vec::new(),
         }
     }
 
@@ -906,15 +949,30 @@ impl TableSpec {
         self
     }
 
+    /// 设置表所属逻辑数据源。
+    pub fn datasource(mut self, id: DatasourceId) -> Self {
+        self.datasource = Some(id);
+        self
+    }
+
     /// 使用 Fields 作为唯一字段来源。
     pub fn fields(mut self, fields: Fields) -> Self {
         self.fields = fields.into_vec();
+        self.primary_key_order = self
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::Key)
+            .map(|field| field.name.to_string())
+            .collect();
         self
     }
 
     /// 增加一个已经命名的字段定义。
     #[must_use]
     pub fn field(mut self, field: FieldSpec) -> Self {
+        if field.kind == FieldKind::Key {
+            self.primary_key_order.push(field.name.to_string());
+        }
         self.fields.push(field);
         self
     }
@@ -924,6 +982,8 @@ impl TableSpec {
         self.indexes.push(TableIndexSpec {
             name: None,
             fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
         });
         self
@@ -938,6 +998,8 @@ impl TableSpec {
         self.indexes.push(TableIndexSpec {
             name: Some(name.into()),
             fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
         });
         self
@@ -948,6 +1010,8 @@ impl TableSpec {
         self.indexes.push(TableIndexSpec {
             name: None,
             fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: false,
         });
         self
@@ -962,7 +1026,60 @@ impl TableSpec {
         self.indexes.push(TableIndexSpec {
             name: Some(name.into()),
             fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: false,
+        });
+        self
+    }
+
+    /// 添加带 `WHERE` 谓词的 PostgreSQL 部分索引。
+    pub fn partial_index(
+        mut self,
+        name: impl Into<String>,
+        fields: impl IntoIterator<Item = FieldRef>,
+        predicate: impl Into<String>,
+    ) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: Some(name.into()),
+            fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: Some(predicate.into()),
+            unique: false,
+        });
+        self
+    }
+
+    /// 添加带 `WHERE` 谓词的 PostgreSQL 部分唯一索引。
+    pub fn partial_unique_named(
+        mut self,
+        name: impl Into<String>,
+        fields: impl IntoIterator<Item = FieldRef>,
+        predicate: impl Into<String>,
+    ) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: Some(name.into()),
+            fields: fields.into_iter().collect(),
+            expressions: Vec::new(),
+            predicate: Some(predicate.into()),
+            unique: true,
+        });
+        self
+    }
+
+    /// 添加表达式索引（如 `lower(email)`）。
+    pub fn expression_index(
+        mut self,
+        name: impl Into<String>,
+        expressions: impl IntoIterator<Item = impl Into<String>>,
+        unique: bool,
+    ) -> Self {
+        self.indexes.push(TableIndexSpec {
+            name: Some(name.into()),
+            fields: Vec::new(),
+            expressions: expressions.into_iter().map(Into::into).collect(),
+            predicate: None,
+            unique,
         });
         self
     }
@@ -991,14 +1108,40 @@ impl TableSpec {
         self
     }
 
+    /// 声明一个框架不建模的存量列（仅 PostgreSQL）。
+    pub fn opaque_column(mut self, name: impl Into<String>, sql_type: impl Into<String>) -> Self {
+        self.opaque_columns.push(TableOpaqueColumnSpec {
+            name: name.into(),
+            sql_type: sql_type.into(),
+        });
+        self
+    }
+
     /// 生成 schema 同步和 TableQuery 使用的不可变执行产物。
     pub fn table_definition(&self) -> Result<TableDefinition, BaseError> {
         let mut table = SchemaTable::new(self.name.to_string());
+        table = table
+            .datasource(self.datasource.clone().unwrap_or_default())
+            .primary_key_order(self.primary_key_order.clone());
+        for opaque in &self.opaque_columns {
+            table = table.opaque_column(opaque.name.clone(), opaque.sql_type.clone());
+        }
         if !self.title.is_empty() {
             table = table.label(self.title.clone());
         }
         for index in &self.indexes {
             let fields = self.validate_index(index)?;
+            if !index.expressions.is_empty() || index.predicate.is_some() {
+                table = table.index_spec(
+                    index.name.clone(),
+                    fields,
+                    index.expressions.clone(),
+                    index.predicate.clone(),
+                    index.unique,
+                    false,
+                );
+                continue;
+            }
             table = match (&index.name, index.unique) {
                 (Some(name), true) => table.unique_named(name.clone(), fields),
                 (None, true) => table.unique(fields),
@@ -1029,9 +1172,15 @@ impl TableSpec {
     }
 
     fn validate_index(&self, index: &TableIndexSpec) -> Result<Vec<String>, BaseError> {
-        if index.fields.is_empty() {
+        if index.fields.is_empty() && index.expressions.is_empty() {
             return Err(BaseError::ConfigError(format!(
-                "表 {} 的复合索引至少需要一个字段",
+                "表 {} 的索引至少需要一个字段或表达式",
+                self.name
+            )));
+        }
+        if !index.expressions.is_empty() && index.name.is_none() {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 的表达式索引必须显式声明名称",
                 self.name
             )));
         }

@@ -1,6 +1,7 @@
 //! Schema-first DSL 构建后的内部表配置。
 
 use super::FieldConfig;
+use crate::datasource::DatasourceId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -8,11 +9,21 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct TableConfig {
     pub(crate) table_name: String,
+    /// 表所属逻辑数据源；默认 `default`。
+    pub(crate) datasource: DatasourceId,
     #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
     pub(crate) table_ref: yang_db::TableRef,
     pub(crate) display_name: String,
+    /// 兼容字段：单主键时等于唯一主键；复合主键时等于首个主键。
     pub(crate) primary_key: String,
+    /// 完整主键列（按声明顺序）；空表示无主键。
+    pub(crate) primary_keys: Vec<String>,
     pub(crate) fields: HashMap<String, FieldConfig>,
+    /// 框架不建模、不读写、也不改写的存量列（仅 PostgreSQL）。
+    ///
+    /// 只用于校验列确实存在且类型符合声明；运行期 CRUD/UI 完全忽略。
+    #[cfg_attr(not(any(feature = "mysql", feature = "postgres")), allow(dead_code))]
+    pub(crate) opaque_columns: Vec<OpaqueColumnConfig>,
     #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
     pub(crate) field_refs: HashMap<String, yang_db::FieldRef>,
     #[cfg_attr(not(any(feature = "mysql", test)), allow(dead_code))]
@@ -56,11 +67,23 @@ impl TableConfig {
     }
 }
 
+/// 框架不建模的存量列声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpaqueColumnConfig {
+    pub(crate) name: String,
+    /// 与 PostgreSQL `format_type` 输出比较的受信类型文本（大小写/空白不敏感）。
+    pub(crate) sql_type: String,
+}
+
 /// 编译后的索引配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct IndexConfig {
     pub(crate) name: Option<String>,
     pub(crate) fields: Vec<String>,
+    /// 表达式键（已校验的受信 SQL）；与 `fields` 至少有一个非空。
+    pub(crate) expressions: Vec<String>,
+    /// PostgreSQL 部分索引谓词（`WHERE <predicate>`）。
+    pub(crate) predicate: Option<String>,
     /// PostgreSQL 15+ 唯一索引的 `NULLS NOT DISTINCT` 语义；MySQL 明确不支持。
     pub(crate) nulls_not_distinct: bool,
 }
@@ -70,8 +93,20 @@ impl IndexConfig {
         Self {
             name,
             fields,
+            expressions: Vec::new(),
+            predicate: None,
             nulls_not_distinct,
         }
+    }
+
+    pub(crate) fn with_expressions(mut self, expressions: Vec<String>) -> Self {
+        self.expressions = expressions;
+        self
+    }
+
+    pub(crate) fn with_predicate(mut self, predicate: Option<String>) -> Self {
+        self.predicate = predicate;
+        self
     }
 }
 
