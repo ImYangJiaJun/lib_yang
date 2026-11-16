@@ -539,6 +539,8 @@
       "path_params": [],
       "query_params": [],
       "body": true,
+      "generated": false,
+      "note": "手写实现（multipart/form-data），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": [
         "im:resource:upload",
@@ -576,6 +578,8 @@
       "path_params": [],
       "query_params": [],
       "body": true,
+      "generated": false,
+      "note": "手写实现（multipart/form-data），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": [
         "im:resource:upload",

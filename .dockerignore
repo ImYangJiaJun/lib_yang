@@ -68,3 +68,30 @@ project/inventory-system/data
 project/inventory-system/parity_runs
 project/inventory-system/tests/fixtures
 project/inventory-system/frontend/node_modules
+
+# 各子项目 .gitignore 明确标注为“含明文凭据/真实业务数据、不入库”的本地产物：
+# 以后端仓库根为 context 构建时同样必须排除，避免把它们送进 docker daemon/
+# 远程 builder。注意 Docker 模式语义：不带斜杠的模式只匹配上下文根，
+# 嵌套项必须使用 **/ 前缀（无 **/ 等于没加）。
+**/.git
+**/.claude
+**/.mcp
+**/*.log
+**/.evolver
+**/.tmplocal
+**/.scratch-archive
+
+# yang-system deploy/ 下的压缩包（.gitignore 已禁止入库；不是编译输入）
+project/yang-system/deploy/*.tar
+project/yang-system/deploy/*.tar.gz
+
+# 业务侧提供的原始表格：是数据不是源码（各项目 .gitignore 均为 docs/*.xlsx）
+docs/*.xlsx
+project/yang-system/docs/*.xlsx
+project/receivables-system/docs/*.xlsx
+
+# inventory-system 本机 Doris 凭据、测试/对拍数据与导出产物（均不参与 Rust 构建）
+project/inventory-system/config/doris.json
+project/inventory-system/.testdata
+project/inventory-system/.golden
+project/inventory-system/public/exports

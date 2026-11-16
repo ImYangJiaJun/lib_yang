@@ -13431,7 +13431,9 @@
   {
    "method": "POST",
    "path": "/open-apis/wiki/v2/nodes/search",
-   "ident": [],
+   "ident": [
+    "User"
+   ],
    "title": "搜索 Wiki",
    "link": "https://open.feishu.cn/document/server-docs/docs/wiki-v2/search_wiki.md",
    "domains": [

@@ -309,6 +309,8 @@
       "path_params": [],
       "query_params": [],
       "body": true,
+      "generated": false,
+      "note": "手写实现（multipart/form-data），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": ["drive:drive", "drive:file", "drive:file:upload"],
       "doc_url": "https://open.feishu.cn/document/server-docs/docs/drive-v1/upload/upload_all"
@@ -321,6 +323,8 @@
       "path_params": ["file_token"],
       "query_params": [],
       "body": false,
+      "generated": false,
+      "note": "手写实现（二进制下载），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": ["drive:drive", "drive:drive:readonly", "drive:file", "drive:file:download", "drive:file:readonly"],
       "doc_url": "https://open.feishu.cn/document/server-docs/docs/drive-v1/download/download"
@@ -333,6 +337,8 @@
       "path_params": [],
       "query_params": [],
       "body": true,
+      "generated": false,
+      "note": "手写实现（multipart/form-data），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": ["bitable:app", "docs:doc", "docs:document.media:upload", "drive:drive", "sheets:spreadsheet"],
       "doc_url": "https://open.feishu.cn/document/server-docs/docs/drive-v1/media/upload_all"
@@ -345,6 +351,8 @@
       "path_params": ["file_token"],
       "query_params": ["extra"],
       "body": false,
+      "generated": false,
+      "note": "手写实现（二进制下载），仅供目录索引，不参与 JSON 端点生成",
       "identity": "either",
       "scopes": ["bitable:app", "bitable:app:readonly", "docs:doc", "docs:doc:readonly", "docs:document.media:download", "drive:drive", "drive:drive:readonly", "sheets:spreadsheet", "sheets:spreadsheet:readonly"],
       "doc_url": "https://open.feishu.cn/document/server-docs/docs/drive-v1/media/download"
