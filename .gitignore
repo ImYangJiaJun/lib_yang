@@ -13,4 +13,4 @@
 .tmplocal/
 */tests/
 __pycache__/
-*.pyc
+*.py[cod]

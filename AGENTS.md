@@ -80,12 +80,21 @@ cargo run --example <name> -p <crate> --locked
 | HTTP 客户端 | `crates/yang-base/src/http/` | reqwest wrapper, feature-gated |
 | Table 系统 | `crates/yang-base/src/table/` | child AGENTS.md；`table_query/` 子模块化（build/read/write/filters/plan/validation…） |
 | definition ui | `crates/yang-base/src/definition/ui/` | 已拆 action/catalog/demo/hints/module/table |
-| schema 同步 | `crates/yang-base/src/database/schema_sync/` | 方言经 `dialect.rs` / `driver.rs` 分派；MySQL `inspect.rs`+`render.rs`，PostgreSQL `pg.rs`（`pg_catalog` 反射：列/主键/索引/CHECK/FK/identity/生成列/注释/collation；部分索引与表达式键反射保留但不支持 DSL 声明） |
+| schema 同步 | `crates/yang-base/src/database/schema_sync/` | 方言经 `dialect.rs` / `driver.rs` 分派；MySQL `inspect.rs`+`render.rs`，PostgreSQL `pg.rs`（`pg_catalog` 反射：列/主键/索引/CHECK/FK/identity/生成列/注释/collation/原生枚举/部分索引/表达式键）；`binding.rs` 维护 `_yang_schema_binding`（managed/adopted 所有权登记） |
 | Tokens | `crates/yang-base/src/token/` | JWT TokenManager, feature-gated；鉴权路径必须用 `verify_token_checked`（`verify_token` 不查 Redis 撤销黑名单） |
 | 基础系统联调 | `project/yang-system/` | 独立嵌套仓库（相对路径依赖 ../../crates 联调本地库）；进入该目录独立跑 Cargo |
 | PCG generation | `crates/yang-pcg/src/generator.rs` | pipeline: topology -> layout -> terrain -> spawn -> chunks |
 | PCG terrain | `crates/yang-pcg/src/terrain/` | child AGENTS.md；`pcg 全部测试放 auxiliary 组跑 --all-targets` |
 | Specs/backlog | `docs/BACKLOG.md`, `docs/superpowers/` | requirements/design/tasks；散落 summary 日志已归档至 docs/audit/ 等子目录 |
+
+## MULTI-DATASOURCE / PG ADOPTION
+- 逻辑源：`DatasourceId`（`DatasourceId::default_source()` = `default`）；运行时注册表在 `Tools`/`ToolsBuilder`（`database_named`/`postgres_named`/`default_datasource`）。
+- 模块与表可用 `ModuleSpec::datasource` / `TableSpec::datasource` 绑定具名源；未绑定走默认源。构建期会校验源已注册。
+- 事务/查询由 `ActionContext::begin_transaction()` 与 `TableQuery` 的 `ensure_same_source` 强制同源；跨源一致性用 outbox/saga。
+- 存量 PG 适配：`Field::native_enum("type_name")`（对应 DSL `Radio::native_enum`）、`Table::index_spec` / `TableSpec::partial_index|partial_unique_named|expression_index`、`Table::opaque_column(name, "format_type")`（DSL `TableSpec::opaque_column`，仅校验已存在且不改写）；同步器只补缺失结构，不删除库内未知对象。
+- 所有权登记：`_yang_schema_binding`（`managed`/`adopted`）由同步器自动维护；`SchemaSyncReport.bindings` 暴露本轮绑定变化。保留表名禁止模块声明。
+- 新增集成门禁：`integration_multi_datasource`（MySQL+PG）、`integration_pg_adoption`（PG，含原生枚举/部分索引/opaque 列/接入报告/所有权绑定）。
+- 存量 PG 项目接入步骤与失败处理见 `docs/reference/POSTGRES_ADOPTION.md`。
 
 ## CODE MAP
 | Symbol | Type | Location | Role |

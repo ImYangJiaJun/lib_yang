@@ -55,6 +55,12 @@ pub(crate) struct FieldConfig {
     /// 列排序规则（PostgreSQL `COLLATE`）；MySQL 不支持字段级 collation。
     pub collation: Option<String>,
 
+    /// PostgreSQL 原生枚举类型名（`CREATE TYPE ... AS ENUM`）；仅枚举字段可声明。
+    ///
+    /// 未声明时 PostgreSQL 使用 `VARCHAR + CHECK` 存储枚举；声明后复用既有
+    /// 原生枚举类型，适配已使用 PG enum 的存量表。MySQL 方言明确拒绝。
+    pub native_enum: Option<String>,
+
     /// 验证器列表
     ///
     /// 用于验证字段值的验证器，按顺序执行
@@ -117,6 +123,7 @@ impl FieldConfig {
             generated: None,
             comment: None,
             collation: None,
+            native_enum: None,
             validators: Vec::new(),
             permissions: FieldPermissions::default(),
             hidden: false,

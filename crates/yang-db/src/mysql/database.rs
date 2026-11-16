@@ -180,6 +180,15 @@ pub struct Database {
     config: DatabaseConfig,
 }
 
+impl Clone for Database {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            config: self.config.clone(),
+        }
+    }
+}
+
 impl Database {
     /// 返回 MySQL 后端的静态能力契约。
     pub const fn capabilities() -> &'static BackendCapabilities {

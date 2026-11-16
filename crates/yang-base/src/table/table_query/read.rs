@@ -6,7 +6,7 @@
 #![cfg(any(feature = "mysql", feature = "postgres"))]
 
 use super::TableQuery;
-use crate::database::AnyTransaction;
+use crate::database::{AnyTransaction, AnyTransactionKind};
 use crate::error::BaseError;
 
 /// 分页窗口计数在结果行中的别名；读取后从 `Record` 中剥离。
@@ -34,21 +34,22 @@ impl TableQuery {
             .unwrap_or(crate::table::query_params::DEFAULT_QUERY_PAGE_SIZE);
         let mut query = self.page(page, page_size)?;
 
-        // 未显式排序时沿用表定义默认排序，再追加主键。
+        // 未显式排序时沿用表定义默认排序，再追加主键（复合主键逐列追加）。
         if query.query_params.order_by.is_empty() {
             query.query_params.order_by = query.table_config.default_order.clone();
         }
-        let primary_key = query.table_config.primary_key.clone();
-        if !query
-            .query_params
-            .order_by
-            .iter()
-            .any(|(field, _)| field == &primary_key)
-        {
-            query
+        for primary_key in query.table_config.primary_keys.clone() {
+            if !query
                 .query_params
                 .order_by
-                .push((primary_key, crate::table::SortOrder::Asc));
+                .iter()
+                .any(|(field, _)| field == &primary_key)
+            {
+                query
+                    .query_params
+                    .order_by
+                    .push((primary_key, crate::table::SortOrder::Asc));
+            }
         }
 
         Ok((query, page, page_size))
@@ -236,8 +237,16 @@ impl TableQuery {
             #[cfg(feature = "postgres")]
             yang_db::BackendKind::PostgreSql => {
                 let database = self.pg_database()?;
-                let primary_key = self.table_config.primary_key.clone();
-                let key = self.field_ref(&primary_key)?;
+                let key = self
+                    .table_config
+                    .primary_keys
+                    .first()
+                    .cloned()
+                    .or_else(|| self.table_config.fields.keys().min().cloned());
+                let Some(key) = key else {
+                    return Ok(false);
+                };
+                let key = self.field_ref(&key)?;
                 let query = self
                     .apply_pg_where_guards(database.table(&self.table_config.table_ref))?
                     .field(key);
@@ -372,9 +381,10 @@ impl TableQuery {
         self,
         tx: &mut AnyTransaction,
     ) -> Result<Vec<crate::table::Record>, BaseError> {
-        match tx {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 self.apply_read_plan(query)?
                     .select::<crate::table::Record>()
@@ -382,7 +392,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseQueryFailed)
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 self.apply_pg_read_plan(query)?
                     .select::<crate::table::Record>()

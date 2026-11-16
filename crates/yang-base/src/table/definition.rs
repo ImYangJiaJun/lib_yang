@@ -6,11 +6,12 @@
 
 use super::field_config::{Audience, FieldConfig, FieldPermissions, RelationConfig, RelationType};
 use super::table_config::{
-    CheckConfig, ForeignKeyConfig, IndexConfig, TableConfig, TimestampFields,
+    CheckConfig, ForeignKeyConfig, IndexConfig, OpaqueColumnConfig, TableConfig, TimestampFields,
 };
 #[cfg(any(feature = "mysql", feature = "postgres"))]
 use super::TableQuery;
 use super::{FieldType, RegexCache, SortOrder, Validator, MAX_VARCHAR_LENGTH};
+use crate::datasource::DatasourceId;
 use crate::error::BaseError;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -128,6 +129,15 @@ impl Field {
     /// 设置列排序规则（PostgreSQL `COLLATE`）。
     pub fn collation(mut self, collation: impl Into<String>) -> Self {
         self.config.collation = Some(collation.into());
+        self
+    }
+
+    /// 声明复用 PostgreSQL 原生枚举类型（如 `order_status`）。
+    ///
+    /// 变体值仍由 [`Field::enumeration`] 声明；同步器会创建缺失的类型并补齐
+    /// 缺失的枚举值。MySQL 方言在渲染 DDL 时明确拒绝该声明。
+    pub fn native_enum(mut self, type_name: impl Into<String>) -> Self {
+        self.config.native_enum = Some(type_name.into());
         self
     }
 
@@ -524,6 +534,8 @@ impl Field {
 struct PendingIndex {
     name: Option<String>,
     fields: Vec<String>,
+    expressions: Vec<String>,
+    predicate: Option<String>,
     unique: bool,
     nulls_not_distinct: bool,
 }
@@ -548,7 +560,10 @@ struct PendingForeignKey {
 pub struct Table {
     name: String,
     label: Option<String>,
+    datasource: Option<DatasourceId>,
+    primary_key_order: Vec<String>,
     fields: Vec<Field>,
+    opaque_columns: Vec<OpaqueColumnConfig>,
     indexes: Vec<PendingIndex>,
     checks: Vec<PendingCheck>,
     foreign_keys: Vec<PendingForeignKey>,
@@ -561,7 +576,10 @@ impl Table {
         Self {
             name: name.into(),
             label: None,
+            datasource: None,
+            primary_key_order: Vec::new(),
             fields: Vec::new(),
+            opaque_columns: Vec::new(),
             indexes: Vec::new(),
             checks: Vec::new(),
             foreign_keys: Vec::new(),
@@ -575,12 +593,37 @@ impl Table {
         self
     }
 
+    /// 设置表所属逻辑数据源（默认 `default`）。
+    pub fn datasource(mut self, id: DatasourceId) -> Self {
+        self.datasource = Some(id);
+        self
+    }
+
+    /// 覆盖复合主键的列顺序（用于抵消字段排序）。
+    pub fn primary_key_order(mut self, order: Vec<String>) -> Self {
+        self.primary_key_order = order;
+        self
+    }
+
     /// 批量添加字段；支持数组、`Vec` 和任意字段迭代器。
     pub fn fields<I>(mut self, fields: I) -> Self
     where
         I: IntoIterator<Item = Field>,
     {
         self.fields.extend(fields);
+        self
+    }
+
+    /// 声明一个框架不建模的存量列（仅 PostgreSQL）。
+    ///
+    /// 该列必须已存在且 `format_type` 与 `sql_type` 一致；框架不改写、不读取、
+    /// 不写入，也不投影到通用 CRUD/UI。用于 `inet`、`citext`、自定义 domain 等
+    /// 无法安全映射为通用字段类型的列。
+    pub fn opaque_column(mut self, name: impl Into<String>, sql_type: impl Into<String>) -> Self {
+        self.opaque_columns.push(OpaqueColumnConfig {
+            name: name.into(),
+            sql_type: sql_type.into(),
+        });
         self
     }
 
@@ -596,6 +639,8 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
             nulls_not_distinct: false,
         });
@@ -614,6 +659,8 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
             nulls_not_distinct: false,
         });
@@ -635,6 +682,8 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
             nulls_not_distinct: true,
         });
@@ -657,6 +706,8 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: true,
             nulls_not_distinct: true,
         });
@@ -675,6 +726,8 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: false,
             nulls_not_distinct: false,
         });
@@ -693,8 +746,42 @@ impl Table {
                 .into_iter()
                 .map(|field| field.into().into_name())
                 .collect(),
+            expressions: Vec::new(),
+            predicate: None,
             unique: false,
             nulls_not_distinct: false,
+        });
+        self
+    }
+
+    /// 添加带受信表达式键与/或部分索引谓词的索引（仅 PostgreSQL 支持）。
+    ///
+    /// `fields` 与 `expressions` 至少一个非空；`predicate` 是 `WHERE` 后原样
+    /// 渲染的受信 SQL 表达式。MySQL 在 schema 同步时明确拒绝部分/表达式索引。
+    pub fn index_spec<I, C, S>(
+        mut self,
+        name: Option<String>,
+        fields: I,
+        expressions: impl IntoIterator<Item = S>,
+        predicate: Option<String>,
+        unique: bool,
+        nulls_not_distinct: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<ColumnName>,
+        S: Into<String>,
+    {
+        self.indexes.push(PendingIndex {
+            name,
+            fields: fields
+                .into_iter()
+                .map(|field| field.into().into_name())
+                .collect(),
+            expressions: expressions.into_iter().map(Into::into).collect(),
+            predicate,
+            unique,
+            nulls_not_distinct,
         });
         self
     }
@@ -764,7 +851,7 @@ impl Table {
         let mut field_names = HashSet::with_capacity(self.fields.len());
         let mut legacy_names = HashSet::new();
         let mut configs = HashMap::with_capacity(self.fields.len());
-        let mut primary_key: Option<String> = None;
+        let mut primary_keys: Vec<String> = Vec::new();
         let mut created_at: Option<String> = None;
         let mut updated_at: Option<String> = None;
         let mut deleted_at: Option<String> = None;
@@ -808,11 +895,8 @@ impl Table {
             }
             validate_field_shape(&self.name, &field, &regex_cache)?;
 
-            if field.primary_key && primary_key.replace(field.config.name.clone()).is_some() {
-                return Err(BaseError::ConfigError(format!(
-                    "表 {} 只能定义一个主键",
-                    self.name
-                )));
+            if field.primary_key {
+                primary_keys.push(field.config.name.clone());
             }
             if field.config.tenant_key && tenant_key.replace(field.config.name.clone()).is_some() {
                 return Err(BaseError::ConfigError(format!(
@@ -853,6 +937,8 @@ impl Table {
                 indexes.push(PendingIndex {
                     name: field.unique_name.take(),
                     fields: vec![field.config.name.clone()],
+                    expressions: Vec::new(),
+                    predicate: None,
                     unique: true,
                     nulls_not_distinct: false,
                 });
@@ -861,11 +947,36 @@ impl Table {
                 indexes.push(PendingIndex {
                     name: field.index_name.take(),
                     fields: vec![field.config.name.clone()],
+                    expressions: Vec::new(),
+                    predicate: None,
                     unique: false,
                     nulls_not_distinct: false,
                 });
             }
             configs.insert(field.config.name.clone(), field.config);
+        }
+
+        let mut opaque_names = HashSet::new();
+        for opaque in &self.opaque_columns {
+            validate_identifier("Opaque 列", &opaque.name)?;
+            if field_names.contains(&opaque.name) || !opaque_names.insert(opaque.name.clone()) {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的 opaque 列 {} 与字段或另一 opaque 列重名",
+                    self.name, opaque.name
+                )));
+            }
+            let sql_type = opaque.sql_type.trim();
+            if sql_type.is_empty()
+                || sql_type.chars().count() > 256
+                || [";", "--", "/*", "*/", "\n", "\r", "\0"]
+                    .iter()
+                    .any(|marker| sql_type.contains(marker))
+            {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的 opaque 列 {} 必须声明非空、长度受限且不含语句分隔符的类型文本",
+                    self.name, opaque.name
+                )));
+            }
         }
 
         if let Some(legacy_name) = legacy_names
@@ -878,15 +989,33 @@ impl Table {
             )));
         }
 
-        let primary_key = primary_key
-            .ok_or_else(|| BaseError::ConfigError(format!("表 {} 必须定义一个主键", self.name)))?;
+        if !self.primary_key_order.is_empty() {
+            let mut ordered = Vec::with_capacity(primary_keys.len());
+            for name in &self.primary_key_order {
+                match primary_keys.iter().position(|key| key == name) {
+                    Some(position) => ordered.push(primary_keys.remove(position)),
+                    None => {
+                        return Err(BaseError::ConfigError(format!(
+                            "表 {} 的主键顺序引用非主键字段: {name}",
+                            self.name
+                        )))
+                    }
+                }
+            }
+            ordered.append(&mut primary_keys);
+            primary_keys = ordered;
+        }
+
+        let primary_key = primary_keys.first().cloned().unwrap_or_default();
 
         let mut unique_indexes = Vec::new();
         let mut normal_indexes = Vec::new();
         let mut index_names = HashSet::new();
         for index in indexes {
             validate_index(&self.name, &field_names, &index, &mut index_names)?;
-            let config = IndexConfig::new(index.name, index.fields, index.nulls_not_distinct);
+            let config = IndexConfig::new(index.name, index.fields, index.nulls_not_distinct)
+                .with_expressions(index.expressions)
+                .with_predicate(index.predicate);
             if index.unique {
                 unique_indexes.push(config);
             } else {
@@ -951,10 +1080,13 @@ impl Table {
         Ok(TableDefinition {
             config: Arc::new(TableConfig {
                 table_name: self.name.clone(),
+                datasource: self.datasource.unwrap_or_default(),
                 table_ref,
                 display_name: self.label.unwrap_or(self.name),
                 primary_key,
+                primary_keys,
                 fields: configs,
+                opaque_columns: self.opaque_columns,
                 field_refs,
                 unique_indexes,
                 indexes: normal_indexes,
@@ -980,6 +1112,11 @@ impl TableDefinition {
         &self.config.table_name
     }
 
+    /// 返回表所属逻辑数据源。
+    pub fn datasource(&self) -> &DatasourceId {
+        &self.config.datasource
+    }
+
     /// 返回展示名称。
     pub fn label(&self) -> &str {
         &self.config.display_name
@@ -988,6 +1125,11 @@ impl TableDefinition {
     /// 返回主键字段名。
     pub fn primary_key(&self) -> &str {
         &self.config.primary_key
+    }
+
+    /// 返回完整主键列（复合主键时大于一个元素）。
+    pub fn primary_keys(&self) -> &[String] {
+        &self.config.primary_keys
     }
 
     /// 返回字段数量。
@@ -1131,9 +1273,27 @@ impl TableDefinition {
         self.bind_pool(crate::database::AnyPool::MySql(pool))
     }
 
-    /// 将表定义绑定到任意受支持的数据库连接池。
+    /// 将表定义绑定到任意受支持的数据库连接池（沿用表声明的数据源）。
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub fn bind_pool(&self, pool: crate::database::AnyPool) -> TableHandle {
+        self.bind_source_pool(crate::database::PoolHandle::new(
+            self.datasource().clone(),
+            pool,
+        ))
+    }
+
+    /// 将表定义绑定到注册表中的具名数据源（推荐入口）。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn bind_datasource(&self, datasource: &crate::database::Datasource) -> TableHandle {
+        self.bind_source_pool(crate::database::PoolHandle::new(
+            datasource.id().clone(),
+            datasource.database().pool(),
+        ))
+    }
+
+    /// 将表定义绑定到带逻辑数据源身份的连接池句柄。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn bind_source_pool(&self, pool: crate::database::PoolHandle) -> TableHandle {
         TableHandle {
             definition: self.clone(),
             pool,
@@ -1209,7 +1369,7 @@ impl<'a> FieldMetadata<'a> {
 #[derive(Debug, Clone)]
 pub struct TableHandle {
     definition: TableDefinition,
-    pool: crate::database::AnyPool,
+    pool: crate::database::PoolHandle,
 }
 
 #[cfg(any(feature = "mysql", feature = "postgres"))]
@@ -1227,10 +1387,11 @@ impl TableHandle {
     {
         let roles: Arc<[String]> =
             Arc::from(roles.into_iter().map(Into::into).collect::<Vec<String>>());
-        TableQuery::new(
+        TableQuery::new_sourced(
             self.definition.shared_config(),
             roles,
-            Some(self.pool.clone()),
+            Some(self.pool.pool().clone()),
+            self.pool.source().clone(),
         )
     }
 }
@@ -1532,6 +1693,22 @@ fn validate_field_shape(table: &str, field: &Field, cache: &RegexCache) -> Resul
         _ => {}
     }
 
+    if let Some(type_name) = &field.config.native_enum {
+        if !matches!(field.config.field_type, FieldType::Enum { .. }) {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的字段 {} 只有枚举类型可以声明 native_enum",
+                field.config.name
+            )));
+        }
+        validate_identifier("枚举类型", type_name)?;
+        // PostgreSQL 标识符上限是 63 字节；通用校验的 64 字符上界不能替代。
+        if type_name.len() > 63 {
+            return Err(BaseError::ConfigError(format!(
+                "表 {table} 的枚举类型名 {type_name} 超过 PostgreSQL 63 字节限制"
+            )));
+        }
+    }
+
     if field.config.auto_increment
         && (!field.primary_key
             || !matches!(
@@ -1812,9 +1989,9 @@ fn validate_index(
     index: &PendingIndex,
     index_names: &mut HashSet<String>,
 ) -> Result<(), BaseError> {
-    if index.fields.is_empty() {
+    if index.fields.is_empty() && index.expressions.is_empty() {
         return Err(BaseError::ConfigError(format!(
-            "表 {table} 的索引字段不能为空"
+            "表 {table} 的索引字段与表达式不能同时为空"
         )));
     }
     let mut seen = HashSet::new();
@@ -1829,6 +2006,25 @@ fn validate_index(
                 "表 {table} 的索引重复引用字段: {field}"
             )));
         }
+    }
+    for expression in &index.expressions {
+        validate_check_expression(table, "索引表达式", expression).map_err(|_| {
+            BaseError::ConfigError(format!(
+                "表 {table} 的索引表达式必须是单条、非空且长度受限的受信 SQL: {expression}"
+            ))
+        })?;
+    }
+    if let Some(predicate) = &index.predicate {
+        validate_check_expression(table, "部分索引谓词", predicate).map_err(|_| {
+            BaseError::ConfigError(format!(
+                "表 {table} 的部分索引谓词必须是单条、非空且长度受限的受信 SQL: {predicate}"
+            ))
+        })?;
+    }
+    if !index.expressions.is_empty() && index.name.is_none() {
+        return Err(BaseError::ConfigError(format!(
+            "表 {table} 的表达式索引必须显式声明名称"
+        )));
     }
     let prefix = if index.unique { "uk" } else { "idx" };
     let effective_name = index
@@ -2110,6 +2306,35 @@ fn storage_type_json_schema(field_type: &FieldType) -> Value {
         FieldType::DateTime => json!({"type": "string", "format": "date-time"}),
         // 嵌套数组/JSON 元素在构建期已被拒绝，这里保持空 schema 作为兜底。
         FieldType::Json | FieldType::Array(_) => json!({}),
+    }
+}
+
+#[cfg(test)]
+mod composite_primary_key_tests {
+    use super::*;
+
+    #[test]
+    fn table_without_primary_key_is_allowed() {
+        let definition = Table::new("no_pk")
+            .fields([Field::string("name", 64).required()])
+            .build()
+            .expect("无主键表定义应有效");
+        assert!(definition.primary_keys().is_empty());
+        assert_eq!(definition.primary_key(), "");
+    }
+
+    #[test]
+    fn composite_primary_key_keeps_all_columns() {
+        let definition = Table::new("composite_pk")
+            .fields([
+                Field::bigint("tenant_id").required().primary_key(),
+                Field::bigint("item_id").required().primary_key(),
+                Field::string("name", 64),
+            ])
+            .build()
+            .expect("复合主键表定义应有效");
+        assert_eq!(definition.primary_key(), "tenant_id");
+        assert_eq!(definition.primary_keys(), ["tenant_id", "item_id"]);
     }
 }
 

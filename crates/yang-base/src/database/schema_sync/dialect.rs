@@ -139,29 +139,45 @@ impl SchemaDialect {
     /// 校验表定义；调用方在生成计划前统一调用。
     pub(super) fn validate_table_config(self, table: &TableConfig) -> Result<(), BaseError> {
         self.quote_table(&table.table_name)?;
+        #[cfg(feature = "mysql")]
+        if matches!(self, Self::MySql) && !table.opaque_columns.is_empty() {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 声明了 PostgreSQL 专属的 opaque 列，MySQL 不支持",
+                table.table_name
+            )));
+        }
         if table.fields.is_empty() {
             return Err(BaseError::ConfigError(format!(
                 "表 {} 没有声明字段",
                 table.table_name
             )));
         }
-        let primary = table.fields.get(&table.primary_key).ok_or_else(|| {
-            BaseError::ConfigError(format!(
-                "表 {} 的主键字段 {} 未声明",
-                table.table_name, table.primary_key
-            ))
-        })?;
-        if !primary.required {
-            return Err(BaseError::ConfigError(format!(
-                "表 {} 的主键字段 {} 必须 required",
-                table.table_name, table.primary_key
-            )));
+        for primary_name in &table.primary_keys {
+            let primary = table.fields.get(primary_name).ok_or_else(|| {
+                BaseError::ConfigError(format!(
+                    "表 {} 的主键字段 {} 未声明",
+                    table.table_name, primary_name
+                ))
+            })?;
+            if !primary.required {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的主键字段 {} 必须 required",
+                    table.table_name, primary_name
+                )));
+            }
         }
+        let single_primary = table.primary_keys.len() == 1;
         self.validate_identifier_limits(table)?;
         for field in table.fields.values() {
             self.quote_identifier(&field.name)?;
+            if field.auto_increment && !single_primary {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 的复合主键不支持 auto_increment: {}",
+                    table.table_name, field.name
+                )));
+            }
             if field.auto_increment
-                && (field.name != table.primary_key
+                && (field.name != table.primary_keys[0]
                     || !matches!(field.field_type, FieldType::Integer | FieldType::BigInt))
             {
                 return Err(BaseError::ConfigError(format!(
@@ -251,7 +267,24 @@ impl SchemaDialect {
             #[cfg(feature = "mysql")]
             Self::MySql => mysql_render::render_create_table(table, true),
             #[cfg(feature = "postgres")]
-            Self::PostgreSql => Ok(self.render_create_table_statements(table, true)?.join("; ")),
+            Self::PostgreSql => {
+                let mut signature = self
+                    .render_create_table_statements(table, true, &BTreeMap::new())?
+                    .join("; ");
+                for opaque in &table.opaque_columns {
+                    signature.push_str(&format!(
+                        "; opaque {}:{}",
+                        opaque.name,
+                        opaque
+                            .sql_type
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_ascii_lowercase()
+                    ));
+                }
+                Ok(signature)
+            }
         }
     }
 
@@ -266,6 +299,21 @@ impl SchemaDialect {
             // `shared_config()`，让 PostgreSQL-only 构建也能读取同一份编译配置。
             let config = definition.shared_config();
             let table = config.as_ref();
+            let last_name = table.table_name.rsplit('.').next().unwrap_or_default();
+            // MySQL 在 lower_case_table_names=1 下大小写不敏感，任何大小写变体
+            // 都可能落到同一张系统表上，必须一并拒绝。
+            let reserved = match self {
+                #[cfg(feature = "mysql")]
+                Self::MySql => last_name.eq_ignore_ascii_case(super::binding::BINDING_TABLE),
+                #[cfg(feature = "postgres")]
+                Self::PostgreSql => last_name == super::binding::BINDING_TABLE,
+            };
+            if reserved {
+                return Err(BaseError::ConfigError(format!(
+                    "表 {} 是框架保留的系统表，不能由模块声明",
+                    table.table_name
+                )));
+            }
             self.validate_table_config(table)?;
             let signature = self.table_signature(table)?;
             if let Some((_, existing_signature)) = normalized.get(definition.name()) {
@@ -332,19 +380,121 @@ impl SchemaDialect {
         self,
         table: &TableConfig,
         include_foreign_keys: bool,
+        existing_enum_types: &BTreeMap<String, Vec<String>>,
     ) -> Result<Vec<String>, BaseError> {
         match self {
             #[cfg(feature = "mysql")]
-            Self::MySql => Ok(vec![self.render_create_table(table, include_foreign_keys)?]),
+            Self::MySql => {
+                let _ = existing_enum_types;
+                Ok(vec![self.render_create_table(table, include_foreign_keys)?])
+            }
             #[cfg(feature = "postgres")]
             Self::PostgreSql => {
-                let mut statements = vec![self.render_create_table(table, include_foreign_keys)?];
+                let mut statements = Vec::new();
+                for (type_name, values) in self.desired_native_enums(table)? {
+                    match existing_enum_types.get(&type_name) {
+                        None => {
+                            statements.push(self.render_create_enum_type(&type_name, &values)?);
+                        }
+                        Some(existing) => {
+                            let missing = values
+                                .iter()
+                                .filter(|value| !existing.contains(value))
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if !missing.is_empty() {
+                                // 新表在同一事务内建列并引用新增枚举值会触发 PG
+                                // “unsafe use of new value”；要求先完成类型迁移。
+                                let default_uses_new = table.fields.values().any(|field| {
+                                    field.native_enum.as_deref() == Some(type_name.as_str())
+                                        && field.default_value.as_ref().is_some_and(|default| {
+                                            default.as_str().is_some_and(|value| {
+                                                missing.iter().any(|m| m == value)
+                                            })
+                                        })
+                                });
+                                if default_uses_new {
+                                    return Err(BaseError::DatabaseInitFailed(format!(
+                                        "枚举类型 {type_name} 缺少取值 {missing:?}，且新表默认值引用这些取值；请先人工 ALTER TYPE 后重启"
+                                    )));
+                                }
+                                for value in missing {
+                                    statements
+                                        .push(self.render_add_enum_value(&type_name, &value)?);
+                                }
+                            }
+                        }
+                    }
+                }
+                statements.push(self.render_create_table(table, include_foreign_keys)?);
                 for index in self.desired_indexes(table)? {
                     statements.push(self.render_create_index_on_table(table, &index, false)?);
                 }
                 Ok(statements)
             }
         }
+    }
+
+    /// 收集表声明中的 PostgreSQL 原生枚举类型；同类型多字段声明必须一致。
+    #[cfg(feature = "postgres")]
+    pub(super) fn desired_native_enums(
+        self,
+        table: &TableConfig,
+    ) -> Result<BTreeMap<String, Vec<String>>, BaseError> {
+        let mut enums = BTreeMap::<String, Vec<String>>::new();
+        for field in table.fields.values() {
+            let Some(type_name) = &field.native_enum else {
+                continue;
+            };
+            let FieldType::Enum { values } = &field.field_type else {
+                continue;
+            };
+            match enums.get(type_name) {
+                Some(existing) if existing != values => {
+                    return Err(BaseError::ConfigError(format!(
+                        "表 {} 的原生枚举类型 {type_name} 在不同字段上声明了不同取值",
+                        table.table_name
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    enums.insert(type_name.clone(), values.clone());
+                }
+            }
+        }
+        Ok(enums)
+    }
+
+    /// 渲染 PostgreSQL 原生枚举类型创建。
+    #[cfg(feature = "postgres")]
+    pub(super) fn render_create_enum_type(
+        self,
+        type_name: &str,
+        values: &[String],
+    ) -> Result<String, BaseError> {
+        Ok(format!(
+            "CREATE TYPE {} AS ENUM ({})",
+            self.quote_identifier(type_name)?,
+            values
+                .iter()
+                .map(|value| self.quote_string(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+
+    /// 渲染 PostgreSQL 原生枚举类型追加取值。
+    #[cfg(feature = "postgres")]
+    pub(super) fn render_add_enum_value(
+        self,
+        type_name: &str,
+        value: &str,
+    ) -> Result<String, BaseError> {
+        Ok(format!(
+            "ALTER TYPE {} ADD VALUE IF NOT EXISTS {}",
+            self.quote_identifier(type_name)?,
+            self.quote_string(value)
+        ))
     }
 
     /// 渲染单条 `CREATE TABLE`（不含独立索引）。
@@ -364,10 +514,17 @@ impl SchemaDialect {
                     .into_iter()
                     .map(|field| self.render_column(field))
                     .collect::<Result<Vec<_>, _>>()?;
-                definitions.push(format!(
-                    "PRIMARY KEY ({})",
-                    self.quote_identifier(&table.primary_key)?
-                ));
+                if !table.primary_keys.is_empty() {
+                    definitions.push(format!(
+                        "PRIMARY KEY ({})",
+                        table
+                            .primary_keys
+                            .iter()
+                            .map(|name| self.quote_identifier(name))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .join(", ")
+                    ));
+                }
                 for check in self.desired_checks(table)? {
                     definitions.push(self.render_check(&check)?);
                 }
@@ -392,7 +549,7 @@ impl SchemaDialect {
             Self::MySql => mysql_render::render_column(field),
             #[cfg(feature = "postgres")]
             Self::PostgreSql => {
-                let sql_type = self.render_type(&field.field_type, &field.name)?;
+                let sql_type = self.render_field_type(field)?;
                 let mut definition = format!("{} {sql_type}", self.quote_identifier(&field.name)?);
                 if let Some(collation) = &field.collation {
                     definition.push_str(" COLLATE ");
@@ -425,6 +582,15 @@ impl SchemaDialect {
                 Ok(definition)
             }
         }
+    }
+
+    /// 渲染字段的 PostgreSQL 列类型；原生枚举使用显式类型名，其余走基础映射。
+    #[cfg(feature = "postgres")]
+    pub(super) fn render_field_type(&self, field: &FieldConfig) -> Result<String, BaseError> {
+        if let Some(type_name) = &field.native_enum {
+            return self.quote_identifier(type_name);
+        }
+        self.render_type(&field.field_type, &field.name)
     }
 
     /// 渲染 PostgreSQL 列类型。
@@ -551,7 +717,7 @@ impl SchemaDialect {
                 let collation_changed =
                     !collations_equal(field.collation.as_deref(), existing_collation);
                 if issues.contains(&SchemaIssueKind::IncompatibleType) || collation_changed {
-                    let sql_type = self.render_type(&field.field_type, &field.name)?;
+                    let sql_type = self.render_field_type(field)?;
                     let collate = match &field.collation {
                         Some(collation) => {
                             format!(" COLLATE {}", self.quote_collation(collation)?)
@@ -560,9 +726,15 @@ impl SchemaDialect {
                         None if existing_collation.is_some() => " COLLATE \"default\"".to_string(),
                         None => String::new(),
                     };
+                    let using = if field.native_enum.is_some() {
+                        // 字符/旧枚举列先转 text 再转目标枚举，避免依赖隐式赋值转换。
+                        format!("{quoted_column}::text::{sql_type}")
+                    } else {
+                        format!("{quoted_column}::{sql_type}")
+                    };
                     statements.push(format!(
                         "ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} \
-                         TYPE {sql_type}{collate} USING {quoted_column}::{sql_type}"
+                         TYPE {sql_type}{collate} USING {using}"
                     ));
                 }
                 if issues.contains(&SchemaIssueKind::NullabilityMismatch) {
@@ -597,7 +769,12 @@ impl SchemaDialect {
         Ok(format!(
             "ALTER TABLE {} ADD PRIMARY KEY ({})",
             self.quote_table(&table.table_name)?,
-            self.quote_identifier(&table.primary_key)?
+            table
+                .primary_keys
+                .iter()
+                .map(|name| self.quote_identifier(name))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
         ))
     }
 
@@ -609,11 +786,14 @@ impl SchemaDialect {
         index: &DesiredIndex,
         concurrent: bool,
     ) -> Result<String, BaseError> {
-        let columns = index
+        let keys = index
             .columns
             .iter()
             .map(|column| self.quote_identifier(column))
             .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .chain(index.expressions.iter().cloned())
+            .collect::<Vec<_>>()
             .join(", ");
         let kind = if index.unique {
             "UNIQUE INDEX"
@@ -627,8 +807,12 @@ impl SchemaDialect {
         } else {
             ""
         };
+        let predicate_clause = match &index.predicate {
+            Some(predicate) => format!(" WHERE {predicate}"),
+            None => String::new(),
+        };
         Ok(format!(
-            "CREATE {kind}{concurrently} {} ON {} ({columns}){nulls_clause}",
+            "CREATE {kind}{concurrently} {} ON {} ({keys}){nulls_clause}{predicate_clause}",
             self.quote_identifier(&index.name)?,
             self.quote_table(&table.table_name)?
         ))
@@ -868,7 +1052,7 @@ impl SchemaDialect {
                     (false, table.indexes.as_slice()),
                 ] {
                     for index in indexes {
-                        if index.fields.is_empty() {
+                        if index.fields.is_empty() && index.expressions.is_empty() {
                             return Err(BaseError::ConfigError(format!(
                                 "表 {} 包含空索引",
                                 table.table_name
@@ -881,6 +1065,12 @@ impl SchemaDialect {
                                     table.table_name, field
                                 )));
                             }
+                        }
+                        for expression in &index.expressions {
+                            ensure_postgres_index_expression(table, expression)?;
+                        }
+                        if let Some(predicate) = &index.predicate {
+                            ensure_postgres_index_expression(table, predicate)?;
                         }
                         let prefix = if unique { "uk" } else { "idx" };
                         let name = match &index.name {
@@ -902,6 +1092,8 @@ impl SchemaDialect {
                             name,
                             unique,
                             columns: index.fields.clone(),
+                            expressions: index.expressions.clone(),
+                            predicate: index.predicate.clone(),
                             nulls_not_distinct: index.nulls_not_distinct,
                         });
                     }
@@ -927,6 +1119,10 @@ impl SchemaDialect {
                 let FieldType::Enum { values } = &field.field_type else {
                     continue;
                 };
+                // 原生枚举由类型本身约束取值，不再生成隐式 CHECK。
+                if field.native_enum.is_some() {
+                    continue;
+                }
                 let allowed = values
                     .iter()
                     .map(|value| self.quote_string(value))
@@ -1009,6 +1205,27 @@ impl SchemaDialect {
 #[cfg(feature = "postgres")]
 fn table_name_part(table_name: &str) -> &str {
     table_name.rsplit('.').next().unwrap_or(table_name)
+}
+
+/// 校验 PostgreSQL 索引表达式/部分索引谓词是受信的单条 SQL。
+#[cfg(feature = "postgres")]
+fn ensure_postgres_index_expression(
+    table: &TableConfig,
+    expression: &str,
+) -> Result<(), BaseError> {
+    let trimmed = expression.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() > 2_048
+        || [";", "--", "/*", "*/"]
+            .iter()
+            .any(|marker| trimmed.contains(marker))
+    {
+        return Err(BaseError::ConfigError(format!(
+            "表 {} 的索引表达式必须是单条、非空且长度受限的受信 SQL: {expression}",
+            table.table_name
+        )));
+    }
+    Ok(())
 }
 
 /// 校验单个标识符不超过 PostgreSQL 的 63 字节上限（用户显式标识符 fail-closed）。
@@ -1120,7 +1337,7 @@ fn validate_postgres_schema(
             });
             continue;
         };
-        if !postgres_type_compatible(&field.field_type, column) {
+        if !postgres_field_type_compatible(field, column) {
             issues.push(SchemaIssue {
                 field: field.name.clone(),
                 kind: SchemaIssueKind::IncompatibleType,
@@ -1225,6 +1442,17 @@ fn validate_postgres_schema(
         table: table.table_name.clone(),
         issues,
     }
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_field_type_compatible(field: &FieldConfig, column: &SchemaColumn) -> bool {
+    if let Some(type_name) = &field.native_enum {
+        // introspection 把原生枚举列归一化为 data_type=enum、column_type=类型名。
+        return matches!(field.field_type, FieldType::Enum { .. })
+            && column.data_type == "enum"
+            && column.column_type == *type_name;
+    }
+    postgres_type_compatible(&field.field_type, column)
 }
 
 #[cfg(feature = "postgres")]

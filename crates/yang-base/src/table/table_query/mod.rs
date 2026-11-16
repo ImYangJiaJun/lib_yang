@@ -153,6 +153,14 @@ pub struct TableQuery {
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pool: Option<crate::database::AnyPool>,
 
+    /// 连接池所属逻辑数据源；事务同源校验使用。
+    #[cfg_attr(not(any(feature = "mysql", feature = "postgres")), allow(dead_code))]
+    pool_source: crate::datasource::DatasourceId,
+
+    /// 是否要求事务必须显式携带数据源身份（多源应用启用）。
+    #[cfg_attr(not(any(feature = "mysql", feature = "postgres")), allow(dead_code))]
+    require_sourced_tx: bool,
+
     /// 慢查询阈值（可观测性 C4）
     ///
     /// `Some(d)` 时，单次执行耗时超过 `d` 会 `tracing::warn!`；`None`（默认）

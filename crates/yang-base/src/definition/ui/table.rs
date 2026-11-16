@@ -176,6 +176,8 @@ pub struct TableViewSchema {
     pub view_id: String,
     /// 用户可见标题。
     pub title: String,
+    /// 表所属逻辑数据源；与 `table` 一起唯一标识物理表。
+    pub datasource: String,
     /// 服务端表定义名。
     pub table: String,
     /// 返回标准分页行数据的 Action operation ID。

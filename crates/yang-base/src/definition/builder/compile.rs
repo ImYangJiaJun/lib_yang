@@ -1,8 +1,7 @@
 //! 构建期编译：定义 → Registry/TableDefinition/运行时视图与模块投影。
 
-use crate::definition::{
-    ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ModuleName, TableName,
-};
+use crate::datasource::DatasourceId;
+use crate::definition::{ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ModuleName};
 use crate::router::middleware::{AuthorizationPolicy, PermissionGroup};
 use crate::table::{RelationOptionsRequest, RelationOptionsResponse, TableDefinition};
 use std::any::TypeId;
@@ -18,20 +17,24 @@ use super::registry::{
 pub(super) fn compile_table_definitions(
     addons: &[AddonSpec],
 ) -> Result<Vec<TableDefinition>, BuildError> {
-    addons
-        .iter()
-        .flat_map(|addon| &addon.modules)
-        .filter_map(|module| module.table.as_ref())
-        .map(|table| {
-            table
-                .table_definition()
-                .map_err(|error| BuildError::InvalidFieldDefinition {
-                    table: table.name.to_string(),
-                    field: "<table>".to_string(),
-                    reason: error.to_string(),
-                })
-        })
-        .collect()
+    let mut definitions = Vec::new();
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let Some(definition) = module.resolved_table_definition().map_err(|error| {
+            BuildError::InvalidFieldDefinition {
+                table: module
+                    .table
+                    .as_ref()
+                    .map_or_else(|| module.name.to_string(), |table| table.name.to_string()),
+                field: "<table>".to_string(),
+                reason: error.to_string(),
+            }
+        })?
+        else {
+            continue;
+        };
+        definitions.push(definition);
+    }
+    Ok(definitions)
 }
 
 pub(super) fn compile_views(
@@ -144,12 +147,22 @@ pub(super) fn compile_runtime_table_views(
     let fields = addons
         .iter()
         .flat_map(|addon| &addon.modules)
-        .filter_map(|module| module.table.as_ref())
-        .flat_map(|table| {
-            table
-                .fields
-                .iter()
-                .map(move |field| (FieldRef::new(table.name.clone(), field.name.clone()), field))
+        .filter_map(|module| module.table.as_ref().map(|table| (module, table)))
+        .flat_map(|(module, table)| {
+            let source = table
+                .datasource
+                .clone()
+                .or_else(|| module.datasource.clone())
+                .unwrap_or_default();
+            table.fields.iter().map(move |field| {
+                (
+                    (
+                        source.clone(),
+                        FieldRef::new(table.name.clone(), field.name.clone()),
+                    ),
+                    field,
+                )
+            })
         })
         .collect::<BTreeMap<_, _>>();
     let mut compiled = Vec::new();
@@ -159,6 +172,11 @@ pub(super) fn compile_runtime_table_views(
             continue;
         };
         let policy = module_view_policy(module);
+        let source = table
+            .datasource
+            .clone()
+            .or_else(|| module.datasource.clone())
+            .unwrap_or_default();
         if module.views.is_empty() {
             let columns = table
                 .fields
@@ -173,6 +191,7 @@ pub(super) fn compile_runtime_table_views(
                 } else {
                     table.title.clone()
                 },
+                datasource: source,
                 table: table.name.to_string(),
                 columns: columns.into(),
                 data_action: None,
@@ -189,12 +208,13 @@ pub(super) fn compile_runtime_table_views(
                 .fields
                 .iter()
                 .map(|reference| {
-                    let field = fields.get(reference).copied().ok_or_else(|| {
-                        BuildError::InvalidReference {
+                    let field = fields
+                        .get(&(source.clone(), reference.clone()))
+                        .copied()
+                        .ok_or_else(|| BuildError::InvalidReference {
                             kind: "View Field",
                             reference: reference.to_string(),
-                        }
-                    })?;
+                        })?;
                     runtime_table_column(field, registry)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -258,12 +278,13 @@ pub(super) fn compile_runtime_table_views(
                 .as_ref()
                 .map(|tree| {
                     let column = |reference: &FieldRef| {
-                        let field = fields.get(reference).copied().ok_or_else(|| {
-                            BuildError::InvalidReference {
+                        let field = fields
+                            .get(&(source.clone(), reference.clone()))
+                            .copied()
+                            .ok_or_else(|| BuildError::InvalidReference {
                                 kind: "Tree View Field",
                                 reference: reference.to_string(),
-                            }
-                        })?;
+                            })?;
                         runtime_table_column(field, registry)
                     };
                     Ok(RuntimeTreeView {
@@ -294,12 +315,13 @@ pub(super) fn compile_runtime_table_views(
                             reference: sort.field.to_string(),
                         });
                     }
-                    let field = fields.get(&sort.field).copied().ok_or_else(|| {
-                        BuildError::InvalidReference {
+                    let field = fields
+                        .get(&(source.clone(), sort.field.clone()))
+                        .copied()
+                        .ok_or_else(|| BuildError::InvalidReference {
                             kind: "View Default Sort",
                             reference: sort.field.to_string(),
-                        }
-                    })?;
+                        })?;
                     if !field.access.sortable {
                         return Err(BuildError::InvalidReference {
                             kind: "View Default Sort",
@@ -319,6 +341,7 @@ pub(super) fn compile_runtime_table_views(
                 module: module.name.to_string(),
                 view_id: format!("{}.{}", module.name, view.name),
                 title: view.title.clone(),
+                datasource: source.clone(),
                 table: table.name.to_string(),
                 columns: columns.into(),
                 data_action,
@@ -708,24 +731,30 @@ fn checked_runtime_field(
 pub(super) fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildError> {
     // 每张表只编译一次 TableDefinition，并由所有引用它的 Action 以 Arc 共享，
     // 避免同一模块内 N 个 Action 重复编译同一份表定义。
-    let mut table_definitions: BTreeMap<&TableName, Arc<TableDefinition>> = BTreeMap::new();
-    for table in addons
-        .iter()
-        .flat_map(|addon| &addon.modules)
-        .filter_map(|module| module.table.as_ref())
-    {
-        if table_definitions.contains_key(&table.name) {
+    let mut table_definitions: BTreeMap<(DatasourceId, String), Arc<TableDefinition>> =
+        BTreeMap::new();
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let Some(definition) = module.resolved_table_definition().map_err(|error| {
+            BuildError::InvalidFieldDefinition {
+                table: module
+                    .table
+                    .as_ref()
+                    .map_or_else(|| module.name.to_string(), |table| table.name.to_string()),
+                field: "<table>".to_string(),
+                reason: error.to_string(),
+            }
+        })?
+        else {
+            continue;
+        };
+        let key = (
+            definition.datasource().clone(),
+            definition.name().to_string(),
+        );
+        if table_definitions.contains_key(&key) {
             continue;
         }
-        let definition =
-            table
-                .table_definition()
-                .map_err(|error| BuildError::InvalidFieldDefinition {
-                    table: table.name.to_string(),
-                    field: "<table>".to_string(),
-                    reason: error.to_string(),
-                })?;
-        table_definitions.insert(&table.name, Arc::new(definition));
+        table_definitions.insert(key, Arc::new(definition));
     }
 
     let mut actions = BTreeMap::new();
@@ -770,8 +799,20 @@ pub(super) fn build_registry(addons: &[AddonSpec]) -> Result<Registry, BuildErro
             table_definition: module
                 .table
                 .as_ref()
-                .and_then(|table| table_definitions.get(&table.name))
+                .and_then(|table| {
+                    let source = table
+                        .datasource
+                        .clone()
+                        .or_else(|| module.datasource.clone())
+                        .unwrap_or_default();
+                    table_definitions.get(&(source, table.name.to_string()))
+                })
                 .map(Arc::clone),
+            datasource: module
+                .table
+                .as_ref()
+                .and_then(|table| table.datasource.clone())
+                .or_else(|| module.datasource.clone()),
         });
     }
     Ok(Registry {

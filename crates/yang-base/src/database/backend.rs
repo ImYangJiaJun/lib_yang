@@ -8,6 +8,7 @@
 //! 后端身份与能力契约来自 `yang-db` 的单一事实源：
 //! [`yang_db::BackendKind`] 与 [`yang_db::BackendCapabilities`]。
 
+use crate::datasource::DatasourceId;
 use crate::error::BaseError;
 use std::future::Future;
 use std::sync::Arc;
@@ -20,8 +21,10 @@ use yang_db::{
 ///
 /// 使用 `#[non_exhaustive]`：内部后端集合随 feature 变化，调用方不得按结构体字面量
 /// 构造，必须通过 `AnyDatabase::mysql` / `AnyDatabase::postgres` 构造（按 feature 启用）。
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct AnyDatabase {
+    id: DatasourceId,
     inner: AnyDatabaseKind,
 }
 
@@ -31,6 +34,7 @@ pub struct AnyDatabase {
 /// `clippy::large_enum_variant`。`AnyDatabase` 在 `Tools` 中通常只构造一次，
 /// 为省下这些栈空间把 PG 变体 Box 化反而多一次堆分配，收益不抵成本。
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 enum AnyDatabaseKind {
     #[cfg(feature = "mysql")]
     MySql(yang_db::mysql::Database),
@@ -49,20 +53,46 @@ impl std::fmt::Debug for AnyDatabase {
 }
 
 impl AnyDatabase {
-    /// 用 MySQL 连接池构造容器。
+    /// 用 MySQL 连接池构造容器（默认数据源）。
     #[cfg(feature = "mysql")]
     pub fn mysql(database: yang_db::mysql::Database) -> Self {
+        Self::mysql_on(DatasourceId::default_source(), database)
+    }
+
+    /// 用指定逻辑名与 MySQL 连接池构造容器。
+    #[cfg(feature = "mysql")]
+    pub(crate) fn mysql_on(id: DatasourceId, database: yang_db::mysql::Database) -> Self {
         Self {
+            id,
             inner: AnyDatabaseKind::MySql(database),
         }
     }
 
-    /// 用 PostgreSQL 连接池构造容器。
+    /// 用 PostgreSQL 连接池构造容器（默认数据源）。
     #[cfg(feature = "postgres")]
     pub fn postgres(database: yang_db::postgres::Database) -> Self {
+        Self::postgres_on(DatasourceId::default_source(), database)
+    }
+
+    /// 用指定逻辑名与 PostgreSQL 连接池构造容器。
+    #[cfg(feature = "postgres")]
+    pub(crate) fn postgres_on(id: DatasourceId, database: yang_db::postgres::Database) -> Self {
         Self {
+            id,
             inner: AnyDatabaseKind::PostgreSql(database),
         }
+    }
+
+    /// 返回逻辑数据源名。
+    pub fn id(&self) -> &DatasourceId {
+        &self.id
+    }
+
+    /// 覆盖逻辑数据源名（供注册表在构造时对齐键与容器身份）。
+    #[must_use]
+    pub(crate) fn with_id(mut self, id: DatasourceId) -> Self {
+        self.id = id;
+        self
     }
 
     /// 返回后端类型。
@@ -188,6 +218,14 @@ impl AnyDatabase {
         }
     }
 
+    /// 返回带逻辑数据源身份的连接池句柄，供 `TableQuery` 做事务同源校验。
+    pub fn source_pool(&self) -> PoolHandle {
+        PoolHandle {
+            source: self.id.clone(),
+            pool: self.pool(),
+        }
+    }
+
     /// 在当前后端上开启事务。
     ///
     /// 返回的 [`AnyTransaction`] 可传入 `TableQuery` 的 `*_in_tx` 系列方法，也可通过
@@ -196,12 +234,15 @@ impl AnyDatabase {
     pub async fn begin(&self) -> Result<AnyTransaction, DbError> {
         match &self.inner {
             #[cfg(feature = "mysql")]
-            AnyDatabaseKind::MySql(database) => {
-                database.transaction().await.map(AnyTransaction::MySql)
-            }
+            AnyDatabaseKind::MySql(database) => database
+                .transaction()
+                .await
+                .map(|transaction| AnyTransaction::MySql(transaction).with_source(self.id.clone())),
             #[cfg(feature = "postgres")]
             AnyDatabaseKind::PostgreSql(database) => {
-                database.transaction().await.map(AnyTransaction::Postgres)
+                database.transaction().await.map(|transaction| {
+                    AnyTransaction::Postgres(transaction).with_source(self.id.clone())
+                })
             }
         }
     }
@@ -325,11 +366,69 @@ impl AnyPool {
     }
 }
 
-/// 两种后端事务的统一句柄。
+/// 带逻辑数据源身份的连接池句柄。
 ///
-/// 由 [`AnyDatabase::begin`] 或 [`crate::action::ActionContext::begin_transaction`]
-/// 创建；`TableQuery` 的 `*_in_tx` 系列方法按变体分派到对应后端。
-pub enum AnyTransaction {
+/// `TableQuery` 持有它；事务在 `*_in_tx` 中与它比较数据源，跨源直接拒绝。
+#[derive(Clone)]
+pub struct PoolHandle {
+    source: DatasourceId,
+    pool: AnyPool,
+}
+
+impl std::fmt::Debug for PoolHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PoolHandle")
+            .field("source", &self.source)
+            .field("backend", &self.pool.backend())
+            .finish()
+    }
+}
+
+impl PoolHandle {
+    /// 用逻辑数据源名与连接池构造句柄。
+    pub(crate) fn new(source: DatasourceId, pool: AnyPool) -> Self {
+        Self { source, pool }
+    }
+
+    /// 返回逻辑数据源名。
+    pub fn source(&self) -> &DatasourceId {
+        &self.source
+    }
+
+    /// 返回底层连接池。
+    pub fn pool(&self) -> &AnyPool {
+        &self.pool
+    }
+
+    /// 返回物理后端。
+    pub fn backend(&self) -> BackendKind {
+        self.pool.backend()
+    }
+}
+
+/// 两种后端事务的统一句柄，并携带逻辑数据源身份。
+///
+/// 旧构造器 [`AnyTransaction::MySql`] / [`AnyTransaction::Postgres`] 保持调用语法，
+/// 但产生的事务没有数据源身份（`source() == None`）；框架内部通过
+/// [`AnyDatabase::begin`] 创建时会自动标注默认/具名源。
+pub struct AnyTransaction {
+    source: Option<DatasourceId>,
+    kind: AnyTransactionKind,
+}
+
+impl std::fmt::Debug for AnyTransaction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AnyTransaction")
+            .field("source", &self.source)
+            .field("backend", &self.backend())
+            .finish()
+    }
+}
+
+/// 内部后端事务分派；各变体按 feature 独占编译。
+pub(crate) enum AnyTransactionKind {
     /// MySQL 事务。
     #[cfg(feature = "mysql")]
     MySql(yang_db::mysql::Transaction),
@@ -339,43 +438,80 @@ pub enum AnyTransaction {
 }
 
 impl AnyTransaction {
+    /// 用 MySQL 事务构造未标注数据源的事务句柄（兼容入口）。
+    #[cfg(feature = "mysql")]
+    #[allow(non_snake_case)]
+    pub fn MySql(transaction: yang_db::mysql::Transaction) -> Self {
+        Self {
+            source: None,
+            kind: AnyTransactionKind::MySql(transaction),
+        }
+    }
+
+    /// 用 PostgreSQL 事务构造未标注数据源的事务句柄（兼容入口）。
+    #[cfg(feature = "postgres")]
+    #[allow(non_snake_case)]
+    pub fn Postgres(transaction: yang_db::postgres::Transaction) -> Self {
+        Self {
+            source: None,
+            kind: AnyTransactionKind::Postgres(transaction),
+        }
+    }
+
+    /// 标注事务所属逻辑数据源。
+    #[must_use]
+    pub(crate) fn with_source(mut self, source: DatasourceId) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// 返回事务所属逻辑数据源；旧构造器创建的事务为 `None`。
+    pub fn source(&self) -> Option<&DatasourceId> {
+        self.source.as_ref()
+    }
+
     /// 返回事务所属后端。
     pub fn backend(&self) -> BackendKind {
-        match self {
+        match &self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(_) => BackendKind::MySql,
+            AnyTransactionKind::MySql(_) => BackendKind::MySql,
             #[cfg(feature = "postgres")]
-            Self::Postgres(_) => BackendKind::PostgreSql,
+            AnyTransactionKind::Postgres(_) => BackendKind::PostgreSql,
         }
+    }
+
+    /// 内部使用：按后端解构事务。
+    pub(crate) fn kind_mut(&mut self) -> &mut AnyTransactionKind {
+        &mut self.kind
     }
 
     /// 当持有 MySQL 事务时返回其可变引用。
     #[cfg(feature = "mysql")]
     pub fn as_mysql(&mut self) -> Option<&mut yang_db::mysql::Transaction> {
-        match self {
-            Self::MySql(transaction) => Some(transaction),
+        match &mut self.kind {
+            AnyTransactionKind::MySql(transaction) => Some(transaction),
             #[cfg(feature = "postgres")]
-            Self::Postgres(_) => None,
+            AnyTransactionKind::Postgres(_) => None,
         }
     }
 
     /// 当持有 PostgreSQL 事务时返回其可变引用。
     #[cfg(feature = "postgres")]
     pub fn as_postgres(&mut self) -> Option<&mut yang_db::postgres::Transaction> {
-        match self {
+        match &mut self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(_) => None,
-            Self::Postgres(transaction) => Some(transaction),
+            AnyTransactionKind::MySql(_) => None,
+            AnyTransactionKind::Postgres(transaction) => Some(transaction),
         }
     }
 
     /// 提交事务。
     pub async fn commit(self) -> Result<(), DbError> {
-        match self {
+        match self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(transaction) => transaction.commit().await,
+            AnyTransactionKind::MySql(transaction) => transaction.commit().await,
             #[cfg(feature = "postgres")]
-            Self::Postgres(transaction) => transaction.commit().await,
+            AnyTransactionKind::Postgres(transaction) => transaction.commit().await,
         }
     }
 
@@ -385,14 +521,14 @@ impl AnyTransaction {
     /// 校验过的标识符拼接控制语句。`name` 必须是 ASCII 标识符（字母/下划线开头，
     /// 仅字母/数字/下划线），非法名称返回 [`DbError::InvalidArgument`]。
     pub async fn savepoint(&mut self, name: &str) -> Result<(), DbError> {
-        match self {
+        match &mut self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(transaction) => {
+            AnyTransactionKind::MySql(transaction) => {
                 let sql = mysql_savepoint_statement("SAVEPOINT", name)?;
                 mysql_execute_control(transaction, &sql).await
             }
             #[cfg(feature = "postgres")]
-            Self::Postgres(transaction) => transaction.savepoint(name).await,
+            AnyTransactionKind::Postgres(transaction) => transaction.savepoint(name).await,
         }
     }
 
@@ -400,37 +536,37 @@ impl AnyTransaction {
     ///
     /// 只撤销保存点之后的工作；更早的保存点与外层事务不受影响。
     pub async fn rollback_to(&mut self, name: &str) -> Result<(), DbError> {
-        match self {
+        match &mut self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(transaction) => {
+            AnyTransactionKind::MySql(transaction) => {
                 let sql = mysql_savepoint_statement("ROLLBACK TO SAVEPOINT", name)?;
                 mysql_execute_control(transaction, &sql).await
             }
             #[cfg(feature = "postgres")]
-            Self::Postgres(transaction) => transaction.rollback_to(name).await,
+            AnyTransactionKind::Postgres(transaction) => transaction.rollback_to(name).await,
         }
     }
 
     /// 释放保存点（`RELEASE SAVEPOINT`）。
     pub async fn release(&mut self, name: &str) -> Result<(), DbError> {
-        match self {
+        match &mut self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(transaction) => {
+            AnyTransactionKind::MySql(transaction) => {
                 let sql = mysql_savepoint_statement("RELEASE SAVEPOINT", name)?;
                 mysql_execute_control(transaction, &sql).await
             }
             #[cfg(feature = "postgres")]
-            Self::Postgres(transaction) => transaction.release_savepoint(name).await,
+            AnyTransactionKind::Postgres(transaction) => transaction.release_savepoint(name).await,
         }
     }
 
     /// 回滚事务。
     pub async fn rollback(self) -> Result<(), DbError> {
-        match self {
+        match self.kind {
             #[cfg(feature = "mysql")]
-            Self::MySql(transaction) => transaction.rollback().await,
+            AnyTransactionKind::MySql(transaction) => transaction.rollback().await,
             #[cfg(feature = "postgres")]
-            Self::Postgres(transaction) => transaction.rollback().await,
+            AnyTransactionKind::Postgres(transaction) => transaction.rollback().await,
         }
     }
 }

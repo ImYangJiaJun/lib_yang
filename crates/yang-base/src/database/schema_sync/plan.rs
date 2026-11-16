@@ -16,6 +16,10 @@ pub(super) async fn plan_locked(
 ) -> Result<Vec<TableSyncPlan>, BaseError> {
     #[cfg(feature = "postgres")]
     ensure_nulls_not_distinct_supported(driver, connection, definitions).await?;
+    #[cfg(feature = "postgres")]
+    ensure_native_enum_supported(driver, connection, definitions).await?;
+    #[cfg(feature = "postgres")]
+    validate_shared_native_enums(definitions)?;
     let mut plans = Vec::with_capacity(definitions.len());
     for definition in definitions {
         let existing = driver.introspect(connection, definition).await?;
@@ -28,6 +32,8 @@ pub(super) async fn plan_locked(
         }
         plans.push(plan);
     }
+    #[cfg(feature = "postgres")]
+    dedupe_native_enum_steps(&mut plans);
     // 本批新增列按表汇总：外键预检可能引用同一批另一张表里尚未创建的列。
     let added_columns_by_table = plans
         .iter()
@@ -112,6 +118,182 @@ pub(super) fn report_tables(definitions: &[&TableDefinition]) -> Vec<String> {
         .collect()
 }
 
+/// 声明了原生枚举时校验 PostgreSQL 版本（12+）。
+///
+/// 事务块内 `ALTER TYPE ... ADD VALUE` 从 PostgreSQL 12 起才被允许；低版本
+/// 无法在同步事务中补齐枚举取值，必须提前 fail-closed。
+#[cfg(feature = "postgres")]
+async fn ensure_native_enum_supported(
+    driver: SchemaDriver,
+    connection: &mut SchemaConnection<'_>,
+    definitions: &[&TableDefinition],
+) -> Result<(), BaseError> {
+    if driver != SchemaDriver::PostgreSql {
+        return Ok(());
+    }
+    let declared = definitions.iter().any(|definition| {
+        definition
+            .shared_config()
+            .fields
+            .values()
+            .any(|field| field.native_enum.is_some())
+    });
+    if !declared {
+        return Ok(());
+    }
+    match connection {
+        SchemaConnection::PostgreSql(connection) => {
+            let version = super::pg::server_version_num(connection).await?;
+            if version < super::pg::PG12_VERSION_NUM {
+                return Err(BaseError::DatabaseInitFailed(format!(
+                    "原生枚举同步需要 PostgreSQL 12+（当前 server_version_num={version}）"
+                )));
+            }
+            Ok(())
+        }
+        #[allow(unreachable_patterns)]
+        _ => Err(BaseError::DatabaseInitFailed(
+            "schema driver 与数据库连接后端不一致".to_string(),
+        )),
+    }
+}
+
+/// 同一批定义共享原生枚举类型时，各表的取值声明必须一致。
+///
+/// 否则多张表会各自计划 `CREATE TYPE`（或互相追加不同取值），执行期冲突。
+#[cfg(feature = "postgres")]
+pub(super) fn validate_shared_native_enums(
+    definitions: &[&TableDefinition],
+) -> Result<(), BaseError> {
+    let mut seen = BTreeMap::<String, Vec<String>>::new();
+    for definition in definitions {
+        let config = definition.shared_config();
+        for field in config.fields.values() {
+            let Some(type_name) = &field.native_enum else {
+                continue;
+            };
+            let FieldType::Enum { values } = &field.field_type else {
+                continue;
+            };
+            match seen.get(type_name) {
+                Some(existing) if existing != values => {
+                    return Err(BaseError::ConfigError(format!(
+                        "原生枚举类型 {type_name} 在表 {} 与其它表中声明了不同取值",
+                        definition.name()
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(type_name.clone(), values.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 共享枚举类型只需要一次 `CREATE TYPE`；后续表的重复步骤被移除。
+#[cfg(feature = "postgres")]
+pub(super) fn dedupe_native_enum_steps(plans: &mut [TableSyncPlan]) {
+    let mut created_steps = BTreeSet::new();
+    let mut created_statements = BTreeSet::new();
+    for plan in plans {
+        let steps_before = plan.steps.len();
+        plan.steps.retain(|step| {
+            step.change.kind != SchemaSyncChangeKind::CreatedEnumType
+                || created_steps.insert(step.change.object.clone())
+        });
+        let mut changed = plan.steps.len() != steps_before;
+        // 建表计划把 CREATE TYPE 内联在 CreatedTable 步骤里，需要按语句去重。
+        for step in &mut plan.steps {
+            let statements_before = step.statements.len();
+            step.statements.retain(|statement| {
+                !statement.starts_with("CREATE TYPE ")
+                    || created_statements.insert(statement.clone())
+            });
+            changed |= step.statements.len() != statements_before;
+        }
+        if changed {
+            // 报告的 changes/statements 必须与真正执行的 steps 保持一致。
+            plan.changes = plan.steps.iter().map(|step| step.change.clone()).collect();
+            plan.statements = plan
+                .steps
+                .iter()
+                .flat_map(|step| step.statements.iter().cloned())
+                .collect();
+        }
+    }
+}
+
+/// opaque 列必须已存在且 `format_type` 与声明一致：框架不创建、不改写它们。
+fn validate_opaque_columns(
+    table: &crate::table::TableConfig,
+    existing: &ExistingTableSchema,
+) -> Result<(), BaseError> {
+    if table.opaque_columns.is_empty() {
+        return Ok(());
+    }
+    if !existing.exists {
+        return Err(BaseError::DatabaseInitFailed(format!(
+            "表 {} 尚不存在，无法自动创建 opaque 列（{}）；请先由人工迁移建表",
+            table.table_name,
+            table
+                .opaque_columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    for opaque in &table.opaque_columns {
+        let Some(column) = existing
+            .columns
+            .iter()
+            .find(|column| column.name == opaque.name)
+        else {
+            return Err(BaseError::DatabaseInitFailed(format!(
+                "表 {} 缺少声明中的 opaque 列 {}，框架不会自动创建自定义类型列",
+                table.table_name, opaque.name
+            )));
+        };
+        if normalize_opaque_type(&opaque.sql_type) != normalize_opaque_type(&column.column_type) {
+            return Err(BaseError::DatabaseInitFailed(format!(
+                "表 {} 的 opaque 列 {} 类型不匹配: expected={}, actual={}",
+                table.table_name, opaque.name, opaque.sql_type, column.column_type
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_opaque_type(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+/// 字段默认值是否引用本次事务内刚追加的原生枚举取值。
+///
+/// PostgreSQL 12+ 允许在事务块内 `ALTER TYPE ... ADD VALUE`，但提交前使用新值
+/// 会报 “unsafe use of new value”；这类组合必须 fail-closed。
+fn enum_default_added_now(field: &FieldConfig, added: &BTreeMap<String, BTreeSet<String>>) -> bool {
+    let Some(type_name) = &field.native_enum else {
+        return false;
+    };
+    let Some(default) = field
+        .default_value
+        .as_ref()
+        .and_then(|value| value.as_str())
+    else {
+        return false;
+    };
+    added
+        .get(type_name)
+        .is_some_and(|values| values.contains(default))
+}
+
 /// MySQL 兼容入口：既有单元测试直接调用本函数。
 #[cfg(all(test, feature = "mysql"))]
 pub(crate) fn plan_table_sync(
@@ -130,11 +312,13 @@ pub(crate) fn plan_table_sync_with(
     let config = definition.shared_config();
     let table = config.as_ref();
     dialect.validate_table_config(table)?;
+    validate_opaque_columns(table, existing)?;
     if !existing.exists {
         let mut statements = Vec::new();
         let mut changes = Vec::new();
         let mut steps = Vec::new();
-        let create_statements = dialect.render_create_table_statements(table, false)?;
+        let create_statements =
+            dialect.render_create_table_statements(table, false, &existing.enum_types)?;
         push_step(
             &mut statements,
             &mut steps,
@@ -199,6 +383,49 @@ pub(crate) fn plan_table_sync_with(
     let mut renamed_columns = BTreeMap::new();
     let mut fields: Vec<&FieldConfig> = table.fields.values().collect();
     fields.sort_by(|left, right| left.name.cmp(&right.name));
+
+    // 原生枚举类型必须先于列变更创建/补齐取值。已在同一事务内新增取值时，
+    // PostgreSQL 禁止事务提交前使用这些新值，相关列变更 fail-closed。
+    #[cfg_attr(not(feature = "postgres"), allow(unused_mut))]
+    let mut added_enum_values = BTreeMap::<String, BTreeSet<String>>::new();
+    #[cfg(feature = "postgres")]
+    if dialect == SchemaDialect::PostgreSql {
+        for (type_name, values) in dialect.desired_native_enums(table)? {
+            match existing.enum_types.get(&type_name) {
+                None => push_step(
+                    &mut statements,
+                    &mut steps,
+                    &mut changes,
+                    vec![dialect.render_create_enum_type(&type_name, &values)?],
+                    SchemaSyncChange {
+                        table: table.table_name.clone(),
+                        object: type_name.clone(),
+                        kind: SchemaSyncChangeKind::CreatedEnumType,
+                    },
+                ),
+                Some(labels) => {
+                    for value in values.iter().filter(|value| !labels.contains(value)) {
+                        push_step(
+                            &mut statements,
+                            &mut steps,
+                            &mut changes,
+                            vec![dialect.render_add_enum_value(&type_name, value)?],
+                            SchemaSyncChange {
+                                table: table.table_name.clone(),
+                                object: format!("{type_name}:{value}"),
+                                kind: SchemaSyncChangeKind::AddedEnumValue,
+                            },
+                        );
+                        added_enum_values
+                            .entry(type_name.clone())
+                            .or_default()
+                            .insert(value.clone());
+                    }
+                }
+            }
+        }
+    }
+
     for field in &fields {
         let current_exists = existing
             .columns
@@ -251,6 +478,12 @@ pub(crate) fn plan_table_sync_with(
         {
             return Err(BaseError::DatabaseInitFailed(format!(
                 "表 {} 已有数据，不能自动增加无默认值的必填字段 {}",
+                table.table_name, field.name
+            )));
+        }
+        if enum_default_added_now(field, &added_enum_values) {
+            return Err(BaseError::DatabaseInitFailed(format!(
+                "表 {} 的新增字段 {} 默认值引用了本次事务内刚追加的枚举取值；请先人工 ALTER TYPE 后重启",
                 table.table_name, field.name
             )));
         }
@@ -405,6 +638,26 @@ pub(crate) fn plan_table_sync_with(
             }
         }
         let kinds = issues.iter().map(|issue| issue.kind).collect::<Vec<_>>();
+        if let Some(type_name) = &field.native_enum {
+            if kinds.contains(&SchemaIssueKind::IncompatibleType)
+                && added_enum_values
+                    .get(type_name)
+                    .is_some_and(|values| !values.is_empty())
+            {
+                return Err(BaseError::DatabaseInitFailed(format!(
+                    "表 {} 的字段 {} 需要改用枚举类型 {}，但本次事务同时追加了新取值；PostgreSQL 禁止提交前使用新取值，请先人工 ALTER TYPE 后重启",
+                    table.table_name, field.name, type_name
+                )));
+            }
+        }
+        if kinds.contains(&SchemaIssueKind::DefaultMismatch)
+            && enum_default_added_now(field, &added_enum_values)
+        {
+            return Err(BaseError::DatabaseInitFailed(format!(
+                "表 {} 的字段 {} 默认值引用了本次事务内刚追加的枚举取值；请先人工 ALTER TYPE 后重启",
+                table.table_name, field.name
+            )));
+        }
         let existing_collation = effective.collations.get(field_name).map(String::as_str);
         let column_statements = dialect.render_modify_column(
             table,
@@ -450,9 +703,9 @@ pub(crate) fn plan_table_sync_with(
         }
     }
 
-    let desired_primary = vec![table.primary_key.clone()];
+    let desired_primary = table.primary_keys.clone();
     let effective_primary = effective.primary_key.clone();
-    if effective_primary.is_empty() {
+    if effective_primary.is_empty() && !desired_primary.is_empty() {
         let statement = dialect.render_add_primary_key(table)?;
         push_step(
             &mut statements,
@@ -465,7 +718,7 @@ pub(crate) fn plan_table_sync_with(
                 kind: SchemaSyncChangeKind::AddedPrimaryKey,
             },
         );
-    } else if effective_primary != desired_primary {
+    } else if !effective_primary.is_empty() && effective_primary != desired_primary {
         return Err(BaseError::DatabaseInitFailed(format!(
             "表 {} 的主键 {:?} 与声明 {:?} 不一致，拒绝自动修改",
             table.table_name, effective_primary, desired_primary
@@ -542,11 +795,12 @@ pub(crate) fn plan_table_sync_with(
             // 否则 preflight SQL 会引用尚未添加的列，导致 "列不存在" 报错。
             // 只读预检先于 DDL：只要索引引用任一本次新增列，整条预检 SQL 都不可执行，
             // 因此跳过整项；sync 路径仍由 DDL 后的约束校验兜底。
+            // 部分索引只约束谓词命中行，表达式索引无法用列名预检——两者都跳过。
             let any_new = desired
                 .columns
                 .iter()
                 .any(|column| added_columns.contains(column));
-            if !any_new {
+            if !any_new && desired.predicate.is_none() && desired.expressions.is_empty() {
                 preflight.push(SchemaPreflightCheck::UniqueIndex {
                     object: desired.name,
                     columns: desired
@@ -716,28 +970,83 @@ pub(crate) fn plan_table_sync_with(
     })
 }
 
-/// 声明的普通索引是否与既有索引定义完全一致。
+/// 声明的索引是否与既有索引定义完全一致。
 ///
-/// 部分索引（`predicate`）与表达式索引（`expressions`）的约束语义不同于普通
-/// 列索引，不能复用同名声明，必须 fail-closed。
+/// 部分索引谓词与表达式键按归一化文本比较：PostgreSQL introspection 会为谓词
+/// 补一层外层括号、并按自身格式重排空白，声明与反射结果只在语义上相同。
 fn plain_index_definition_matches(existing: &ExistingIndex, desired: &DesiredIndex) -> bool {
-    existing.predicate.is_none()
-        && existing.expressions.is_empty()
+    index_keys_match(existing, desired)
         && existing.unique == desired.unique
         && existing.nulls_not_distinct == desired.nulls_not_distinct
-        && existing.columns == desired.columns
 }
 
-/// 既有普通索引能否满足声明索引（唯一索引可满足普通索引需求）。
+/// 既有索引能否满足声明索引（唯一索引可满足普通索引需求）。
 ///
 /// `NULLS NOT DISTINCT` 比默认的 `NULLS DISTINCT` 更严格：严格索引可以满足
-/// 宽松声明，反之不行。
+/// 宽松声明，反之不行。部分索引/表达式索引必须谓词与键完全一致。
 fn plain_index_covers(existing: &ExistingIndex, desired: &DesiredIndex) -> bool {
-    existing.predicate.is_none()
-        && existing.expressions.is_empty()
-        && existing.columns == desired.columns
+    index_keys_match(existing, desired)
         && (existing.unique == desired.unique || existing.unique)
         && (!desired.nulls_not_distinct || existing.nulls_not_distinct)
+}
+
+fn index_keys_match(existing: &ExistingIndex, desired: &DesiredIndex) -> bool {
+    existing.columns == desired.columns
+        && existing.expressions.len() == desired.expressions.len()
+        && existing
+            .expressions
+            .iter()
+            .zip(&desired.expressions)
+            .all(|(actual, expected)| {
+                normalize_index_fragment(actual) == normalize_index_fragment(expected)
+            })
+        && normalize_index_optional(existing.predicate.as_deref())
+            == normalize_index_optional(desired.predicate.as_deref())
+}
+
+fn normalize_index_optional(fragment: Option<&str>) -> Option<String> {
+    fragment.map(normalize_index_fragment)
+}
+
+/// 折叠空白并去掉 PostgreSQL 反射谓词常见的一层外层括号。
+fn normalize_index_fragment(fragment: &str) -> String {
+    let mut normalized = fragment.split_whitespace().collect::<Vec<_>>().join(" ");
+    while has_single_outer_parentheses(&normalized) {
+        normalized = normalized[1..normalized.len() - 1].trim().to_string();
+    }
+    normalized
+}
+
+/// 首字符 `(` 是否与末字符 `)` 配对（忽略引号内的括号）。
+fn has_single_outer_parentheses(value: &str) -> bool {
+    if !value.starts_with('(') || !value.ends_with(')') {
+        return false;
+    }
+    let mut depth = 0_i32;
+    let mut quoted = false;
+    for (index, character) in value.char_indices() {
+        if quoted {
+            if character == '\'' {
+                quoted = false;
+            }
+            continue;
+        }
+        match character {
+            '\'' => quoted = true,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return index + character.len_utf8() == value.len();
+                }
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// CHECK 表达式是否引用了本批新增列。

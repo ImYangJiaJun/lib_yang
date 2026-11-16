@@ -8,7 +8,7 @@
 
 use super::TableQuery;
 use crate::action::builtin::add::ReturningTarget;
-use crate::database::AnyTransaction;
+use crate::database::{AnyTransaction, AnyTransactionKind};
 use crate::error::BaseError;
 use crate::table::field_config::Audience;
 use serde_json::Value;
@@ -118,10 +118,11 @@ impl TableQuery {
         tx: &mut AnyTransaction,
         data: crate::table::Record,
     ) -> Result<u64, BaseError> {
+        self.ensure_same_source(tx)?;
         let data = self.prepare_and_validate_insert(record_into_columns(data))?;
-        match tx {
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 self.apply_write_plan(query)?
                     .insert(&data)
@@ -129,7 +130,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseExecuteFailed)?;
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 let query =
                     self.register_pg_fields(self.apply_pg_write_plan(query)?, data.keys())?;
@@ -159,6 +160,9 @@ impl TableQuery {
         data: crate::table::Record,
         target: ReturningTarget<'_>,
     ) -> Result<crate::table::Record, BaseError> {
+        if matches!(target, ReturningTarget::Pk) {
+            self.ensure_single_primary_key("insert_returning(ReturningTarget::Pk)")?;
+        }
         let data = self.prepare_and_validate_insert(record_into_columns(data))?;
         match self.backend()? {
             #[cfg(feature = "mysql")]
@@ -235,13 +239,14 @@ impl TableQuery {
         data: &[crate::table::Record],
         target: ReturningTarget<'_>,
     ) -> Result<Vec<crate::table::Record>, BaseError> {
-        match tx {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(_) => Err(Self::mysql_batch_returning_unsupported(
+            AnyTransactionKind::MySql(_) => Err(Self::mysql_batch_returning_unsupported(
                 "insert_batch_returning_in_tx",
             )),
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let Some(rows) = self.prepare_pg_insert_rows(data)? else {
                     return Ok(Vec::new());
                 };
@@ -296,6 +301,7 @@ impl TableQuery {
         self,
         data: crate::table::Record,
     ) -> Result<(u64, Value), BaseError> {
+        self.ensure_single_primary_key("insert_returning_pk_value")?;
         let data = self.prepare_and_validate_insert(record_into_columns(data))?;
         match self.backend()? {
             #[cfg(feature = "mysql")]
@@ -358,11 +364,12 @@ impl TableQuery {
         tx: &mut AnyTransaction,
         data: crate::table::Record,
     ) -> Result<(u64, u64), BaseError> {
+        self.ensure_same_source(tx)?;
         self.ensure_integer_primary_key()?;
         let data = self.prepare_and_validate_insert(record_into_columns(data))?;
-        match tx {
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 let id = self
                     .apply_write_plan(query)?
@@ -372,7 +379,7 @@ impl TableQuery {
                 Ok((1, id))
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let primary_key = self.field_ref(&self.table_config.primary_key)?;
                 let query = tx.table(&self.table_config.table_ref);
                 let query =
@@ -389,9 +396,12 @@ impl TableQuery {
 
     /// 主键类型守卫：`insert_returning_id` 先把主键转成 `u64`，非整型在触库前拒绝。
     fn ensure_integer_primary_key(&self) -> Result<(), BaseError> {
-        let primary_key = &self.table_config.primary_key;
+        let primary_key = self.ensure_single_primary_key("insert_returning_id")?;
         let config = self.table_config.get_field(primary_key).ok_or_else(|| {
-            BaseError::FieldNotFound(self.table_config.table_name.clone(), primary_key.clone())
+            BaseError::FieldNotFound(
+                self.table_config.table_name.clone(),
+                primary_key.to_string(),
+            )
         })?;
         if matches!(
             config.field_type,
@@ -408,6 +418,17 @@ impl TableQuery {
                 self.table_config.table_name, config.field_type
             ),
         ))
+    }
+
+    /// 单主键操作的守卫：复合主键在入口 fail-closed，避免只按第一列定位。
+    fn ensure_single_primary_key(&self, operation: &str) -> Result<&str, BaseError> {
+        if self.table_config.primary_keys.len() != 1 {
+            return Err(BaseError::ConfigError(format!(
+                "{operation} 仅支持单主键表；表 {} 的主键为 {:?}",
+                self.table_config.table_name, self.table_config.primary_keys
+            )));
+        }
+        Ok(&self.table_config.primary_key)
     }
 
     /// MySQL 无 `RETURNING` 时的明确错误（不伪造返回值）。
@@ -459,6 +480,7 @@ impl TableQuery {
     ) -> Result<yang_db::postgres::QueryBuilder<'a>, BaseError> {
         match target {
             ReturningTarget::Pk => {
+                self.ensure_single_primary_key("ReturningTarget::Pk")?;
                 Ok(query.returning(self.field_ref(&self.table_config.primary_key)?))
             }
             ReturningTarget::All => Ok(query.returning_all()),
@@ -678,9 +700,10 @@ impl TableQuery {
         rows: Vec<crate::table::Record>,
         columns: &[&str],
     ) -> Result<u64, BaseError> {
-        match tx {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 // 空批 = 写 0 行：没写就没写，不发明语句（生成器也会拒空数据）。
                 let Some(batch) = self.plan_upsert_batch(rows, columns)? else {
                     return Ok(0);
@@ -694,7 +717,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseExecuteFailed)
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let Some(prepared) = self.prepare_pg_upsert_rows(rows, columns)? else {
                     return Ok(0);
                 };
@@ -716,8 +739,9 @@ impl TableQuery {
         conflict_columns: &[&str],
         update_columns: &[&str],
     ) -> Result<u64, BaseError> {
-        match tx {
-            AnyTransaction::Postgres(tx) => {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
+            AnyTransactionKind::Postgres(tx) => {
                 let Some(prepared) = self.prepare_pg_upsert_rows(rows, conflict_columns)? else {
                     return Ok(0);
                 };
@@ -732,7 +756,7 @@ impl TableQuery {
                 .await
             }
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(_) => Err(BaseError::ConfigError(
+            AnyTransactionKind::MySql(_) => Err(BaseError::ConfigError(
                 "upsert_batch_in_tx_with_update_columns 仅支持 PostgreSQL；MySQL 请使用 upsert_batch_in_tx(rows, update_columns) 的 ON DUPLICATE KEY UPDATE 语义"
                     .to_string(),
             )),
@@ -752,8 +776,9 @@ impl TableQuery {
         rows: Vec<crate::table::Record>,
         conflict_columns: &[&str],
     ) -> Result<u64, BaseError> {
-        match tx {
-            AnyTransaction::Postgres(tx) => {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
+            AnyTransactionKind::Postgres(tx) => {
                 let Some(prepared) = self.prepare_pg_upsert_rows(rows, conflict_columns)? else {
                     return Ok(0);
                 };
@@ -761,7 +786,7 @@ impl TableQuery {
                     .await
             }
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(_) => Err(BaseError::ConfigError(
+            AnyTransactionKind::MySql(_) => Err(BaseError::ConfigError(
                 "upsert_batch_do_nothing_in_tx 仅支持 PostgreSQL；MySQL 请使用 upsert_batch_in_tx 的 ON DUPLICATE KEY UPDATE 语义"
                     .to_string(),
             )),
@@ -786,9 +811,10 @@ impl TableQuery {
         columns: &[&str],
         predicate: Option<&str>,
     ) -> Result<u64, BaseError> {
-        match tx {
+        self.ensure_same_source(tx)?;
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 if let Some(predicate) = predicate {
                     return Err(BaseError::ConfigError(format!(
                         "MySQL 不支持 ON DUPLICATE KEY UPDATE 的冲突谓词（收到 `{predicate}`）；\
@@ -804,7 +830,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseExecuteFailed)
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let Some(prepared) = self.prepare_pg_upsert_rows(rows, columns)? else {
                     return Ok(0);
                 };
@@ -945,7 +971,12 @@ impl TableQuery {
 
     /// 框架保护的列：主键 / 租户 / 自动列 / 创建时间 / 软删时间，upsert 一律不得覆盖。
     fn is_framework_owned_column(&self, name: &str) -> bool {
-        if name == self.table_config.primary_key {
+        if self
+            .table_config
+            .primary_keys
+            .iter()
+            .any(|primary| primary == name)
+        {
             return true;
         }
         if let Some((tenant_field, _)) = &self.tenant_scope {
@@ -1465,11 +1496,12 @@ impl TableQuery {
         tx: &mut AnyTransaction,
         data: crate::table::Record,
     ) -> Result<u64, BaseError> {
+        self.ensure_same_source(tx)?;
         let data = self.prepare_update_data(record_into_columns(data))?;
         self.ensure_soft_delete_write_has_where("UPDATE")?;
-        match tx {
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 self.apply_write_plan(query)?
                     .update(&data)
@@ -1477,7 +1509,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseExecuteFailed)
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 let query =
                     self.register_pg_fields(self.apply_pg_write_plan(query)?, data.keys())?;
@@ -1710,6 +1742,7 @@ impl TableQuery {
     /// 与 [`TableQuery::delete`] 一致：配置了软删除字段时走 UPDATE 标记（同样在
     /// 事务内），否则物理删除；WHERE 守卫与软删语义完全复用。
     pub async fn delete_in_tx(self, tx: &mut AnyTransaction) -> Result<u64, BaseError> {
+        self.ensure_same_source(tx)?;
         // 软删标记与逐行 update 走同一字段校验路径（含 can_write），再进入事务分支。
         let soft_delete_data = self
             .table_config
@@ -1724,9 +1757,9 @@ impl TableQuery {
             .transpose()?;
         // 与 delete() 同一守卫：软删标记在事务内同样是 UPDATE，零 WHERE 必须拒绝。
         self.ensure_soft_delete_write_has_where("DELETE")?;
-        match tx {
+        match tx.kind_mut() {
             #[cfg(feature = "mysql")]
-            AnyTransaction::MySql(tx) => {
+            AnyTransactionKind::MySql(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 if let Some(data) = soft_delete_data {
                     return self
@@ -1741,7 +1774,7 @@ impl TableQuery {
                     .map_err(BaseError::DatabaseExecuteFailed)
             }
             #[cfg(feature = "postgres")]
-            AnyTransaction::Postgres(tx) => {
+            AnyTransactionKind::Postgres(tx) => {
                 let query = tx.table(&self.table_config.table_ref);
                 if let Some(data) = soft_delete_data {
                     let query =

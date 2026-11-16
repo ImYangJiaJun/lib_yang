@@ -180,5 +180,9 @@ required-features = ["mysql"]
 name = "database_example"
 required-features = ["mysql"]
 
+[[example]]
+name = "pg_adoption_report"
+required-features = ["postgres"]
+
 [package.metadata.docs.rs]
 all-features = true

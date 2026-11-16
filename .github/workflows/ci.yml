@@ -347,6 +347,8 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_runtime --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL schema sync wave3 integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave3 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL adoption integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_adoption --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 types integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 codec integration
@@ -357,6 +359,47 @@ jobs:
         run: cargo test -p yang-db --no-default-features --features postgres --test integration_pg_wave5_expressions --locked -- --ignored --test-threads=1
       - name: PostgreSQL row lock queries integration
         run: cargo test -p yang-db --no-default-features --features mysql,postgres --test integration_advanced_queries --locked postgres -- --ignored --test-threads=1
+
+  docker-multi-datasource:
+    name: MySQL 8 + PostgreSQL 16 multi-datasource integration
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: integration
+          MYSQL_DATABASE: yang_system_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pintegration"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MYSQL_TEST_URL: mysql://root:integration@127.0.0.1:3306/yang_system_test
+      PG_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CI_RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Multi-datasource routing and transaction guard integration
+        run: cargo test -p yang-base --no-default-features --features mysql,postgres --test integration_multi_datasource --locked -- --ignored --test-threads=1
 
   docker-postgres-17:
     name: PostgreSQL 17 integration
@@ -430,6 +473,8 @@ jobs:
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave3_runtime --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL schema sync wave3 integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_schema_sync_pg_wave3 --locked -- --ignored --test-threads=1
+      - name: yang-base PostgreSQL adoption integration
+        run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_adoption --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 types integration
         run: cargo test -p yang-base --no-default-features --features postgres --test integration_pg_wave4_types --locked -- --ignored --test-threads=1
       - name: yang-base PostgreSQL Wave 4 codec integration

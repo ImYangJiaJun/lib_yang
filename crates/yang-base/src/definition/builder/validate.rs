@@ -1,5 +1,6 @@
 //! 构建期交叉校验、引用收集与确定性排序。
 
+use crate::datasource::DatasourceId;
 use crate::definition::{
     ActionRef, AddonSpec, BuildError, FieldKind, FieldRef, ParamSource, TableName,
 };
@@ -9,60 +10,71 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use super::schema_contains_binary_field;
 
 pub(super) fn resolve_param_fields(addons: &mut [AddonSpec]) -> Result<(), BuildError> {
-    let definitions = addons
+    // 按逻辑数据源收集字段：同源内允许参数引用其它表；跨源引用不解析。
+    let mut by_source: BTreeMap<DatasourceId, BTreeMap<FieldRef, crate::definition::FieldSpec>> =
+        BTreeMap::new();
+    for table in addons
         .iter()
         .flat_map(|addon| &addon.modules)
         .filter_map(|module| module.table.as_ref())
-        .flat_map(|table| {
-            table.fields.iter().map(move |field| {
-                (
-                    crate::definition::FieldRef::new(table.name.clone(), field.name.clone()),
-                    field.clone(),
-                )
-            })
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for action in addons
-        .iter_mut()
-        .flat_map(|addon| &mut addon.modules)
-        .flat_map(crate::definition::ModuleSpec::actions_mut)
     {
-        for param in &mut action.params {
-            let Some(reference) = &param.field else {
-                continue;
-            };
-            let field = definitions
-                .get(reference)
-                .ok_or_else(|| BuildError::InvalidReference {
-                    kind: "Field",
-                    reference: reference.to_string(),
-                })?;
-            param.kind.get_or_insert(field.kind);
-            param.required |= field.is_required();
-            if param.validation.min_length.is_none() {
-                param.validation.min_length = field.validation.min_length;
-            }
-            if param.validation.max_length.is_none() {
-                param.validation.max_length = field.validation.max_length;
-            }
-            if param.validation.minimum.is_none() {
-                param.validation.minimum = field.validation.minimum.clone();
-            }
-            if param.validation.maximum.is_none() {
-                param.validation.maximum = field.validation.maximum.clone();
-            }
-            if param.validation.pattern.is_none() {
-                param.validation.pattern = field.validation.pattern.clone();
-            }
-            if param.presentation.title.is_empty() {
-                param.presentation.title = field.presentation.title.clone();
-            }
-            if param.presentation.description.is_empty() {
-                param.presentation.description = field.presentation.description.clone();
-            }
-            if param.presentation.widget.is_none() {
-                param.presentation.widget = field.presentation.widget;
+        let source = table.datasource.clone().unwrap_or_default();
+        let fields = by_source.entry(source).or_default();
+        for field in &table.fields {
+            fields.insert(
+                crate::definition::FieldRef::new(table.name.clone(), field.name.clone()),
+                field.clone(),
+            );
+        }
+    }
+
+    for module in addons.iter_mut().flat_map(|addon| &mut addon.modules) {
+        let source = module
+            .table
+            .as_ref()
+            .and_then(|table| table.datasource.clone())
+            .or_else(|| module.datasource.clone())
+            .unwrap_or_default();
+        let definitions = by_source.get(&source).cloned().unwrap_or_default();
+
+        for action in module.actions_mut() {
+            for param in &mut action.params {
+                let Some(reference) = &param.field else {
+                    continue;
+                };
+                let field =
+                    definitions
+                        .get(reference)
+                        .ok_or_else(|| BuildError::InvalidReference {
+                            kind: "Field",
+                            reference: reference.to_string(),
+                        })?;
+                param.kind.get_or_insert(field.kind);
+                param.required |= field.is_required();
+                if param.validation.min_length.is_none() {
+                    param.validation.min_length = field.validation.min_length;
+                }
+                if param.validation.max_length.is_none() {
+                    param.validation.max_length = field.validation.max_length;
+                }
+                if param.validation.minimum.is_none() {
+                    param.validation.minimum = field.validation.minimum.clone();
+                }
+                if param.validation.maximum.is_none() {
+                    param.validation.maximum = field.validation.maximum.clone();
+                }
+                if param.validation.pattern.is_none() {
+                    param.validation.pattern = field.validation.pattern.clone();
+                }
+                if param.presentation.title.is_empty() {
+                    param.presentation.title = field.presentation.title.clone();
+                }
+                if param.presentation.description.is_empty() {
+                    param.presentation.description = field.presentation.description.clone();
+                }
+                if param.presentation.widget.is_none() {
+                    param.presentation.widget = field.presentation.widget;
+                }
             }
         }
     }
@@ -137,11 +149,29 @@ pub(super) fn validate_unique_modules(addons: &[AddonSpec]) -> Result<(), BuildE
 }
 
 pub(super) fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), BuildError> {
-    let mut tables = BTreeSet::new();
+    let mut tables: BTreeSet<(DatasourceId, TableName)> = BTreeSet::new();
     let mut operations = BTreeSet::new();
     for module in addons.iter().flat_map(|addon| &addon.modules) {
         if let Some(table) = &module.table {
-            insert_unique(&mut tables, &table.name, "Table")?;
+            let source = table
+                .datasource
+                .clone()
+                .or_else(|| module.datasource.clone())
+                .unwrap_or_default();
+            if let Some(module_source) = &module.datasource {
+                if module_source != &source {
+                    return Err(BuildError::InvalidReference {
+                        kind: "Datasource",
+                        reference: format!(
+                            "{}: 模块数据源 {} 与表数据源 {} 不一致",
+                            module.name, module_source, source
+                        ),
+                    });
+                }
+            }
+            if !tables.insert((source.clone(), table.name.clone())) {
+                return Err(duplicate("Table", format!("{source}.{}", table.name)));
+            }
             let mut fields = BTreeSet::new();
             let mut tenant_key = None;
             for field in &table.fields {
@@ -263,6 +293,44 @@ pub(super) fn validate_module_contents(addons: &[AddonSpec]) -> Result<(), Build
         let mut views = BTreeSet::new();
         for view in &module.views {
             insert_unique(&mut views, &view.name, "View")?;
+        }
+    }
+
+    // 外键目标必须与源表在同一逻辑数据源；应用级外部表（不在模块表集合中）允许，
+    // 由 schema 同步阶段决定是否可建。
+    let mut table_sources: BTreeMap<TableName, BTreeSet<DatasourceId>> = BTreeMap::new();
+    for (source, name) in &tables {
+        table_sources
+            .entry(name.clone())
+            .or_default()
+            .insert(source.clone());
+    }
+    for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let Some(table) = &module.table else {
+            continue;
+        };
+        let source = table
+            .datasource
+            .clone()
+            .or_else(|| module.datasource.clone())
+            .unwrap_or_default();
+        for foreign_key in &table.foreign_keys {
+            for referenced in &foreign_key.referenced_fields {
+                if let Some(sources) = table_sources.get(referenced.table()) {
+                    if !sources.contains(&source) {
+                        return Err(BuildError::InvalidReference {
+                            kind: "ForeignKey",
+                            reference: format!(
+                                "{}: 目标 {}.{} 不在数据源 {}",
+                                foreign_key.name,
+                                referenced.table(),
+                                referenced.field(),
+                                source
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -408,7 +476,8 @@ fn is_mime_token_byte(value: u8) -> bool {
 
 pub(super) fn collect_fields(
     addons: &[AddonSpec],
-) -> Result<BTreeMap<TableName, BTreeSet<crate::definition::FieldName>>, BuildError> {
+) -> Result<BTreeMap<(DatasourceId, TableName), BTreeSet<crate::definition::FieldName>>, BuildError>
+{
     let mut result = BTreeMap::new();
     for table in addons
         .iter()
@@ -420,7 +489,11 @@ pub(super) fn collect_fields(
             .iter()
             .map(|field| field.name.clone())
             .collect();
-        if result.insert(table.name.clone(), fields).is_some() {
+        let source = table.datasource.clone().unwrap_or_default();
+        if result
+            .insert((source, table.name.clone()), fields)
+            .is_some()
+        {
             return Err(duplicate("Table", &table.name));
         }
     }
@@ -452,11 +525,12 @@ pub(super) fn collect_views(
 }
 
 fn validate_field_ref(
+    source: &DatasourceId,
     reference: &FieldRef,
-    fields: &BTreeMap<TableName, BTreeSet<crate::definition::FieldName>>,
+    fields: &BTreeMap<(DatasourceId, TableName), BTreeSet<crate::definition::FieldName>>,
 ) -> Result<(), BuildError> {
     if fields
-        .get(reference.table())
+        .get(&(source.clone(), reference.table().clone()))
         .is_some_and(|table| table.contains(reference.field()))
     {
         Ok(())
@@ -484,11 +558,17 @@ fn validate_action_ref(
 
 pub(super) fn validate_references(
     addons: &[AddonSpec],
-    fields: &BTreeMap<TableName, BTreeSet<crate::definition::FieldName>>,
+    fields: &BTreeMap<(DatasourceId, TableName), BTreeSet<crate::definition::FieldName>>,
     actions: &BTreeSet<ActionRef>,
     views: &BTreeSet<crate::definition::ViewRef>,
 ) -> Result<(), BuildError> {
     for module in addons.iter().flat_map(|addon| &addon.modules) {
+        let source = module
+            .table
+            .as_ref()
+            .and_then(|table| table.datasource.clone())
+            .or_else(|| module.datasource.clone())
+            .unwrap_or_default();
         for middleware in module.middlewares() {
             if let Some(target) = middleware.target_action() {
                 if target.module() != &module.name {
@@ -506,7 +586,7 @@ pub(super) fn validate_references(
         if let Some(table) = &module.table {
             for field in &table.fields {
                 if let Some(relation) = &field.relation {
-                    validate_field_ref(relation, fields)?;
+                    validate_field_ref(&source, relation, fields)?;
                 }
                 if let Some(select) = &field.select {
                     if field.relation.is_none() {
@@ -518,7 +598,7 @@ pub(super) fn validate_references(
                     validate_action_ref(select, actions)?;
                 }
                 for display in &field.presentation.display {
-                    validate_field_ref(display, fields)?;
+                    validate_field_ref(&source, display, fields)?;
                     let same_target_table = field
                         .relation
                         .as_ref()
@@ -535,7 +615,7 @@ pub(super) fn validate_references(
         for action in module.actions() {
             for param in &action.params {
                 if let Some(field) = &param.field {
-                    validate_field_ref(field, fields)?;
+                    validate_field_ref(&source, field, fields)?;
                 }
             }
             for call in &action.calls {
@@ -551,7 +631,7 @@ pub(super) fn validate_references(
                 });
             }
             for field in &view.fields {
-                validate_field_ref(field, fields)?;
+                validate_field_ref(&source, field, fields)?;
                 // View 是同一主表的多场景投影：数据源固定为 module.table。
                 // 跨表字段会被编译成“本表列”，请求期要么静默读到主表同名列，
                 // 要么报 FieldNotFound；在构建期明确拒绝这种非法定义。
@@ -595,7 +675,7 @@ pub(super) fn validate_references(
                     }
                 }
                 for field in tree_fields {
-                    validate_field_ref(field, fields)?;
+                    validate_field_ref(&source, field, fields)?;
                     if field.table() != &table.name || !view.fields.contains(field) {
                         return Err(BuildError::InvalidReference {
                             kind: "Tree View Field",

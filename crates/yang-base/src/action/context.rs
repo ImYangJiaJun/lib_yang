@@ -121,6 +121,8 @@ pub struct ActionContext {
     registry: Option<Arc<Registry>>,
     /// 不可变表定义（如果 Action 关联表）。
     table_definition: Option<TableDefinition>,
+    /// 本次派发所属模块绑定的逻辑数据源；由 Registry 注入。
+    datasource: Option<crate::datasource::DatasourceId>,
     /// 本次派发的运行期标识，用于串联日志/span/metrics/审计。
     ///
     /// 由 `new` 默认生成；`RequestIdMiddleware` 在洋葱链
@@ -155,6 +157,7 @@ impl Clone for ActionContext {
             tools: Arc::clone(&self.tools),
             registry: self.registry.clone(),
             table_definition: self.table_definition.clone(),
+            datasource: self.datasource.clone(),
             request_id: self.request_id,
             module: self.module.clone(),
             action: self.action.clone(),
@@ -175,6 +178,7 @@ impl ActionContext {
             tools,
             registry: None,
             table_definition: None,
+            datasource: None,
             request_id: RequestId::generate(),
             module: None,
             action: None,
@@ -357,6 +361,33 @@ impl ActionContext {
             .ok_or(BaseError::TableDefinitionNotSet)
     }
 
+    /// 注入本次派发所属模块的数据源（仅 crate 内 Registry 使用）。
+    pub(crate) fn with_datasource(
+        mut self,
+        datasource: Option<crate::datasource::DatasourceId>,
+    ) -> Self {
+        self.datasource = datasource;
+        self
+    }
+
+    /// 返回本次派发所属逻辑数据源。
+    pub fn datasource(&self) -> Option<&crate::datasource::DatasourceId> {
+        self.datasource.as_ref()
+    }
+
+    /// 解析本请求使用的数据源：模块注入源 → 表定义源 → 默认源。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    fn resolved_datasource(&self) -> crate::datasource::DatasourceId {
+        self.datasource
+            .clone()
+            .or_else(|| {
+                self.table_definition
+                    .as_ref()
+                    .map(|definition| definition.datasource().clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// 零拷贝版本：用 `std::mem::take` 替代 clone 请求体。
     ///
     /// 调用后 `self.request.body` 变为 `Value::Null`，仅在不再需要 body 时使用。
@@ -379,27 +410,56 @@ impl ActionContext {
     /// - `Ok(TableQuery)`: 查询构建器
     /// - `Err(BaseError::TableDefinitionNotSet)`: 表定义未设置
     fn base_table_query(&self, definition: &TableDefinition) -> Result<TableQuery, BaseError> {
-        // 从当前应用资源注入连接池；未配置数据库时保持 None，由执行层统一报错。
         #[cfg(any(feature = "mysql", feature = "postgres"))]
-        let pool = match self.tools.database() {
-            Ok(database) => Some(database.pool()),
-            Err(BaseError::DatabaseNotInitialized) => None,
-            Err(error) => return Err(error),
+        let (pool, pool_source) = {
+            let source = definition.datasource().clone();
+            match self.tools.database_named(&source) {
+                Ok(database) => (Some(database.pool()), database.id().clone()),
+                Err(BaseError::DatabaseNotInitialized) => (None, source),
+                Err(error) => return Err(error),
+            }
         };
         #[cfg(not(any(feature = "mysql", feature = "postgres")))]
-        let pool = None;
+        let (pool, pool_source) = (None, crate::datasource::DatasourceId::default_source());
 
         // 注入可观测性：慢查询阈值（Tools 配置槽）+ 本次派发 request_id，
         // 使受保护层执行边界能在超阈值时 warn 并串联 request_id。
         let slow_threshold = self.slow_query_threshold();
-        Ok(TableQuery::new(
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        let query = TableQuery::new_sourced(
             definition.shared_config(),
             Arc::clone(&self.cached_roles),
             pool,
+            pool_source,
         )
-        .with_slow_threshold(slow_threshold)
-        .with_request_id(self.request_id)
-        .with_regex_cache(self.tools.regex_cache().clone()))
+        .require_sourced_tx(
+            self.tools
+                .datasources()
+                .map(|datasources| {
+                    let backends: Vec<_> = datasources
+                        .iter()
+                        .map(|datasource| datasource.database().backend())
+                        .collect();
+                    backends
+                        .iter()
+                        .enumerate()
+                        .any(|(index, backend)| backends[..index].contains(backend))
+                })
+                .unwrap_or(false),
+        );
+        #[cfg(not(any(feature = "mysql", feature = "postgres")))]
+        let query = {
+            let _ = pool_source;
+            TableQuery::new(
+                definition.shared_config(),
+                Arc::clone(&self.cached_roles),
+                pool,
+            )
+        };
+        Ok(query
+            .with_slow_threshold(slow_threshold)
+            .with_request_id(self.request_id)
+            .with_regex_cache(self.tools.regex_cache().clone()))
     }
 
     /// 创建默认失败关闭的表查询构建器。
@@ -470,11 +530,37 @@ impl ActionContext {
     /// ```
     #[cfg(any(feature = "mysql", feature = "postgres"))]
     pub async fn begin_transaction(&self) -> Result<crate::database::AnyTransaction, BaseError> {
+        let source = self.resolved_datasource();
+        self.begin_transaction_on(&source).await
+    }
+
+    /// 在指定逻辑数据源上开启事务。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub async fn begin_transaction_on(
+        &self,
+        source: &crate::datasource::DatasourceId,
+    ) -> Result<crate::database::AnyTransaction, BaseError> {
         self.tools
-            .database()?
+            .database_named(source)?
             .begin()
             .await
             .map_err(BaseError::DatabaseTransactionFailed)
+    }
+
+    /// 返回本请求使用的数据库容器（模块源 → 表定义源 → 默认源）。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database(&self) -> Result<&crate::database::AnyDatabase, BaseError> {
+        let source = self.resolved_datasource();
+        self.database_on(&source)
+    }
+
+    /// 返回指定数据源的数据库容器。
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    pub fn database_on(
+        &self,
+        source: &crate::datasource::DatasourceId,
+    ) -> Result<&crate::database::AnyDatabase, BaseError> {
+        self.tools.database_named(source)
     }
 
     /// 事务局部会话配置的默认键：当前租户 ID。
@@ -512,14 +598,14 @@ impl ActionContext {
         // 仅 MySQL 时 PostgreSQL 分支不参与编译，键值参数保持未使用。
         #[cfg(not(feature = "postgres"))]
         let _ = (key, value);
-        match tx {
+        match tx.kind_mut() {
             #[cfg(feature = "postgres")]
-            crate::database::AnyTransaction::Postgres(tx) => tx
+            crate::database::AnyTransactionKind::Postgres(tx) => tx
                 .set_local(key, value)
                 .await
                 .map_err(BaseError::DatabaseExecuteFailed),
             #[cfg(feature = "mysql")]
-            crate::database::AnyTransaction::MySql(_) => Err(BaseError::ConfigError(
+            crate::database::AnyTransactionKind::MySql(_) => Err(BaseError::ConfigError(
                 "MySQL 不支持事务级 SET LOCAL；该能力仅在 PostgreSQL 下可用".to_string(),
             )),
         }

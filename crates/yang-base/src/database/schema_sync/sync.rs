@@ -98,6 +98,7 @@ impl DatabaseInitializer {
             changes: plans.into_iter().flat_map(|plan| plan.changes).collect(),
             statements,
             deferred_statements,
+            bindings: Vec::new(),
         })
     }
 
@@ -126,6 +127,7 @@ impl DatabaseInitializer {
                     .collect(),
                 statements,
                 deferred_statements,
+                bindings: Vec::new(),
             },
             violations,
         })
@@ -151,11 +153,24 @@ impl DatabaseInitializer {
         if definitions.is_empty() {
             return Ok(SchemaSyncReport::default());
         }
+        if let Some(definition) = definitions.iter().find(|definition| {
+            definition
+                .name()
+                .rsplit('.')
+                .next()
+                .is_some_and(|name| name == super::binding::BINDING_TABLE)
+        }) {
+            return Err(BaseError::ConfigError(format!(
+                "表 {} 是框架保留的系统表，不能由模块声明",
+                definition.name()
+            )));
+        }
+        let datasource = self.db().id().clone();
 
         let mut owned = self.acquire_schema_connection().await?;
         let mut connection = owned.as_schema();
         let lock = driver.lock(&mut connection).await?;
-        let result = sync_locked(driver, &mut connection, &definitions).await;
+        let result = sync_locked(driver, &mut connection, &definitions, &datasource).await;
         // 复位会话级 lock_timeout：连接归还池后会被业务查询复用。
         let reset_result = driver.reset_session(&mut connection).await;
         let release_result = driver.unlock(&mut connection, &lock).await;
@@ -244,7 +259,10 @@ impl StepPhase {
                     && !is_foreign_key
                     && matches!(
                         step.change.kind,
-                        SchemaSyncChangeKind::CreatedTable | SchemaSyncChangeKind::AddedColumn
+                        SchemaSyncChangeKind::CreatedTable
+                            | SchemaSyncChangeKind::AddedColumn
+                            | SchemaSyncChangeKind::CreatedEnumType
+                            | SchemaSyncChangeKind::AddedEnumValue
                     )
             }
             Self::Main => {
@@ -252,7 +270,10 @@ impl StepPhase {
                     && !is_foreign_key
                     && !matches!(
                         step.change.kind,
-                        SchemaSyncChangeKind::CreatedTable | SchemaSyncChangeKind::AddedColumn
+                        SchemaSyncChangeKind::CreatedTable
+                            | SchemaSyncChangeKind::AddedColumn
+                            | SchemaSyncChangeKind::CreatedEnumType
+                            | SchemaSyncChangeKind::AddedEnumValue
                     )
             }
             Self::Concurrent => step.concurrent,
@@ -286,9 +307,23 @@ async fn sync_locked(
     driver: SchemaDriver,
     connection: &mut SchemaConnection<'_>,
     definitions: &[&TableDefinition],
+    datasource: &crate::datasource::DatasourceId,
 ) -> Result<SchemaSyncReport, BaseError> {
     driver.configure_session(connection).await?;
     let plans = plan_locked(driver, connection, definitions).await?;
+
+    // 所有权绑定必须先于 DDL 落库：MySQL 的 DDL 隐式提交、PostgreSQL 的并发索引
+    // 也在主事务提交后执行；若等 DDL 成功后再写绑定，进程中断或后续步骤失败会
+    // 让框架建的表在下次启动时被误判为 adopted。
+    super::binding::ensure_binding_table(driver, connection).await?;
+    let existing_bindings = super::binding::load_bindings(connection, datasource).await?;
+    let planned_changes = plans
+        .iter()
+        .flat_map(|plan| plan.changes.iter().cloned())
+        .collect::<Vec<_>>();
+    let binding_updates =
+        binding_updates(driver, definitions, &existing_bindings, &planned_changes)?;
+    super::binding::upsert_bindings(connection, datasource, &binding_updates).await?;
 
     if driver.transactional_ddl() {
         // PostgreSQL：地基步骤 -> 同事务内预检（能看到新列）-> 其余事务步骤
@@ -356,6 +391,15 @@ async fn sync_locked(
             .collect(),
         statements,
         deferred_statements,
+        bindings: binding_updates
+            .iter()
+            .map(|update| super::SchemaBindingChange {
+                datasource: datasource.clone(),
+                table: update.table.clone(),
+                mode: update.mode,
+                newly_bound: update.newly_bound,
+            })
+            .collect(),
     })
 }
 
@@ -370,6 +414,58 @@ fn plan_statements(plans: &[super::model::TableSyncPlan]) -> (Vec<String>, Vec<S
         }
     }
     (statements, deferred_statements)
+}
+
+/// 计算本轮需要写入的所有权绑定。
+///
+/// - 首次登记时：本轮由框架建表 → `managed`；表已存在 → `adopted`。
+/// - 已登记为 `adopted` 的表一旦被框架实际演进，即进入 `managed`。
+fn binding_updates(
+    driver: SchemaDriver,
+    definitions: &[&TableDefinition],
+    existing: &std::collections::BTreeMap<String, super::binding::BindingRecord>,
+    changes: &[super::SchemaSyncChange],
+) -> Result<Vec<super::binding::BindingUpdate>, BaseError> {
+    let changed = changes
+        .iter()
+        .map(|change| change.table.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let now = super::binding::now_unix_seconds();
+    let mut updates = Vec::new();
+    for definition in definitions {
+        let table = definition.name().to_string();
+        let fingerprint = super::binding::table_fingerprint(driver, definition)?;
+        let record = existing.get(&table);
+        let (mode, newly_bound) = match record {
+            Some(record) => {
+                let mode = if record.mode == super::SchemaBindingMode::Adopted
+                    && changed.contains(table.as_str())
+                {
+                    super::SchemaBindingMode::Managed
+                } else {
+                    record.mode
+                };
+                (mode, false)
+            }
+            // 首次登记：框架本轮建表或演进过的表直接归 managed；完全未动的
+            // 存量表先记为 adopted，等待下一次实际演进或在报告中人工确认。
+            None if changed.contains(table.as_str()) => (super::SchemaBindingMode::Managed, true),
+            None => (super::SchemaBindingMode::Adopted, true),
+        };
+        let needs_write = record.map_or(true, |record| {
+            record.mode != mode || record.fingerprint != fingerprint
+        });
+        if needs_write {
+            updates.push(super::binding::BindingUpdate {
+                table,
+                mode,
+                fingerprint,
+                adopted_at: now,
+                newly_bound,
+            });
+        }
+    }
+    Ok(updates)
 }
 
 async fn execute_steps(

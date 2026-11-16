@@ -129,6 +129,22 @@ impl AppBuilder {
 
     /// 校验全部定义、解析引用并冻结 Catalog/Registry。
     pub fn build(mut self, tools: impl Into<Arc<Tools>>) -> Result<BuiltApp, BuildError> {
+        let tools: Arc<Tools> = tools.into();
+        // 兼容直接给 AddonSpec.datasource 赋值的调用方：构建期统一下派到模块与表。
+        for addon in &mut self.addons {
+            if let Some(source) = addon.datasource.clone() {
+                for module in &mut addon.modules {
+                    if module.datasource.is_none() {
+                        module.datasource = Some(source.clone());
+                    }
+                    if let Some(table) = &mut module.table {
+                        if table.datasource.is_none() {
+                            table.datasource = Some(source.clone());
+                        }
+                    }
+                }
+            }
+        }
         validate_unique_addons(&self.addons)?;
         validate_dependencies(&self.addons)?;
         validate_module_ownership(&self.addons)?;
@@ -159,6 +175,29 @@ impl AppBuilder {
         }
         let registry = Arc::new(registry);
         let table_definitions = compile_table_definitions(&self.addons)?;
+        // 配置了数据库注册表时，表声明的逻辑源必须在注册表中存在；未配置数据库
+        // 的纯元数据构建保持既有行为。
+        #[cfg(any(feature = "mysql", feature = "postgres"))]
+        if let Ok(datasources) = tools.datasources() {
+            for definition in &table_definitions {
+                datasources
+                    .resolve_id(definition.datasource())
+                    .map_err(|error| BuildError::InvalidReference {
+                        kind: "Datasource",
+                        reference: error.to_string(),
+                    })?;
+            }
+            for module in self.addons.iter().flat_map(|addon| &addon.modules) {
+                if let Some(source) = &module.datasource {
+                    datasources.resolve_id(source).map_err(|error| {
+                        BuildError::InvalidReference {
+                            kind: "Datasource",
+                            reference: error.to_string(),
+                        }
+                    })?;
+                }
+            }
+        }
         for module in self.addons.iter_mut().flat_map(|addon| &mut addon.modules) {
             module.clear_handlers();
         }
@@ -167,7 +206,7 @@ impl AppBuilder {
                 addons: self.addons,
             },
             registry,
-            tools: tools.into(),
+            tools,
             table_definitions,
             compiled_views,
         })
