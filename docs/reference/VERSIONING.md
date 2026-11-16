@@ -2,9 +2,9 @@
 
 当前仓库基线：
 
-- `yang-base` 0.4.0
-- `yang-base-derive` 0.3.0
-- `yang-db` 0.2.1
+- `yang-base` 0.5.0
+- `yang-base-derive` 0.3.1
+- `yang-db` 0.3.0
 
 0.x 仍允许在次版本中发布 breaking change，但本仓库继续把 patch 版本用于兼容增强；任何有意删除、重命名或收紧公共契约的变化必须集中到明确的升级版本，并提供迁移说明和契约测试。
 
@@ -31,7 +31,7 @@
 
 ## yang-db 0.1.x 规则
 
-`yang-db` 仍处于 0.2.1：
+`yang-db` 仍处于 0.3.0：
 
 - 允许新增类型、方言能力、checked identifier 入口和结构化错误；已有入口保持可编译。
 - 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和兼容测试。
@@ -167,3 +167,47 @@ unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新
   版本号与文档一致性。
 - 传输、认证与错误分类行为分别由 `tests/transport_axum.rs`、
   `tests/token_revocation_integration.rs`、`tests/error_test.rs` 覆盖。
+
+## yang-base 0.5.0 与 yang-db 0.3.0 迁移说明
+
+0.5.0 / 0.3.0 汇总了 0.4.0 之后的两部分变化：PostgreSQL Wave 1–5 的公共契约调整，
+以及一批兼容增强与 fail-fast 收紧。`yang-base` 0.5.0 依赖 `yang-db` 0.3.0 与
+`yang-base-derive` 0.3.1。
+
+### 破坏性变更
+
+- **跨后端数据库句柄**：`Tools::database()` 返回 `&AnyDatabase`（原 `&yang_db::Database`），
+  `ToolsBuilder::database()` 接收 `AnyDatabase`；新增 `AnyPool` / `AnyTransaction`。
+  构造改用 `AnyDatabase::mysql(..)` / `AnyDatabase::postgres(..)`。
+- **事务入口统一**：`ActionContext::begin_transaction()` 返回 `AnyTransaction`；
+  `TableQuery` 的 `update_in_tx` / `delete_in_tx` 等入口接收 `&mut AnyTransaction`
+  （原 `&mut yang_db::Transaction`）。
+- **`yang-db` 关系执行器**：`DatabaseRelationExecutor::new(database)` 改为
+  `new(database, roles)`，数据库句柄为 `AnyDatabase`；新增 `target` / `with_tenant` /
+  `without_tenant_scope` 守卫，未登记目标表或未绑定租户时 fail-closed。
+- **窗口函数类型**：`WindowFunction` 移除 `PartialEq` / `Eq`；`FrameMode` 新增
+  `Groups` 变体且未标 `#[non_exhaustive]`，下游穷举 `match` 必须补分支。
+- **schema 同步报告**：`SchemaSyncReport` 新增 `statements` / `deferred_statements`；
+  结构体字面量改用 `Default` + 字段赋值。
+
+### 兼容增强与 fail-fast 收紧
+
+- 软删表的零 WHERE `update` / `delete` / 事务写返回 `MissingWhereClause`；
+  `INSERT` 与读路径不受影响。
+- PostgreSQL upsert 明确拒绝 `where` / `where_any` 行过滤（此前会被静默丢弃）。
+- CHECK 表达式在渲染时按目标方言复校验；跨方言越界载荷返回 `ConfigError`。
+- 框架托管列的默认 `writable_by` 收敛；显式声明 `writable_by` 的列保持原语义。
+- 撤销水位线 TTL 取 `max(access, refresh, 90 天)`，只放大不缩短。
+- 路径段校验拒绝 C0/C1/DEL 控制字符；HTTP 重定向策略改为显式 opt-in（默认仍等价
+  `reqwest` 的 `limited(10)`）；二进制响应按 `Content-Length` 快速失败并按
+  `binary_limit` 累计。
+- 租户 token TTL 增加上界与 `checked_add`；取消路径用 RAII 释放刷新锁。
+- `Request` / 飞书 token 与 options 的 `Debug` 输出脱敏。
+
+### 宿主迁移
+
+- 使用 `Tools::database()` / `AnyDatabase` / `AnyTransaction` 的代码按新类型改写。
+- `DatabaseRelationExecutor` 调用点补 `roles` 参数。
+- 对 `FrameMode` 穷举 `match` 补 `Groups`；`WindowFunction` 比较改为比较渲染 SQL。
+- 依赖路径依赖的宿主把 `yang-base` / `yang-db` / `yang-runtime` 的版本要求同步到
+  `0.5.0` / `0.3.0` / `0.2.0`。

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### 破坏性变更
 
@@ -19,6 +19,16 @@
   `statements` 与 `deferred_statements` 字段：分别携带事务内 DDL 与事务提交后
   执行的 deferred DDL（`VALIDATE CONSTRAINT`、并发索引等），供 dry-run 审计。
   使用结构体字面量构造下游需改用 `Default` + 字段赋值。
+
+### 兼容增强
+
+- 新增 `RedisClient::set_with_options_outcome` 与 `SetOutcome`：区分 `SET NX/XX`
+  条件写是否真正生效；`set_with_options` 的既有返回契约保持不变。
+- PostgreSQL `DISCARD ALL` 后同步清理 sqlx 客户端语句缓存，避免连接因失效缓存
+  被 hard-close，池不再退化为每次借出都新建连接。
+- `insert()` 在解码阶段拒绝负值主键；Pool 路径走既有回滚分支，不再出现
+  「返回 Err 但行已提交」。
+- 事务与查询日志改为只记录参数数量，不记录参数值。
 
 ### 限制
 

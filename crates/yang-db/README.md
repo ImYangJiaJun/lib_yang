@@ -17,20 +17,20 @@ YANG 数据库操作库，提供类型安全的 MySQL/PostgreSQL 查询构建器
 
 ```toml
 # 仅 MySQL
-yang-db = { version = "0.2.1", default-features = false, features = ["mysql"] }
+yang-db = { version = "0.3.0", default-features = false, features = ["mysql"] }
 
 # 仅 PostgreSQL
-yang-db = { version = "0.2.1", default-features = false, features = ["postgres"] }
+yang-db = { version = "0.3.0", default-features = false, features = ["postgres"] }
 
 # 仅 Redis
-yang-db = { version = "0.2.1", default-features = false, features = ["redis"] }
+yang-db = { version = "0.3.0", default-features = false, features = ["redis"] }
 
 # Redis 扩展能力（按需组合）
 # redis-tls         : rediss://（rustls + 系统根证书）
 # redis-cluster     : Redis Cluster（槽位路由、MOVED/ASK）
 # redis-sentinel    : Sentinel（master 发现与故障转移）
 # metrics           : 命令级延迟/错误指标
-yang-db = { version = "0.2.1", default-features = false, features = ["redis", "redis-tls"] }
+yang-db = { version = "0.3.0", default-features = false, features = ["redis", "redis-tls"] }
 ```
 
 无 feature 组合仍提供 `DbError`、`DbErrorCategory`、`IsolationLevel` 与 `PoolStatus` 等后端无关契约。docs.rs 使用 all-features 构建完整 API。

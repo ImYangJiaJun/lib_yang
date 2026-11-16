@@ -1,6 +1,6 @@
 [package]
 name = "yang-runtime"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "YANG 服务进程运行时：配置源合成、多阶段关闭预算、日志/指标/链路与 readiness"
@@ -28,8 +28,8 @@ metrics.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
-yang-base = { path = "../yang-base", version = "0.4.0", default-features = false, features = ["mysql", "redis", "metrics"] }
-yang-db = { path = "../yang-db", version = "0.2.1", default-features = false, features = ["mysql", "redis"] }
+yang-base = { path = "../yang-base", version = "0.5.0", default-features = false, features = ["mysql", "redis", "metrics"] }
+yang-db = { path = "../yang-db", version = "0.3.0", default-features = false, features = ["mysql", "redis"] }
 
 [lints]
 workspace = true

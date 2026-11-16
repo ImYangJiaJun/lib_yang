@@ -31,6 +31,14 @@
   字段类型码），Base v3 写接口的单元格方言不同；签名与编码行为不变。
   `v3_record_upsert` 实际只做 PATCH 更新（`record_id` 必填），文档不再声称可创建，
   新建记录指向 `v3_record_batch_create` / v1 `create_record`。
+- 路径段校验拒绝 C0/C1/DEL 控制字符与 `.`/`..` 段；错误在发请求前返回。
+- 二进制响应先按 `Content-Length` 快速失败，再按 `binary_limit` 累计 chunk，
+  峰值内存受上限约束。
+- tenant_access_token TTL 增加上界与 `checked_add`；取消路径用 RAII 释放刷新锁，
+  正常路径语义不变。
+- `TenantTokenGrant` / `TenantTokenResponse` / `MemoryTokenCache` /
+  `FeishuOptionsRequest` 的 `Debug` 输出脱敏。
+- 事件签名复核与 OpenAPI catalog 的 multipart/二进制端点标注修正。
 
 ## 0.2.0
 
