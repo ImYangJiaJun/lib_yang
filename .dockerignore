@@ -95,3 +95,21 @@ project/inventory-system/config/doris.json
 project/inventory-system/.testdata
 project/inventory-system/.golden
 project/inventory-system/public/exports
+
+# purchase-sales-system：构建上下文是 lib_yang 根，Dockerfile 只 COPY
+#   crates/ 与 project/purchase-sales-system/
+# 本地运行配置、构建产物、附件、部署镜像包与生产配置都不该送进 docker daemon。
+project/purchase-sales-system/config.toml
+project/purchase-sales-system/target
+project/purchase-sales-system/attachments
+project/purchase-sales-system/parity_runs
+project/purchase-sales-system/.testdata
+project/purchase-sales-system/tests
+project/purchase-sales-system/tools
+project/purchase-sales-system/deploy/config.cloud.toml
+project/purchase-sales-system/deploy/config.cloud.toml.*
+project/purchase-sales-system/deploy/*.tar
+project/purchase-sales-system/deploy/*.tar.gz
+project/purchase-sales-system/deploy/.env
+project/purchase-sales-system/deploy/.deploy-lock
+project/purchase-sales-system/deploy/.releases
