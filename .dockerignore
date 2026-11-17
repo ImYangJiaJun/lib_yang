@@ -68,6 +68,7 @@ project/inventory-system/data
 project/inventory-system/parity_runs
 project/inventory-system/tests/fixtures
 project/inventory-system/frontend/node_modules
+project/inventory-system/deploy/.ssh-password*
 
 # 各子项目 .gitignore 明确标注为“含明文凭据/真实业务数据、不入库”的本地产物：
 # 以后端仓库根为 context 构建时同样必须排除，避免把它们送进 docker daemon/
