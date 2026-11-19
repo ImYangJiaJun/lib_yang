@@ -1,16 +1,16 @@
 # yang-base — 后端基础库公共 API
 
-版本：0.5.0 | 许可：MIT OR Apache-2.0
+版本：0.6.0 | 许可：MIT OR Apache-2.0
 
 `yang-base` 提供 schema-first 数据表、类型化 Action、原子 API 注册、应用级路由目录、插件生命周期、MySQL/Redis 初始化、HTTP 客户端和 JWT Token 管理。
 
-精确签名以 rustdoc 与源码为准；本文件描述 0.5.0 应用侧公共契约，不保留已删除 API 的历史教程。
+精确签名以 rustdoc 与源码为准；本文件描述 0.6.0 应用侧公共契约，不保留已删除 API 的历史教程。
 
 ## 安装与 feature
 
 ```toml
 [dependencies]
-yang-base = "0.5.0"
+yang-base = "0.6.0"
 ```
 
 | Feature | 默认 | 能力 |
@@ -298,7 +298,20 @@ let document = catalog.to_openapi(
 - 资源一律经 `ToolsBuilder` 在启动期注册（mysql/cache/token/http + 类型化 extension/config 槽），运行期通过 `Tools` 只读获取；重复注册在构建期报错。
 - `health_check` 汇总各资源健康状态，`close` 幂等并按注册逆序释放。
 
-直接使用初始化配置时，应用还需依赖 `yang-db` 0.3.0 的 `DatabaseConfig` / `RedisConfig`。
+直接使用初始化配置时，应用还需依赖 `yang-db` 0.3.1 的 `DatabaseConfig` / `RedisConfig`。
+
+### 多数据源
+
+- `DatasourceId` 是逻辑数据源名，`DatasourceId::default_source()` 为 `default`。
+- `ToolsBuilder` 的 `database_named` / `mysql_named` / `postgres_named` 注册具名源，
+  `default_datasource` 指定默认源；`Tools::database_named` / `datasources` /
+  `datasource_health` 读取注册表与健康状态。
+- `AddonSpec::datasource` / `ModuleSpec::datasource` / `TableSpec::datasource` 绑定
+  逻辑源；未声明时按「表 → 模块 → Addon → 默认源」继承，构建期校验源已注册。
+- 事务与查询强制同源：`ActionContext::begin_transaction_on` 创建带源事务，
+  `TableQuery::require_sourced_tx` 与 `*_in_tx` 在跨源时 fail-closed；跨源一致性
+  使用 outbox/saga，不声明跨源外键。
+- 存量 PostgreSQL 接入步骤见 [POSTGRES_ADOPTION.md](POSTGRES_ADOPTION.md)。
 
 ### DatabaseInitializer
 

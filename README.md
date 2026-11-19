@@ -22,7 +22,7 @@ lib_yang/
 
 `project/yang-system` 是独立 Git/Cargo 项目，并从根 workspace 排除。它通过相对路径直接依赖 `../../crates/yang-base`、`../../crates/yang-db` 和 `../../crates/yang-runtime`，因此基础库修改会直接参与基础系统编译，无需 Cargo patch。
 
-`yang-base 0.5.0` 的注册边界同时承担契约和安全校验：同一 `ModuleSpec` 可以组合公开与受保护 API，`TokenAuthMiddleware` 默认只拦截受保护 Action；`.crud()` 自动为写接口生成 `{module}:write`、为读接口生成 `{module}:read`（`{module}` 为完整限定 Module 名），并把具体 `TableDefinition` 的字段、主键和查询能力投影到 `ApiCatalog`。路由模板与跨模块冲突在 `AppBuilder::build` 构建期按 Axum 0.8 的 `{name}` / `{*name}` 语法检查，`TableQuery` 则在生成 SQL 前校验 WHERE 字段、操作符和值类型，并把与 `null` 的等值比较规范化为 `IS NULL` / `IS NOT NULL`。
+`yang-base 0.6.0` 的注册边界同时承担契约和安全校验：同一 `ModuleSpec` 可以组合公开与受保护 API，`TokenAuthMiddleware` 默认只拦截受保护 Action；`.crud()` 自动为写接口生成 `{module}:write`、为读接口生成 `{module}:read`（`{module}` 为完整限定 Module 名），并把具体 `TableDefinition` 的字段、主键和查询能力投影到 `ApiCatalog`。路由模板与跨模块冲突在 `AppBuilder::build` 构建期按 Axum 0.8 的 `{name}` / `{*name}` 语法检查，`TableQuery` 则在生成 SQL 前校验 WHERE 字段、操作符和值类型，并把与 `null` 的等值比较规范化为 `IS NULL` / `IS NOT NULL`。
 
 ## 本地开发环境
 
