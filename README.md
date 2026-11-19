@@ -30,7 +30,7 @@ lib_yang/
 
 | 工具 | 版本与用途 |
 |---|---|
-| Rustup | 安装仓库固定的 Rust 1.97.1、rustfmt 和 clippy |
+| Rustup | 安装仓库固定的 Rust 1.100.0、rustfmt 和 clippy |
 | Python | 3.11+，运行本地 CI 脚本 |
 | Docker Desktop | 提供 Docker Compose、MySQL 8.0 和 Redis 7 |
 | Node.js | 24+，运行 `yang-system` 前端 |

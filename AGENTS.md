@@ -3,7 +3,7 @@
 **刷新日期:** 2026-11-09（对照工作区 HEAD d7f4cf1 现场核实；上一版生成于 2026-09-05 / b8e511d）
 
 ## OVERVIEW
-YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system`（本地联合调试）与 `project/receivables-system`（另行联调，均从根 workspace 排除）。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.97.1（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
+YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system`（本地联合调试）与 `project/receivables-system`（另行联调，均从根 workspace 排除）。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.100.0（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
 
 ## STRUCTURE
 ```text
@@ -11,7 +11,7 @@ lib_yang/
 ├── Cargo.toml                # workspace root: members=["crates/*"], exclude project/yang-system 与 project/receivables-system
 ├── clippy.toml               # disallowed-types 豁免（RUSTSEC-2026-0009）——NOTES 勿再写"无 clippy.toml"
 ├── deny.toml                 # cargo-deny 策略（advisories/licenses/sources）
-├── rust-toolchain.toml       # channel 1.97.1
+├── rust-toolchain.toml       # channel 1.100.0
 ├── benchmarks/               # runtime-shadow 基准配置（CI performance-shadow job）
 ├── crates/
 │   ├── yang-db/              # MySQL/PG 查询构建 + Redis 客户端（v0.2.1）
@@ -139,7 +139,7 @@ cargo run --example <name> -p <crate> --locked
 
 ## NOTES
 - `CONTRIBUTING.md` 是提交规范；改 `Cargo.lock`/feature 必须在推送前跑 `python scripts/run_ci.py full`。
-- 根 `rust-toolchain.toml` 固定 1.97.1；CI 的 `msrv` job 用 `+1.80.0` check——两件事不是一回事。
+- 根 `rust-toolchain.toml` 固定 1.100.0；CI 的 `msrv` job 用 `+1.80.0` check——两件事不是一回事。
 - CI 跑在 `.github/workflows/ci.yml`；`deny.toml` 驱动 supply-chain job；`benchmarks/runtime-shadow.toml` 驱动 performance-shadow。
 - `.gitignore` 含 `*/tests/`（对 Rust 反常），reasoning about tracked integration tests 时要小心。
 - 仓库已建 `.codegraph/` 索引；结构性问题（X 在哪/谁调用 X/改 X 影响什么）优先用 codegraph MCP 工具，纯文本内容搜索才用 grep/read。

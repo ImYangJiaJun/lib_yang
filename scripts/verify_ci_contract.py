@@ -19,7 +19,7 @@ REQUIRED_FRAGMENTS = (
     "docker-postgres:",
     "docker-postgres-17:",
     "docker-redis:",
-    'CI_RUST_VERSION: "1.97.1"',
+    'CI_RUST_VERSION: "1.100.0"',
     "toolchain: ${{ env.CI_RUST_VERSION }}",
     "cargo fmt --all -- --check",
     "cargo test --lib -p yang-db --locked",
