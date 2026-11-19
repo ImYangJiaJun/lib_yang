@@ -14,10 +14,10 @@ YANG 服务进程运行时，提供与具体业务无关的启动期配置、生
 
 ```toml
 [dependencies]
-yang-runtime = "0.2.0"
+yang-runtime = "0.2.1"
 ```
 
-`yang-runtime` 固定工作区依赖版本（`yang-base` 0.4.x、`yang-db` 0.2.x）与 OpenTelemetry 0.30 栈，独立使用者应同时核对 MSRV 1.80。
+`yang-runtime` 固定工作区依赖版本（`yang-base` 0.6.x、`yang-db` 0.3.x）与 OpenTelemetry 0.30 栈，独立使用者应同时核对 MSRV 1.80。
 
 ## 相关 crate
 

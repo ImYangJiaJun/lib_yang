@@ -2,9 +2,9 @@
 
 当前仓库基线：
 
-- `yang-base` 0.5.0
+- `yang-base` 0.6.0
 - `yang-base-derive` 0.3.1
-- `yang-db` 0.3.0
+- `yang-db` 0.3.1
 
 0.x 仍允许在次版本中发布 breaking change，但本仓库继续把 patch 版本用于兼容增强；任何有意删除、重命名或收紧公共契约的变化必须集中到明确的升级版本，并提供迁移说明和契约测试。
 
@@ -31,7 +31,7 @@
 
 ## yang-db 0.1.x 规则
 
-`yang-db` 仍处于 0.3.0：
+`yang-db` 仍处于 0.3.1：
 
 - 允许新增类型、方言能力、checked identifier 入口和结构化错误；已有入口保持可编译。
 - 不安全、含糊或无法验证的入口先 deprecated，并提供替代 API、迁移示例和兼容测试。
@@ -211,3 +211,51 @@ unchecked operator、分号切割脚本和隐式 RAW 回退只用于兼容；新
 - 对 `FrameMode` 穷举 `match` 补 `Groups`；`WindowFunction` 比较改为比较渲染 SQL。
 - 依赖路径依赖的宿主把 `yang-base` / `yang-db` / `yang-runtime` 的版本要求同步到
   `0.5.0` / `0.3.0` / `0.2.0`。
+
+## yang-base 0.6.0 与 yang-db 0.3.1 迁移说明
+
+0.6.0 / 0.3.1 汇总了 0.5.0 / 0.3.0 之后的 PostgreSQL 多数据源与存量库接入能力，以及
+PostgreSQL 参数绑定签名修复。`yang-base` 0.6.0 依赖 `yang-db` 0.3.1 与
+`yang-base-derive` 0.3.1；`yang-runtime` 同步发布 0.2.1。
+
+### 破坏性变更
+
+- **`AnyTransaction` 由 enum 改为 struct**：`AnyTransaction::MySql(tx)` /
+  `AnyTransaction::Postgres(tx)` 构造语法保持不变（兼容构造器产生
+  `source() == None` 的事务）；但 `match tx { AnyTransaction::MySql(t) => ... }`
+  形式的模式匹配不再编译。改用 `as_mysql()` / `as_postgres()` / `backend()` /
+  `source()`，或通过 `AnyDatabase::begin()` / `ActionContext::begin_transaction()`
+  获取带数据源身份的事务。
+- **UI 契约升级**：`UI_SCHEMA_VERSION` 由 `2.4` 升到 `2.5`；Module 与 TableView
+  投影新增 `datasource` 字段。前端契约需同步接受 2.5（yang-system 前端已支持）。
+- **`AddonSpec` 新增 `datasource` 字段**：该结构全部字段公开且未标注
+  `#[non_exhaustive]`，使用结构体字面量的下游需补字段或改用 `AddonSpec::new`。
+  `TableSpec` / `ModuleSpec` 含私有字段，不受结构体字面量影响。
+
+### 兼容新增
+
+- 多数据源：`DatasourceId`、`DatasourceRegistry`、`Datasource`、
+  `DatasourceHealth`、`DatasourcePoolStatus`、`PoolHandle`；
+  `Tools::{database_named, datasources, datasource_health}`、
+  `ToolsBuilder::{database_named, database_named_with_policy, mysql_named,
+  postgres_named, default_datasource}` 与
+  `ActionContext::begin_transaction_on`。
+- 存量 PostgreSQL 接入：`PgAdoptionReport`（`describe_postgres_schema`）、
+  `SchemaBindingMode`、`SchemaSyncReport.bindings`、
+  `Field::native_enum`、`Table::opaque_column`、`Table::index_spec` /
+  `TableSpec::{partial_index, partial_unique_named, expression_index}`，以及
+  `sync_table_definitions_grouped` / `preflight_table_definitions_grouped`
+  系列入口。
+- `TableQuery::where_primary_keys`、`require_sourced_tx`、数据源绑定与跨源事务
+  拒绝；`DatabaseRelationExecutor::new_on`。
+- 接入步骤见 `docs/reference/POSTGRES_ADOPTION.md`。
+
+### yang-db 0.3.1
+
+- 修复 PostgreSQL 参数绑定缓存：未类型化 NULL 使用 OID 0，并以 128 位绑定类型
+  签名区分同文本不同参数组合，避免 22P03 / 08P01 / 22021 以及 FLOAT8 按 INT8
+  解码的静默错值。
+- 事务与 QueryBuilder 的 NULL 从 TEXT / INT4 改为 OID 0，支持
+  `::numeric` / `::uuid` / `::timestamptz` 等任意显式 cast。
+- SQL 前会附加 `/*yang-bind:...*/` 注释参与 sqlx 语句缓存键；下游若断言精确
+  SQL 文本需同步。`postgres::params` 为 crate 内部模块，不新增公共 API。

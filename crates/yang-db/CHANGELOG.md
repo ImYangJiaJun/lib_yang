@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1
+
+### 修复
+
+- PostgreSQL 参数绑定缓存改为按「SQL 文本 + 参数类型组合」分桶：未类型化 NULL
+  使用 OID 0，并生成 128 位绑定类型签名附加到 SQL 注释中，避免首次 PARSE 定型后
+  出现 22P03 / 08P01 / 22021，以及 FLOAT8 按 INT8 解码导致的静默错值。
+- 事务与 QueryBuilder 的 NULL 从 TEXT / INT4 改为 OID 0，支持
+  `::numeric` / `::uuid` / `::timestamptz` 等任意显式 cast。
+- 新增单连接池回归 `integration_pg_bind_signature`：db NULL→TEXT、tx NULL→INT、
+  QueryBuilder INT→FLOAT。
+
+### 兼容新增
+
+- MySQL / PostgreSQL 的 `Database` 实现 `Clone`，用于多数据源共享同一连接池。
+- SQL 前会附加 `/*yang-bind:...*/` 注释参与 sqlx 语句缓存键；断言精确 SQL 文本的
+  下游测试需同步。`postgres::params` 为 crate 内部模块，不新增公共 API。
+
 ## 0.3.0
 
 ### 破坏性变更

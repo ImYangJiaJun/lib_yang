@@ -3,6 +3,8 @@
 /.worktrees/
 /project/
 /scs/
+# 本机导出与归档（含真实业务数据，不入库）
+/exports/
 .mcp.json
 .mcp.local.json
 .idea/

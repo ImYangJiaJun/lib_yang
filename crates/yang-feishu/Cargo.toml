@@ -272,6 +272,10 @@ tokio = { version = "1.52.1", features = [
 name = "bitable_pull"
 required-features = ["http", "bitable"]
 
+[[example]]
+name = "drive_pull_probe"
+required-features = ["http", "drive"]
+
 [[test]]
 name = "api_surface"
 required-features = ["api-auth", "api-contact", "api-docx", "api-im"]
