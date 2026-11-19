@@ -20,6 +20,7 @@ pub mod field;
 pub mod identifier;
 pub mod init;
 pub mod listener;
+pub(crate) mod params;
 pub mod query_builder;
 pub mod transaction;
 

@@ -1,5 +1,6 @@
 use crate::error::DbError;
 use crate::isolation::IsolationLevel;
+use crate::postgres::params::{json_signature, keyed_sql, PgUntypedNull};
 use crate::postgres::query_builder::QueryBuilder;
 use sqlx::Transaction as SqlxTransaction;
 use std::collections::VecDeque;
@@ -314,8 +315,9 @@ impl Transaction {
         }
 
         if let Some(tx) = &mut self.tx {
-            // 构建查询并逐一绑定参数
-            let mut query = sqlx::query(sql);
+            // 构建查询并逐一绑定参数；缓存键带上参数类型签名。
+            let statement = keyed_sql(sql, json_signature(&params));
+            let mut query = sqlx::query(&statement);
             for param in &params {
                 query = bind_json_param_tx(query, param);
             }
@@ -364,8 +366,9 @@ impl Transaction {
         }
 
         if let Some(tx) = &mut self.tx {
-            // 构建查询并逐一绑定参数
-            let mut query = sqlx::query_as::<_, T>(sql);
+            // 构建查询并逐一绑定参数；缓存键带上参数类型签名。
+            let statement = keyed_sql(sql, json_signature(&params));
+            let mut query = sqlx::query_as::<_, T>(&statement);
             for param in &params {
                 query = bind_json_param_as_tx(query, param);
             }
@@ -723,7 +726,8 @@ impl Transaction {
             if enable_logging {
                 log::debug!("事务内声明游标: {}", declare);
             }
-            let mut query = sqlx::query(&declare);
+            let keyed_declare = keyed_sql(&declare, json_signature(&params));
+            let mut query = sqlx::query(&keyed_declare);
             for param in &params {
                 query = bind_json_param_tx(query, param);
             }
@@ -866,10 +870,10 @@ fn bind_json_param_tx<'q>(
             Some(crate::json_param::JsonNumber::Int(i)) => query.bind(i),
             Some(crate::json_param::JsonNumber::Uint(u)) => query.bind(u.to_string()),
             Some(crate::json_param::JsonNumber::Float(f)) => query.bind(f),
-            None => query.bind(Option::<String>::None),
+            None => query.bind(PgUntypedNull),
         },
         serde_json::Value::Bool(value) => query.bind(*value),
-        serde_json::Value::Null => query.bind(Option::<String>::None),
+        serde_json::Value::Null => query.bind(PgUntypedNull),
         other => query.bind(other.clone()),
     }
 }
@@ -887,10 +891,10 @@ where
             Some(crate::json_param::JsonNumber::Int(i)) => query.bind(i),
             Some(crate::json_param::JsonNumber::Uint(u)) => query.bind(u.to_string()),
             Some(crate::json_param::JsonNumber::Float(f)) => query.bind(f),
-            None => query.bind(Option::<String>::None),
+            None => query.bind(PgUntypedNull),
         },
         serde_json::Value::Bool(value) => query.bind(*value),
-        serde_json::Value::Null => query.bind(Option::<String>::None),
+        serde_json::Value::Null => query.bind(PgUntypedNull),
         other => query.bind(other.clone()),
     }
 }

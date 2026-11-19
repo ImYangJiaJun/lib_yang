@@ -1,4 +1,5 @@
 use crate::error::DbError;
+use crate::postgres::params::{json_signature, keyed_sql, PgUntypedNull};
 use crate::postgres::transaction::{
     next_cursor_name, normalize_stream_sql, validate_prepared_gid, TransactionOptions,
     DEFAULT_STREAM_BATCH_SIZE,
@@ -928,9 +929,11 @@ impl Database {
             log::debug!("执行参数化查询: {}, 参数数量: {}", sql, params.len());
         }
 
-        // 构建查询并逐一绑定参数
+        // 构建查询并逐一绑定参数；缓存键带上参数类型签名，避免首次 NULL/类型
+        // 绑定的 PARSE 结果污染后续同文本调用。
         let mut conn = self.acquire().await?;
-        let mut query = sqlx::query_as::<_, T>(sql);
+        let statement = keyed_sql(sql, json_signature(&params));
+        let mut query = sqlx::query_as::<_, T>(&statement);
         for param in &params {
             query = bind_json_param_as(query, param);
         }
@@ -971,9 +974,11 @@ impl Database {
             log::debug!("执行参数化语句: {}, 参数数量: {}", sql, params.len());
         }
 
-        // 构建查询并逐一绑定参数
+        // 构建查询并逐一绑定参数；缓存键带上参数类型签名，避免首次 NULL/类型
+        // 绑定的 PARSE 结果污染后续同文本调用。
         let mut conn = self.acquire().await?;
-        let mut query = sqlx::query(sql);
+        let statement = keyed_sql(sql, json_signature(&params));
+        let mut query = sqlx::query(&statement);
         for param in &params {
             query = bind_json_param(query, param);
         }
@@ -1032,7 +1037,8 @@ impl Database {
         if self.config.enable_logging {
             log::debug!("声明流式游标: {}", declare);
         }
-        let mut query = sqlx::query(&declare);
+        let keyed_declare = keyed_sql(&declare, json_signature(&params));
+        let mut query = sqlx::query(&keyed_declare);
         for param in &params {
             query = bind_json_param(query, param);
         }
@@ -1206,10 +1212,11 @@ impl Database {
         params: Vec<serde_json::Value>,
     ) -> Result<Vec<String>, DbError> {
         let statement = explain_statement(sql)?;
+        let keyed_statement = keyed_sql(&statement, json_signature(&params));
         if self.config.enable_logging {
             log::debug!("执行 EXPLAIN: {}, 参数数量: {}", statement, params.len());
         }
-        let mut query = sqlx::query_as::<_, (serde_json::Value,)>(&statement);
+        let mut query = sqlx::query_as::<_, (serde_json::Value,)>(&keyed_statement);
         for param in &params {
             query = bind_json_param_as(query, param);
         }
@@ -1746,36 +1753,6 @@ impl Drop for PgRowCursor {
             // 同步 Drop 无法执行 ROLLBACK，detach 让连接关闭而不是带着打开事务回池。
             let _ = conn.detach();
         }
-    }
-}
-
-/// 未类型化 NULL 参数。
-///
-/// PARSE 阶段发送参数类型 OID 0（未指定），让 PostgreSQL 依据 SQL 上下文推断
-/// 参数类型（与字符串字面量一致）。这使 `$1::text`、`$1::uuid`、
-/// `$1::timestamptz`、`$1::numeric`、`$1::int + 1` 等显式 cast 场景都能接受
-/// NULL；若固定绑定成 `int4`，这些 cast 会报 42883。绑定值本身编码为 NULL
-/// （长度 -1），不写入任何数据。
-#[derive(Debug, Clone, Copy)]
-struct PgUntypedNull;
-
-impl sqlx::Type<sqlx::Postgres> for PgUntypedNull {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        // OID 0 = 未指定类型，由服务端推断。
-        sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(0))
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for PgUntypedNull {
-    fn encode_by_ref(
-        &self,
-        _buffer: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        Ok(sqlx::encode::IsNull::Yes)
-    }
-
-    fn size_hint(&self) -> usize {
-        0
     }
 }
 

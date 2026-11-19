@@ -1,5 +1,6 @@
 use crate::postgres::condition::{ComparisonOperator, Condition, SqlValue};
 use crate::postgres::field::{FieldType, OrderClause};
+use crate::postgres::params::{keyed_sql_for, PgUntypedNull};
 use sqlx::postgres::PgPool;
 use sqlx::{TypeInfo, ValueRef};
 use std::collections::HashMap;
@@ -24,8 +25,8 @@ use std::collections::HashMap;
 macro_rules! bind_value_match {
     ($query:expr, $param:expr) => {
         match $param {
-            // NULL 值：绑定为 Option<i32>::None
-            SqlValue::Null => $query.bind(Option::<i32>::None),
+            // NULL 值：未类型化 NULL，由服务端按 SQL 上下文推断类型
+            SqlValue::Null => $query.bind(PgUntypedNull),
             // 布尔值
             SqlValue::Bool(b) => $query.bind(*b),
             // 整数
@@ -4254,7 +4255,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_as::<_, T>(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query_as::<_, T>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -4297,7 +4299,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_as::<_, T>(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query_as::<_, T>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -4342,7 +4345,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_scalar::<_, C>(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query_scalar::<_, C>(&statement);
         for param in params {
             query = bind_scalar_param(query, param);
         }
@@ -4559,7 +4563,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_as::<_, R>(&sql);
+        let statement = keyed_sql_for(&sql, params);
+        let mut query = sqlx::query_as::<_, R>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -4759,7 +4764,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数数量: {}", params.len());
         }
 
-        let mut query = sqlx::query(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query(&statement);
         for param in params {
             query = bind_execute_param(query, param);
         }
@@ -5030,7 +5036,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query(&statement);
         for param in params {
             query = bind_execute_param(query, param);
         }
@@ -5107,7 +5114,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_as::<_, R>(&sql);
+        let statement = keyed_sql_for(&sql, params);
+        let mut query = sqlx::query_as::<_, R>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -5194,7 +5202,8 @@ impl<'a> QueryBuilder<'a> {
             amount,
             &self.conditions,
         )?;
-        let mut query = sqlx::query(generator.get_sql());
+        let statement = keyed_sql_for(generator.get_sql(), generator.get_params());
+        let mut query = sqlx::query(&statement);
         for param in generator.get_params() {
             query = bind_execute_param(query, param);
         }
@@ -5240,7 +5249,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query(&statement);
         for param in params {
             query = bind_execute_param(query, param);
         }
@@ -5305,7 +5315,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("参数: {:?}", params);
         }
 
-        let mut query = sqlx::query_as::<_, R>(&sql);
+        let statement = keyed_sql_for(&sql, params);
+        let mut query = sqlx::query_as::<_, R>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -5609,7 +5620,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("执行 upsert() SQL: {}", sql);
         }
 
-        let mut query = sqlx::query(sql);
+        let statement = keyed_sql_for(sql, params);
+        let mut query = sqlx::query(&statement);
         for param in params {
             query = bind_execute_param(query, param);
         }
@@ -5678,7 +5690,8 @@ impl<'a> QueryBuilder<'a> {
             log::debug!("执行 upsert_returning() SQL: {}", sql);
         }
 
-        let mut query = sqlx::query_as::<_, R>(&sql);
+        let statement = keyed_sql_for(&sql, params);
+        let mut query = sqlx::query_as::<_, R>(&statement);
         for param in params {
             query = bind_param(query, param);
         }
@@ -6002,7 +6015,8 @@ async fn execute_upsert_batch_chunk(
         update_columns,
         update_where,
     )?;
-    let mut query = sqlx::query(generator.get_sql());
+    let statement = keyed_sql_for(generator.get_sql(), generator.get_params());
+    let mut query = sqlx::query(&statement);
     for param in generator.get_params() {
         query = bind_execute_param(query, param);
     }
@@ -6187,7 +6201,8 @@ async fn execute_generated(
     sql: &str,
     params: &[SqlValue],
 ) -> Result<u64, crate::error::DbError> {
-    let mut query = sqlx::query(sql);
+    let statement = keyed_sql_for(sql, params);
+    let mut query = sqlx::query(&statement);
     for param in params {
         query = bind_execute_param(query, param);
     }
@@ -6223,7 +6238,8 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     let mut generator = SqlGenerator::new();
     generator.build_insert_batch(table, &json_data_list, field_types)?;
-    let mut query = sqlx::query(generator.get_sql());
+    let statement = keyed_sql_for(generator.get_sql(), generator.get_params());
+    let mut query = sqlx::query(&statement);
     for param in generator.get_params() {
         query = bind_execute_param(query, param);
     }
@@ -6243,7 +6259,8 @@ where
     let mut generator = SqlGenerator::new();
     generator.build_insert_batch(table, data, field_types)?;
     let sql = format!("{}{}", generator.get_sql(), returning);
-    let mut query = sqlx::query_as::<_, R>(&sql);
+    let statement = keyed_sql_for(&sql, generator.get_params());
+    let mut query = sqlx::query_as::<_, R>(&statement);
     for param in generator.get_params() {
         query = bind_param(query, param);
     }
@@ -6279,7 +6296,8 @@ where
         update_where,
     )?;
     let sql = format!("{}{}", generator.get_sql(), returning);
-    let mut query = sqlx::query_as::<_, R>(&sql);
+    let statement = keyed_sql_for(&sql, generator.get_params());
+    let mut query = sqlx::query_as::<_, R>(&statement);
     for param in generator.get_params() {
         query = bind_param(query, param);
     }
@@ -6295,7 +6313,8 @@ async fn execute_update_chunk(
 ) -> Result<u64, crate::error::DbError> {
     let mut generator = SqlGenerator::new();
     generator.build_update_batch(table, records, where_field.as_str(), field_types)?;
-    let mut query = sqlx::query(generator.get_sql());
+    let statement = keyed_sql_for(generator.get_sql(), generator.get_params());
+    let mut query = sqlx::query(&statement);
     for param in generator.get_params() {
         query = bind_execute_param(query, param);
     }
