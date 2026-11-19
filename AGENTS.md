@@ -1,6 +1,6 @@
 # AGENTS.md — lib_yang
 
-**刷新日期:** 2026-11-09（对照工作区 HEAD d7f4cf1 现场核实；上一版生成于 2026-09-05 / b8e511d）
+**刷新日期:** 2026-11-19（对照工作区 HEAD 2358f07 现场核实；上一版生成于 2026-11-09 / d7f4cf1）
 
 ## OVERVIEW
 YANG Rust workspace：六个基础库 crate（`yang-db`、`yang-base` + `yang-base-derive` proc-macro、`yang-runtime`、`yang-pcg`、`yang-feishu`）+ 独立嵌套应用 `project/yang-system`（本地联合调试）与 `project/receivables-system`（另行联调，均从根 workspace 排除）。edition 2021、resolver 2、共享 `[workspace.dependencies]`，根工具链固定 1.100.0（`rust-toolchain.toml`），MSRV 1.80（CI `+1.80.0` 单独 job 校验）。所有注释、文档、commit message 中文风格。
@@ -14,14 +14,14 @@ lib_yang/
 ├── rust-toolchain.toml       # channel 1.100.0
 ├── benchmarks/               # runtime-shadow 基准配置（CI performance-shadow job）
 ├── crates/
-│   ├── yang-db/              # MySQL/PG 查询构建 + Redis 客户端（v0.2.1）
-│   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.4.0）
-│   ├── yang-base-derive/     # #[derive(Action)] + params! 宏（v0.3.0）
-│   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.1.0）
+│   ├── yang-db/              # MySQL/PG 查询构建 + Redis 客户端（v0.3.0）
+│   ├── yang-base/            # definition 内核、actions、tables、auth、token、HTTP、transport-axum（v0.5.0）
+│   ├── yang-base-derive/     # #[derive(Action)] + params! 宏（v0.3.1）
+│   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.2.0）
 │   ├── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.2.0）
 │   └── yang-feishu/          # 飞书开放平台协议客户端（v0.3.0）
 ├── project/yang-system/      # 嵌套独立 Git/Cargo 应用（有自己的 .git/AGENTS.md/compose.yaml）；不在 workspace
-├── project/receivables-system/ # 嵌套独立 Cargo 应用（PG + axum，依赖仓外 fin_receivables_rs）；不在 workspace
+├── project/receivables-system/ # 嵌套独立 Cargo 应用（PG + axum，业务核心 vendor 在 project/receivables-system/vendor/fin_receivables_rs）；不在 workspace
 ├── scripts/
 │   ├── run_ci.py             # quick/full/integration 统一入口（唯一 CI 门禁入口）
 │   ├── verify_ci_contract.py / verify_feature_isolation.py
@@ -121,7 +121,7 @@ cargo run --example <name> -p <crate> --locked
 | `PluginManagerBuilder` / `PluginRegistry` | structs | `crates/yang-base/src/plugin/builder.rs`、`registry.rs` | build-time registration + runtime registry |
 
 ## CONVENTIONS
-- edition `2021`（各 crate `edition.workspace = true`）；`project/yang-system` 与 `project/receivables-system` 从根 workspace 排除，Cargo 命令须进各自目录跑。
+- edition `2021`（各 crate `edition.workspace = true`）；`project/yang-system` 与 `project/receivables-system` 从根 workspace 排除，Cargo 命令须进各自目录跑；receivables 的业务核心已 vendor 在 `project/receivables-system/vendor/fin_receivables_rs`。
 - 面向用户的对话、comments/public docs/commit message 一律中文（工具调用参数可用英文）；`yang-base` `#![warn(missing_docs)]`。
 - Unit tests colocated 在 `__tests__/`；integration tests 在 crate `tests/`；`yang-pcg` 的主测试在 `src/**/__tests__/` 与 `src/bin/pcg_cli.rs`，`tests/generation_bench.rs` 为 ignored 基准。
 - 需求追踪注释用 `验证需求: X.Y` 前缀。
