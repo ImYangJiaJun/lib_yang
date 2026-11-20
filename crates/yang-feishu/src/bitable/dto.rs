@@ -157,11 +157,42 @@ pub struct FieldProperty {
     /// 单向/双向关联列（type 18/21）指向的数据表 id。
     #[serde(default)]
     pub table_id: Option<String>,
+    /// 查找引用列（Lookup）的数据源表 id（部分响应直接给在顶层）。
+    #[serde(default)]
+    pub target_table: Option<String>,
+    /// 查找引用列（Lookup）的数据源字段 id。
+    #[serde(default)]
+    pub target_field: Option<String>,
+    /// Lookup 的筛选信息；数据源表 id 实际嵌在这里的 `target_table`。
+    #[serde(default)]
+    pub filter_info: Option<FieldFilterInfo>,
+}
+
+/// Lookup 字段的筛选信息。
+#[derive(Debug, Clone, Deserialize)]
+pub struct FieldFilterInfo {
+    /// 数据源表 id。
+    #[serde(default)]
+    pub target_table: Option<String>,
+}
+
+impl FieldProperty {
+    /// Lookup 数据源表 id：兼容顶层与 `filter_info.target_table` 两种返回。
+    pub fn lookup_target_table(&self) -> Option<&str> {
+        self.target_table.as_deref().or_else(|| {
+            self.filter_info
+                .as_ref()
+                .and_then(|filter| filter.target_table.as_deref())
+        })
+    }
 }
 
 /// 一个字段选项。
 #[derive(Debug, Clone, Deserialize)]
 pub struct PropertyOption {
+    /// 选项 id（记录里存的是 id，不是名称）。
+    #[serde(default)]
+    pub id: String,
     /// 选项名。
     #[serde(default)]
     pub name: String,
