@@ -6,11 +6,11 @@
 **只包含平台契约，不包含业务**：审批派发状态机、字段映射、数据源拉取编排、控制台
 Action、产品表与中文运维文案都留在宿主。
 
-## 安装（0.3.0）
+## 安装（0.3.1）
 
 ```toml
 [dependencies]
-yang-feishu = { version = "0.3.0", default-features = false, features = ["bitable", "approval", "metrics"] }
+yang-feishu = { version = "0.3.1", default-features = false, features = ["bitable", "approval", "metrics"] }
 ```
 
 默认不启用任何 API 域；按需开启 typed 模块或官方域：

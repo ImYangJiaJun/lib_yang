@@ -19,7 +19,7 @@ lib_yang/
 │   ├── yang-base-derive/     # #[derive(Action)] + params! 宏（v0.3.1）
 │   ├── yang-runtime/         # 配置源、可观测性、进程生命周期（v0.2.1）
 │   ├── yang-pcg/             # deterministic PCG map generator + UE5 adapter（v0.2.0）
-│   └── yang-feishu/          # 飞书开放平台协议客户端（v0.3.0）
+│   └── yang-feishu/          # 飞书开放平台协议客户端（v0.3.1）
 ├── project/yang-system/      # 嵌套独立 Git/Cargo 应用（有自己的 .git/AGENTS.md/compose.yaml）；不在 workspace
 ├── project/receivables-system/ # 嵌套独立 Cargo 应用（PG + axum，业务核心 vendor 在 project/receivables-system/vendor/fin_receivables_rs）；不在 workspace
 ├── scripts/
