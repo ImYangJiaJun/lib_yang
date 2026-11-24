@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1
+
+兼容增强（无破坏性 API 调整）：
+
+- `bitable::dto::FieldProperty` 新增 `target_table`、`target_field`、`filter_info`
+  字段与 `FieldFilterInfo` 类型，并新增 `lookup_target_table()`：兼容 Lookup
+  数据源表 id 出现在顶层或 `filter_info.target_table` 两种响应形态。
+- `bitable::dto::PropertyOption` 新增 `id`：记录中引用选项实际存的是 id 而非名称。
+- 新增 `drive_pull_probe` 示例（`--features http,drive`）：广度优先递归列云盘目录，
+  按 `type=file` 下载并保留相对路径；分页按 `has_more`/`next_page_token` 收敛，
+  深度上限 5、单文件上限 64 MiB，单文件失败不影响其余文件。
+- 兼容性说明：`FieldProperty` / `PropertyOption` 未标 `#[non_exhaustive]`；若下游
+  以结构体字面量构造这两个类型，需同步补齐新增字段。
+
 ## 0.3.0
 
 - 新增 `approval::relation_record_ids(cell)`：从关联列单元格取 record_id，接受
